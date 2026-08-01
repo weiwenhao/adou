@@ -1,0 +1,210 @@
+import fmt
+import json
+
+// Pi keeps a parsed arguments object on every tool-call delta.  Provider
+// streams are allowed to split JSON anywhere, so parse the complete value when
+// possible and otherwise repair only the unfinished lexical pieces before
+// closing open containers.  A failed repair deliberately returns {}: schema
+// validation still protects tool execution at the end of the turn.
+fn parse(string source): json.value_t {
+    if source.trim([' ', '\t', '\n', '\r']) == '' {
+        return json.object_value({})
+    }
+    var value = json.parse(source) catch e {
+        string repaired = repair_json(source)
+        string closed = close_json(repaired)
+        return json.parse(closed) catch second {
+            json.object_value({})
+        }
+    }
+    return value
+}
+
+#local
+fn repair_json(string source): string {
+    [u8] bytes = source as [u8]
+    [u8] result = []
+    bool in_string = false
+    bool escaped = false
+    int index = 0
+    for index < bytes.len() {
+        u8 byte = bytes[index]
+        if !in_string {
+            result.push(byte)
+            if byte == '"'.char() {
+                in_string = true
+            }
+            index += 1
+            continue
+        }
+        if escaped {
+            // A trailing slash is repaired below; valid escapes and ordinary
+            // escaped bytes are copied without changing their meaning.
+            result.push(byte)
+            escaped = false
+            index += 1
+            continue
+        }
+        if byte == '\\'.char() {
+            if index + 1 >= bytes.len() {
+                result.push('\\'.char())
+                result.push('\\'.char())
+            } else if valid_escape(bytes[index + 1]) {
+                result.push(byte)
+                escaped = true
+            } else {
+                // Match Pi's repairJson: turn an unknown escape such as \H
+                // into a literal backslash followed by H.
+                result.push('\\'.char())
+                result.push('\\'.char())
+            }
+            index += 1
+            continue
+        }
+        if byte == '"'.char() {
+            result.push(byte)
+            in_string = false
+            index += 1
+            continue
+        }
+        if byte < 0x20 {
+            result = append_control(result, byte)
+        } else {
+            result.push(byte)
+        }
+        index += 1
+    }
+    if in_string {
+        if escaped {
+            result.push('\\'.char())
+        }
+        result.push('"'.char())
+    }
+    return result as string
+}
+
+#local
+fn close_json(string source): string {
+    string trimmed = source.trim([' ', '\t', '\n', '\r'])
+    [u8] bytes = trimmed as [u8]
+    if bytes.len() == 0 {
+        return '{}'
+    }
+    int end = bytes.len()
+    if bytes[end - 1] == ','.char() {
+        end -= 1
+        for end > 0 && is_space(bytes[end - 1]) {
+            end -= 1
+        }
+    }
+    [u8] result = bytes.slice(0, end)
+    result = append_incomplete_token(result)
+    if result.len() > 0 && result[result.len() - 1] == ':'.char() {
+        result.append('null' as [u8])
+    }
+
+    [u8] stack = []
+    bool in_string = false
+    bool escaped = false
+    int last_string_start = -1
+    for index, byte in result {
+        if in_string {
+            if escaped {
+                escaped = false
+            } else if byte == '\\'.char() {
+                escaped = true
+            } else if byte == '"'.char() {
+                in_string = false
+            }
+            continue
+        }
+        if byte == '"'.char() {
+            in_string = true
+            last_string_start = index
+        } else if byte == '{'.char() {
+            stack.push('}'.char())
+        } else if byte == '['.char() {
+            stack.push(']'.char())
+        } else if byte == '}'.char() || byte == ']'.char() {
+            if stack.len() > 0 && stack[stack.len() - 1] == byte {
+                stack = stack.slice(0, stack.len() - 1)
+            }
+        }
+    }
+
+    // A partial object key (for example {"pa) needs a value placeholder;
+    // a partial string value (for example {"path":"rea) does not.
+    if result.len() > 0 && result[result.len() - 1] == '"'.char() && stack.len() > 0 && stack[stack.len() - 1] == '}'.char() && last_string_start > 0 {
+        int previous = last_string_start - 1
+        for previous >= 0 && is_space(result[previous]) {
+            previous -= 1
+        }
+        if previous >= 0 && (result[previous] == '{'.char() || result[previous] == ','.char()) {
+            result.push(':'.char())
+            result.append('null' as [u8])
+        }
+    }
+    for int index = stack.len() - 1; index >= 0; index -= 1 {
+        result.push(stack[index])
+    }
+    return result as string
+}
+
+#local
+fn append_incomplete_token([u8] result): [u8] {
+    if result.len() == 0 {
+        return result
+    }
+    int end = result.len()
+    int start = end
+    for start > 0 && !is_token_delimiter(result[start - 1]) {
+        start -= 1
+    }
+    if start == end {
+        return result
+    }
+    string token = result.slice(start, end) as string
+    if token == 't' || token == 'tr' || token == 'tru' {
+        result.append('e' as [u8])
+    } else if token == 'f' || token == 'fa' || token == 'fal' || token == 'fals' {
+        result.append(('false'.slice(token.len(), 5)) as [u8])
+    } else if token == 'n' || token == 'nu' || token == 'nul' {
+        result.append(('null'.slice(token.len(), 4)) as [u8])
+    } else if token.ends_with('.') || token.ends_with('e') || token.ends_with('E') || token.ends_with('+') || token.ends_with('-') {
+        result.push('0'.char())
+    }
+    return result
+}
+
+#local
+fn is_token_delimiter(u8 byte): bool {
+    return is_space(byte) || byte == '{'.char() || byte == '['.char() || byte == ','.char() || byte == ':'.char() || byte == '}'.char() || byte == ']'.char()
+}
+
+#local
+fn is_space(u8 byte): bool {
+    return byte == ' '.char() || byte == '\t'.char() || byte == '\n'.char() || byte == '\r'.char()
+}
+
+#local
+fn valid_escape(u8 byte): bool {
+    return byte == '"'.char() || byte == '\\'.char() || byte == '/'.char() || byte == 'b'.char() || byte == 'f'.char() || byte == 'n'.char() || byte == 'r'.char() || byte == 't'.char() || byte == 'u'.char()
+}
+
+#local
+fn append_control([u8] result, u8 byte): [u8] {
+    if byte == 0x08 {
+        result.append('\\b' as [u8])
+    } else if byte == 0x0c {
+        result.append('\\f' as [u8])
+    } else if byte == '\n'.char() {
+        result.append('\\n' as [u8])
+    } else if byte == '\r'.char() {
+        result.append('\\r' as [u8])
+    } else if byte == '\t'.char() {
+        result.append('\\t' as [u8])
+    } else {
+        result.append(fmt.sprintf('\\u%04x', byte) as [u8])
+    }
+    return result
+}

@@ -1,5 +1,6 @@
 import adou.src.ai.models
 import adou.src.ai.sse
+import adou.src.ai.streaming_json
 import adou.src.ai.types
 import json
 
@@ -164,6 +165,7 @@ fn processor_t.update_block(&self, int provider_index, ref<json.value_t> delta, 
     } else if delta_type == 'input_json_delta' && slot.kind == SLOT_TOOL_CALL {
         string value = required_string(delta, 'partial_json')
         slot.tool_call.partial_json += value
+        slot.tool_call.arguments = streaming_json.parse(slot.tool_call.partial_json)
         events.push(update_event(types.EVENT_TOOLCALL_DELTA, slot.content_index, value, '', self.output))
     }
     return events

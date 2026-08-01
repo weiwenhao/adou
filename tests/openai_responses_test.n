@@ -91,6 +91,22 @@ test 'converts reasoning and incomplete terminal status' {
     assert(thinking.thinking == 'final reasoning')
     assert(thinking.thinking_signature != '')
 }
+test 'parses Responses tool arguments on every delta' {
+    var processor = openai_responses.processor(test_model(), 123)
+    processor.start()
+    var added = sse.event_t {
+        event: 'message', data: '{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_read","call_id":"call_read","name":"read","arguments":""}}', id: '', retry: -1,
+    }
+    processor.feed(added)
+    var delta = sse.event_t {
+        event: 'message', data: '{"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\\"path\\":\\""}', id: '', retry: -1,
+    }
+    var events = processor.feed(delta)
+    assert(events.len() == 1 && events[0].kind == types.EVENT_TOOLCALL_DELTA)
+    var partial = events[0].partial as ref<types.assistant_message_t>
+    var call = partial.content[0] as ref<types.tool_call_t>
+    assert(call.arguments.get('path').as_string() == '')
+}
 test 'tracks final answer message phases in partial events' {
     string fixture = ''
     fixture += frame('{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_phase","phase":"final_answer","content":[]}}')

@@ -1,6 +1,7 @@
 import adou.src.ai.sse
 import adou.src.ai.models
 import adou.src.ai.types
+import adou.src.ai.streaming_json
 import json
 import strings
 const SLOT_TEXT = 'text'
@@ -93,6 +94,7 @@ fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
             if slot.kind == SLOT_TOOL_CALL {
                 string delta = required_string(root, 'delta')
                 slot.tool_call.partial_json += delta
+                slot.tool_call.arguments = streaming_json.parse(slot.tool_call.partial_json)
                 events.push(update_event(types.EVENT_TOOLCALL_DELTA, slot.content_index, delta, '', self.output))
             }
         }
@@ -104,6 +106,7 @@ fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
                 string complete = required_string(root, 'arguments')
                 string previous = slot.tool_call.partial_json
                 slot.tool_call.partial_json = complete
+                slot.tool_call.arguments = streaming_json.parse(complete)
                 if complete.starts_with(previous) && complete.len() > previous.len() {
                     string delta = complete.slice(previous.len(), complete.len())
                     events.push(update_event(types.EVENT_TOOLCALL_DELTA, slot.content_index, delta, '', self.output))
@@ -168,7 +171,7 @@ fn processor_t.create_slot(&self, int output_index, ref<json.value_t> item, [typ
     } else if item_type == 'function_call' {
         string call_id = required_string(item, 'call_id')
         string item_id = required_string(item, 'id')
-        var block = new types.tool_call_t(id = call_id + '|' + item_id, name = required_string(item, 'name'), partial_json = optional_string(item, 'arguments', ''),)
+        var block = new types.tool_call_t(id = call_id + '|' + item_id, name = required_string(item, 'name'), arguments = streaming_json.parse(optional_string(item, 'arguments', '')), partial_json = optional_string(item, 'arguments', ''),)
         types.content_t content = block
         self.output.content.push(content)
         int content_index = self.output.content.len() - 1

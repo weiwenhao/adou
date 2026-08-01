@@ -1,5 +1,6 @@
 import adou.src.ai.models
 import adou.src.ai.sse
+import adou.src.ai.streaming_json
 import adou.src.ai.types
 import json
 import strings
@@ -172,7 +173,7 @@ fn processor_t.append_tool_call(&self, ref<json.value_t> value, [types.assistant
     var object = value.as_object()
     int index = object.contains('index') ? object['index'].as_number().to_int() : self.slots.len()
     if !self.slots.contains(index) {
-        var block = new types.tool_call_t(partial_json = '')
+        var block = new types.tool_call_t(arguments = streaming_json.parse(''), partial_json = '')
         types.content_t content = block
         self.output.content.push(content)
         int content_index = self.output.content.len() - 1
@@ -191,6 +192,7 @@ fn processor_t.append_tool_call(&self, ref<json.value_t> value, [types.assistant
         if function.contains('arguments') && !function['arguments'].is_null() {
             string delta = function['arguments'].as_string()
             slot.tool_call.partial_json += delta
+            slot.tool_call.arguments = streaming_json.parse(slot.tool_call.partial_json)
             events.push(update_event(types.EVENT_TOOLCALL_DELTA, slot.content_index, delta, '', self.output))
         }
     }
