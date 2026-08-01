@@ -1,4 +1,5 @@
 import adou.src.tools.path_utils
+import adou.src.config.paths
 import fs
 import json
 import os
@@ -61,9 +62,7 @@ fn read_object(string file_path): object_t {
 }
 
 fn trust_path(): string {
-    string home = syscall.get_env('HOME')
-    if home == '' {home = '/'}
-    return path.join(home, '.adou/trust.json')
+    return paths.trust_path()
 }
 
 #local

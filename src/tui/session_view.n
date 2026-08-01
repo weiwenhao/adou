@@ -6,6 +6,7 @@ import adou.src.ai.abort
 import adou.src.ai.types as ai_types
 import adou.src.config.auth
 import adou.src.config.models
+import adou.src.config.paths
 import adou.src.config.settings as config_settings
 import adou.src.config.trust as trust
 import adou.src.config.types
@@ -1052,8 +1053,7 @@ fn view_t.show_session_overlay(&self) {
     // Pi's resume picker can broaden from the current project to all
     // projects. Include the default shared store here as well; explicit
     // --session-dir remains intentionally scoped to that directory.
-    string home = syscall.get_env('HOME')
-    string shared_root = home == '' ? '' : path.join(home, '.adou/sessions')
+    string shared_root = paths.sessions_dir()
     if shared_root != '' && path.dir(self.runner.repository.session_dir) == shared_root {
         var project_dirs = os.listdir(shared_root) catch error {[]}
         for project_name in project_dirs {

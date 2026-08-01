@@ -1,4 +1,5 @@
 import adou.src.tools.path_utils
+import adou.src.config.paths
 import adou.src.platform.cwd as platform_cwd
 import fs
 import path
@@ -23,7 +24,7 @@ fn load(string cwd, string agent_dir): load_result_t! {
     string resolved_cwd = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
     string resolved_agent_dir = agent_dir
     if resolved_agent_dir == '' {
-        resolved_agent_dir = path_utils.resolve_to_cwd('~/.adou', resolved_cwd)
+        resolved_agent_dir = paths.agent_dir()
     } else {
         resolved_agent_dir = path_utils.resolve_to_cwd(resolved_agent_dir, resolved_cwd)
     }

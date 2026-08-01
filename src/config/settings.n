@@ -1,4 +1,5 @@
 import adou.src.tools.path_utils
+import adou.src.config.paths
 import fs
 import fmt
 import json
@@ -106,9 +107,7 @@ fn set_default_thinking(string level): void! {
 }
 
 fn settings_path(): string {
-    string home = syscall.get_env('HOME')
-    if home == '' {home = '/'}
-    return path.join(home, '.adou/settings.json')
+    return paths.settings_path()
 }
 
 #local

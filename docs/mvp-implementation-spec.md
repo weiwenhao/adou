@@ -48,6 +48,18 @@
 - 终端适配：[terminal.ts](../vendors/pi/packages/tui/src/terminal.ts)
 - TUI 渲染器：[tui.ts](../vendors/pi/packages/tui/src/tui.ts)
 
+### 2.1 构建与测试入口
+
+Adou 只使用 Make 组织构建，不依赖 CMake。Nature 源码和测试由 Nature 自己的命令负责编译与执行：
+
+```sh
+make build
+make test
+make run
+```
+
+`make test` 按文件串行调用 `nature test`；每次调用前会检查并清理当前用户遗留的 Nature 编译器进程，避免 Nature 编译器的高内存峰值发生重叠。测试不调用 CTest，也不依赖 `vendors/pi` 运行时。
+
 ## 3. MVP 目标
 
 MVP 必须交付一个可独立运行、运行时不依赖 Node.js、Bun 或 Pi 进程的 Nature coding agent，具备以下能力：
@@ -480,7 +492,7 @@ MVP 写入 Pi v3 的 parent 链，并维护当前 active leaf；reader 不得因
 - compaction 后重建 LLM context 为 `compactionSummary + firstKeptEntryId 之后的消息`；
 - 原始消息仍保留在 JSONL；
 - API key、Authorization header、完整请求 header 不得写入 session；
-- 默认目录为 `~/.adou/sessions/`，不直接修改 `~/.pi/agent/sessions/`。
+- 默认目录为 `~/.pi/agent/sessions/`；可通过 `PI_CODING_AGENT_SESSION_DIR` 覆盖，旧版 Adou 的 `ADOU_SESSION_DIR` 仍作为兼容别名。
 
 MVP 提供最近 session 恢复、树状 active path 选择以及从当前 leaf fork/clone 的能力；远程分享仍不在范围内。
 
@@ -637,7 +649,7 @@ adou [--provider deepseek|openai|anthropic]
      [--no-session]
 ```
 
-默认模型为 `deepseek/deepseek-v4-flash`，密钥按已保存的 `~/.adou/auth.json`、环境变量 `DEEPSEEK_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 解析。`--api-key` MAY 支持，但帮助文本必须提示命令行参数可能进入 shell history。
+默认模型为 `deepseek/deepseek-v4-flash`，密钥按已保存的 `~/.pi/agent/auth.json`、环境变量 `DEEPSEEK_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 解析。`PI_CODING_AGENT_DIR` 可覆盖 `~/.pi/agent`（`ADOU_CODING_AGENT_DIR` 为兼容别名）。`--api-key` MAY 支持，但帮助文本必须提示命令行参数可能进入 shell history。
 
 配置必须包含模型 `contextWindow` 和 `maxTokens`。未知 context window 时不得凭空触发 threshold compaction；overflow error recovery 仍可依据 provider error pattern 执行。
 
@@ -661,7 +673,7 @@ MVP 内置 TUI 命令：
 
 `!` bash 复用模型 bash 的同一个 Nature process 执行器：stdout/stderr 按 chunk 增量显示，运行中显示可取消 Loader，结束时保留截断详情、退出码、超时和 full-output 路径。`/model` 的非精确参数打开带搜索词的选择器；`Ctrl+P`/`Ctrl+Shift+P` 只在已认证模型之间循环。
 
-`/share` 在没有远程凭据时生成与当前 Pi v3 记录对应的本地 `.share.jsonl` artifact，并明确提示远程 GitHub gist 尚未配置；`/trust` 写入 `$HOME/.adou/trust.json`，不把 trust 误当成已完成的完整策略执行。其余 session 管理命令直接操作 Pi v3 JSONL：`/resume`、`/import` 打开已有记录，`/export` 输出 JSONL/HTML，`/name` 写入 session info，`/tree` 选择 active leaf，`/fork` 从历史 user message 分支，`/clone` 创建带 `parentSession` 的新记录。
+`/share` 在没有远程凭据时生成与当前 Pi v3 记录对应的本地 `.share.jsonl` artifact，并明确提示远程 GitHub gist 尚未配置；`/trust` 写入 `$HOME/.pi/agent/trust.json`（或 `PI_CODING_AGENT_DIR` 指定的位置），不把 trust 误当成已完成的完整策略执行。其余 session 管理命令直接操作 Pi v3 JSONL：`/resume`、`/import` 打开已有记录，`/export` 输出 JSONL/HTML，`/name` 写入 session info，`/tree` 选择 active leaf，`/fork` 从历史 user message 分支，`/clone` 创建带 `parentSession` 的新记录。
 
 无扩展 RPC 的响应结构遵循 Pi `rpc-types.ts`：模型和统计使用嵌套对象，`get_entries` 支持 `since` 游标，`get_tree` 返回递归节点，`get_fork_messages` 返回可分叉的 user message；stdin 为管道时必须保留 JSONL 命令，不得先被普通 prompt 读取。prompt、compact 和 bash 在后台协程中运行，主循环可继续接收 `steer`、`follow_up`、`abort`、`abort_retry`、`abort_bash` 与状态查询；响应和事件通过单一输出锁保持 JSONL 行完整。由于 Nature 运行时没有 Pi 的扩展事件总线，文档只承诺无扩展核心命令，不承诺扩展 UI 请求或 SDK 回调。
 

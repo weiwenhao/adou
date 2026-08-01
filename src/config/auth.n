@@ -1,4 +1,5 @@
 import adou.src.tools.path_utils
+import adou.src.config.paths
 import fs
 import json
 import os
@@ -96,11 +97,7 @@ fn remove(string provider): void! {
 }
 
 fn auth_path(): string {
-    string home = syscall.get_env('HOME')
-    if home == '' {
-        home = '/'
-    }
-    return path.join(home, '.adou/auth.json')
+    return paths.auth_path()
 }
 
 #local

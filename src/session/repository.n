@@ -1,4 +1,5 @@
 import adou.src.ai.types as ai_types
+import adou.src.config.paths
 import adou.src.session.identity
 import adou.src.session.jsonl
 import adou.src.session.message_json
@@ -50,13 +51,12 @@ type manager_t = struct {
 }
 
 fn default_session_dir(string cwd): string {
-    string home = syscall.get_env('HOME')
     string resolved = path_utils.clean(cwd)
     if resolved.starts_with('/') {
         resolved = resolved.slice(1, resolved.len())
     }
     string safe = resolved.replace('/', '-').replace('\\', '-').replace(':', '-')
-    return path_utils.clean(home + '/.adou/sessions/--' + safe + '--')
+    return path_utils.clean(path.join(paths.sessions_dir(), '--' + safe + '--'))
 }
 
 // Resolve the session directory without creating it.  Startup selectors use
@@ -281,7 +281,7 @@ fn open_reference(string cwd, string session_dir, string reference): ref<manager
 // Pi resolves --session/--fork id prefixes across all project directories
 // when the reference is not found in the current project.  A custom
 // --session-dir is a flat lookup root; the default store is grouped by
-// encoded cwd, so scan one directory level below ~/.adou/sessions.
+// encoded cwd, so scan one directory level below ~/.pi/agent/sessions.
 #local
 fn find_global_reference(string session_dir, string reference): [string] {
     [string] matches = []
@@ -289,11 +289,7 @@ fn find_global_reference(string session_dir, string reference): [string] {
         append_reference_matches(&matches, session_dir, reference)
         return matches
     }
-    string home = syscall.get_env('HOME')
-    if home == '' {
-        return matches
-    }
-    string root = path.join(home, '.adou/sessions')
+    string root = paths.sessions_dir()
     var names = os.listdir(root) catch error {return matches}
     for name in names {
         string candidate = path.join(root, name)
