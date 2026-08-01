@@ -82,7 +82,7 @@ port=$(cat "$port_file")
 
 if ! PI_CODING_AGENT_DIR="$tmp_dir/agent" \
     PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions" \
-    "$binary" --provider openai --model gpt-5.1-codex \
+    "$binary" --provider openai --model gpt-5.1-codex --thinking off \
     --base-url "http://127.0.0.1:$port/v1" --api-key e2e-key \
     --mode json --no-context-files --no-tools --session "$session_file" \
     'say hi' > "$output_file" 2>&1; then
@@ -108,6 +108,14 @@ if ! rg -F '"id":"fc_wahzbi1nji4hg"' "$request_file" >/dev/null; then
 fi
 if ! rg -F '"type":"function_call_output"' "$request_file" >/dev/null; then
     echo 'e2e: Responses request did not replay the tool result' >&2
+    exit 1
+fi
+if ! rg -F '"reasoning":{"effort":"none"}' "$request_file" >/dev/null; then
+    echo 'e2e: Responses request did not map thinking off to none' >&2
+    exit 1
+fi
+if rg -F '"include"' "$request_file" >/dev/null; then
+    echo 'e2e: Responses request unexpectedly included encrypted reasoning when thinking is off' >&2
     exit 1
 fi
 if ! rg -F '"delta":"ok"' "$output_file" >/dev/null; then

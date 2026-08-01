@@ -30,7 +30,7 @@ fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.strea
     }
     if model.reasoning {
         json_object_t reasoning = {}
-        if options.reasoning_effort != '' {
+        if options.reasoning_effort != '' && options.reasoning_effort != 'off' {
             reasoning['effort'] = boxed_string(options.reasoning_effort)
             reasoning['summary'] = boxed_string(options.reasoning_summary)
             body['include'] = json.box_value(json.array_value([boxed_string('reasoning.encrypted_content'),]))

@@ -94,6 +94,14 @@ test 'rejects a missing API key' {
     assert(failed)
 }
 
+test 'maps disabled OpenAI reasoning to the provider none value' {
+    var context = new types.context_t(system_prompt = 'system')
+    var options = new types.stream_options_t(api_key = 'secret', reasoning_effort = 'off')
+    var payload = json.parse(openai_request.build(fixture_model(true), context, options))
+    assert(payload.get('reasoning').get('effort').as_string() == 'none')
+    assert(!payload.as_object().contains('include'))
+}
+
 test 'normalizes foreign Responses tool ids for replay' {
     var model = fixture_model(true)
     var context = new types.context_t()
