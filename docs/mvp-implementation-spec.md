@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.14
+文档版本：0.15
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -484,7 +484,7 @@ content: string, required
 
 ### 11.5 `grep`、`find`、`ls`
 
-`grep` 优先使用系统 `rg`（支持 `--hidden`、glob、大小写和 literal/context/limit），不可用时回退到 POSIX grep；`find` 使用系统 find 并排除 `.git`、`node_modules`；`ls` 使用排序的 `ls -A1p`，保留隐藏文件和目录 `/` 后缀。路径参数统一相对 session cwd 解析，命令参数不通过 shell 拼接，避免模式和路径注入。
+`grep` 优先使用系统 `rg`（支持 `--hidden`、glob、大小写和 literal/context/limit），不可用时回退到 POSIX grep；路径不存在返回 `Path not found`，`limit <= 0` 按 Pi 归一为 1；`find` 使用系统 find 并排除 `.git`、`node_modules`；`ls` 使用排序的 `ls -A1p`，保留隐藏文件和目录 `/` 后缀，且在执行前区分不存在路径和非目录路径。路径参数统一相对 session cwd 解析，命令参数不通过 shell 拼接，避免模式和路径注入。
 
 MVP 保持 Pi 的默认安全模型：`read`/`write` 没有内建权限弹窗，也不偷偷限制在 cwd。系统 prompt 和文档必须明确工具可访问用户进程有权限的路径。
 

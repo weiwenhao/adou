@@ -225,8 +225,11 @@ fn grep_executor_t.execute(&self, string call_id, ref<json.value_t> arguments, r
     string search_path = object.contains('path') ? object['path'].as_string() : '.'
     string absolute_path = path_utils.resolve_to_cwd(search_path, self.cwd)
     int limit = optional_int(object, 'limit', 100)
+    if !path_utils.exists(absolute_path) {
+        throw errorf('Path not found: %s', absolute_path)
+    }
     if limit <= 0 {
-        throw errorf('limit must be greater than zero')
+        limit = 1
     }
     int context = optional_int(object, 'context', 0)
     if context < 0 {
@@ -336,6 +339,15 @@ fn ls_executor_t.execute(&self, string call_id, ref<json.value_t> arguments, ref
     int limit = optional_int(object, 'limit', 500)
     if limit <= 0 {
         throw errorf('limit must be greater than zero')
+    }
+    if !path_utils.exists(absolute_path) {
+        throw errorf('Path not found: %s', absolute_path)
+    }
+    var stat = syscall.stat(absolute_path) catch error {
+        throw errorf('Path not found: %s', absolute_path)
+    }
+    if !syscall.stat_is_dir(stat.mode) {
+        throw errorf('Not a directory: %s', absolute_path)
     }
     var result = command.argv(self.cwd, '/bin/ls', ['-A1p', absolute_path])
     throw_if_aborted(cancellation)
