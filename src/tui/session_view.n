@@ -2794,7 +2794,10 @@ fn scoped_model_id(string option): string {
 
 #local
 fn builtin_command_names(): [string] {
-    return ['/help', '/settings', '/scoped-models', '/model', '/export', '/import', '/share', '/copy', '/name', '/session', '/changelog', '/hotkeys', '/fork', '/clone', '/tree', '/trust', '/login', '/logout', '/new', '/compact', '/reload', '/resume', '/quit']
+    // Keep slash completion in the same order as Pi's built-in registry.
+    // `/help` remains accepted by run_command as a convenience, but is not
+    // advertised as a Pi built-in command.
+    return ['/settings', '/model', '/scoped-models', '/export', '/import', '/share', '/copy', '/name', '/session', '/changelog', '/hotkeys', '/fork', '/clone', '/tree', '/trust', '/login', '/logout', '/new', '/compact', '/resume', '/reload', '/quit']
 }
 
 #local
