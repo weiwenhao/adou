@@ -696,7 +696,7 @@ MVP 内置 TUI 命令：
 - TUI component 与 Pi 兼容规则；
 - ICU 到 Pi segmentation/width 语义的适配。
 
-Nature 标准库扩展必须有独立 testar/CTest；Adou 不得依赖未测试的私有 runtime symbol。
+Nature 标准库扩展必须有独立的 Nature `test` 回归；Adou 不得依赖未测试的私有 runtime symbol。
 
 ## 17. 移植方法
 

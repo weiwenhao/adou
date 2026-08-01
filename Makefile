@@ -31,7 +31,7 @@ $(NATIVE_OBJ): native/unicode_icu.c
 
 $(ADOU_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(SAFE_NATURE)
 	@mkdir -p "$(BIN_DIR)"
-	@NATURE_EXECUTABLE="$(NATURE)" BUILD_OUTPUT_DIR="$(BIN_DIR)" "$(SAFE_NATURE)" build -o adou "$(CURDIR)/main.n"
+	@cd "$(BIN_DIR)" && NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" build -o adou "$(CURDIR)/main.n"
 
 run: build
 	@"$(ADOU_BIN)"
