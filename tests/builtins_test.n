@@ -15,6 +15,9 @@ test 'built-in tool scope matches Pi CLI include/exclude semantics' {
     var selected = builtins.select_tools('/tmp', ['read', 'bash', 'edit'], ['bash'], false)
     assert(selected.len() == 2)
     assert(selected[0].name == 'read' && selected[1].name == 'edit')
+    var defaults = builtins.select_tools('/tmp', [], [], false)
+    assert(defaults.len() == 4)
+    assert(defaults[0].name == 'read' && defaults[1].name == 'bash' && defaults[2].name == 'edit' && defaults[3].name == 'write')
     assert(builtins.select_tools('/tmp', [], [], true).len() == 0)
 }
 
@@ -71,7 +74,7 @@ test 'Pi core shell tools execute in the session directory' {
     }
     assert(fuzzy_duplicate)
 
-    var bash_tool = builtins.all(root)[3]
+    var bash_tool = builtins.all(root)[1]
     var bash_args = value_ref(json.parse('{"command":"pwd && printf ok"}'))
     var bash_result = bash_tool.executor.execute('bash', bash_args, cancellation, no_update)
     assert(bash_result.content[0].text.contains(root))

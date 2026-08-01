@@ -32,7 +32,7 @@ fn build_with_tools(string cwd, [ref<project.file_t>] context_files, string cust
 fn tool_descriptions([string] tool_names): string {
     string result = ''
     for name in tool_names {
-        string description = name == 'read' ? 'Read file contents' : name == 'write' ? 'Create or overwrite files' : name == 'edit' ? 'Make targeted edits to files' : name == 'bash' ? 'Execute bash commands (ls, grep, find, etc.)' : name == 'grep' ? 'Search file contents for patterns (respects .gitignore)' : name == 'find' ? 'Find files by glob pattern (respects .gitignore)' : name == 'ls' ? 'List directory contents' : ''
+        string description = tool_snippet(name)
         if description == '' {
             continue
         }
@@ -47,14 +47,22 @@ fn prompt_guidelines([string] tool_names): string {
     if has_tool(tool_names, 'bash') && !has_tool(tool_names, 'grep') && !has_tool(tool_names, 'find') && !has_tool(tool_names, 'ls') {
         values.push('Use bash for file operations like ls, rg, find')
     }
-    if has_tool(tool_names, 'read') {
-        values.push('Use read, grep, find, and ls to inspect before editing when those tools are available')
-    }
-    if has_tool(tool_names, 'edit') {
-        values.push('Use edit for targeted changes')
-    }
-    if has_tool(tool_names, 'write') {
-        values.push('Use write for complete file replacement')
+    // Pi appends tool-provided guidelines in the same order as the active
+    // tool registry. Preserve that ordering so the model sees an identical
+    // prompt when a custom --tools list is supplied.
+    for name in tool_names {
+        if name == 'read' {
+            values.push('Use read to examine files instead of cat or sed.')
+        } else if name == 'bash' {
+            values.push('Inspect PI_* environment variables for current model and session details.')
+        } else if name == 'edit' {
+            values.push('Use edit for precise changes (edits[].oldText must match exactly)')
+            values.push('When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls')
+            values.push('Each edits[].oldText is matched against the original file, not after earlier edits are applied. Do not emit overlapping or nested edits. Merge nearby changes into one edit.')
+            values.push('Keep edits[].oldText as small as possible while still being unique in the file. Do not pad with large unchanged regions.')
+        } else if name == 'write' {
+            values.push('Use write only for new files or complete rewrites.')
+        }
     }
     values.push('Be concise in your responses')
     values.push('Show file paths clearly when working with files')
@@ -71,4 +79,9 @@ fn has_tool([string] tool_names, string wanted): bool {
         if name == wanted {return true}
     }
     return false
+}
+
+#local
+fn tool_snippet(string name): string {
+    return name == 'read' ? 'Read file contents' : name == 'write' ? 'Create or overwrite files' : name == 'edit' ? 'Make precise file edits with exact text replacement, including multiple disjoint edits in one call' : name == 'bash' ? 'Execute bash commands (ls, grep, find, etc.)' : name == 'grep' ? 'Search file contents for patterns (respects .gitignore)' : name == 'find' ? 'Find files by glob pattern (respects .gitignore)' : name == 'ls' ? 'List directory contents' : ''
 }

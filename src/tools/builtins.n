@@ -37,9 +37,9 @@ fn write_tool(string cwd): ref<agent_types.agent_tool_t>! {
 fn all(string cwd): [ref<agent_types.agent_tool_t>]! {
     return [
         read_tool(cwd),
-        write_tool(cwd),
-        shell_tools.edit_tool(cwd),
         shell_tools.bash_tool(cwd),
+        shell_tools.edit_tool(cwd),
+        write_tool(cwd),
         shell_tools.grep_tool(cwd),
         shell_tools.find_tool(cwd),
         shell_tools.ls_tool(cwd),
