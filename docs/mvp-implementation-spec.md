@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.11
+文档版本：0.12
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -337,6 +337,7 @@ MVP 不实现 OpenRouter、GitHub Copilot、xAI 等 URL/provider compat 分支�
 - text、reasoning、function call 的增量组装和 Pi 修复语义的最终 tool argument 解析；
 - 每个 tool-call delta 都保留可用的部分 `arguments` 对象，并在工具结束时清除流式 scratch 字段；
 - tool-call 收尾继续使用 streaming JSON 修复器，保留 Pi 对不完整最终参数的容错；
+- 当 Chat Completions 省略 `tool_calls[].index` 时，按稳定 tool-call id 继续合并 delta，不得拆成多个调用；
 - response id、usage、cache usage、stop/toolUse/length/error/aborted 映射；
 - DeepSeek API key 认证、HTTP 状态、重试、超时和取消。
 

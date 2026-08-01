@@ -66,3 +66,21 @@ test 'repairs incomplete final function arguments like Pi' {
         assert(false)
     }
 }
+
+test 'continues a tool call by id when the provider omits index' {
+    var processor = openai_completions.processor(model(), 1)
+    processor.start()
+    var first = processor.feed(frame('{"choices":[{"delta":{"tool_calls":[{"id":"call_no_index","function":{"name":"read","arguments":"{\\"path\\":\\""}}]},"finish_reason":null}]}'))
+    assert(first.len() == 2 && first[0].kind == types.EVENT_TOOLCALL_START)
+    var second = processor.feed(frame('{"choices":[{"delta":{"tool_calls":[{"id":"call_no_index","function":{"arguments":"main.n\\"}"}}]},"finish_reason":null}]}'))
+    assert(second.len() == 1 && second[0].kind == types.EVENT_TOOLCALL_DELTA)
+    processor.feed(frame('{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}'))
+    var done = processor.finish()
+    assert(done.len() == 2 && done[0].kind == types.EVENT_TOOLCALL_END)
+    if done[0].tool_call is ref<types.tool_call_t> tool_call {
+        assert(tool_call.id == 'call_no_index')
+        assert(tool_call.arguments.get('path').as_string() == 'main.n')
+    } else {
+        assert(false)
+    }
+}

@@ -171,7 +171,21 @@ fn processor_t.append_thinking(&self, string value, [types.assistant_event_t] ev
 #local
 fn processor_t.append_tool_call(&self, ref<json.value_t> value, [types.assistant_event_t] events): [types.assistant_event_t]! {
     var object = value.as_object()
-    int index = object.contains('index') ? object['index'].as_number().to_int() : self.slots.len()
+    int index = -1
+    if object.contains('index') && !object['index'].is_null() {
+        index = object['index'].as_number().to_int()
+    } else if object.contains('id') && !object['id'].is_null() {
+        string id = object['id'].as_string()
+        for existing_index, existing_slot in self.slots {
+            if existing_slot.tool_call.id == id {
+                index = existing_index
+                break
+            }
+        }
+    }
+    if index < 0 {
+        index = self.slots.len()
+    }
     if !self.slots.contains(index) {
         var block = new types.tool_call_t(arguments = streaming_json.parse(''), partial_json = '')
         types.content_t content = block
