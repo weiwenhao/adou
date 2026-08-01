@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.12
+文档版本：0.13
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -348,6 +348,7 @@ MVP 不实现 OpenRouter、GitHub Copilot、xAI 等 URL/provider compat 分支�
 实现必须搬运：
 
 - text、thinking、redacted thinking、tool use 的流式内容块；
+- `content_block_start` 的 `tool_use.input` 初始参数必须出现在 `toolcall_start` 的 partial tool call 中，并由流状态独立持有；
 - tool input JSON 的增量解析、非法转义修复和结束时 scratch 清理；
 - tool input JSON 收尾继续使用增量修复器，不能因不完整最终 payload 丢弃可执行工具调用；
 - tool result 转换；

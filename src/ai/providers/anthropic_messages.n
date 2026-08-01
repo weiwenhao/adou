@@ -111,6 +111,7 @@ fn processor_t.start_block(&self, int provider_index, ref<json.value_t> block, [
     if self.slots.contains(provider_index) {
         throw errorf('Anthropic content block index %d already exists', provider_index)
     }
+    var block_object = block.as_object()
     string block_type = required_string(block, 'type')
     if block_type == 'text' {
         var content = new types.text_content_t(text = optional_string(block, 'text', ''))
@@ -135,7 +136,15 @@ fn processor_t.start_block(&self, int provider_index, ref<json.value_t> block, [
         events.push(update_event(types.EVENT_THINKING_START, content_index, '', '', self.output))
     } else if block_type == 'tool_use' {
         var content = new types.tool_call_t(id = required_string(block, 'id'), name = required_string(block, 'name'), partial_json = '',)
-        content.arguments = json.parse('{}')
+        // Anthropic includes an initial input object on tool_use blocks. Pi
+        // keeps it on the tool call until input_json_delta events arrive.
+        // Clone the value so the streamed output owns its arguments rather
+        // than retaining a reference into the parsed SSE frame.
+        if block_object.contains('input') && !block_object['input'].is_null() {
+            content.arguments = json.parse(json.stringify(*block_object['input']))
+        } else {
+            content.arguments = json.parse('{}')
+        }
         types.content_t item = content
         self.output.content.push(item)
         int content_index = self.output.content.len() - 1

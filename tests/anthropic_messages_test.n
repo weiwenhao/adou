@@ -152,3 +152,14 @@ test 'repairs incomplete final tool input like Pi' {
         assert(false)
     }
 }
+
+test 'keeps initial tool input from the content block start like Pi' {
+    var processor = anthropic_messages.processor(anthropic_model(), 1)
+    processor.start()
+    var start = processor.feed(sse.event_t {event: 'content_block_start', data: '{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_initial","name":"read","input":{"path":"main.n"}}}',})
+    assert(start.len() == 1 && start[0].kind == types.EVENT_TOOLCALL_START)
+    var partial = start[0].partial as ref<types.assistant_message_t>
+    var call = partial.content[0] as ref<types.tool_call_t>
+    assert(call.id == 'tool_initial')
+    assert(call.arguments.get('path').as_string() == 'main.n')
+}
