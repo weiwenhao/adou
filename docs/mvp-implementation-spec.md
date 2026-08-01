@@ -1,8 +1,8 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.9
-日期：2026-08-01
+文档版本：0.10
+日期：2026-08-02
 
 ## 1. 文档目的
 
@@ -97,6 +97,11 @@ MVP 首发平台为 macOS arm64 和 Linux amd64。平台层必须隔离，不能
 | Session utilities | `--session-id`/`--session-dir` 选择记录，`--export` JSONL/HTML，项目 trust 记录和本地 share artifact |
 
 OpenAI Responses、DeepSeek OpenAI Chat Completions 和 Anthropic Messages 都通过验收后，才能称为 MVP 完成。
+
+默认工具集合必须与 Pi 一致：system prompt 和实际 tool registry 默认只包含
+`read`、`bash`、`edit`、`write`；`grep`、`find`、`ls` 只能在显式选择后出现。
+任何未传入工具选择参数的 prompt 构建入口也必须遵守这一规则，不能把 opt-in
+工具误写进 `Available tools`。
 
 ### 4.2 MVP 外
 

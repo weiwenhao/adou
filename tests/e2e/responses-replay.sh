@@ -84,7 +84,7 @@ if ! PI_CODING_AGENT_DIR="$tmp_dir/agent" \
     PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions" \
     "$binary" --provider openai --model gpt-5.1-codex --thinking off \
     --base-url "http://127.0.0.1:$port/v1" --api-key e2e-key \
-    --mode json --no-context-files --no-tools --session "$session_file" \
+    --mode json --no-context-files --session "$session_file" \
     'say hi' > "$output_file" 2>&1; then
     echo 'e2e: Responses replay command failed' >&2
     cat "$output_file" >&2
@@ -112,6 +112,19 @@ if ! rg -F '"type":"function_call_output"' "$request_file" >/dev/null; then
 fi
 if ! rg -F '"reasoning":{"effort":"none"}' "$request_file" >/dev/null; then
     echo 'e2e: Responses request did not map thinking off to none' >&2
+    exit 1
+fi
+if ! rg -F -- '- read: Read file contents' "$request_file" >/dev/null || \
+   ! rg -F -- '- bash: Execute bash commands (ls, grep, find, etc.)' "$request_file" >/dev/null || \
+   ! rg -F -- '- edit: Make precise file edits with exact text replacement, including multiple disjoint edits in one call' "$request_file" >/dev/null || \
+   ! rg -F -- '- write: Create or overwrite files' "$request_file" >/dev/null; then
+    echo 'e2e: Responses request did not advertise Pi default coding tools' >&2
+    exit 1
+fi
+if rg -F -- '- grep:' "$request_file" >/dev/null || \
+   rg -F -- '- find:' "$request_file" >/dev/null || \
+   rg -F -- '- ls:' "$request_file" >/dev/null; then
+    echo 'e2e: Responses request advertised opt-in tools in the default prompt' >&2
     exit 1
 fi
 if rg -F '"include"' "$request_file" >/dev/null; then

@@ -8,7 +8,10 @@ fn build(string cwd, [ref<project.file_t>] context_files, string append_text): s
 // text replaces the default assistant instructions, while append text,
 // project context and the working directory remain attached.
 fn build_custom(string cwd, [ref<project.file_t>] context_files, string custom_prompt, string append_text): string {
-    return build_with_tools(cwd, context_files, custom_prompt, append_text, ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls'])
+    // Pi's default registry contains only the coding quartet.  grep/find/ls
+    // are opt-in helpers and must not leak into prompts built without an
+    // explicit selectedTools list.
+    return build_with_tools(cwd, context_files, custom_prompt, append_text, ['read', 'bash', 'edit', 'write'])
 }
 
 fn build_with_tools(string cwd, [ref<project.file_t>] context_files, string custom_prompt, string append_text, [string] tool_names): string {
