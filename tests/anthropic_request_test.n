@@ -1,0 +1,93 @@
+import adou.src.ai.providers.anthropic_request
+import adou.src.ai.types
+import json
+
+fn anthropic_model(): ref<types.model_t> {
+    return new types.model_t(id = 'claude-sonnet-4-5', api = 'anthropic-messages', provider = 'anthropic', base_url = 'https://api.anthropic.com/v1/', reasoning = true, max_tokens = 8192,)
+}
+
+test 'builds Pi-compatible Anthropic messages tools cache and thinking payload' {
+    var model = anthropic_model()
+    model.supports_eager_tool_streaming = false
+    var context = new types.context_t(system_prompt = 'system')
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    var assistant = new types.assistant_message_t(api = 'openai-responses', provider = 'openai', model = 'gpt-5')
+    types.content_t text = new types.text_content_t(text = 'answer')
+    types.content_t thinking = new types.thinking_content_t(thinking = 'reason', thinking_signature = 'sig')
+    types.content_t redacted = new types.thinking_content_t(thinking = '[Reasoning redacted]', thinking_signature = 'opaque', redacted = true,)
+    types.content_t tool_call = new types.tool_call_t(id = 'call|foreign:id', name = 'read', arguments = json.parse('{"path":"README.md"}'),)
+    assistant.content.push(text)
+    assistant.content.push(thinking)
+    assistant.content.push(redacted)
+    assistant.content.push(tool_call)
+    types.message_t assistant_message = assistant
+    context.messages.push(assistant_message)
+    var first_result = new types.tool_result_message_t(tool_call_id = 'call|foreign:id', tool_name = 'read')
+    first_result.content.push(new types.text_content_t(text = 'one'))
+    types.message_t first_tool_result = first_result
+    context.messages.push(first_tool_result)
+    var second_result = new types.tool_result_message_t(tool_call_id = 'second', tool_name = 'read', is_error = true,)
+    second_result.content.push(new types.text_content_t(text = 'two'))
+    types.message_t second_tool_result = second_result
+    context.messages.push(second_tool_result)
+    types.message_t final_user = new types.user_message_t(content = 'continue')
+    context.messages.push(final_user)
+    var tool = new types.tool_t(name = 'read', description = 'Read a file', parameters = json.parse('{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}'),)
+    context.tools.push(tool)
+    var options = new types.stream_options_t(api_key = 'key', max_tokens = 2048, thinking_enabled = true, thinking_budget_tokens = 1536, cache_retention = 'long',)
+    var body = json.parse(anthropic_request.build(model, context, options))
+    assert(body.get('model').as_string() == 'claude-sonnet-4-5')
+    assert(body.get('max_tokens').as_number() == '2048')
+    assert(body.get('thinking').get('type').as_string() == 'enabled')
+    assert(body.get('thinking').get('budget_tokens').as_number() == '1536')
+    assert(body.get('system').at(0).get('cache_control').get('ttl').as_string() == '1h')
+    var messages = body.get('messages')
+    assert(messages.as_array().len() == 4)
+    var assistant_blocks = messages.at(1).get('content')
+    assert(assistant_blocks.as_array().len() == 4)
+    assert(assistant_blocks.at(1).get('type').as_string() == 'thinking')
+    assert(assistant_blocks.at(2).get('type').as_string() == 'redacted_thinking')
+    assert(assistant_blocks.at(3).get('id').as_string() == 'call_foreign_id')
+    var tool_results = messages.at(2).get('content')
+    assert(tool_results.as_array().len() == 2)
+    assert(tool_results.at(0).get('tool_use_id').as_string() == 'call_foreign_id')
+    assert(tool_results.at(1).get('is_error').as_bool())
+    assert(messages.at(3).get('content').at(0).get('cache_control').get('ttl').as_string() == '1h')
+    assert(body.get('tools').at(0).get('input_schema').get('required').at(0).as_string() == 'path')
+    assert(!body.get('tools').at(0).as_object().contains('eager_input_streaming'))
+    assert(body.get('tools').at(0).get('cache_control').get('ttl').as_string() == '1h')
+    assert(anthropic_request.endpoint(model) == 'https://api.anthropic.com/v1/messages')
+    assert(anthropic_request.beta_header(model, context).find('interleaved-thinking') >= 0)
+    assert(anthropic_request.beta_header(model, context).find('fine-grained-tool-streaming') >= 0)
+}
+
+test 'builds adaptive thinking and disables cache when requested' {
+    var model = anthropic_model()
+    model.adaptive_thinking = true
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    var options = new types.stream_options_t(api_key = 'key', thinking_enabled = true, reasoning_effort = 'high', cache_retention = 'none',)
+    var body = json.parse(anthropic_request.build(model, context, options))
+    assert(body.get('thinking').get('type').as_string() == 'adaptive')
+    assert(body.get('output_config').get('effort').as_string() == 'high')
+    assert(!body.get('messages').at(0).get('content').at(0).as_object().contains('cache_control'))
+    assert(anthropic_request.beta_header(model, context) == '')
+}
+
+test 'maps branch summaries into Pi user context' {
+    var context = new types.context_t()
+    context.messages.push(new types.branch_summary_message_t(summary = 'abandoned work', from_id = 'entry-1', timestamp = 1))
+    var body = json.parse(anthropic_request.build(anthropic_model(), context, new types.stream_options_t(api_key = 'key')))
+    assert(body.get('messages').at(0).get('content').at(0).get('text').as_string() == 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\nabandoned work</summary>')
+}
+
+test 'rejects missing Anthropic authentication' {
+    bool failed = false
+    anthropic_request.api_key(new types.stream_options_t()) catch e {
+        failed = e.msg() == 'No API key for provider: anthropic'
+        ''
+    }
+    assert(failed)
+}

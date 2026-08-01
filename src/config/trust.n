@@ -1,0 +1,74 @@
+import adou.src.tools.path_utils
+import fs
+import json
+import os
+import path
+import syscall
+
+type object_t = map<string, ref<json.value_t>>
+
+// Project trust follows Pi's nearest-ancestor decision semantics.  It is
+// independent from provider credentials and can be changed with `/trust`.
+fn decision(string cwd): bool? {
+    string file_path = trust_path()
+    if !path_utils.exists(file_path) {return null}
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return null}
+    string content = input.content() catch error {
+        input.close()
+        return null
+    }
+    input.close()
+    var root = json.parse(content) catch error {return null}
+    if root.kind != json.VALUE_OBJECT {return null}
+    object_t object = root.as_object() catch error {return null} as object_t
+    string current = normalize(cwd)
+    for true {
+        if object.contains(current) && object[current].kind == json.VALUE_BOOL {
+            return object[current].boolean
+        }
+        string parent = path.dir(current)
+        if parent == current || parent == '' {break}
+        current = parent
+    }
+    return null
+}
+
+fn save(string cwd, bool trusted): void! {
+    string file_path = trust_path()
+    object_t object = read_object(file_path)
+    object[normalize(cwd)] = json.box_value(json.bool_value(trusted))
+    os.mkdirs(path.dir(file_path), 0o700)
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    string content = json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+    int written = output.write(content as [u8])
+    output.close()
+    if written != content.len() {throw errorf('Could not write project trust store')}
+}
+
+#local
+fn read_object(string file_path): object_t {
+    if !path_utils.exists(file_path) {return {}}
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return {}}
+    string content = input.content() catch error {
+        input.close()
+        return {}
+    }
+    input.close()
+    if content == '' {return {}}
+    var parsed = json.parse(content) catch error {return {}}
+    if parsed.kind != json.VALUE_OBJECT {return {}}
+    return parsed.as_object() catch error {return {}} as object_t
+}
+
+fn trust_path(): string {
+    string home = syscall.get_env('HOME')
+    if home == '' {home = '/'}
+    return path.join(home, '.adou/trust.json')
+}
+
+#local
+fn normalize(string value): string {
+    string result = path_utils.clean(value)
+    if result == '' {return '/'}
+    return result
+}

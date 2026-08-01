@@ -1,0 +1,142 @@
+import adou.src.compaction.token_estimate
+import adou.src.compaction.types as compaction_types
+import adou.src.config.args
+import adou.src.config.resolve
+import adou.src.context.project
+import adou.src.context.system_prompt
+import adou.src.session.identity
+import fs
+import os
+import path
+import syscall
+
+fn write_file(string file_path, string content): void! {
+    os.mkdirs(path.dir(file_path), 0o700)
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    int written = output.write(content as [u8])
+    output.close()
+    assert(written == content.len())
+}
+
+test 'MVP CLI parses provider model sessions compaction and messages' {
+    var parsed = args.parse(['adou', '--provider', 'anthropic', '--model', 'claude-test', '--base-url', 'http://localhost:9999', '--thinking', 'high', '--session', 'session.jsonl', '--context-window', '1234', '--max-tokens', '99', '--timeout-ms', '55', '--max-retries', '0', '--reserve-tokens', '10', '--keep-recent-tokens', '20', 'hello'])
+    assert(parsed.errors.len() == 0)
+    assert(parsed.provider == 'anthropic' && parsed.model == 'claude-test')
+    assert(parsed.context_window == 1234 && parsed.max_tokens == 99 && parsed.timeout_ms == 55 && parsed.max_retries == 0)
+    assert(parsed.reserve_tokens == 10 && parsed.keep_recent_tokens == 20)
+    assert(parsed.messages.len() == 1 && parsed.messages[0] == 'hello')
+    var config = resolve.resolve(parsed, '/tmp/work')
+    assert(config.model.api == 'anthropic-messages' && config.model.context_window == 1234)
+    assert(config.stream_options.max_retries == 0 && config.stream_options.thinking_enabled)
+}
+
+test 'defaults to the Pi DeepSeek V4 Flash model' {
+    var parsed = args.parse(['adou'])
+    assert(parsed.errors.len() == 0)
+    var config = resolve.resolve(parsed, '/tmp/work')
+    assert(config.provider == 'deepseek')
+    assert(config.model.id == 'deepseek-v4-flash')
+    assert(config.model.api == 'openai-completions')
+    assert(config.model.base_url == 'https://api.deepseek.com')
+    assert(config.model.context_window == 1000000 && config.model.max_tokens == 384000)
+}
+
+test 'model references may carry their provider' {
+    var parsed = args.parse(['adou', '--model', 'openai/gpt-5.1-codex'])
+    var config = resolve.resolve(parsed, '/tmp/work')
+    assert(config.provider == 'openai' && config.model.id == 'gpt-5.1-codex' && config.model.api == 'openai-responses')
+}
+
+test 'model references may carry Pi thinking suffixes' {
+    var parsed = args.parse(['adou', '--model', 'deepseek/deepseek-v4-flash:high'])
+    var config = resolve.resolve(parsed, '/tmp/work')
+    assert(config.provider == 'deepseek' && config.model.id == 'deepseek-v4-flash')
+    assert(config.thinking == 'high' && config.stream_options.reasoning_effort == 'high')
+}
+
+test 'Pi-compatible one-shot and prompt/session options are preserved' {
+    var parsed = args.parse(['adou', '--print', '--name', 'review', '--fork', 'source.jsonl', '--system-prompt', 'Answer tersely', '--append-system-prompt', 'Keep edits small', '--no-context-files', 'inspect this'])
+    assert(parsed.errors.len() == 0)
+    assert(parsed.print_mode && parsed.session_name == 'review' && parsed.fork_path == 'source.jsonl')
+    assert(parsed.system_prompt == 'Answer tersely' && parsed.append_system_prompts.len() == 1)
+    assert(parsed.no_context_files && parsed.messages.len() == 1 && parsed.messages[0] == 'inspect this')
+    var config = resolve.resolve(parsed, '/tmp/work')
+    assert(config.print_mode && config.no_context_files && config.system_prompt == 'Answer tersely')
+}
+
+test 'CLI keeps @file arguments separate from the prompt' {
+    var parsed = args.parse(['adou', '@src/main.n', 'summarize'])
+    assert(parsed.errors.len() == 0)
+    assert(parsed.file_args.len() == 1 && parsed.file_args[0] == 'src/main.n')
+    assert(parsed.messages.len() == 1 && parsed.messages[0] == 'summarize')
+}
+
+test 'print mode is set even when it reads the prompt from stdin' {
+    var parsed = args.parse(['adou', '--print'])
+    assert(parsed.errors.len() == 0 && parsed.print_mode && parsed.messages.len() == 0)
+}
+
+test 'Pi output and session selection flags parse without losing prompts' {
+    var parsed = args.parse(['adou', '--mode', 'json', '--session-id', '01ABC', '--models', 'deepseek/*,anthropic/*', '--no-builtin-tools', '--export', 'session.html', '--verbose', '--offline', 'inspect'])
+    assert(parsed.errors.len() == 0)
+    assert(parsed.mode == 'json' && parsed.print_mode == false)
+    assert(parsed.session_id == '01ABC' && parsed.scoped_models.len() == 2)
+    assert(parsed.no_builtin_tools && parsed.export_path == 'session.html')
+    assert(parsed.verbose && parsed.offline && parsed.messages.len() == 1)
+    var config = resolve.resolve(parsed, '/tmp/work')
+    assert(config.mode == 'json' && config.print_mode && config.session_id == '01ABC')
+    assert(config.no_builtin_tools && config.scoped_models.len() == 2)
+}
+
+test 'model listing accepts a provider pattern' {
+    var parsed = args.parse(['adou', '--list-models', 'anthropic'])
+    assert(parsed.errors.len() == 0 && parsed.list_models && parsed.list_models_pattern == 'anthropic')
+}
+
+test 'tool scope flags preserve order and exclusions' {
+    var parsed = args.parse(['adou', '--no-tools', '--tools', 'read, bash,edit', '--exclude-tools', 'bash'])
+    assert(parsed.errors.len() == 0 && parsed.no_tools)
+    assert(parsed.tool_names.len() == 3 && parsed.tool_names[1] == 'bash')
+    assert(parsed.exclude_tool_names.len() == 1 && parsed.exclude_tool_names[0] == 'bash')
+    var config = resolve.resolve(parsed, '/tmp/work')
+    assert(config.no_tools && config.tool_names.len() == 3 && config.exclude_tool_names[0] == 'bash')
+}
+
+test 'CLI reports missing invalid conflicting and unknown options together' {
+    var parsed = args.parse(['adou', '--provider', '--thinking', 'impossible', '--session', 'one', '--continue', '--unknown'])
+    assert(parsed.errors.len() == 4)
+    assert(parsed.errors[0] == '--provider requires a value')
+    assert(parsed.errors[1] == 'Unknown option: --unknown')
+    assert(parsed.errors[2].starts_with('Invalid thinking level'))
+    assert(parsed.errors[3] == '--session and --continue cannot be used together')
+}
+
+test 'unknown context window never triggers threshold compaction' {
+    var settings = compaction_types.settings_t {reserve_tokens: 16384, keep_recent_tokens: 20000,}
+    assert(!token_estimate.should_compact(1000000, 0, settings))
+}
+
+test 'project context loads global then root-to-leaf with Pi candidate precedence' {
+    string root = '/tmp/adou-context-' + identity.short_id()
+    string agent_dir = path.join(root, 'agent')
+    string project_dir = path.join(root, 'project')
+    string nested_dir = path.join(project_dir, 'src/sub')
+    write_file(path.join(agent_dir, 'AGENTS.md'), 'global rules')
+    write_file(path.join(project_dir, 'AGENTS.md'), 'root rules')
+    write_file(path.join(project_dir, 'CLAUDE.md'), 'shadowed by agents')
+    write_file(path.join(project_dir, 'src/CLAUDE.md'), 'nested rules')
+    os.mkdirs(nested_dir, 0o700)
+    var loaded = project.load(nested_dir, agent_dir)
+    assert(loaded.warnings.len() == 0 && loaded.files.len() == 3)
+    assert(loaded.files[0].content == 'global rules')
+    assert(loaded.files[1].content == 'root rules')
+    assert(loaded.files[2].content == 'nested rules')
+    string prompt = system_prompt.build(nested_dir, loaded.files, 'extra guideline')
+    assert(prompt.contains('<project_context>'))
+    assert(prompt.find('global rules') < prompt.find('root rules') && prompt.find('root rules') < prompt.find('nested rules'))
+    assert(prompt.ends_with('Current working directory: ' + nested_dir))
+    string no_tools_prompt = system_prompt.build_with_tools(nested_dir, [], '', '', [])
+    assert(no_tools_prompt.contains('Available tools:\n(none)'))
+    assert(!no_tools_prompt.contains('- read:'))
+    os.rmdir(root, true)
+}

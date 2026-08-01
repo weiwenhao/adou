@@ -1,0 +1,194 @@
+import adou.src.ai.types
+import fmt
+import json
+import strings
+
+type json_object_t = map<string, ref<json.value_t>>
+
+fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+    json_object_t body = {}
+    body['model'] = boxed_string(model.id)
+    body['messages'] = json.box_value(json.array_value(convert_messages(model, context)))
+    body['stream'] = json.box_value(json.bool_value(true))
+    json_object_t stream_options = {}
+    stream_options['include_usage'] = json.box_value(json.bool_value(true))
+    body['stream_options'] = json.box_value(object_value(stream_options))
+    int output_tokens = options.max_tokens > 0 ? options.max_tokens : model.max_tokens
+    if output_tokens > 0 {
+        body['max_tokens'] = json.box_value(json.number_value(fmt.sprintf('%d', output_tokens)))
+    }
+    if context.tools.len() > 0 {
+        body['tools'] = json.box_value(json.array_value(convert_tools(context.tools)))
+    }
+    if model.reasoning {
+        json_object_t thinking = {}
+        thinking['type'] = boxed_string(options.thinking_enabled ? 'enabled' : 'disabled')
+        body['thinking'] = json.box_value(object_value(thinking))
+        if options.thinking_enabled && options.reasoning_effort != '' {
+            body['reasoning_effort'] = boxed_string(options.reasoning_effort)
+        }
+    }
+    return json.stringify(object_value(body))
+}
+
+fn endpoint(ref<types.model_t> model): string {
+    string base = model.base_url
+    for base.ends_with('/') {
+        base = base.slice(0, base.len() - 1)
+    }
+    return base + '/chat/completions'
+}
+
+fn authorization(ref<types.stream_options_t> options): string! {
+    if options.api_key == '' {
+        throw errorf('No API key for provider: deepseek')
+    }
+    return 'Bearer ' + options.api_key
+}
+
+#local
+fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [ref<json.value_t>]! {
+    [ref<json.value_t>] result = []
+    if context.system_prompt != '' {
+        json_object_t system = {}
+        system['role'] = boxed_string('system')
+        system['content'] = boxed_string(context.system_prompt)
+        result.push(json.box_value(object_value(system)))
+    }
+    for message in context.messages {
+        if message is ref<types.user_message_t> user {
+            result.push(message_item('user', user.content))
+        } else if message is ref<types.assistant_message_t> assistant {
+            ref<json.value_t>? item = assistant_item(model, assistant)
+            if item is ref<json.value_t> value {
+                result.push(value)
+            }
+        } else if message is ref<types.tool_result_message_t> tool_result {
+            result.push(tool_result_item(tool_result))
+        } else if message is ref<types.compaction_summary_message_t> summary {
+            result.push(message_item('user', 'The conversation history before this point was compacted into the following summary:\n\n<summary>\n' + summary.summary + '\n</summary>'))
+        } else if message is ref<types.branch_summary_message_t> summary {
+            result.push(message_item('user', 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\n' + summary.summary + '</summary>'))
+        } else if message is ref<types.custom_message_t> custom {
+            result.push(message_item('user', custom.content))
+        } else if message is ref<types.bash_execution_message_t> bash {
+            if !bash.exclude_from_context {
+                result.push(message_item('user', types.bash_execution_text(bash)))
+            }
+        }
+    }
+    return result
+}
+
+#local
+fn message_item(string role, string content): ref<json.value_t> {
+    json_object_t item = {}
+    item['role'] = boxed_string(role)
+    item['content'] = boxed_string(content)
+    return json.box_value(object_value(item))
+}
+
+#local
+fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> message): ref<json.value_t>?! {
+    string text = ''
+    string reasoning = ''
+    [ref<json.value_t>] calls = []
+    for block in message.content {
+        if block is ref<types.text_content_t> text_block {
+            text += text_block.text
+        } else if block is ref<types.thinking_content_t> thinking_block {
+            reasoning += thinking_block.thinking
+        } else if block is ref<types.tool_call_t> tool_call {
+            calls.push(tool_call_item(tool_call))
+        }
+    }
+    if text == '' && reasoning == '' && calls.len() == 0 {
+        return null
+    }
+    json_object_t item = {}
+    item['role'] = boxed_string('assistant')
+    if text != '' {
+        item['content'] = boxed_string(text)
+    } else {
+        item['content'] = json.box_value(json.null_value())
+    }
+    if model.reasoning {
+        item['reasoning_content'] = boxed_string(reasoning)
+    }
+    if calls.len() > 0 {
+        item['tool_calls'] = json.box_value(json.array_value(calls))
+    }
+    return json.box_value(object_value(item))
+}
+
+#local
+fn tool_call_item(ref<types.tool_call_t> call): ref<json.value_t>! {
+    json_object_t function = {}
+    function['name'] = boxed_string(call.name)
+    function['arguments'] = boxed_string(json.stringify(call.arguments))
+    json_object_t item = {}
+    item['id'] = boxed_string(normalize_tool_id(call.id))
+    item['type'] = boxed_string('function')
+    item['function'] = json.box_value(object_value(function))
+    return json.box_value(object_value(item))
+}
+
+#local
+fn tool_result_item(ref<types.tool_result_message_t> message): ref<json.value_t> {
+    [string] lines = []
+    for block in message.content {
+        lines.push(block.text)
+    }
+    string content = strings.join(lines, '\n')
+    if content == '' {
+        content = '(no tool output)'
+    }
+    json_object_t item = {}
+    item['role'] = boxed_string('tool')
+    item['tool_call_id'] = boxed_string(normalize_tool_id(message.tool_call_id))
+    item['content'] = boxed_string(content)
+    return json.box_value(object_value(item))
+}
+
+#local
+fn convert_tools([ref<types.tool_t>] tools): [ref<json.value_t>]! {
+    [ref<json.value_t>] result = []
+    for tool in tools {
+        json_object_t function = {}
+        function['name'] = boxed_string(tool.name)
+        function['description'] = boxed_string(tool.description)
+        function['parameters'] = json.box_value(tool.parameters)
+        function['strict'] = json.box_value(json.bool_value(false))
+        json_object_t item = {}
+        item['type'] = boxed_string('function')
+        item['function'] = json.box_value(object_value(function))
+        result.push(json.box_value(object_value(item)))
+    }
+    return result
+}
+
+#local
+fn normalize_tool_id(string id): string {
+    [u8] result = []
+    for byte in id as [u8] {
+        if result.len() >= 64 {
+            break
+        }
+        bool allowed = byte >= 'a'.char() && byte <= 'z'.char()
+        allowed = allowed || byte >= 'A'.char() && byte <= 'Z'.char()
+        allowed = allowed || byte >= '0'.char() && byte <= '9'.char()
+        allowed = allowed || byte == '_'.char() || byte == '-'.char()
+        result.push(allowed ? byte : '_'.char())
+    }
+    return result as string
+}
+
+#local
+fn boxed_string(string value): ref<json.value_t> {
+    return json.box_value(json.string_value(value))
+}
+
+#local
+fn object_value(json_object_t value): json.value_t {
+    return json.object_value(value as map<string, ref<json.value_t>>)
+}

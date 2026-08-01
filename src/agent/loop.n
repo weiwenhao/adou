@@ -1,0 +1,646 @@
+import adou.src.agent.event_stream as agent_stream
+import adou.src.agent.schema
+import adou.src.agent.types as agent_types
+import adou.src.ai.abort
+import adou.src.ai.clone
+import adou.src.ai.event_stream as assistant_stream
+import adou.src.ai.types
+import adou.src.tools.types as tool_types
+import co.mutex
+import json
+import time
+
+type run_state_t = struct {
+    ref<agent_stream.stream_t> stream
+    ref<agent_types.context_t> context
+    [types.message_t] new_messages = []
+    ref<agent_types.config_t> config
+    agent_types.stream_fn stream_function
+    ref<types.model_t> model
+    ref<types.stream_options_t> options
+    bool first_turn = true
+}
+
+type prepared_t = struct {
+    int index
+    ref<types.tool_call_t> tool_call
+    ref<agent_types.agent_tool_t>? tool = null
+    ref<json.value_t>? arguments = null
+    bool immediate
+    tool_types.tool_result_t result
+    bool is_error
+}
+
+type finalized_t = struct {
+    int index
+    ref<types.tool_call_t> tool_call
+    tool_types.tool_result_t result
+    bool is_error
+}
+
+type update_state_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    bool accepting = true
+}
+
+type batch_t = struct {
+    [ref<types.tool_result_message_t>] messages = []
+    bool terminate
+}
+
+fn prompt([types.message_t] prompts, ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function): ref<agent_stream.stream_t> {
+    var stream = agent_stream.new()
+    go run_prompt(stream, prompts, context, config, stream_function)
+    return stream
+}
+
+fn continue_from(ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function): ref<agent_stream.stream_t>! {
+    if context.messages.len() == 0 {
+        throw errorf('Cannot continue: no messages in context')
+    }
+    if context.messages[context.messages.len() - 1] is ref<types.assistant_message_t> assistant_message {
+        throw errorf('Cannot continue from message role: assistant')
+    }
+    var stream = agent_stream.new()
+    go run_continue(stream, context, config, stream_function)
+    return stream
+}
+
+#local
+fn run_prompt(ref<agent_stream.stream_t> stream, [types.message_t] prompts, ref<agent_types.context_t> source, ref<agent_types.config_t> config, agent_types.stream_fn stream_function): void! {
+    var context = copy_context(source)
+    for prompt_message in prompts {
+        context.messages.push(prompt_message)
+    }
+    var state = new_state(stream, context, config, stream_function)
+    state.new_messages = prompts
+    run_prompt_inner(state, prompts) catch e {
+        stream.fail(e.msg()) catch fail_error {}
+    }
+}
+
+#local
+fn run_prompt_inner(ref<run_state_t> state, [types.message_t] prompts): void! {
+    emit_simple(state, agent_types.EVENT_AGENT_START)
+    emit_simple(state, agent_types.EVENT_TURN_START)
+    for message in prompts {
+        emit_message(state, agent_types.EVENT_MESSAGE_START, message, types.assistant_event_t{})
+        emit_message(state, agent_types.EVENT_MESSAGE_END, message, types.assistant_event_t{})
+    }
+    run_loop(state)
+}
+
+#local
+fn run_continue(ref<agent_stream.stream_t> stream, ref<agent_types.context_t> source, ref<agent_types.config_t> config, agent_types.stream_fn stream_function): void! {
+    var state = new_state(stream, copy_context(source), config, stream_function)
+    run_continue_inner(state) catch e {
+        stream.fail(e.msg()) catch fail_error {}
+    }
+}
+
+#local
+fn run_continue_inner(ref<run_state_t> state): void! {
+    emit_simple(state, agent_types.EVENT_AGENT_START)
+    emit_simple(state, agent_types.EVENT_TURN_START)
+    run_loop(state)
+}
+
+#local
+fn new_state(ref<agent_stream.stream_t> stream, ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function): ref<run_state_t> {
+    return new run_state_t(stream = stream, context = context, config = config, stream_function = stream_function, model = config.model, options = copy_options(config.stream_options))
+}
+
+#local
+fn run_loop(ref<run_state_t> state): void! {
+    [types.message_t] pending = state.config.queues.drain_steering()
+    for true {
+        bool has_more_tool_calls = true
+        for has_more_tool_calls || pending.len() > 0 {
+            if !state.first_turn {
+                emit_simple(state, agent_types.EVENT_TURN_START)
+            } else {
+                state.first_turn = false
+            }
+            if pending.len() > 0 {
+                for queued_message in pending {
+                    emit_message(state, agent_types.EVENT_MESSAGE_START, queued_message, types.assistant_event_t{})
+                    emit_message(state, agent_types.EVENT_MESSAGE_END, queued_message, types.assistant_event_t{})
+                    state.context.messages.push(queued_message)
+                    state.new_messages.push(queued_message)
+                }
+                pending = []
+            }
+            var assistant_message = stream_assistant(state)
+            types.message_t generated = assistant_message
+            state.new_messages.push(generated)
+            if assistant_message.stop_reason == types.STOP_ERROR || assistant_message.stop_reason == types.STOP_ABORTED {
+                emit_turn_end(state, assistant_message, [])
+                emit_agent_end(state)
+                return
+            }
+            [ref<types.tool_call_t>] calls = tool_calls(assistant_message)
+            [ref<types.tool_result_message_t>] results = []
+            has_more_tool_calls = false
+            if calls.len() > 0 {
+                batch_t batch = batch_t{}
+                if assistant_message.stop_reason == types.STOP_LENGTH {
+                    batch = fail_truncated_calls(state, calls)
+                } else {
+                    batch = execute_calls(state, assistant_message, calls)
+                }
+                results = batch.messages
+                has_more_tool_calls = !batch.terminate
+                for result in results {
+                    types.message_t result_message = result
+                    state.context.messages.push(result_message)
+                    state.new_messages.push(result_message)
+                }
+            }
+            emit_turn_end(state, assistant_message, results)
+            if state.stream.cancellation.is_aborted() {
+                emit_agent_end(state)
+                return
+            }
+            apply_next_turn(state, assistant_message, results)
+            if should_stop(state, assistant_message, results) {
+                emit_agent_end(state)
+                return
+            }
+            pending = state.config.queues.drain_steering()
+        }
+        var follow_up = state.config.queues.drain_follow_up()
+        if follow_up.len() > 0 {
+            pending = follow_up
+            continue
+        }
+        break
+    }
+    emit_agent_end(state)
+}
+
+#local
+fn stream_assistant(ref<run_state_t> state): ref<types.assistant_message_t>! {
+    var llm_context = provider_context(state.context)
+    var response = state.stream_function(state.model, llm_context, state.options)
+    abort.abort_callback_t cancel_response = fn() {
+        response.abort()
+    }
+    state.stream.cancellation.on_abort(cancel_response)
+    if state.stream.cancellation.is_aborted() {
+        response.abort()
+    }
+    ref<types.assistant_message_t>? partial = null
+    bool added_partial = false
+    for true {
+        types.assistant_event_t event = response.recv() catch e {
+            break
+        }
+        if event.kind == types.EVENT_START {
+            var started = event.partial as ref<types.assistant_message_t>
+            partial = started
+            types.message_t context_message = started
+            state.context.messages.push(context_message)
+            added_partial = true
+            // assistant_stream snapshots provider-owned messages before they
+            // enter the channel, so keep that immutable copy through the
+            // agent/session/TUI event chain.  Cloning again here turns every
+            // streaming update into an unnecessary O(n) second copy.
+            types.message_t snapshot = started
+            emit_message(state, agent_types.EVENT_MESSAGE_START, snapshot, types.assistant_event_t{})
+            continue
+        }
+        if is_update(event.kind) {
+            if partial is ref<types.assistant_message_t> current {
+                var updated = event.partial as ref<types.assistant_message_t>
+                partial = updated
+                types.message_t context_message = updated
+                state.context.messages[state.context.messages.len() - 1] = context_message
+                types.message_t snapshot = updated
+                emit_message(state, agent_types.EVENT_MESSAGE_UPDATE, snapshot, event)
+            }
+            continue
+        }
+        if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
+            var final_message = response.result()
+            set_final_assistant(state.context, final_message, added_partial)
+            if !added_partial {
+                types.message_t snapshot = clone.assistant(final_message)
+                emit_message(state, agent_types.EVENT_MESSAGE_START, snapshot, types.assistant_event_t{})
+            }
+            types.message_t final_event_message = final_message
+            emit_message(state, agent_types.EVENT_MESSAGE_END, final_event_message, types.assistant_event_t{})
+            return final_message
+        }
+    }
+    var final_message = response.result()
+    set_final_assistant(state.context, final_message, added_partial)
+    if !added_partial {
+        types.message_t snapshot = clone.assistant(final_message)
+        emit_message(state, agent_types.EVENT_MESSAGE_START, snapshot, types.assistant_event_t{})
+    }
+    types.message_t final_event_message = final_message
+    emit_message(state, agent_types.EVENT_MESSAGE_END, final_event_message, types.assistant_event_t{})
+    return final_message
+}
+
+#local
+fn execute_calls(ref<run_state_t> state, ref<types.assistant_message_t> assistant_message, [ref<types.tool_call_t>] calls): batch_t! {
+    bool sequential = state.config.tool_execution == agent_types.EXECUTION_SEQUENTIAL
+    for call in calls {
+        var tool = find_tool(state.context.tools, call.name)
+        if tool is ref<agent_types.agent_tool_t> found {
+            if found.execution_mode == agent_types.EXECUTION_SEQUENTIAL {
+                sequential = true
+                break
+            }
+        }
+    }
+    if sequential {
+        return execute_sequential(state, assistant_message, calls)
+    }
+    return execute_parallel(state, assistant_message, calls)
+}
+
+#local
+fn execute_sequential(ref<run_state_t> state, ref<types.assistant_message_t> assistant_message, [ref<types.tool_call_t>] calls): batch_t! {
+    [ref<finalized_t>] finalized = []
+    [ref<types.tool_result_message_t>] messages = []
+    for int i = 0; i < calls.len(); i += 1 {
+        emit_tool_start(state, calls[i])
+        var prepared = prepare_call(state, assistant_message, calls[i], i)
+        ref<finalized_t> outcome = new finalized_t(tool_call = calls[i])
+        if prepared.immediate {
+            outcome = finalize_immediate(prepared)
+        } else {
+            outcome = execute_prepared(state, assistant_message, prepared)
+        }
+        emit_tool_end(state, outcome)
+        var message = tool_result_message(outcome)
+        emit_tool_result(state, message)
+        finalized.push(outcome)
+        messages.push(message)
+        if state.stream.cancellation.is_aborted() {
+            break
+        }
+    }
+    return batch_t {messages: messages, terminate: should_terminate(finalized),}
+}
+
+#local
+fn execute_parallel(ref<run_state_t> state, ref<types.assistant_message_t> assistant_message, [ref<types.tool_call_t>] calls): batch_t! {
+    [ref<prepared_t>] prepared_calls = []
+    [ref<finalized_t>] finalized = []
+    int launched = 0
+    var completions = chan<anyptr>.new(calls.len() + 1)
+    for int i = 0; i < calls.len(); i += 1 {
+        emit_tool_start(state, calls[i])
+        var prepared = prepare_call(state, assistant_message, calls[i], i)
+        prepared_calls.push(prepared)
+        finalized.push(new finalized_t(index = i, tool_call = calls[i]))
+        if prepared.immediate {
+            var outcome = finalize_immediate(prepared)
+            finalized[i] = outcome
+            emit_tool_end(state, outcome)
+        } else {
+            launched += 1
+        }
+        if state.stream.cancellation.is_aborted() {
+            break
+        }
+    }
+    for prepared in prepared_calls {
+        if !prepared.immediate {
+            go execute_parallel_one(state, assistant_message, prepared, completions)
+        }
+    }
+    for int i = 0; i < launched; i += 1 {
+        ref<finalized_t> outcome = completions.recv() as ref<finalized_t>
+        finalized[outcome.index] = outcome
+        emit_tool_end(state, outcome)
+    }
+    [ref<types.tool_result_message_t>] messages = []
+    for outcome in finalized {
+        var message = tool_result_message(outcome)
+        emit_tool_result(state, message)
+        messages.push(message)
+    }
+    return batch_t {messages: messages, terminate: should_terminate(finalized),}
+}
+
+#local
+fn execute_parallel_one(ref<run_state_t> state, ref<types.assistant_message_t> assistant_message, ref<prepared_t> prepared, chan<anyptr> completions): void! {
+    var outcome = execute_prepared(state, assistant_message, prepared)
+    completions.send(outcome as anyptr)
+}
+
+#local
+fn prepare_call(ref<run_state_t> state, ref<types.assistant_message_t> assistant_message, ref<types.tool_call_t> call, int index): ref<prepared_t> {
+    var prepared = new prepared_t(index = index, tool_call = call)
+    var tool = find_tool(state.context.tools, call.name)
+    if !(tool is ref<agent_types.agent_tool_t>) {
+        prepared.immediate = true
+        prepared.is_error = true
+        prepared.result = error_result('Tool ' + call.name + ' not found')
+        return prepared
+    }
+    var found = tool as ref<agent_types.agent_tool_t>
+    var validated = schema.validate_and_coerce(found.name, found.parameters, call.arguments) catch e {
+        prepared.immediate = true
+        prepared.is_error = true
+        prepared.result = error_result(e.msg())
+        return prepared
+    }
+    var arguments = box_json(validated)
+    if state.config.before_tool_call is agent_types.before_tool_call_fn before {
+        var before_result = before(assistant_message, call, arguments, state.context, state.stream.cancellation) catch e {
+            prepared.immediate = true
+            prepared.is_error = true
+            prepared.result = error_result(e.msg())
+            return prepared
+        }
+        if state.stream.cancellation.is_aborted() {
+            prepared.immediate = true
+            prepared.is_error = true
+            prepared.result = error_result('Operation aborted')
+            return prepared
+        }
+        if before_result.block {
+            prepared.immediate = true
+            prepared.is_error = true
+            prepared.result = error_result(before_result.reason == '' ? 'Tool execution was blocked' : before_result.reason)
+            return prepared
+        }
+    }
+    if state.stream.cancellation.is_aborted() {
+        prepared.immediate = true
+        prepared.is_error = true
+        prepared.result = error_result('Operation aborted')
+        return prepared
+    }
+    prepared.tool = found
+    prepared.arguments = arguments
+    return prepared
+}
+
+#local
+fn execute_prepared(ref<run_state_t> state, ref<types.assistant_message_t> assistant_message, ref<prepared_t> prepared): ref<finalized_t> {
+    var tool = prepared.tool as ref<agent_types.agent_tool_t>
+    var arguments = prepared.arguments as ref<json.value_t>
+    var updates = new update_state_t()
+    agent_types.tool_update_fn on_update = fn(tool_types.tool_result_t partial_result) {
+        updates.lock.lock()
+        bool accepting = updates.accepting
+        updates.lock.unlock()
+        if accepting {
+            emit_tool_update(state, prepared.tool_call, partial_result) catch e {}
+        }
+    }
+    tool_types.tool_result_t result = tool_types.tool_result_t{}
+    bool is_error = false
+    result = tool.executor.execute(prepared.tool_call.id, arguments, state.stream.cancellation, on_update) catch e {
+        is_error = true
+        error_result(e.msg())
+    }
+    updates.lock.lock()
+    updates.accepting = false
+    updates.lock.unlock()
+    if state.config.after_tool_call is agent_types.after_tool_call_fn after {
+        var override = after(assistant_message, prepared.tool_call, arguments, result, is_error, state.context, state.stream.cancellation) catch e {
+            is_error = true
+            result = error_result(e.msg())
+            agent_types.after_result_t{}
+        }
+        if override.has_content {
+            result.content = override.content
+        }
+        if override.has_details {
+            result.details = override.details
+        }
+        if override.has_usage {
+            result.usage = override.usage
+        }
+        if override.has_terminate {
+            result.terminate = override.terminate
+        }
+        if override.has_is_error {
+            is_error = override.is_error
+        }
+    }
+    return new finalized_t(index = prepared.index, tool_call = prepared.tool_call, result = result, is_error = is_error)
+}
+
+#local
+fn fail_truncated_calls(ref<run_state_t> state, [ref<types.tool_call_t>] calls): batch_t! {
+    [ref<types.tool_result_message_t>] messages = []
+    for call in calls {
+        emit_tool_start(state, call)
+        string message = 'Tool call "' + call.name + '" was not executed: the response hit the output token limit, so its arguments may be truncated. Re-issue the tool call with complete arguments.'
+        var outcome = new finalized_t(tool_call = call, result = error_result(message), is_error = true)
+        emit_tool_end(state, outcome)
+        var result_message = tool_result_message(outcome)
+        emit_tool_result(state, result_message)
+        messages.push(result_message)
+    }
+    return batch_t {messages: messages,}
+}
+
+#local
+fn finalize_immediate(ref<prepared_t> prepared): ref<finalized_t> {
+    return new finalized_t(index = prepared.index, tool_call = prepared.tool_call, result = prepared.result, is_error = prepared.is_error)
+}
+
+#local
+fn error_result(string message): tool_types.tool_result_t {
+    return tool_types.text_result(message)
+}
+
+#local
+fn tool_result_message(ref<finalized_t> outcome): ref<types.tool_result_message_t> {
+    return new types.tool_result_message_t(tool_call_id = outcome.tool_call.id, tool_name = outcome.tool_call.name, content = outcome.result.content, details = outcome.result.details, usage = outcome.result.usage, is_error = outcome.is_error, timestamp = time.now().ms_timestamp())
+}
+
+#local
+fn should_terminate([ref<finalized_t>] outcomes): bool {
+    if outcomes.len() == 0 {
+        return false
+    }
+    for outcome in outcomes {
+        if !outcome.result.terminate {
+            return false
+        }
+    }
+    return true
+}
+
+#local
+fn apply_next_turn(ref<run_state_t> state, ref<types.assistant_message_t> message, [ref<types.tool_result_message_t>] results): void! {
+    if state.config.prepare_next_turn is agent_types.prepare_next_turn_fn prepare {
+        var update = prepare(message, results, state.context, state.new_messages)
+        if update.has_context {
+            if update.context is ref<agent_types.context_t> next_context {
+                state.context = next_context
+            }
+        }
+        if update.has_model {
+            if update.model is ref<types.model_t> next_model {
+                state.model = next_model
+            }
+        }
+        if update.has_thinking_level {
+            if update.thinking_level == 'off' {
+                state.options.thinking_enabled = false
+                state.options.reasoning_effort = ''
+            } else {
+                state.options.thinking_enabled = true
+                state.options.reasoning_effort = update.thinking_level
+            }
+        }
+    }
+}
+
+#local
+fn should_stop(ref<run_state_t> state, ref<types.assistant_message_t> message, [ref<types.tool_result_message_t>] results): bool! {
+    if state.config.should_stop_after_turn is agent_types.should_stop_after_turn_fn stop {
+        return stop(message, results, state.context, state.new_messages)
+    }
+    return false
+}
+
+#local
+fn provider_context(ref<agent_types.context_t> context): ref<types.context_t> {
+    var result = new types.context_t(system_prompt = context.system_prompt, messages = context.messages)
+    for tool in context.tools {
+        result.tools.push(new types.tool_t(name = tool.name, description = tool.description, parameters = tool.parameters, sequential = tool.execution_mode == agent_types.EXECUTION_SEQUENTIAL))
+    }
+    return result
+}
+
+#local
+fn copy_context(ref<agent_types.context_t> source): ref<agent_types.context_t> {
+    var result = new agent_types.context_t(system_prompt = source.system_prompt, tools = source.tools)
+    for message in source.messages {
+        result.messages.push(message)
+    }
+    return result
+}
+
+#local
+fn copy_options(ref<types.stream_options_t> source): ref<types.stream_options_t> {
+    return new types.stream_options_t(api_key = source.api_key, timeout_ms = source.timeout_ms, max_tokens = source.max_tokens, max_retries = source.max_retries, max_retry_delay_ms = source.max_retry_delay_ms, session_id = source.session_id, reasoning_effort = source.reasoning_effort, reasoning_summary = source.reasoning_summary, thinking_enabled = source.thinking_enabled, thinking_budget_tokens = source.thinking_budget_tokens, thinking_display = source.thinking_display, cache_retention = source.cache_retention)
+}
+
+#local
+fn set_final_assistant(ref<agent_types.context_t> context, ref<types.assistant_message_t> message, bool added_partial) {
+    types.message_t final_message = message
+    if added_partial {
+        context.messages[context.messages.len() - 1] = final_message
+    } else {
+        context.messages.push(final_message)
+    }
+}
+
+#local
+fn tool_calls(ref<types.assistant_message_t> message): [ref<types.tool_call_t>] {
+    [ref<types.tool_call_t>] result = []
+    for block in message.content {
+        if block is ref<types.tool_call_t> call {
+            result.push(call)
+        }
+    }
+    return result
+}
+
+#local
+fn find_tool([ref<agent_types.agent_tool_t>] tools, string name): ref<agent_types.agent_tool_t>? {
+    for tool in tools {
+        if tool.name == name {
+            return tool
+        }
+    }
+    return null
+}
+
+#local
+fn is_update(string kind): bool {
+    return kind == types.EVENT_TEXT_START || kind == types.EVENT_TEXT_DELTA || kind == types.EVENT_TEXT_END || kind == types.EVENT_THINKING_START || kind == types.EVENT_THINKING_DELTA || kind == types.EVENT_THINKING_END || kind == types.EVENT_TOOLCALL_START || kind == types.EVENT_TOOLCALL_DELTA || kind == types.EVENT_TOOLCALL_END
+}
+
+#local
+fn clone_assistant_event(types.assistant_event_t source): types.assistant_event_t {
+    var result = types.assistant_event_t {kind: source.kind, content_index: source.content_index, delta: source.delta, content: source.content, reason: source.reason,}
+    if source.partial is ref<types.assistant_message_t> partial {
+        result.partial = clone.assistant(partial)
+    }
+    if source.message is ref<types.assistant_message_t> message {
+        result.message = clone.assistant(message)
+    }
+    if source.error is ref<types.assistant_message_t> error_message {
+        result.error = clone.assistant(error_message)
+    }
+    if source.tool_call is ref<types.tool_call_t> call {
+        result.tool_call = new types.tool_call_t(id = call.id, name = call.name, arguments = call.arguments, partial_json = call.partial_json)
+    }
+    return result
+}
+
+#local
+fn box_json(json.value_t value): ref<json.value_t> {
+    return new json.value_t(kind = value.kind, boolean = value.boolean, number = value.number, text = value.text, array = value.array, object = value.object)
+}
+
+#local
+fn emit_simple(ref<run_state_t> state, string kind): void! {
+    var event = agent_types.agent_event_t {kind: kind,}
+    state.stream.push(event)
+}
+
+#local
+fn emit_message(ref<run_state_t> state, string kind, types.message_t message, types.assistant_event_t assistant_event): void! {
+    var event = agent_types.agent_event_t {kind: kind, assistant_event: assistant_event,}
+    if message is ref<types.user_message_t> user {
+        event.user_message = user
+    } else if message is ref<types.assistant_message_t> assistant_message {
+        event.assistant_message = assistant_message
+    } else if message is ref<types.tool_result_message_t> tool {
+        event.tool_message = tool
+    }
+    state.stream.push(event)
+}
+
+#local
+fn emit_turn_end(ref<run_state_t> state, ref<types.assistant_message_t> message, [ref<types.tool_result_message_t>] results): void! {
+    var event = agent_types.agent_event_t {kind: agent_types.EVENT_TURN_END, assistant_message: message, tool_results: results,}
+    state.stream.push(event)
+}
+
+#local
+fn emit_agent_end(ref<run_state_t> state): void! {
+    var event = agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_END, messages: state.new_messages,}
+    state.stream.push(event)
+    state.stream.end()
+}
+
+#local
+fn emit_tool_start(ref<run_state_t> state, ref<types.tool_call_t> call): void! {
+    var event = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_START, tool_call_id: call.id, tool_name: call.name, args: call.arguments,}
+    state.stream.push(event)
+}
+
+#local
+fn emit_tool_update(ref<run_state_t> state, ref<types.tool_call_t> call, tool_types.tool_result_t result): void! {
+    var event = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_UPDATE, tool_call_id: call.id, tool_name: call.name, args: call.arguments, tool_result: result,}
+    state.stream.push(event)
+}
+
+#local
+fn emit_tool_end(ref<run_state_t> state, ref<finalized_t> outcome): void! {
+    var event = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_END, tool_call_id: outcome.tool_call.id, tool_name: outcome.tool_call.name, tool_result: outcome.result, is_error: outcome.is_error,}
+    state.stream.push(event)
+}
+
+#local
+fn emit_tool_result(ref<run_state_t> state, ref<types.tool_result_message_t> message): void! {
+    types.message_t result = message
+    emit_message(state, agent_types.EVENT_MESSAGE_START, result, types.assistant_event_t{})
+    emit_message(state, agent_types.EVENT_MESSAGE_END, result, types.assistant_event_t{})
+}

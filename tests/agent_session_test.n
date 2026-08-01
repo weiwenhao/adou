@@ -1,0 +1,311 @@
+import adou.src.agent.session
+import adou.src.agent.session_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.event_stream
+import adou.src.ai.types as ai_types
+import adou.src.compaction.serialize
+import adou.src.compaction.types as compaction_types
+import adou.src.session.repository
+import adou.src.session.types as session_types
+import co.mutex
+import json
+import time
+
+type provider_fixture_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    [ref<ai_types.assistant_message_t>] agent_responses = []
+    int agent_index
+    int agent_calls
+    int summary_calls
+    [[ai_types.message_t]] agent_contexts = []
+    [string] summary_prompts = []
+}
+
+fn model(int context_window): ref<ai_types.model_t> {
+    return new ai_types.model_t(id = 'mock', api = 'mock', provider = 'mock', base_url = 'http://example.invalid', reasoning = true, context_window = context_window, max_tokens = 100)
+}
+
+fn assistant(string text, string stop_reason, string error_message, int input_tokens, int total_tokens): ref<ai_types.assistant_message_t> {
+    [ai_types.content_t] content = []
+    if text != '' {
+        ai_types.content_t block = new ai_types.text_content_t(text = text)
+        content.push(block)
+    }
+    return new ai_types.assistant_message_t(content = content, api = 'mock', provider = 'mock', model = 'mock', usage = ai_types.usage_t {input: input_tokens, total_tokens: total_tokens,}, stop_reason = stop_reason, error_message = error_message, timestamp = time.now().ms_timestamp())
+}
+
+fn user(string text): ai_types.message_t {
+    ai_types.message_t message = new ai_types.user_message_t(content = text, timestamp = time.now().ms_timestamp())
+    return message
+}
+
+fn provider_fn(ref<provider_fixture_t> fixture): agent_types.stream_fn {
+    agent_types.stream_fn result = fn(ref<ai_types.model_t> current_model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+        fixture.lock.lock()
+        ref<ai_types.assistant_message_t> response = assistant('', ai_types.STOP_ERROR, 'fixture response missing', 0, 0)
+        if context.system_prompt == serialize.SUMMARIZATION_SYSTEM_PROMPT {
+            fixture.summary_calls += 1
+            if context.messages.len() > 0 {
+                if context.messages[0] is ref<ai_types.user_message_t> prompt {
+                    fixture.summary_prompts.push(prompt.content)
+                }
+            }
+            response = assistant('## Goal\ncontinue', ai_types.STOP_STOP, '', 8, 10)
+        } else {
+            fixture.agent_calls += 1
+            fixture.agent_contexts.push(context.messages.slice(0, context.messages.len()))
+            response = fixture.agent_responses[fixture.agent_index]
+            fixture.agent_index += 1
+        }
+        fixture.lock.unlock()
+        var stream = event_stream.new()
+        if response.stop_reason == ai_types.STOP_ERROR || response.stop_reason == ai_types.STOP_ABORTED {
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_ERROR, reason: response.stop_reason, error: response,}) catch error {}
+        } else {
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_DONE, reason: response.stop_reason, message: response,}) catch error {}
+        }
+        stream.end() catch error {}
+        return stream
+    }
+    return result
+}
+
+fn make_runner(ref<repository.manager_t> manager, ref<provider_fixture_t> fixture, int context_window, int reserve_tokens, int keep_recent_tokens): ref<session.runner_t>! {
+    var context = new agent_types.context_t(system_prompt = 'coding agent')
+    var config = new agent_types.config_t(model = model(context_window), stream_options = new ai_types.stream_options_t(max_retries = 0))
+    var settings = compaction_types.settings_t {reserve_tokens: reserve_tokens, keep_recent_tokens: keep_recent_tokens,}
+    return session.new(manager, context, config, provider_fn(fixture), settings)
+}
+
+fn consume(ref<session_stream.stream_t> stream): ([session_stream.event_t], [ai_types.message_t])! {
+    [session_stream.event_t] events = []
+    for true {
+        var event = stream.recv() catch error {break}
+        events.push(event)
+    }
+    return (events, stream.result())
+}
+
+fn count_kind([session_stream.event_t] events, string kind): int {
+    int count = 0
+    for event in events {
+        if event.kind == kind {
+            count += 1
+        }
+    }
+    return count
+}
+
+fn last_compaction_error([session_stream.event_t] events): string {
+    string result = ''
+    for event in events {
+        if event.kind == session_stream.EVENT_COMPACTION_END && event.error_message != '' {
+            result = event.error_message
+        }
+    }
+    return result
+}
+
+fn seed_history(ref<repository.manager_t> manager): void! {
+    manager.append_message(user('old request with enough text to summarize'))
+    ai_types.message_t old_assistant = assistant('old response with enough text to keep near the cut', ai_types.STOP_STOP, '', 20, 20)
+    manager.append_message(old_assistant)
+}
+
+test 'session forwards lifecycle and persists each completed message' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant('hello', ai_types.STOP_STOP, '', 2, 3)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    var result = consume(runner.prompt('hi'))
+    assert(fixture.agent_calls == 1 && fixture.summary_calls == 0)
+    assert(manager.get_entries().len() == 2 && result[1].len() == 2)
+    assert(count_kind(result[0], agent_types.EVENT_MESSAGE_END) == 2)
+    assert(count_kind(result[0], session_stream.EVENT_SESSION_END) == 1)
+}
+
+test 'threshold compaction runs after a successful turn without retrying' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant('a response long enough to create a split cut point', ai_types.STOP_STOP, '', 90, 90)])
+    var runner = make_runner(manager, fixture, 100, 20, 5)
+    var result = consume(runner.prompt('hello threshold'))
+    assert(fixture.agent_calls == 1 && fixture.summary_calls == 1)
+    assert(count_kind(result[0], session_stream.EVENT_COMPACTION_START) == 1)
+    assert(count_kind(result[0], session_stream.EVENT_COMPACTION_END) == 1)
+    assert(manager.latest_compaction() is ref<session_types.entry_t>)
+}
+
+test 'overflow compacts and retries once without the saved error in active context' {
+    var manager = repository.in_memory('/tmp')
+    seed_history(manager)
+    var fixture = new provider_fixture_t(agent_responses = [assistant('', ai_types.STOP_ERROR, 'prompt is too long', 0, 0), assistant('recovered', ai_types.STOP_STOP, '', 5, 6)])
+    var runner = make_runner(manager, fixture, 100, 0, 5)
+    var result = consume(runner.prompt('new prompt'))
+    assert(fixture.agent_calls == 2 && fixture.summary_calls == 1)
+    assert(count_kind(result[0], session_stream.EVENT_COMPACTION_START) == 1)
+    assert(fixture.agent_contexts[1].len() > 0)
+    var retry_tail = fixture.agent_contexts[1][fixture.agent_contexts[1].len() - 1]
+    assert(retry_tail is ref<ai_types.user_message_t>)
+    var final_tail = result[1][result[1].len() - 1]
+    assert(final_tail is ref<ai_types.assistant_message_t>)
+    var final_message = final_tail as ref<ai_types.assistant_message_t>
+    assert(final_message.stop_reason == ai_types.STOP_STOP)
+}
+
+test 'a second overflow emits the Pi recovery error and never compacts twice' {
+    var manager = repository.in_memory('/tmp')
+    seed_history(manager)
+    var fixture = new provider_fixture_t(agent_responses = [assistant('', ai_types.STOP_ERROR, 'prompt is too long', 0, 0), assistant('', ai_types.STOP_ERROR, 'maximum context length', 0, 0)])
+    var runner = make_runner(manager, fixture, 100, 0, 5)
+    var result = consume(runner.prompt('retry only once'))
+    assert(fixture.agent_calls == 2 && fixture.summary_calls == 1)
+    assert(count_kind(result[0], session_stream.EVENT_COMPACTION_START) == 1)
+    assert(last_compaction_error(result[0]) == 'Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.')
+}
+
+test 'successful over-window response compacts but is not retried' {
+    var manager = repository.in_memory('/tmp')
+    seed_history(manager)
+    var fixture = new provider_fixture_t(agent_responses = [assistant('completed answer', ai_types.STOP_STOP, '', 101, 101)])
+    var runner = make_runner(manager, fixture, 100, 0, 5)
+    var result = consume(runner.prompt('large but successful'))
+    assert(fixture.agent_calls == 1 && fixture.summary_calls == 1)
+    assert(count_kind(result[0], session_stream.EVENT_COMPACTION_START) == 1)
+}
+
+test 'aborted response never triggers compaction' {
+    var manager = repository.in_memory('/tmp')
+    seed_history(manager)
+    var fixture = new provider_fixture_t(agent_responses = [assistant('', ai_types.STOP_ABORTED, 'cancelled', 1000, 1000)])
+    var runner = make_runner(manager, fixture, 100, 20, 5)
+    var result = consume(runner.prompt('cancel'))
+    assert(fixture.agent_calls == 1 && fixture.summary_calls == 0)
+    assert(count_kind(result[0], session_stream.EVENT_COMPACTION_START) == 0)
+}
+
+test 'manual compaction uses the shared path and forwards custom instructions' {
+    var manager = repository.in_memory('/tmp')
+    seed_history(manager)
+    manager.append_message(user('recent request'))
+    var fixture = new provider_fixture_t()
+    var runner = make_runner(manager, fixture, 100, 0, 2)
+    var result = consume(runner.compact_now('preserve exact filenames'))
+    assert(fixture.agent_calls == 0 && fixture.summary_calls == 1)
+    assert(fixture.summary_prompts[0].contains('Additional focus: preserve exact filenames'))
+    assert(count_kind(result[0], session_stream.EVENT_COMPACTION_START) == 1)
+    assert(manager.latest_compaction() is ref<session_types.entry_t>)
+}
+
+test 'manual compaction reports when the session has no eligible history' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t()
+    var runner = make_runner(manager, fixture, 100, 0, 2)
+    var result = consume(runner.compact_now(''))
+    assert(fixture.summary_calls == 0)
+    assert(last_compaction_error(result[0]) == 'Nothing to compact')
+}
+
+test 'starting a new session clears active context and keeps in-memory mode' {
+    var manager = repository.in_memory('/tmp')
+    manager.append_message(user('old'))
+    var fixture = new provider_fixture_t()
+    var runner = make_runner(manager, fixture, 100, 0, 2)
+    assert(runner.active_messages.len() == 1 && !runner.repository.persisted)
+    runner.start_new_session()
+    assert(runner.active_messages.len() == 0)
+    assert(runner.repository.get_entries().len() == 0 && !runner.repository.persisted)
+}
+
+test 'tree navigation to a user message selects its parent and restores editor text' {
+    var manager = repository.in_memory('/tmp')
+    string first_user = manager.append_message(user('first request'))
+    ai_types.message_t first_answer = assistant('first answer', ai_types.STOP_STOP, '', 2, 3)
+    string first_assistant = manager.append_message(first_answer)
+    string selected_user = manager.append_message(user('rewrite this request'))
+    ai_types.message_t selected_answer = assistant('old answer', ai_types.STOP_STOP, '', 2, 3)
+    manager.append_message(selected_answer)
+    var fixture = new provider_fixture_t()
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    string editor_text = runner.navigate_tree(selected_user)
+    assert(editor_text == 'rewrite this request')
+    assert(manager.get_leaf_id() == first_assistant)
+    assert(runner.active_messages.len() == 2)
+    assert(runner.active_messages[0] is ref<ai_types.user_message_t>)
+    assert(first_user != '')
+}
+
+test 'tree branch summary captures the abandoned branch and attaches at target parent' {
+    var manager = repository.in_memory('/tmp')
+    manager.append_message(user('root request'))
+    ai_types.message_t base_answer = assistant('base answer', ai_types.STOP_STOP, '', 2, 3)
+    string common = manager.append_message(base_answer)
+    string target_user = manager.append_message(user('target draft'))
+    ai_types.message_t target_answer = assistant('target answer', ai_types.STOP_STOP, '', 2, 3)
+    manager.append_message(target_answer)
+    manager.set_leaf(common)
+    manager.append_message(user('abandoned request'))
+    ai_types.message_t abandoned_answer = assistant('abandoned answer', ai_types.STOP_STOP, '', 2, 3)
+    manager.append_message(abandoned_answer)
+    var fixture = new provider_fixture_t()
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    var target = runner.inspect_tree_target(target_user)
+    assert(target.editor_text == 'target draft' && target.new_leaf_id == common)
+    var result = consume(runner.navigate_tree_with_summary(target_user, 'preserve branch decisions'))
+    assert(fixture.summary_calls == 1)
+    assert(fixture.summary_prompts[0].contains('abandoned request'))
+    assert(fixture.summary_prompts[0].contains('abandoned answer'))
+    assert(!fixture.summary_prompts[0].contains('target draft'))
+    assert(fixture.summary_prompts[0].contains('Additional focus: preserve branch decisions'))
+    assert(count_kind(result[0], session_stream.EVENT_BRANCH_SUMMARY_START) == 1)
+    assert(count_kind(result[0], session_stream.EVENT_BRANCH_SUMMARY_END) == 1)
+    var entries = manager.get_entries()
+    var summary_entry = entries[entries.len() - 1]
+    assert(summary_entry.kind == session_types.ENTRY_BRANCH_SUMMARY)
+    assert(summary_entry.has_parent && summary_entry.parent_id == common)
+    var summary_object = summary_entry.raw.as_object()
+    assert(summary_object['fromId'].as_string() == common)
+    assert(result[1].len() == 3)
+    assert(result[1][2] is ref<ai_types.branch_summary_message_t>)
+}
+
+test 'thinking level changes persist once and update provider options' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t()
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    runner.set_thinking_level('high')
+    assert(runner.agent_config.stream_options.thinking_enabled)
+    assert(runner.agent_config.stream_options.reasoning_effort == 'high')
+    assert(manager.get_entries().len() == 1)
+    assert(manager.get_entries()[0].kind == session_types.ENTRY_THINKING_CHANGE)
+    runner.set_thinking_level('high')
+    assert(manager.get_entries().len() == 1)
+}
+
+test 'model selection preserves an explicit in-memory API key' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t()
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    runner.agent_config.stream_options.api_key = 'runtime-key'
+    var next = new ai_types.model_t(id = 'mock-next', api = 'mock', provider = 'mock', base_url = 'http://example.invalid', reasoning = true, context_window = 1000, max_tokens = 100)
+    runner.set_model(next)
+    assert(runner.agent_config.model.id == 'mock-next')
+    assert(runner.agent_config.stream_options.api_key == 'runtime-key')
+}
+
+test 'transient provider errors retry with the failed message removed from active context' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant('', ai_types.STOP_ERROR, '503 service unavailable', 0, 0), assistant('recovered after retry', ai_types.STOP_STOP, '', 4, 5)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    runner.retry_base_delay_ms = 1
+    var result = consume(runner.prompt('retry this request'))
+    assert(fixture.agent_calls == 2)
+    assert(count_kind(result[0], session_stream.EVENT_RETRY_START) == 1)
+    assert(count_kind(result[0], session_stream.EVENT_RETRY_END) == 1)
+    assert(result[1].len() == 2)
+    assert(manager.get_entries().len() == 3)
+    assert(manager.build_context().messages.len() == 3)
+    if result[1][1] is ref<ai_types.assistant_message_t> recovered {
+        assert(recovered.content.len() == 1)
+    } else {
+        assert(false)
+    }
+}

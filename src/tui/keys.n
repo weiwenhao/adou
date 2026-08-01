@@ -1,0 +1,377 @@
+// Keyboard decoding shared by the TUI.  The parser accepts the legacy VT
+// forms used by xterm/tmux and Kitty's CSI-u forms without depending on a
+// terminal-specific runtime.
+const MOD_SHIFT = 1
+const MOD_ALT = 2
+const MOD_CTRL = 4
+const MOD_SUPER = 8
+const LOCK_MASK = 192
+
+const CODE_ESCAPE = 27
+const CODE_TAB = 9
+const CODE_ENTER = 13
+const CODE_SPACE = 32
+const CODE_BACKSPACE = 127
+const CODE_UP = -1
+const CODE_DOWN = -2
+const CODE_RIGHT = -3
+const CODE_LEFT = -4
+const CODE_DELETE = -10
+const CODE_INSERT = -11
+const CODE_PAGE_UP = -12
+const CODE_PAGE_DOWN = -13
+const CODE_HOME = -14
+const CODE_END = -15
+
+var kitty_protocol_active = false
+
+type parsed_t = struct {
+    bool valid
+    int codepoint
+    int modifier
+}
+
+fn set_kitty_protocol(bool active) {
+    kitty_protocol_active = active
+}
+
+fn is_kitty_protocol_active(): bool {
+    return kitty_protocol_active
+}
+
+fn parse_key(string data): string {
+    var sequence = parse_kitty(data)
+    if sequence.valid {
+        return format_codepoint(sequence.codepoint, sequence.modifier)
+    }
+    var modify = parse_modify_other_keys(data)
+    if modify.valid {
+        return format_codepoint(modify.codepoint, modify.modifier)
+    }
+    if kitty_protocol_active && (data == '\x1b\r' || data == '\n') {
+        return 'shift+enter'
+    }
+    string legacy = parse_legacy(data)
+    if legacy != '' {
+        return legacy
+    }
+    return ''
+}
+
+fn matches(string data, string key_id): bool {
+    string actual = parse_key(data)
+    if actual == '' {
+        return false
+    }
+    string expected = canonical_key(key_id)
+    return actual == expected
+}
+
+fn decode_printable(string data): string {
+    var sequence = parse_kitty(data)
+    if !sequence.valid {
+        var modify = parse_modify_other_keys(data)
+        if modify.valid {
+            sequence = modify
+        } else {
+            return ''
+        }
+    }
+    int modifier = sequence.modifier & ~LOCK_MASK
+    if modifier != 0 && modifier != MOD_SHIFT {
+        return ''
+    }
+    int codepoint = sequence.codepoint
+    if codepoint < 32 || codepoint < 0 {
+        return ''
+    }
+    return encode_codepoint(codepoint)
+}
+
+#local
+fn parse_kitty(string data): parsed_t {
+    var invalid = parsed_t {}
+    if data.len() < 4 || data[0] != 0x1b || data[1] != '['.char() {
+        return invalid
+    }
+    int final_index = data.len() - 1
+    u8 command = data[final_index]
+    if command != 'u'.char() && command != 'A'.char() && command != 'B'.char() && command != 'C'.char() && command != 'D'.char() && command != 'H'.char() && command != 'F'.char() && command != '~'.char() {
+        return invalid
+    }
+    int body_start = 2
+    int first_separator = separator_at(data, body_start, final_index)
+    int first_end = first_separator >= 0 ? first_separator : final_index
+    int first = parse_number(data, body_start, first_end)
+    if first < 0 {
+        return invalid
+    }
+    int modifier = modifier_from_body(data, body_start, final_index)
+    int codepoint = first
+    if command == 'A'.char() {
+        codepoint = CODE_UP
+    } else if command == 'B'.char() {
+        codepoint = CODE_DOWN
+    } else if command == 'C'.char() {
+        codepoint = CODE_RIGHT
+    } else if command == 'D'.char() {
+        codepoint = CODE_LEFT
+    } else if command == 'H'.char() {
+        codepoint = CODE_HOME
+    } else if command == 'F'.char() {
+        codepoint = CODE_END
+    } else if command == '~'.char() {
+        codepoint = functional_codepoint(first)
+        if codepoint == 0 {
+            return invalid
+        }
+    }
+    if command == 'u'.char() {
+        codepoint = first
+    }
+    return parsed_t {valid: true, codepoint: codepoint, modifier: modifier,}
+}
+
+#local
+fn parse_modify_other_keys(string data): parsed_t {
+    var invalid = parsed_t {}
+    if data.len() < 8 || data[0] != 0x1b || data[1] != '['.char() || data[data.len() - 1] != '~'.char() {
+        return invalid
+    }
+    int first_end = data.find(';')
+    if first_end < 0 || data.slice(2, first_end) != '27' {
+        return invalid
+    }
+    int second_end = data.find_after(';', first_end + 1)
+    if second_end < 0 {
+        return invalid
+    }
+    int modifier_value = parse_number(data, first_end + 1, second_end)
+    int codepoint = parse_number(data, second_end + 1, data.len() - 1)
+    if modifier_value < 1 || codepoint < 0 {
+        return invalid
+    }
+    return parsed_t {valid: true, codepoint: codepoint, modifier: modifier_value - 1,}
+}
+
+#local
+fn parse_legacy(string data): string {
+    if data == '\x1b' {return 'escape'}
+    if data == '\x1b[A' || data == '\x1bOA' {return 'up'}
+    if data == '\x1b[B' || data == '\x1bOB' {return 'down'}
+    if data == '\x1b[C' || data == '\x1bOC' {return 'right'}
+    if data == '\x1b[D' || data == '\x1bOD' {return 'left'}
+    if data == '\x1b[H' || data == '\x1bOH' || data == '\x1b[1~' || data == '\x1b[7~' {return 'home'}
+    if data == '\x1b[F' || data == '\x1bOF' || data == '\x1b[4~' || data == '\x1b[8~' {return 'end'}
+    if data == '\x1b[2~' {return 'insert'}
+    if data == '\x1b[3~' {return 'delete'}
+    if data == '\x1b[5~' || data == '\x1b[[5~' {return 'pageUp'}
+    if data == '\x1b[6~' || data == '\x1b[[6~' {return 'pageDown'}
+    if data == '\x1b[E' || data == '\x1bOE' {return 'clear'}
+    if data == '\x1b[Z' {return 'shift+tab'}
+    if data == '\x1bOP' || data == '\x1b[11~' || data == '\x1b[[A' {return 'f1'}
+    if data == '\x1bOQ' || data == '\x1b[12~' || data == '\x1b[[B' {return 'f2'}
+    if data == '\x1bOR' || data == '\x1b[13~' || data == '\x1b[[C' {return 'f3'}
+    if data == '\x1bOS' || data == '\x1b[14~' || data == '\x1b[[D' {return 'f4'}
+    if data == '\x1b[15~' || data == '\x1b[[E' {return 'f5'}
+    if data == '\x1b[17~' {return 'f6'}
+    if data == '\x1b[18~' {return 'f7'}
+    if data == '\x1b[19~' {return 'f8'}
+    if data == '\x1b[20~' {return 'f9'}
+    if data == '\x1b[21~' {return 'f10'}
+    if data == '\x1b[23~' {return 'f11'}
+    if data == '\x1b[24~' {return 'f12'}
+    if data == '\x1ba' || data == '\x1bb' {return data == '\x1bb' ? 'alt+left' : 'alt+right'}
+    if data == '\x1bp' {return 'alt+up'}
+    if data == '\x1bn' {return 'alt+down'}
+    if data == '\x1b[1;3D' || data == '\x1bB' {return 'alt+left'}
+    if data == '\x1b[1;3C' || data == '\x1bF' {return 'alt+right'}
+    if data == '\x1b[1;5D' || data == '\x1bOd' {return 'ctrl+left'}
+    if data == '\x1b[1;5C' || data == '\x1bOc' {return 'ctrl+right'}
+    if data == '\x1b[1;5A' || data == '\x1bOa' {return 'ctrl+up'}
+    if data == '\x1b[1;5B' || data == '\x1bOb' {return 'ctrl+down'}
+    if data == '\x1b\r' {return 'alt+enter'}
+    if data == '\x1b ' {return 'alt+space'}
+    if data == '\x1b\x7f' || data == '\x1b\b' {return 'alt+backspace'}
+    if data == '\r' || (!kitty_protocol_active && data == '\n') || data == '\x1bOM' {return 'enter'}
+    if data == '\t' {return 'tab'}
+    if data == ' ' {return 'space'}
+    if data == '\x7f' {return 'backspace'}
+    if data == '\x08' {return 'backspace'}
+    if data == '\x00' {return 'ctrl+space'}
+    if data == '\x1c' {return 'ctrl+\\'}
+    if data == '\x1d' {return 'ctrl+]'}
+    if data == '\x1f' {return 'ctrl+-'}
+    if data == '\x1b\x1c' {return 'ctrl+alt+\\'}
+    if data == '\x1b\x1d' {return 'ctrl+alt+]'}
+    if data == '\x1b\x1f' {return 'ctrl+alt+-'}
+    if data.len() == 1 {
+        int code = data[0] as int
+        if code >= 1 && code <= 26 {
+            int letter = code + 'a'.char() as int - 1
+            return 'ctrl+' + ascii_char(letter)
+        }
+        if code >= 32 && code <= 126 {
+            return data
+        }
+    }
+    if data.len() == 2 && data[0] == 0x1b {
+        int code = data[1] as int
+        if code >= 1 && code <= 26 {
+            int letter = code + 'a'.char() as int - 1
+            return 'ctrl+alt+' + ascii_char(letter)
+        }
+        if code >= 32 && code <= 126 {
+            return 'alt+' + data.slice(1, 2)
+        }
+    }
+    return ''
+}
+
+#local
+fn canonical_key(string key_id): string {
+    string key = key_id.to_lower()
+    if key == 'esc' {return 'escape'}
+    if key == 'return' {return 'enter'}
+    if key == 'pageup' {return 'pageUp'}
+    if key == 'pagedown' {return 'pageDown'}
+    if key == 'ctrl+esc' {return 'ctrl+escape'}
+    if key.contains('+') {
+        int last = key.find_after('+', 0)
+        for int cursor = 0; cursor < key.len(); cursor += 1 {
+            if key[cursor] == '+'.char() {last = cursor}
+        }
+        string base = key.slice(last + 1, key.len())
+        if base == 'esc' {base = 'escape'}
+        if base == 'return' {base = 'enter'}
+        if base == 'pageup' {base = 'pageUp'}
+        if base == 'pagedown' {base = 'pageDown'}
+        string result = ''
+        if key.contains('shift+') {result += 'shift+'}
+        if key.contains('alt+') {result += 'alt+'}
+        if key.contains('ctrl+') {result += 'ctrl+'}
+        if key.contains('super+') {result += 'super+'}
+        return result + base
+    }
+    return key
+}
+
+#local
+fn separator_at(string data, int start, int end): int {
+    for int index = start; index < end; index += 1 {
+        if data[index] == ';'.char() || data[index] == ':'.char() {
+            return index
+        }
+    }
+    return -1
+}
+
+#local
+fn modifier_from_body(string data, int start, int end): int {
+    int separator = -1
+    for int index = start; index < end; index += 1 {
+        if data[index] == ';'.char() {
+            separator = index
+            break
+        }
+    }
+    if separator < 0 {
+        return 0
+    }
+    int modifier_end = end
+    for int index = separator + 1; index < end; index += 1 {
+        if data[index] == ':'.char() {
+            modifier_end = index
+            break
+        }
+    }
+    int value = parse_number(data, separator + 1, modifier_end)
+    return value > 0 ? value - 1 : 0
+}
+
+#local
+fn parse_number(string data, int start, int end): int {
+    if start >= end {
+        return -1
+    }
+    int value = 0
+    for int index = start; index < end; index += 1 {
+        u8 byte = data[index]
+        if byte < '0'.char() || byte > '9'.char() {
+            return -1
+        }
+        int digit = byte as int - '0'.char() as int
+        value = value * 10 + digit
+    }
+    return value
+}
+
+#local
+fn functional_codepoint(int value): int {
+    if value == 2 {return CODE_INSERT}
+    if value == 3 {return CODE_DELETE}
+    if value == 5 {return CODE_PAGE_UP}
+    if value == 6 {return CODE_PAGE_DOWN}
+    if value == 7 {return CODE_HOME}
+    if value == 8 {return CODE_END}
+    return 0
+}
+
+#local
+fn format_codepoint(int codepoint, int modifier): string {
+    int effective = codepoint
+    int locks_removed = modifier & ~LOCK_MASK
+    if (locks_removed & MOD_SHIFT) != 0 && effective >= 65 && effective <= 90 {
+        effective += 32
+    }
+    string key = ''
+    if effective == CODE_ESCAPE {key = 'escape'} else if effective == CODE_TAB {key = 'tab'} else if effective == CODE_ENTER {key = 'enter'} else if effective == CODE_SPACE {key = 'space'} else if effective == CODE_BACKSPACE {key = 'backspace'} else if effective == CODE_UP {key = 'up'} else if effective == CODE_DOWN {key = 'down'} else if effective == CODE_LEFT {key = 'left'} else if effective == CODE_RIGHT {key = 'right'} else if effective == CODE_DELETE {key = 'delete'} else if effective == CODE_INSERT {key = 'insert'} else if effective == CODE_PAGE_UP {key = 'pageUp'} else if effective == CODE_PAGE_DOWN {key = 'pageDown'} else if effective == CODE_HOME {key = 'home'} else if effective == CODE_END {key = 'end'} else if effective >= 97 && effective <= 122 {key = ascii_char(effective)} else if effective >= 48 && effective <= 57 {key = ascii_char(effective)} else if effective >= 33 && effective <= 126 {key = ascii_char(effective)}
+    if key == '' {
+        return ''
+    }
+    string result = ''
+    if (locks_removed & MOD_SHIFT) != 0 {result += 'shift+'}
+    if (locks_removed & MOD_ALT) != 0 {result += 'alt+'}
+    if (locks_removed & MOD_CTRL) != 0 {result += 'ctrl+'}
+    if (locks_removed & MOD_SUPER) != 0 {result += 'super+'}
+    return result + key
+}
+
+#local
+fn plain_printable(string data): string {
+    if data == '' || data[0] == 0x1b {
+        return ''
+    }
+    if data.len() > 0 && data[0] >= 32 {
+        return data
+    }
+    return ''
+}
+
+#local
+fn ascii_char(int value): string {
+    [u8] bytes = vec<u8>.cap_of(1)
+    bytes.push(value as u8)
+    return bytes as string
+}
+
+#local
+fn encode_codepoint(int codepoint): string {
+    [u8] result = vec<u8>.cap_of(4)
+    if codepoint <= 0x7f {
+        result.push(codepoint as u8)
+    } else if codepoint <= 0x7ff {
+        result.push((0xc0 | (codepoint >> 6)) as u8)
+        result.push((0x80 | (codepoint & 0x3f)) as u8)
+    } else if codepoint <= 0xffff {
+        result.push((0xe0 | (codepoint >> 12)) as u8)
+        result.push((0x80 | ((codepoint >> 6) & 0x3f)) as u8)
+        result.push((0x80 | (codepoint & 0x3f)) as u8)
+    } else if codepoint <= 0x10ffff {
+        result.push((0xf0 | (codepoint >> 18)) as u8)
+        result.push((0x80 | ((codepoint >> 12) & 0x3f)) as u8)
+        result.push((0x80 | ((codepoint >> 6) & 0x3f)) as u8)
+        result.push((0x80 | (codepoint & 0x3f)) as u8)
+    }
+    return result as string
+}

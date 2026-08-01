@@ -1,0 +1,79 @@
+import adou.src.ai.types
+import adou.src.compaction.types as compaction_types
+import adou.src.unicode.utf8
+import json
+
+fn calculate_context_tokens(types.usage_t usage): int {
+    if usage.total_tokens != 0 {
+        return usage.total_tokens
+    }
+    return usage.input + usage.output + usage.cache_read + usage.cache_write
+}
+
+fn estimate_tokens(types.message_t message): int! {
+    int chars = 0
+    if message is ref<types.user_message_t> user {
+        chars = utf8.utf16_length(user.content)
+    } else if message is ref<types.assistant_message_t> assistant {
+        for block in assistant.content {
+            if block is ref<types.text_content_t> text {
+                chars += utf8.utf16_length(text.text)
+            } else if block is ref<types.thinking_content_t> thinking {
+                chars += utf8.utf16_length(thinking.thinking)
+            } else if block is ref<types.tool_call_t> call {
+                chars += utf8.utf16_length(call.name)
+                chars += utf8.utf16_length(json.stringify(call.arguments))
+            }
+        }
+    } else if message is ref<types.tool_result_message_t> tool {
+        for block in tool.content {
+            chars += utf8.utf16_length(block.text)
+        }
+    } else if message is ref<types.compaction_summary_message_t> summary {
+        chars = utf8.utf16_length(summary.summary)
+    } else if message is ref<types.branch_summary_message_t> summary {
+        chars = utf8.utf16_length(summary.summary)
+    } else if message is ref<types.custom_message_t> custom {
+        chars = utf8.utf16_length(custom.content)
+    } else if message is ref<types.bash_execution_message_t> bash {
+        if !bash.exclude_from_context {
+            chars = utf8.utf16_length(types.bash_execution_text(bash))
+        }
+    }
+    return (chars + 3) / 4
+}
+
+fn estimate_context_tokens([types.message_t] messages): compaction_types.context_estimate_t! {
+    int last_usage_index = -1
+    types.usage_t last_usage = types.usage_t{}
+    for int index = messages.len() - 1; index >= 0; index -= 1 {
+        if messages[index] is ref<types.assistant_message_t> assistant {
+            int tokens = calculate_context_tokens(assistant.usage)
+            if assistant.stop_reason != types.STOP_ABORTED && assistant.stop_reason != types.STOP_ERROR && tokens > 0 {
+                last_usage_index = index
+                last_usage = assistant.usage
+                break
+            }
+        }
+    }
+    if last_usage_index < 0 {
+        int estimated = 0
+        for message in messages {
+            estimated += estimate_tokens(message)
+        }
+        return compaction_types.context_estimate_t {tokens: estimated, trailing_tokens: estimated,}
+    }
+    int usage_tokens = calculate_context_tokens(last_usage)
+    int trailing_tokens = 0
+    for int index = last_usage_index + 1; index < messages.len(); index += 1 {
+        trailing_tokens += estimate_tokens(messages[index])
+    }
+    return compaction_types.context_estimate_t {tokens: usage_tokens + trailing_tokens, usage_tokens: usage_tokens, trailing_tokens: trailing_tokens, last_usage_index: last_usage_index,}
+}
+
+fn should_compact(int context_tokens, int context_window, compaction_types.settings_t settings): bool {
+    if !settings.enabled || context_window <= 0 {
+        return false
+    }
+    return context_tokens > context_window - settings.reserve_tokens
+}

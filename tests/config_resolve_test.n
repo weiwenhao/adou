@@ -1,0 +1,13 @@
+import adou.src.config.args
+import adou.src.config.resolve
+
+test 'unknown provider is a recoverable configuration error' {
+    var arguments = args.parse(['adou', '--provider', 'mock'])
+    bool failed = false
+    try {
+        resolve.resolve(arguments, '/tmp')
+    } catch error {
+        failed = error.msg().contains('Unsupported provider: mock')
+    }
+    assert(failed)
+}

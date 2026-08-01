@@ -1,0 +1,370 @@
+import adou.src.ai.models
+import adou.src.ai.sse
+import adou.src.ai.types
+import json
+import strings
+
+const SLOT_TEXT = 'text'
+const SLOT_THINKING = 'thinking'
+const SLOT_TOOL_CALL = 'toolCall'
+
+type slot_t = struct {
+    string kind
+    int content_index
+    ref<types.text_content_t> text = new types.text_content_t()
+    ref<types.thinking_content_t> thinking = new types.thinking_content_t()
+    ref<types.tool_call_t> tool_call = new types.tool_call_t()
+}
+
+type processor_t = struct {
+    ref<types.model_t> model
+    ref<types.assistant_message_t> output
+    map<int, slot_t> slots = {}
+    int text_index = -1
+    int thinking_index = -1
+    bool started
+    bool saw_finish_reason
+    bool saw_terminal
+}
+
+fn processor(ref<types.model_t> model, int timestamp): ref<processor_t> {
+    var output = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, timestamp = timestamp,)
+    return new processor_t(model = model, output = output)
+}
+
+fn processor_t.start(&self): types.assistant_event_t! {
+    if self.started {
+        throw errorf('OpenAI Completions stream already started')
+    }
+    self.started = true
+    return types.assistant_event_t {kind: types.EVENT_START, partial: self.output,}
+}
+
+fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
+    if !self.started {
+        throw errorf('OpenAI Completions stream has not started')
+    }
+    if self.saw_terminal {
+        throw errorf('OpenAI Completions stream received data after terminal event')
+    }
+    if frame.data == '[DONE]' {
+        return []
+    }
+    var root = json.box_value(json.parse(frame.data))
+    if root.kind != json.VALUE_OBJECT {
+        return []
+    }
+    var root_object = root.as_object()
+    if root_object.contains('error') && !root_object['error'].is_null() {
+        throw errorf('%s', error_value(root_object['error']))
+    }
+    [types.assistant_event_t] events = []
+    if root_object.contains('id') && !root_object['id'].is_null() {
+        self.output.response_id = root_object['id'].as_string()
+    }
+    if root_object.contains('usage') && !root_object['usage'].is_null() {
+        self.update_usage(root_object['usage'])
+    }
+    if !root_object.contains('choices') || root_object['choices'].is_null() {
+        return events
+    }
+    var choices = root_object['choices'].as_array()
+    if choices.len() == 0 {
+        return events
+    }
+    var choice = choices[0]
+    var choice_object = choice.as_object()
+    if choice_object.contains('finish_reason') && !choice_object['finish_reason'].is_null() {
+        self.apply_finish_reason(choice_object['finish_reason'].as_string())
+    }
+    if !choice_object.contains('delta') || choice_object['delta'].is_null() {
+        return events
+    }
+    var delta = choice_object['delta']
+    var delta_object = delta.as_object()
+    if delta_object.contains('content') && !delta_object['content'].is_null() {
+        string text = delta_object['content'].as_string()
+        if text != '' {
+            events = self.append_text(text, events)
+        }
+    }
+    string reasoning = reasoning_delta(delta_object)
+    if reasoning != '' {
+        events = self.append_thinking(reasoning, events)
+    }
+    if delta_object.contains('tool_calls') && !delta_object['tool_calls'].is_null() {
+        for call in delta_object['tool_calls'].as_array() {
+            events = self.append_tool_call(call, events)
+        }
+    }
+    return events
+}
+
+fn processor_t.finish(&self): [types.assistant_event_t]! {
+    if self.saw_terminal {
+        throw errorf('OpenAI Completions stream already finished')
+    }
+    if !self.saw_finish_reason {
+        throw errorf('OpenAI Completions stream ended without finish_reason')
+    }
+    [types.assistant_event_t] events = []
+    for content_index, block in self.output.content {
+        if block is ref<types.text_content_t> text {
+            events.push(update_event(types.EVENT_TEXT_END, content_index, '', text.text, self.output))
+        } else if block is ref<types.thinking_content_t> thinking {
+            events.push(update_event(types.EVENT_THINKING_END, content_index, '', thinking.thinking, self.output))
+        } else if block is ref<types.tool_call_t> {
+            int slot_index = self.slot_for_content_index(content_index)
+            if slot_index >= 0 {
+                events = self.finish_slot(slot_index, events)
+            }
+        }
+    }
+    self.saw_terminal = true
+    if self.output.stop_reason == types.STOP_STOP && self.has_tool_call() {
+        self.output.stop_reason = types.STOP_TOOL_USE
+    }
+    self.output.usage = models.calculate_cost(self.model, self.output.usage)
+    events.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: self.output.stop_reason, message: self.output,})
+    return events
+}
+
+#local
+fn processor_t.append_text(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
+    ref<types.text_content_t>? text = self.find_text()
+    int index = -1
+    if text is ref<types.text_content_t> existing {
+        index = self.content_index(existing)
+        existing.text += value
+    } else {
+        var block = new types.text_content_t(text = value)
+        types.content_t content = block
+        self.output.content.push(content)
+        index = self.output.content.len() - 1
+        self.text_index = index
+        events.push(update_event(types.EVENT_TEXT_START, index, '', '', self.output))
+    }
+    events.push(update_event(types.EVENT_TEXT_DELTA, index, value, '', self.output))
+    return events
+}
+
+#local
+fn processor_t.append_thinking(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
+    ref<types.thinking_content_t>? thinking = self.find_thinking()
+    int index = -1
+    if thinking is ref<types.thinking_content_t> existing {
+        index = self.content_index_thinking(existing)
+        existing.thinking += value
+    } else {
+        var block = new types.thinking_content_t(thinking_signature = 'reasoning_content', thinking = value)
+        types.content_t content = block
+        self.output.content.push(content)
+        index = self.output.content.len() - 1
+        self.thinking_index = index
+        events.push(update_event(types.EVENT_THINKING_START, index, '', '', self.output))
+    }
+    events.push(update_event(types.EVENT_THINKING_DELTA, index, value, '', self.output))
+    return events
+}
+
+#local
+fn processor_t.append_tool_call(&self, ref<json.value_t> value, [types.assistant_event_t] events): [types.assistant_event_t]! {
+    var object = value.as_object()
+    int index = object.contains('index') ? object['index'].as_number().to_int() : self.slots.len()
+    if !self.slots.contains(index) {
+        var block = new types.tool_call_t(partial_json = '')
+        types.content_t content = block
+        self.output.content.push(content)
+        int content_index = self.output.content.len() - 1
+        self.slots[index] = slot_t {kind: SLOT_TOOL_CALL, content_index: content_index, tool_call: block,}
+        events.push(update_event(types.EVENT_TOOLCALL_START, content_index, '', '', self.output))
+    }
+    var slot = self.slots[index]
+    if object.contains('id') && !object['id'].is_null() {
+        slot.tool_call.id = object['id'].as_string()
+    }
+    if object.contains('function') && !object['function'].is_null() {
+        var function = object['function'].as_object()
+        if function.contains('name') && !function['name'].is_null() {
+            slot.tool_call.name = function['name'].as_string()
+        }
+        if function.contains('arguments') && !function['arguments'].is_null() {
+            string delta = function['arguments'].as_string()
+            slot.tool_call.partial_json += delta
+            events.push(update_event(types.EVENT_TOOLCALL_DELTA, slot.content_index, delta, '', self.output))
+        }
+    }
+    return events
+}
+
+#local
+fn processor_t.finish_slot(&self, int index, [types.assistant_event_t] events): [types.assistant_event_t]! {
+    if !self.slots.contains(index) {
+        return events
+    }
+    var slot = self.slots[index]
+    if slot.kind == SLOT_TEXT {
+        events.push(update_event(types.EVENT_TEXT_END, slot.content_index, '', slot.text.text, self.output))
+    } else if slot.kind == SLOT_THINKING {
+        events.push(update_event(types.EVENT_THINKING_END, slot.content_index, '', slot.thinking.thinking, self.output))
+    } else if slot.kind == SLOT_TOOL_CALL {
+        string arguments = slot.tool_call.partial_json
+        if arguments == '' {
+            arguments = '{}'
+        }
+        slot.tool_call.arguments = json.parse(arguments)
+        slot.tool_call.partial_json = ''
+        var event = update_event(types.EVENT_TOOLCALL_END, slot.content_index, '', '', self.output)
+        event.tool_call = slot.tool_call
+        events.push(event)
+    }
+    self.slots.del(index)
+    return events
+}
+
+#local
+fn processor_t.slot_for_content_index(&self, int content_index): int {
+    for index, slot in self.slots {
+        if slot.content_index == content_index {
+            return index
+        }
+    }
+    return -1
+}
+
+#local
+fn processor_t.update_usage(&self, ref<json.value_t> value): void! {
+    var object = value.as_object()
+    int input = optional_int(object, 'prompt_tokens', 0)
+    int output = optional_int(object, 'completion_tokens', 0)
+    int cache_read = 0
+    int cache_write = 0
+    int reasoning = 0
+    if object.contains('prompt_cache_hit_tokens') {
+        cache_read = optional_int(object, 'prompt_cache_hit_tokens', 0)
+    }
+    if object.contains('prompt_tokens_details') && !object['prompt_tokens_details'].is_null() {
+        var details = object['prompt_tokens_details'].as_object()
+        cache_read = optional_int(details, 'cached_tokens', cache_read)
+        cache_write = optional_int(details, 'cache_write_tokens', cache_write)
+    }
+    if object.contains('completion_tokens_details') && !object['completion_tokens_details'].is_null() {
+        reasoning = optional_int(object['completion_tokens_details'].as_object(), 'reasoning_tokens', 0)
+    }
+    int uncached = input - cache_read - cache_write
+    if uncached < 0 {
+        uncached = 0
+    }
+    self.output.usage.input = uncached
+    self.output.usage.output = output
+    self.output.usage.cache_read = cache_read
+    self.output.usage.cache_write = cache_write
+    self.output.usage.reasoning = reasoning
+    self.output.usage.total_tokens = uncached + cache_read + cache_write + output
+}
+
+#local
+fn processor_t.apply_finish_reason(&self, string reason): void! {
+    self.saw_finish_reason = true
+    if reason == 'stop' || reason == 'end' {
+        self.output.stop_reason = types.STOP_STOP
+    } else if reason == 'length' {
+        self.output.stop_reason = types.STOP_LENGTH
+    } else if reason == 'tool_calls' || reason == 'function_call' {
+        self.output.stop_reason = types.STOP_TOOL_USE
+    } else {
+        self.output.stop_reason = types.STOP_ERROR
+        self.output.error_message = 'Provider finish_reason: ' + reason
+    }
+}
+
+#local
+fn processor_t.has_tool_call(&self): bool {
+    for block in self.output.content {
+        if block is ref<types.tool_call_t> {
+            return true
+        }
+    }
+    return false
+}
+
+#local
+fn processor_t.find_text(&self): ref<types.text_content_t>? {
+    for block in self.output.content {
+        if block is ref<types.text_content_t> text {
+            return text
+        }
+    }
+    return null
+}
+
+#local
+fn processor_t.find_thinking(&self): ref<types.thinking_content_t>? {
+    for block in self.output.content {
+        if block is ref<types.thinking_content_t> thinking {
+            return thinking
+        }
+    }
+    return null
+}
+
+#local
+fn processor_t.content_index(&self, ref<types.text_content_t> target): int {
+    for index, block in self.output.content {
+        if block is ref<types.text_content_t> {
+            return index
+        }
+    }
+    return -1
+}
+
+#local
+fn processor_t.content_index_thinking(&self, ref<types.thinking_content_t> target): int {
+    for index, block in self.output.content {
+        if block is ref<types.thinking_content_t> {
+            return index
+        }
+    }
+    return -1
+}
+
+#local
+fn reasoning_delta(map<string, ref<json.value_t>> object): string! {
+    [string] keys = ['reasoning_content', 'reasoning', 'reasoning_text']
+    for key in keys {
+        if object.contains(key) && !object[key].is_null() {
+            string value = object[key].as_string()
+            if value != '' {
+                return value
+            }
+        }
+    }
+    return ''
+}
+
+#local
+fn error_value(ref<json.value_t> value): string! {
+    if value.kind == json.VALUE_STRING {
+        return value.as_string()
+    }
+    if value.kind == json.VALUE_OBJECT {
+        var object = value.as_object()
+        if object.contains('message') && !object['message'].is_null() {
+            return object['message'].as_string()
+        }
+    }
+    return json.stringify(*value)
+}
+
+#local
+fn optional_int(map<string, ref<json.value_t>> object, string key, int fallback): int! {
+    if !object.contains(key) || object[key].is_null() {
+        return fallback
+    }
+    return object[key].as_number().to_int()
+}
+
+#local
+fn update_event(string event_type, int content_index, string delta, string content, ref<types.assistant_message_t> partial): types.assistant_event_t {
+    return types.assistant_event_t {kind: event_type, content_index: content_index, delta: delta, content: content, partial: partial,}
+}

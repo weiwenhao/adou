@@ -1,0 +1,188 @@
+import adou.src.ai.abort
+import adou.src.ai.event_stream
+import adou.src.ai.types
+import adou.src.tools.types as tool_types
+import co.mutex
+import json
+
+const EVENT_AGENT_START = 'agent_start'
+const EVENT_AGENT_END = 'agent_end'
+const EVENT_TURN_START = 'turn_start'
+const EVENT_TURN_END = 'turn_end'
+const EVENT_MESSAGE_START = 'message_start'
+const EVENT_MESSAGE_UPDATE = 'message_update'
+const EVENT_MESSAGE_END = 'message_end'
+const EVENT_TOOL_START = 'tool_execution_start'
+const EVENT_TOOL_UPDATE = 'tool_execution_update'
+const EVENT_TOOL_END = 'tool_execution_end'
+const EXECUTION_PARALLEL = 'parallel'
+const EXECUTION_SEQUENTIAL = 'sequential'
+const QUEUE_ALL = 'all'
+const QUEUE_ONE = 'one-at-a-time'
+
+type tool_update_fn = fn(tool_types.tool_result_t)
+type stream_fn = fn(ref<types.model_t>, ref<types.context_t>, ref<types.stream_options_t>): ref<event_stream.assistant_stream_t>
+
+type tool_executor_t = interface {
+    fn execute(string, ref<json.value_t>, ref<abort.abort_t>, tool_update_fn): tool_types.tool_result_t!
+}
+
+type agent_tool_t = struct {
+    string name
+    string label
+    string description
+    json.value_t parameters
+    string execution_mode = EXECUTION_PARALLEL
+    tool_executor_t executor
+}
+
+type context_t = struct {
+    string system_prompt
+    [types.message_t] messages = []
+    [ref<agent_tool_t>] tools = []
+}
+
+type before_result_t = struct {
+    bool block
+    string reason
+}
+
+type after_result_t = struct {
+    bool has_content
+    [ref<types.text_content_t>] content = []
+    bool has_details
+    json.value_t details
+    bool has_usage
+    types.usage_t usage
+    bool has_is_error
+    bool is_error
+    bool has_terminate
+    bool terminate
+}
+
+type turn_update_t = struct {
+    bool has_context
+    ref<context_t>? context = null
+    bool has_model
+    ref<types.model_t>? model = null
+    bool has_thinking_level
+    string thinking_level
+}
+
+type before_tool_call_fn = fn(ref<types.assistant_message_t>, ref<types.tool_call_t>, ref<json.value_t>, ref<context_t>, ref<abort.abort_t>): before_result_t!
+type after_tool_call_fn = fn(ref<types.assistant_message_t>, ref<types.tool_call_t>, ref<json.value_t>, tool_types.tool_result_t, bool, ref<context_t>, ref<abort.abort_t>): after_result_t!
+type prepare_next_turn_fn = fn(ref<types.assistant_message_t>, [ref<types.tool_result_message_t>], ref<context_t>, [types.message_t]): turn_update_t!
+type should_stop_after_turn_fn = fn(ref<types.assistant_message_t>, [ref<types.tool_result_message_t>], ref<context_t>, [types.message_t]): bool!
+type optional_before_tool_call_fn = before_tool_call_fn|null
+type optional_after_tool_call_fn = after_tool_call_fn|null
+type optional_prepare_next_turn_fn = prepare_next_turn_fn|null
+type optional_should_stop_after_turn_fn = should_stop_after_turn_fn|null
+
+type queue_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    [types.message_t] steering = []
+    [types.message_t] follow_up = []
+    string steering_mode = QUEUE_ONE
+    string follow_up_mode = QUEUE_ONE
+}
+
+fn queue_t.enqueue_steering(&self, types.message_t message) {
+    self.lock.lock()
+    self.steering.push(message)
+    self.lock.unlock()
+}
+
+fn queue_t.enqueue_follow_up(&self, types.message_t message) {
+    self.lock.lock()
+    self.follow_up.push(message)
+    self.lock.unlock()
+}
+
+fn queue_t.drain_steering(&self): [types.message_t] {
+    self.lock.lock()
+    var result = drain(&self.steering, self.steering_mode)
+    self.lock.unlock()
+    return result
+}
+
+fn queue_t.drain_follow_up(&self): [types.message_t] {
+    self.lock.lock()
+    var result = drain(&self.follow_up, self.follow_up_mode)
+    self.lock.unlock()
+    return result
+}
+
+fn queue_t.restore_all(&self): [types.message_t] {
+    self.lock.lock()
+    [types.message_t] result = self.steering.slice(0, self.steering.len())
+    result.append(self.follow_up)
+    self.steering = []
+    self.follow_up = []
+    self.lock.unlock()
+    return result
+}
+
+fn queue_t.pending_count(&self): int {
+    self.lock.lock()
+    int count = self.steering.len() + self.follow_up.len()
+    self.lock.unlock()
+    return count
+}
+
+#local
+fn drain(ptr<[types.message_t]> messages, string mode): [types.message_t] {
+    var current = *messages
+    if current.len() == 0 {
+        return []
+    }
+    if mode == QUEUE_ONE {
+        types.message_t first = current[0]
+        *messages = current.slice(1, current.len())
+        return [first]
+    }
+    var result = current
+    *messages = []
+    return result
+}
+
+type config_t = struct {
+    ref<types.model_t> model
+    ref<types.stream_options_t> stream_options
+    string tool_execution = EXECUTION_PARALLEL
+    ref<queue_t> queues = new queue_t()
+    optional_before_tool_call_fn before_tool_call = null
+    optional_after_tool_call_fn after_tool_call = null
+    optional_prepare_next_turn_fn prepare_next_turn = null
+    optional_should_stop_after_turn_fn should_stop_after_turn = null
+}
+
+type agent_event_t = struct {
+    string kind
+    ref<types.user_message_t>? user_message = null
+    ref<types.assistant_message_t>? assistant_message = null
+    ref<types.tool_result_message_t>? tool_message = null
+    types.assistant_event_t assistant_event
+    [types.message_t] messages = []
+    [ref<types.tool_result_message_t>] tool_results = []
+    string tool_call_id
+    string tool_name
+    json.value_t args
+    tool_types.tool_result_t tool_result
+    bool is_error
+}
+
+fn agent_event_t.message(self): types.message_t! {
+    if self.user_message is ref<types.user_message_t> user {
+        types.message_t result = user
+        return result
+    }
+    if self.assistant_message is ref<types.assistant_message_t> assistant_message {
+        types.message_t result = assistant_message
+        return result
+    }
+    if self.tool_message is ref<types.tool_result_message_t> tool {
+        types.message_t result = tool
+        return result
+    }
+    throw errorf('agent event %s has no message', self.kind)
+}

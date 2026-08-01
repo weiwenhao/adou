@@ -1,0 +1,96 @@
+import adou.src.tools.path_utils
+import adou.src.platform.cwd as platform_cwd
+import fs
+import path
+import syscall
+
+type file_t = struct {
+    string path
+    string content
+}
+
+type load_result_t = struct {
+    [ref<file_t>] files = []
+    [string] warnings = []
+}
+
+type file_load_t = struct {
+    ref<file_t>? file = null
+    string warning
+}
+
+fn load(string cwd, string agent_dir): load_result_t! {
+    string resolved_cwd = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
+    string resolved_agent_dir = agent_dir
+    if resolved_agent_dir == '' {
+        resolved_agent_dir = path_utils.resolve_to_cwd('~/.adou', resolved_cwd)
+    } else {
+        resolved_agent_dir = path_utils.resolve_to_cwd(resolved_agent_dir, resolved_cwd)
+    }
+    var result = load_result_t{}
+    [string] warnings = []
+    var global_context = load_from_dir(resolved_agent_dir)
+    if global_context.warning != '' {
+        warnings.push(global_context.warning)
+    }
+    if global_context.file is ref<file_t> global_file {
+        result.files.push(global_file)
+    }
+    [ref<file_t>] ancestors = []
+    string current = resolved_cwd
+    for true {
+        var found = load_from_dir(current)
+        if found.warning != '' {
+            warnings.push(found.warning)
+        }
+        if found.file is ref<file_t> context_file {
+            if !contains_path(result.files, context_file.path) {
+                ancestors.push(context_file)
+            }
+        }
+        if current == '/' {
+            break
+        }
+        string parent = path.dir(current)
+        if parent == current {
+            break
+        }
+        current = parent
+    }
+    for int index = ancestors.len() - 1; index >= 0; index -= 1 {
+        result.files.push(ancestors[index])
+    }
+    result.warnings = warnings
+    return result
+}
+
+#local
+fn load_from_dir(string directory): file_load_t {
+    [string] candidates = ['AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD']
+    for candidate in candidates {
+        string file_path = path.join(directory, candidate)
+        if !path_utils.exists(file_path) {
+            continue
+        }
+        var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+            return file_load_t {warning: 'Could not read ' + file_path + ': ' + error.msg(),}
+        }
+        string content = input.content() catch error {
+            input.close()
+            return file_load_t {warning: 'Could not read ' + file_path + ': ' + error.msg(),}
+        }
+        input.close()
+        return file_load_t {file: new file_t(path = file_path, content = content),}
+    }
+    return file_load_t{}
+}
+
+#local
+fn contains_path([ref<file_t>] files, string value): bool {
+    for file in files {
+        if file.path == value {
+            return true
+        }
+    }
+    return false
+}

@@ -1,0 +1,1149 @@
+import adou.src.agent.types as agent_types
+import adou.src.ai.abort
+import adou.src.ai.types as ai_types
+import adou.src.session.identity
+import adou.src.tools.command
+import adou.src.tools.path_utils
+import adou.src.tools.truncate
+import adou.src.tools.types as tool_types
+import adou.src.tools.write
+import adou.src.unicode.utf8
+import adou.src.unicode.normalization
+import co.mutex
+import fmt
+import fs
+import json
+import path
+import strings
+import syscall
+import time
+
+type bash_executor_t: agent_types.tool_executor_t = struct { string cwd }
+type edit_executor_t: agent_types.tool_executor_t = struct { string cwd }
+type grep_executor_t: agent_types.tool_executor_t = struct { string cwd }
+type find_executor_t: agent_types.tool_executor_t = struct { string cwd }
+type ls_executor_t: agent_types.tool_executor_t = struct { string cwd }
+type bash_result_t = struct {
+    string output
+    int exit_code
+    bool cancelled
+    bool timed_out
+    bool truncated
+    string full_output_path
+}
+type bash_stream_state_t = struct {
+    ref<mutex.mutex_t> lock
+    string output
+    i64 last_update_ms
+}
+const GREP_MAX_LINE_LENGTH = 500
+const MAX_BASH_TIMEOUT_SECONDS = 2147483.647
+
+fn bash_executor_t.execute(&self, string call_id, ref<json.value_t> arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    throw_if_aborted(cancellation)
+    var object = arguments.as_object()
+    string script = object['command'].as_string()
+    if script.trim([' ', '\t', '\n', '\r']) == '' {
+        throw errorf('Bash command must not be empty')
+    }
+    int timeout_ms = 0
+    if object.contains('timeout') {
+        float timeout = object['timeout'].as_number().to_float()
+        if timeout <= 0.0 {
+            throw errorf('Invalid timeout: must be a finite number of seconds')
+        }
+        if timeout > MAX_BASH_TIMEOUT_SECONDS {
+            throw errorf('Invalid timeout: maximum is 2147483.647 seconds')
+        }
+        timeout_ms = (timeout * 1000.0) as int
+    }
+    var stream_state = new bash_stream_state_t(lock = mutex.mutex_t.new(), last_update_ms = 0)
+    on_update(tool_types.text_result(''))
+    command.output_chunk_fn on_chunk = fn(string chunk) {
+        stream_state.lock.lock()
+        stream_state.output += chunk
+        i64 now = time.now().ms_timestamp()
+        bool publish = stream_state.last_update_ms == 0 || now - stream_state.last_update_ms >= 100
+        if publish {
+            stream_state.last_update_ms = now
+        }
+        string snapshot = stream_state.output
+        stream_state.lock.unlock()
+        if publish {
+            var partial = truncate.tail(snapshot)
+            var partial_result = tool_types.text_result(partial.content)
+            if partial.truncated {
+                partial_result.details = truncation_details(partial) catch error {json.null_value()}
+            }
+            on_update(partial_result)
+        }
+    }
+    var output = command.shell_abortable_stream(self.cwd, script, timeout_ms, cancellation, on_chunk)
+    stream_state.lock.lock()
+    string streamed_text = stream_state.output
+    stream_state.lock.unlock()
+    string text = streamed_text != '' ? streamed_text : combine_output(output.stdout, output.stderr)
+    var truncated = truncate.tail(text)
+    string result_text = truncated.content
+    string full_output_path = ''
+    if truncated.truncated {
+        full_output_path = persist_bash_output(text)
+        result_text += bash_truncation_footer(truncated, full_output_path)
+    }
+    if output.aborted {
+        throw errorf('%s', append_command_status(result_text, 'Command aborted'))
+    }
+    if output.timed_out {
+        throw errorf('%s', append_command_status(result_text, fmt.sprintf('Command timed out after %.3f seconds', timeout_ms as float / 1000.0)))
+    }
+    if output.exit_code != 0 {
+        string status = output.term_sig != 0 ? fmt.sprintf('Command exited with code %d (signal %d)', output.exit_code, output.term_sig) : fmt.sprintf('Command exited with code %d', output.exit_code)
+        throw errorf('%s', append_command_status(result_text, status))
+    }
+    var result = tool_types.text_result(result_text)
+    if truncated.truncated {
+        result.details = truncation_details_with_path(truncated, full_output_path)
+    }
+    on_update(result)
+    return result
+}
+
+// Interactive `!command` uses the same backend as the model-facing bash tool.
+fn execute_bash(string cwd, string script, int timeout_ms, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
+    throw_if_aborted(cancellation)
+    var output = command.shell_abortable(cwd, script, timeout_ms, cancellation)
+    string text = combine_output(output.stdout, output.stderr)
+    var truncated = truncate.tail(text)
+    string result_text = truncated.content
+    string full_output_path = ''
+    if truncated.truncated {
+        full_output_path = persist_bash_output(text)
+        result_text += bash_truncation_footer(truncated, full_output_path)
+    }
+    if output.aborted {
+        throw errorf('%s', append_command_status(result_text, 'Command aborted'))
+    }
+    if output.timed_out {
+        throw errorf('%s', append_command_status(result_text, fmt.sprintf('Command timed out after %.3f seconds', timeout_ms as float / 1000.0)))
+    }
+    if output.exit_code != 0 {
+        string status = output.term_sig != 0 ? fmt.sprintf('Command exited with code %d (signal %d)', output.exit_code, output.term_sig) : fmt.sprintf('Command exited with code %d', output.exit_code)
+        throw errorf('%s', append_command_status(result_text, status))
+    }
+    var result = tool_types.text_result(result_text)
+    if truncated.truncated {
+        result.details = truncation_details_with_path(truncated, full_output_path)
+    }
+    return result
+}
+
+fn execute_bash_capture(string cwd, string script, int timeout_ms, ref<abort.abort_t> cancellation): bash_result_t! {
+    throw_if_aborted(cancellation)
+    var output = command.shell_abortable(cwd, script, timeout_ms, cancellation)
+    bool cancelled = output.aborted || cancellation.is_aborted()
+    string text = combine_output(output.stdout, output.stderr)
+    var truncated = truncate.tail(text)
+    string result_text = truncated.content
+    string full_output_path = ''
+    if truncated.truncated {
+        full_output_path = persist_bash_output(text)
+        result_text += bash_truncation_footer(truncated, full_output_path)
+    }
+    return bash_result_t {output: result_text, exit_code: output.exit_code as int, cancelled: cancelled, timed_out: output.timed_out, truncated: truncated.truncated, full_output_path: full_output_path,}
+}
+
+fn stream_for_interactive(string cwd, string script, int timeout_ms, ref<abort.abort_t> cancellation, command.output_chunk_fn on_chunk): command.result_t! {
+    return command.shell_abortable_stream(cwd, script, timeout_ms, cancellation, on_chunk)
+}
+
+fn execute_bash_stream(string cwd, string script, int timeout_ms, ref<abort.abort_t> cancellation, command.output_chunk_fn on_chunk): bash_result_t! {
+    throw_if_aborted(cancellation)
+    var process_output = stream_for_interactive(cwd, script, timeout_ms, cancellation, on_chunk)
+    bool cancelled = process_output.aborted || cancellation.is_aborted()
+    string text = combine_output(process_output.stdout, process_output.stderr)
+    var truncated = truncate.tail(text)
+    string result_text = truncated.content
+    string full_output_path = ''
+    if truncated.truncated {
+        full_output_path = persist_bash_output(text)
+        result_text += bash_truncation_footer(truncated, full_output_path)
+    }
+    return bash_result_t {output: result_text, exit_code: process_output.exit_code as int, cancelled: cancelled, timed_out: process_output.timed_out, truncated: truncated.truncated, full_output_path: full_output_path,}
+}
+
+
+
+fn edit_executor_t.execute(&self, string call_id, ref<json.value_t> arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    throw_if_aborted(cancellation)
+    var object = arguments.as_object()
+    string input_path = object['path'].as_string()
+    string absolute_path = path_utils.resolve_to_cwd(input_path, self.cwd)
+    var file = fs.open(absolute_path, syscall.O_RDONLY, 0)
+    string raw = file.content() catch e {
+        file.close()
+        throw e
+    }
+    file.close()
+    string content = utf8.replacement_decode(raw as [u8])
+    bool bom = content.starts_with('\xef\xbb\xbf')
+    if bom {
+        content = content.slice(3, content.len())
+    }
+    bool crlf = content.contains('\r\n')
+    string normalized = content.replace('\r\n', '\n').replace('\r', '\n')
+    [edit_t] edits = parse_edits(object)
+    if edits.len() == 0 {
+        throw errorf('Edit tool input is invalid. edits must contain at least one replacement.')
+    }
+    var (replacement_base, matched_edits, used_fuzzy) = match_edits(normalized, edits, input_path)
+    string updated = used_fuzzy ? apply_fuzzy_edits(normalized, replacement_base, matched_edits) : apply_matched_edits(replacement_base, matched_edits, 0)
+    if updated == normalized {
+        throw errorf('No changes made to %s. The replacement produced identical content.', input_path)
+    }
+    if crlf {
+        updated = updated.replace('\n', '\r\n')
+    }
+    if bom {
+        updated = '\xef\xbb\xbf' + updated
+    }
+    throw_if_aborted(cancellation)
+    var result = write.execute(self.cwd, input_path, updated, cancellation)
+    result.content = [new ai_types.text_content_t(text = fmt.sprintf('Successfully replaced %d block(s) in %s.', edits.len(), input_path))]
+    string diff_content = updated
+    if bom {
+        diff_content = diff_content.slice(3, diff_content.len())
+    }
+    diff_content = diff_content.replace('\r\n', '\n')
+    result.details = edit_details(input_path, normalized, diff_content)
+    return result
+}
+
+fn grep_executor_t.execute(&self, string call_id, ref<json.value_t> arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    throw_if_aborted(cancellation)
+    var object = arguments.as_object()
+    string pattern = object['pattern'].as_string()
+    string search_path = object.contains('path') ? object['path'].as_string() : '.'
+    string absolute_path = path_utils.resolve_to_cwd(search_path, self.cwd)
+    int limit = optional_int(object, 'limit', 100)
+    if limit <= 0 {
+        throw errorf('limit must be greater than zero')
+    }
+    int context = optional_int(object, 'context', 0)
+    if context < 0 {
+        throw errorf('context must not be negative')
+    }
+    bool ignore_case = optional_bool(object, 'ignoreCase', false)
+    bool literal = optional_bool(object, 'literal', false)
+    string glob = object.contains('glob') ? object['glob'].as_string() : ''
+    var result = run_grep(self.cwd, pattern, absolute_path, glob, ignore_case, literal, context, limit)
+    throw_if_aborted(cancellation)
+    if result.exit_code == 1 {
+        return tool_types.text_result('No matches found')
+    }
+    if result.exit_code != 0 {
+        throw errorf('%s', result.stderr.trim([' ', '\t', '\n', '\r']))
+    }
+    string output = result.stdout.trim(['\n', '\r'])
+    if output == '' {
+        return tool_types.text_result('No matches found')
+    }
+    output = format_grep_paths(output, absolute_path)
+    var match_result = limit_grep_matches(output, limit)
+    output = match_result[0]
+    bool matches_limited = match_result[1]
+    var line_result = truncate_grep_lines(output)
+    output = line_result[0]
+    bool lines_truncated = line_result[1]
+    var truncated = truncate.head(output)
+    string text = truncated.content
+    if truncated.truncated {
+        text += fmt.sprintf('\n\n[Output truncated at %s]', truncate.format_size(truncate.DEFAULT_MAX_BYTES))
+    }
+    if lines_truncated {
+        text += fmt.sprintf('\n\n[Some lines truncated to %d chars. Use read to see full lines]', GREP_MAX_LINE_LENGTH)
+    }
+    if matches_limited {
+        text += fmt.sprintf('\n\n[%d matches limit reached. Use limit=%d for more, or refine pattern]', limit, limit * 2)
+    }
+    var tool_result = tool_types.text_result(text)
+    if truncated.truncated {
+        tool_result.details = truncation_details(truncated)
+    }
+    if matches_limited && !truncated.truncated {
+        tool_result.details = grep_limit_details(limit)
+    }
+    return tool_result
+}
+
+fn find_executor_t.execute(&self, string call_id, ref<json.value_t> arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    throw_if_aborted(cancellation)
+    var object = arguments.as_object()
+    string pattern = object['pattern'].as_string()
+    string search_path = object.contains('path') ? object['path'].as_string() : '.'
+    string absolute_path = path_utils.resolve_to_cwd(search_path, self.cwd)
+    int limit = optional_int(object, 'limit', 1000)
+    if limit <= 0 {
+        throw errorf('limit must be greater than zero')
+    }
+    if !path_utils.exists(absolute_path) {
+        throw errorf('Path not found: %s', absolute_path)
+    }
+    var result = run_find(self.cwd, absolute_path, pattern)
+    throw_if_aborted(cancellation)
+    if result.exit_code != 0 && result.stdout.trim([' ', '\t', '\n', '\r']) == '' {
+        throw errorf('%s', result.stderr.trim([' ', '\t', '\n', '\r']))
+    }
+    [string] matches = []
+    string raw = result.stdout.trim(['\n', '\r'])
+    if raw != '' {
+        for value in raw.split('\n') {
+            if value.starts_with(absolute_path + '/') {
+                value = value.slice(absolute_path.len() + 1, value.len())
+            }
+            if glob_matches(pattern, value) {
+                matches.push(value)
+            }
+        }
+    }
+    sort_strings(matches)
+    bool limited = matches.len() > limit
+    if limited {
+        matches = matches.slice(0, limit)
+    }
+    if matches.len() == 0 {
+        return tool_types.text_result('No files found matching pattern')
+    }
+    string text = strings.join(matches, '\n')
+    if limited {
+        text += fmt.sprintf('\n\n[%d results limit reached. Use limit=%d for more]', limit, limit * 2)
+    }
+    var truncated = truncate.head(text)
+    if truncated.truncated {
+        text = truncated.content + '\n\n[Output truncated at ' + truncate.format_size(truncate.DEFAULT_MAX_BYTES) + ']'
+    }
+    var tool_result = tool_types.text_result(text)
+    if truncated.truncated {
+        tool_result.details = truncation_details(truncated)
+    }
+    return tool_result
+}
+
+fn ls_executor_t.execute(&self, string call_id, ref<json.value_t> arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    throw_if_aborted(cancellation)
+    var object = arguments.as_object()
+    string search_path = object.contains('path') ? object['path'].as_string() : '.'
+    string absolute_path = path_utils.resolve_to_cwd(search_path, self.cwd)
+    int limit = optional_int(object, 'limit', 500)
+    if limit <= 0 {
+        throw errorf('limit must be greater than zero')
+    }
+    var result = command.argv(self.cwd, '/bin/ls', ['-A1p', absolute_path])
+    throw_if_aborted(cancellation)
+    if result.exit_code != 0 {
+        throw errorf('%s', result.stderr.trim([' ', '\t', '\n', '\r']))
+    }
+    string raw = result.stdout.trim(['\n', '\r'])
+    if raw == '' {
+        return tool_types.text_result('(empty directory)')
+    }
+    [string] entries = raw.split('\n')
+    sort_ls_entries(entries)
+    bool limited = entries.len() > limit
+    if limited {
+        entries = entries.slice(0, limit)
+    }
+    string text = strings.join(entries, '\n')
+    if limited {
+        text += fmt.sprintf('\n\n[%d entries limit reached. Use limit=%d for more]', limit, limit * 2)
+    }
+    var truncated = truncate.head(text)
+    if truncated.truncated {
+        text = truncated.content + '\n\n[Output truncated at ' + truncate.format_size(truncate.DEFAULT_MAX_BYTES) + ']'
+    }
+    var tool_result = tool_types.text_result(text)
+    if truncated.truncated {
+        tool_result.details = truncation_details(truncated)
+    }
+    return tool_result
+}
+
+fn bash_tool(string cwd): ref<agent_types.agent_tool_t>! {
+    json.value_t parameters = json.parse('{"type":"object","properties":{"command":{"type":"string","description":"Bash command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (optional)"}},"required":["command"]}')
+    return new agent_types.agent_tool_t(name = 'bash', label = 'bash', description = 'Execute a shell command in the current working directory. Output is truncated to 2000 lines or 50KB.', parameters = parameters, execution_mode = agent_types.EXECUTION_SEQUENTIAL, executor = bash_executor_t {cwd: cwd,})
+}
+
+fn edit_tool(string cwd): ref<agent_types.agent_tool_t>! {
+    json.value_t parameters = json.parse('{"type":"object","properties":{"path":{"type":"string","description":"Path to the file to edit"},"edits":{"type":"array","description":"Exact unique oldText/newText replacements","items":{"type":"object","properties":{"oldText":{"type":"string"},"newText":{"type":"string"}},"required":["oldText","newText"]}}},"required":["path","edits"]}')
+    return new agent_types.agent_tool_t(name = 'edit', label = 'edit', description = 'Apply one or more exact, unique text replacements to a file.', parameters = parameters, execution_mode = agent_types.EXECUTION_SEQUENTIAL, executor = edit_executor_t {cwd: cwd,})
+}
+
+fn grep_tool(string cwd): ref<agent_types.agent_tool_t>! {
+    json.value_t parameters = json.parse('{"type":"object","properties":{"pattern":{"type":"string","description":"Search pattern (regex or literal)"},"path":{"type":"string"},"glob":{"type":"string"},"ignoreCase":{"type":"boolean"},"literal":{"type":"boolean"},"context":{"type":"number"},"limit":{"type":"number"}},"required":["pattern"]}')
+    return new agent_types.agent_tool_t(name = 'grep', label = 'grep', description = 'Search files with ripgrep when available, falling back to grep.', parameters = parameters, executor = grep_executor_t {cwd: cwd,})
+}
+
+fn find_tool(string cwd): ref<agent_types.agent_tool_t>! {
+    json.value_t parameters = json.parse('{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern to match files"},"path":{"type":"string"},"limit":{"type":"number"}},"required":["pattern"]}')
+    return new agent_types.agent_tool_t(name = 'find', label = 'find', description = 'Find files by glob pattern while respecting hierarchical .gitignore rules.', parameters = parameters, executor = find_executor_t {cwd: cwd,})
+}
+
+fn ls_tool(string cwd): ref<agent_types.agent_tool_t>! {
+    json.value_t parameters = json.parse('{"type":"object","properties":{"path":{"type":"string"},"limit":{"type":"number"}}}')
+    return new agent_types.agent_tool_t(name = 'ls', label = 'ls', description = 'List directory contents alphabetically, including dotfiles.', parameters = parameters, executor = ls_executor_t {cwd: cwd,})
+}
+
+type edit_t = struct {
+    string old_text
+    string new_text
+    int start
+    int end
+    int index
+}
+
+type line_span_t = struct {
+    int start
+    int end
+}
+type edit_group_t = struct {
+    int start_line
+    int end_line
+    [edit_t] edits = []
+}
+
+#local
+fn match_edits(string content, [edit_t] edits, string input_path): (string, [edit_t], bool)! {
+    bool used_fuzzy = false
+    string fuzzy_content = ''
+    for int index = 0; index < edits.len(); index += 1 {
+        edits[index].index = index
+        edits[index].old_text = edits[index].old_text.replace('\r\n', '\n').replace('\r', '\n')
+        edits[index].new_text = edits[index].new_text.replace('\r\n', '\n').replace('\r', '\n')
+        if edits[index].old_text == '' {
+            if edits.len() == 1 {throw errorf('oldText must not be empty in %s.', input_path)}
+            throw errorf('edits[%d].oldText must not be empty in %s.', index, input_path)
+        }
+        if content.find(edits[index].old_text) < 0 {
+            if fuzzy_content == '' {fuzzy_content = normalize_for_fuzzy_match(content)}
+            if fuzzy_content.find(normalize_for_fuzzy_match(edits[index].old_text)) < 0 {
+                if edits.len() == 1 {throw errorf('Could not find the exact text in %s. The old text must match exactly including all whitespace and newlines.', input_path)}
+                throw errorf('Could not find edits[%d] in %s. The oldText must match exactly including all whitespace and newlines.', index, input_path)
+            }
+            used_fuzzy = true
+        }
+    }
+    string base = used_fuzzy ? (fuzzy_content == '' ? normalize_for_fuzzy_match(content) : fuzzy_content) : content
+    for int index = 0; index < edits.len(); index += 1 {
+        string needle = used_fuzzy ? normalize_for_fuzzy_match(edits[index].old_text) : edits[index].old_text
+        edits[index].start = base.find(needle)
+        int occurrences = count_occurrences(base, needle)
+        if occurrences != 1 {
+            if edits.len() == 1 {throw errorf('Found %d occurrences of the text in %s. The text must be unique. Please provide more context to make it unique.', occurrences, input_path)}
+            throw errorf('Found %d occurrences of edits[%d] in %s. Each oldText must be unique. Please provide more context to make it unique.', occurrences, index, input_path)
+        }
+        edits[index].end = edits[index].start + needle.len()
+    }
+    sort_edits(edits)
+    for int index = 1; index < edits.len(); index += 1 {
+        if edits[index - 1].end > edits[index].start {
+            throw errorf('edits[%d] and edits[%d] overlap in %s. Merge them into one edit or target disjoint regions.', edits[index - 1].index, edits[index].index, input_path)
+        }
+    }
+    return (base, edits, used_fuzzy)
+}
+
+#local
+fn normalize_for_fuzzy_match(string text): string! {
+    string result = normalization.nfkc(text)
+    result = trim_trailing_whitespace_per_line(result)
+    [string] single_quotes = ['\xe2\x80\x98', '\xe2\x80\x99', '\xe2\x80\x9a', '\xe2\x80\x9b']
+    for value in single_quotes {
+        result = result.replace(value, "'")
+    }
+    [string] double_quotes = ['\xe2\x80\x9c', '\xe2\x80\x9d', '\xe2\x80\x9e', '\xe2\x80\x9f']
+    for value in double_quotes {
+        result = result.replace(value, '"')
+    }
+    [string] dashes = ['\xe2\x80\x90', '\xe2\x80\x91', '\xe2\x80\x92', '\xe2\x80\x93', '\xe2\x80\x94', '\xe2\x80\x95', '\xe2\x88\x92']
+    for value in dashes {
+        result = result.replace(value, '-')
+    }
+    [string] spaces = ['\xc2\xa0', '\xe2\x80\x82', '\xe2\x80\x83', '\xe2\x80\x84', '\xe2\x80\x85', '\xe2\x80\x86', '\xe2\x80\x87', '\xe2\x80\x88', '\xe2\x80\x89', '\xe2\x80\x8a', '\xe2\x80\xaf', '\xe2\x81\x9f', '\xe3\x80\x80']
+    for value in spaces {
+        result = result.replace(value, ' ')
+    }
+    return result
+}
+
+#local
+fn trim_trailing_whitespace_per_line(string text): string {
+    string result = ''
+    int start = 0
+    for int index = 0; index < text.len(); index += 1 {
+        if text[index] == '\n'.char() {
+            result += trim_line_end(text.slice(start, index)) + '\n'
+            start = index + 1
+        }
+    }
+    if start < text.len() {
+        result += trim_line_end(text.slice(start, text.len()))
+    }
+    return result
+}
+
+#local
+fn trim_line_end(string line): string {
+    int end = line.len()
+    for end > 0 {
+        u8 value = line[end - 1]
+        if value != ' '.char() && value != '\t'.char() && value != 0x0b && value != 0x0c && value != '\r'.char() {
+            break
+        }
+        end -= 1
+    }
+    return line.slice(0, end)
+}
+
+#local
+fn count_occurrences(string content, string needle): int {
+    int count = 0
+    int cursor = 0
+    for cursor <= content.len() - needle.len() {
+        int found = cursor == 0 ? content.find(needle) : content.find_after(needle, cursor)
+        if found < 0 {break}
+        count += 1
+        cursor = found + needle.len()
+    }
+    return count
+}
+
+#local
+fn sort_edits([edit_t] edits) {
+    for int index = 0; index < edits.len(); index += 1 {
+        for int next = index + 1; next < edits.len(); next += 1 {
+            if edits[next].start < edits[index].start {
+                var swap = edits[index]
+                edits[index] = edits[next]
+                edits[next] = swap
+            }
+        }
+    }
+}
+
+#local
+fn apply_matched_edits(string content, [edit_t] edits, int offset): string {
+    string result = content
+    for int index = edits.len() - 1; index >= 0; index -= 1 {
+        int start = edits[index].start - offset
+        int end = edits[index].end - offset
+        result = result.slice(0, start) + edits[index].new_text + result.slice(end, result.len())
+    }
+    return result
+}
+
+#local
+fn apply_fuzzy_edits(string original, string normalized, [edit_t] edits): string! {
+    [string] original_lines = split_lines_with_endings(original)
+    [line_span_t] normalized_lines = line_spans(normalized)
+    if original_lines.len() != normalized_lines.len() {
+        throw errorf('Cannot preserve unchanged lines because the normalized content has a different line count.')
+    }
+    [ref<edit_group_t>] groups = []
+    for edit in edits {
+        var (start_line, end_line) = replacement_line_range(normalized_lines, edit)
+        if groups.len() > 0 && start_line < groups[groups.len() - 1].end_line {
+            var group = groups[groups.len() - 1]
+            if end_line > group.end_line {group.end_line = end_line}
+            group.edits.push(edit)
+        } else {
+            groups.push(new edit_group_t(start_line = start_line, end_line = end_line, edits = [edit]))
+        }
+    }
+    string result = ''
+    int original_line_index = 0
+    for group in groups {
+        for int index = original_line_index; index < group.start_line; index += 1 {
+            result += original_lines[index]
+        }
+        int start_offset = normalized_lines[group.start_line].start
+        int end_offset = normalized_lines[group.end_line - 1].end
+        result += apply_matched_edits(normalized.slice(start_offset, end_offset), group.edits, start_offset)
+        original_line_index = group.end_line
+    }
+    for int index = original_line_index; index < original_lines.len(); index += 1 {
+        result += original_lines[index]
+    }
+    return result
+}
+
+#local
+fn split_lines_with_endings(string content): [string] {
+    [string] result = []
+    int start = 0
+    for int index = 0; index < content.len(); index += 1 {
+        if content[index] == '\n'.char() {
+            result.push(content.slice(start, index + 1))
+            start = index + 1
+        }
+    }
+    if start < content.len() {result.push(content.slice(start, content.len()))}
+    return result
+}
+
+#local
+fn line_spans(string content): [line_span_t] {
+    [line_span_t] result = []
+    int start = 0
+    for int index = 0; index < content.len(); index += 1 {
+        if content[index] == '\n'.char() {
+            result.push(line_span_t {start: start, end: index + 1,})
+            start = index + 1
+        }
+    }
+    if start < content.len() {result.push(line_span_t {start: start, end: content.len(),})}
+    return result
+}
+
+#local
+fn replacement_line_range([line_span_t] lines, edit_t edit): (int, int)! {
+    int start_line = -1
+    for index, line in lines {
+        if edit.start >= line.start && edit.start < line.end {start_line = index; break}
+    }
+    if start_line < 0 {throw errorf('Replacement range is outside the base content.')}
+    int end_line = start_line
+    for end_line < lines.len() && lines[end_line].end < edit.end {
+        end_line += 1
+    }
+    if end_line >= lines.len() {throw errorf('Replacement range is outside the base content.')}
+    return (start_line, end_line + 1)
+}
+
+type diff_op_t = struct {
+    int kind
+    string text
+    int old_line
+    int new_line
+    int old_before
+    int new_before
+}
+
+const DIFF_EQUAL = 0
+const DIFF_ADD = 1
+const DIFF_REMOVE = 2
+
+#local
+fn edit_details(string input_path, string old_content, string new_content): json.value_t! {
+    var old_lines = diff_lines(old_content)
+    var new_lines = diff_lines(new_content)
+    var operations = line_diff(old_lines, new_lines)
+    string display = display_diff(operations, old_lines, new_lines, 4)
+    string patch = unified_patch(input_path, operations, old_lines, new_lines, 4)
+    int first_changed = 0
+    for op in operations {
+        if op.kind != DIFF_EQUAL {
+            first_changed = op.new_line > 0 ? op.new_line : op.new_before + 1
+            break
+        }
+    }
+    map<string, ref<json.value_t>> object = {}
+    object['diff'] = json.box_value(json.string_value(display))
+    object['patch'] = json.box_value(json.string_value(patch))
+    object['firstChangedLine'] = json.box_value(json.number_value(fmt.sprintf('%d', first_changed)))
+    return json.object_value(object)
+}
+
+#local
+fn diff_lines(string content): [string] {
+    if content == '' {return []}
+    [string] lines = content.split('\n')
+    if lines.len() > 0 && lines[lines.len() - 1] == '' {
+        lines = lines.slice(0, lines.len() - 1)
+    }
+    return lines
+}
+
+#local
+fn line_diff([string] old_lines, [string] new_lines): [diff_op_t] {
+    int old_count = old_lines.len()
+    int new_count = new_lines.len()
+    int width = new_count + 1
+    [int] lcs = []
+    for int i = 0; i < (old_count + 1) * width; i += 1 {
+        lcs.push(0)
+    }
+    for int i = old_count - 1; i >= 0; i -= 1 {
+        for int j = new_count - 1; j >= 0; j -= 1 {
+            int index = i * width + j
+            if old_lines[i] == new_lines[j] {
+                lcs[index] = 1 + lcs[(i + 1) * width + j + 1]
+            } else {
+                int down = lcs[(i + 1) * width + j]
+                int right = lcs[i * width + j + 1]
+                lcs[index] = down > right ? down : right
+            }
+        }
+    }
+    [diff_op_t] result = []
+    int i = 0
+    int j = 0
+    for i < old_count || j < new_count {
+        if i < old_count && j < new_count && old_lines[i] == new_lines[j] {
+            result.push(diff_op_t {kind: DIFF_EQUAL, text: old_lines[i], old_line: i + 1, new_line: j + 1, old_before: i, new_before: j,})
+            i += 1
+            j += 1
+        } else if j < new_count && (i == old_count || lcs[i * width + j + 1] >= lcs[(i + 1) * width + j]) {
+            result.push(diff_op_t {kind: DIFF_ADD, text: new_lines[j], old_line: 0, new_line: j + 1, old_before: i, new_before: j,})
+            j += 1
+        } else {
+            result.push(diff_op_t {kind: DIFF_REMOVE, text: old_lines[i], old_line: i + 1, new_line: 0, old_before: i, new_before: j,})
+            i += 1
+        }
+    }
+    return result
+}
+
+#local
+fn display_diff([diff_op_t] operations, [string] old_lines, [string] new_lines, int context): string {
+    int max_line = old_lines.len() > new_lines.len() ? old_lines.len() : new_lines.len()
+    int width = fmt.sprintf('%d', max_line).len()
+    [string] output = []
+    [bool] include = []
+    for int i = 0; i < operations.len(); i += 1 {
+        include.push(false)
+    }
+    for int i = 0; i < operations.len(); i += 1 {
+        if operations[i].kind == DIFF_EQUAL {continue}
+        int start = i - context
+        if start < 0 {start = 0}
+        int end = i + context
+        if end >= operations.len() {end = operations.len() - 1}
+        for int j = start; j <= end; j += 1 {
+            include[j] = true
+        }
+    }
+    bool had_gap = false
+    for int i = 0; i < operations.len(); i += 1 {
+        if !include[i] {
+            if output.len() > 0 {had_gap = true}
+            continue
+        }
+        if had_gap {
+            output.push(' ' + pad_number('', width) + ' ...')
+            had_gap = false
+        }
+        var op = operations[i]
+        string number = op.kind == DIFF_REMOVE ? pad_number(fmt.sprintf('%d', op.old_line), width) : pad_number(fmt.sprintf('%d', op.new_line), width)
+        string prefix = op.kind == DIFF_ADD ? '+' : op.kind == DIFF_REMOVE ? '-' : ' '
+        output.push(prefix + number + ' ' + op.text)
+    }
+    return strings.join(output, '\n')
+}
+
+#local
+fn unified_patch(string input_path, [diff_op_t] operations, [string] old_lines, [string] new_lines, int context): string {
+    [string] output = ['--- ' + input_path, '+++ ' + input_path]
+    [bool] include = []
+    for int i = 0; i < operations.len(); i += 1 {
+        include.push(false)
+    }
+    for int i = 0; i < operations.len(); i += 1 {
+        if operations[i].kind == DIFF_EQUAL {continue}
+        int start = i - context
+        if start < 0 {start = 0}
+        int end = i + context
+        if end >= operations.len() {end = operations.len() - 1}
+        for int j = start; j <= end; j += 1 {
+            include[j] = true
+        }
+    }
+    int index = 0
+    for index < operations.len() {
+        for index < operations.len() && !include[index] {
+            index += 1
+        }
+        if index >= operations.len() {break}
+        int start = index
+        int end = index
+        for int j = index + 1; j < operations.len() && include[j]; j += 1 {
+            end = j
+        }
+        var first = operations[start]
+        int old_start = first.kind == DIFF_ADD ? first.old_before : first.old_line
+        int new_start = first.kind == DIFF_REMOVE ? first.new_before : first.new_line
+        if old_start < 0 {old_start = 0}
+        if new_start < 0 {new_start = 0}
+        int old_count = 0
+        int new_count = 0
+        for int j = start; j <= end; j += 1 {
+            if operations[j].kind != DIFF_ADD {old_count += 1}
+            if operations[j].kind != DIFF_REMOVE {new_count += 1}
+        }
+        output.push(fmt.sprintf('@@ -%d,%d +%d,%d @@', old_start, old_count, new_start, new_count))
+        for int j = start; j <= end; j += 1 {
+            string prefix = operations[j].kind == DIFF_ADD ? '+' : operations[j].kind == DIFF_REMOVE ? '-' : ' '
+            output.push(prefix + operations[j].text)
+        }
+        index = end + 1
+    }
+    return strings.join(output, '\n')
+}
+
+#local
+fn pad_number(string value, int width): string {
+    string result = value
+    for result.len() < width {
+        result = ' ' + result
+    }
+    return result
+}
+
+#local
+fn parse_edits({string:ref<json.value_t>} object): [edit_t]! {
+    [edit_t] result = []
+    if object.contains('edits') {
+        ref<json.value_t> value = object['edits']
+        if value.kind == json.VALUE_STRING {
+            var parsed = json.parse(value.as_string())
+            for item in parsed.as_array() {
+                var item_object = item.as_object()
+                result.push(edit_t {old_text: item_object['oldText'].as_string(), new_text: item_object['newText'].as_string(),})
+            }
+        } else {
+            for item in value.as_array() {
+                var item_object = item.as_object()
+                result.push(edit_t {old_text: item_object['oldText'].as_string(), new_text: item_object['newText'].as_string(),})
+            }
+        }
+    }
+    if object.contains('oldText') && object.contains('newText') {
+        result.push(edit_t {old_text: object['oldText'].as_string(), new_text: object['newText'].as_string(),})
+    }
+    return result
+}
+
+#local
+fn run_grep(string cwd, string pattern, string path, string glob, bool ignore_case, bool literal, int context, int limit): command.result_t! {
+    var available = command.shell(cwd, 'command -v rg >/dev/null 2>&1')
+    if available.exit_code == 0 {
+        [string] args = ['--color=never', '--line-number', '--hidden', '--no-heading', '--with-filename']
+        if ignore_case {args.push('--ignore-case')}
+        if literal {args.push('--fixed-strings')}
+        if glob != '' {args.push('--glob'); args.push(glob)}
+        if context > 0 {args.push('-C'); args.push(fmt.sprintf('%d', context))}
+        args.push('--max-count'); args.push(fmt.sprintf('%d', limit))
+        args.push('--')
+        args.push(pattern)
+        args.push(path)
+        return command.argv(cwd, 'rg', args)
+    }
+    [string] fallback = ['-R', '-n', '-H', '-I']
+    if ignore_case {fallback.push('-i')}
+    if literal {fallback.push('-F')}
+    if context > 0 {fallback.push('-C'); fallback.push(fmt.sprintf('%d', context))}
+    fallback.push('-m'); fallback.push(fmt.sprintf('%d', limit))
+    fallback.push('--')
+    fallback.push(pattern)
+    fallback.push(path)
+    return command.argv(cwd, '/usr/bin/grep', fallback)
+}
+
+#local
+fn run_find(string cwd, string search_path, string pattern): command.result_t! {
+    var available = command.shell(cwd, 'command -v rg >/dev/null 2>&1')
+    if available.exit_code == 0 {
+        [string] args = ['--files', '--color=never', '--hidden']
+        if !inside_git_repo(search_path) {
+            args.push('--no-require-git')
+        }
+        args.push('--glob')
+        args.push('!**/.git/**')
+        args.push('--glob')
+        args.push('!**/node_modules/**')
+        args.push('--')
+        args.push(search_path)
+        return command.argv(cwd, 'rg', args)
+    }
+    [string] args = [search_path, '-type', 'f', '-not', '-path', '*/.git/*', '-not', '-path', '*/node_modules/*']
+    if pattern.contains('/') {
+        args.push('-path')
+        args.push(search_path + '/' + pattern)
+    } else {
+        args.push('-name')
+        args.push(pattern)
+    }
+    return command.argv(cwd, '/usr/bin/find', args)
+}
+
+#local
+fn glob_matches(string pattern, string relative_path): bool {
+    int width = relative_path.len() + 1
+    [i8] memo = []
+    for int index = 0; index < (pattern.len() + 1) * width; index += 1 {
+        memo.push(-1)
+    }
+    if glob_match_at(pattern, relative_path, 0, 0, memo, width) {
+        return true
+    }
+    if !pattern.contains('/') {
+        string name = path.base(relative_path)
+        [i8] name_memo = []
+        int name_width = name.len() + 1
+        for int index = 0; index < (pattern.len() + 1) * name_width; index += 1 {
+            name_memo.push(-1)
+        }
+        return glob_match_at(pattern, name, 0, 0, name_memo, name_width)
+    }
+    return false
+}
+
+#local
+fn glob_match_at(string pattern, string value, int pattern_index, int value_index, [i8] memo, int width): bool {
+    int memo_index = pattern_index * width + value_index
+    if memo[memo_index] >= 0 {
+        return memo[memo_index] == 1
+    }
+    bool matched = false
+    if pattern_index == pattern.len() {
+        matched = value_index == value.len()
+    } else if pattern[pattern_index] == '*'.char() {
+        int next = pattern_index
+        for next < pattern.len() && pattern[next] == '*'.char() {
+            next += 1
+        }
+        bool crosses_directories = next - pattern_index >= 2
+        if crosses_directories && next < pattern.len() && pattern[next] == '/'.char() && glob_match_at(pattern, value, next + 1, value_index, memo, width) {
+            matched = true
+        }
+        int cursor = value_index
+        for !matched {
+            if glob_match_at(pattern, value, next, cursor, memo, width) {
+                matched = true
+                break
+            }
+            if cursor >= value.len() || (!crosses_directories && value[cursor] == '/'.char()) {
+                break
+            }
+            cursor += 1
+        }
+    } else if pattern[pattern_index] == '?'.char() {
+        matched = value_index < value.len() && value[value_index] != '/'.char() && glob_match_at(pattern, value, pattern_index + 1, value_index + 1, memo, width)
+    } else if pattern[pattern_index] == '\\'.char() && pattern_index + 1 < pattern.len() {
+        matched = value_index < value.len() && pattern[pattern_index + 1] == value[value_index] && glob_match_at(pattern, value, pattern_index + 2, value_index + 1, memo, width)
+    } else {
+        matched = value_index < value.len() && pattern[pattern_index] == value[value_index] && glob_match_at(pattern, value, pattern_index + 1, value_index + 1, memo, width)
+    }
+    memo[memo_index] = matched ? 1 : 0
+    return matched
+}
+
+#local
+fn inside_git_repo(string search_path): bool {
+    string current = search_path
+    for true {
+        if path_utils.exists(path.join(current, '.git')) {
+            return true
+        }
+        string parent = path.dir(current)
+        if parent == current || parent == '' {
+            return false
+        }
+        current = parent
+    }
+    return false
+}
+
+#local
+fn combine_output(string stdout, string stderr): string {
+    string result = stdout
+    if stderr != '' {
+        if result != '' && !result.ends_with('\n') {result += '\n'}
+        result += stderr
+    }
+    return result.trim(['\n', '\r'])
+}
+
+#local
+fn append_command_status(string output, string status): string {
+    return output == '' ? status : output + '\n\n' + status
+}
+
+#local
+fn truncate_grep_lines(string output): (string, bool) {
+    [string] lines = []
+    bool truncated = false
+    for line in output.split('\n') {
+        if utf8.utf16_length(line) > GREP_MAX_LINE_LENGTH {
+            line = utf8.utf16_prefix(line, GREP_MAX_LINE_LENGTH) + '...'
+            truncated = true
+        }
+        lines.push(line)
+    }
+    return (strings.join(lines, '\n'), truncated)
+}
+
+#local
+fn format_grep_paths(string output, string search_path): string {
+    [string] lines = []
+    string file_prefix = search_path + ':'
+    string directory_prefix = search_path + '/'
+    for line in output.split('\n') {
+        if line.starts_with(file_prefix) {
+            line = path.base(search_path) + line.slice(search_path.len(), line.len())
+        } else if line.starts_with(directory_prefix) {
+            line = line.slice(search_path.len() + 1, line.len())
+        }
+        int colon = line.find(':')
+        int second = colon >= 0 ? line.find_after(':', colon + 1) : -1
+        if second >= 0 {
+            line = line.slice(0, second + 1) + ' ' + line.slice(second + 1, line.len())
+        } else {
+            int dash = line.find('-')
+            int second_dash = dash >= 0 ? line.find_after('-', dash + 1) : -1
+            if second_dash >= 0 {
+                line = line.slice(0, second_dash + 1) + ' ' + line.slice(second_dash + 1, line.len())
+            }
+        }
+        lines.push(line)
+    }
+    return strings.join(lines, '\n')
+}
+
+#local
+fn limit_grep_matches(string output, int limit): (string, bool) {
+    [string] lines = []
+    int matches = 0
+    bool limited = false
+    for line in output.split('\n') {
+        if is_grep_match_line(line) {
+            if matches >= limit {
+                limited = true
+                break
+            }
+            matches += 1
+        }
+        lines.push(line)
+    }
+    return (strings.join(lines, '\n'), limited)
+}
+
+#local
+fn is_grep_match_line(string line): bool {
+    int first = line.find(':')
+    if first < 0 {
+        return false
+    }
+    int second = line.find_after(':', first + 1)
+    if second < 0 {
+        return false
+    }
+    string number = line.slice(first + 1, second)
+    number.to_int() catch error {
+        return false
+    }
+    return true
+}
+
+#local
+fn grep_limit_details(int limit): json.value_t! {
+    map<string, ref<json.value_t>> object = {}
+    object['matchLimit'] = json.box_value(json.number_value(fmt.sprintf('%d', limit)))
+    return json.object_value(object)
+}
+
+#local
+fn sort_ls_entries([string] entries) {
+    for int i = 0; i < entries.len(); i += 1 {
+        for int j = i + 1; j < entries.len(); j += 1 {
+            string left = entries[i].to_lower()
+            string right = entries[j].to_lower()
+            if right < left || (right == left && entries[j] < entries[i]) {
+                string swap = entries[i]
+                entries[i] = entries[j]
+                entries[j] = swap
+            }
+        }
+    }
+}
+
+#local
+fn sort_strings([string] values) {
+    for int i = 0; i < values.len(); i += 1 {
+        for int j = i + 1; j < values.len(); j += 1 {
+            if values[j] < values[i] {
+                string swap = values[i]
+                values[i] = values[j]
+                values[j] = swap
+            }
+        }
+    }
+}
+
+#local
+fn optional_int({string:ref<json.value_t>} object, string key, int fallback): int! {
+    if !object.contains(key) {return fallback}
+    return object[key].as_number().to_float() as int
+}
+
+#local
+fn optional_bool({string:ref<json.value_t>} object, string key, bool fallback): bool! {
+    if !object.contains(key) {return fallback}
+    return object[key].as_bool()
+}
+
+#local
+fn truncation_details(truncate.result_t truncated): json.value_t! {
+    map<string, ref<json.value_t>> object = {}
+    object['truncated'] = json.box_value(json.bool_value(truncated.truncated))
+    object['truncatedBy'] = json.box_value(json.string_value(truncated.truncated_by))
+    object['outputLines'] = json.box_value(json.number_value(fmt.sprintf('%d', truncated.output_lines)))
+    object['outputBytes'] = json.box_value(json.number_value(fmt.sprintf('%d', truncated.output_bytes)))
+    object['maxLines'] = json.box_value(json.number_value(fmt.sprintf('%d', truncated.max_lines)))
+    object['maxBytes'] = json.box_value(json.number_value(fmt.sprintf('%d', truncated.max_bytes)))
+    map<string, ref<json.value_t>> wrapper = {}
+    wrapper['truncation'] = json.box_value(json.object_value(object))
+    return json.object_value(wrapper)
+}
+
+#local
+fn truncation_details_with_path(truncate.result_t truncated, string full_output_path): json.value_t! {
+    var value = truncation_details(truncated)
+    var object = value.as_object()
+    object['fullOutputPath'] = json.box_value(json.string_value(full_output_path))
+    return json.object_value(object)
+}
+
+#local
+fn bash_truncation_footer(truncate.result_t truncated, string full_output_path): string {
+    int start_line = truncated.total_lines - truncated.output_lines + 1
+    int end_line = truncated.total_lines
+    if truncated.last_line_partial {
+        return fmt.sprintf('\n\n[Showing last %s of line %d. Full output: %s]', truncate.format_size(truncated.output_bytes), end_line, full_output_path)
+    }
+    if truncated.truncated_by == 'lines' {
+        return fmt.sprintf('\n\n[Showing lines %d-%d of %d. Full output: %s]', start_line, end_line, truncated.total_lines, full_output_path)
+    }
+    return fmt.sprintf('\n\n[Showing lines %d-%d of %d (%s limit). Full output: %s]', start_line, end_line, truncated.total_lines, truncate.format_size(truncate.DEFAULT_MAX_BYTES), full_output_path)
+}
+
+#local
+fn persist_bash_output(string content): string! {
+    string file_path = '/tmp/adou-bash-' + identity.uuid_v7() + '.log'
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_EXCL, 0o600)
+    [u8] bytes = content as [u8]
+    int offset = 0
+    for offset < bytes.len() {
+        int written = file.write(bytes.slice(offset, bytes.len()))
+        if written <= 0 {
+            file.close()
+            throw errorf('Could not persist full bash output')
+        }
+        offset += written
+    }
+    file.close()
+    return file_path
+}
+
+#local
+fn throw_if_aborted(ref<abort.abort_t> cancellation): void! {
+    if cancellation.is_aborted() {throw errorf('Operation aborted')}
+}

@@ -1,0 +1,74 @@
+import adou.src.tui.input_buffer
+
+fn assert_sequences([string] actual, [string] expected) {
+    assert(actual.len() == expected.len())
+    for index, value in expected {
+        assert(actual[index] == value)
+    }
+}
+
+test 'regular UTF-8 input is emitted by complete codepoint including split bytes' {
+    var buffer = input_buffer.new()
+    var first = buffer.process('hello \xe4' as [u8])
+    assert_sequences(first.sequences, ['h', 'e', 'l', 'l', 'o', ' '])
+    assert(first.needs_timeout && buffer.get_buffer() == '\xe4')
+    var second = buffer.process('\xb8\x96\xe7\x95\x8c' as [u8])
+    assert_sequences(second.sequences, ['世', '界'])
+    assert(!second.needs_timeout)
+}
+
+test 'partial CSI mouse and arrow sequences remain buffered until complete' {
+    var buffer = input_buffer.new()
+    assert(buffer.process('\x1b' as [u8]).sequences.len() == 0)
+    assert(buffer.process('[<35' as [u8]).sequences.len() == 0)
+    var mouse = buffer.process(';20;5m' as [u8])
+    assert_sequences(mouse.sequences, ['\x1b[<35;20;5m'])
+    var arrows = buffer.process('\x1b[A\x1b[B\x1b[C' as [u8])
+    assert_sequences(arrows.sequences, ['\x1b[A', '\x1b[B', '\x1b[C'])
+}
+
+test 'OSC DCS APC SS3 and old mouse protocols are framed' {
+    var buffer = input_buffer.new()
+    var result = buffer.process('\x1b]0;title\x07\x1bP>|version\x1b\\\x1b_Gpayload\x1b\\\x1bOA\x1b[M abc' as [u8])
+    assert_sequences(result.sequences, ['\x1b]0;title\x07', '\x1bP>|version\x1b\\', '\x1b_Gpayload\x1b\\', '\x1bOA', '\x1b[M ab', 'c'])
+}
+
+test 'WezTerm escape press and Kitty release are separated' {
+    var buffer = input_buffer.new()
+    var result = buffer.process('\x1b\x1b[27;129:3u' as [u8])
+    assert_sequences(result.sequences, ['\x1b', '\x1b[27;129:3u'])
+    var meta = buffer.process('\x1b\x1b' as [u8])
+    assert_sequences(meta.sequences, ['\x1b\x1b'])
+}
+
+test 'Kitty printable sequence suppresses only its matching raw duplicate' {
+    var buffer = input_buffer.new()
+    var duplicate = buffer.process('\x1b[224u\xc3\xa0' as [u8])
+    assert_sequences(duplicate.sequences, ['\x1b[224u'])
+    var different = buffer.process('\x1b[97ub' as [u8])
+    assert_sequences(different.sequences, ['\x1b[97u', 'b'])
+    var modified = buffer.process('\x1b[64;3u@' as [u8])
+    assert_sequences(modified.sequences, ['\x1b[64;3u', '@'])
+}
+
+test 'bracketed paste survives chunking newlines Unicode and trailing input' {
+    var buffer = input_buffer.new()
+    var first = buffer.process('a\x1b[200~line1\n' as [u8])
+    assert_sequences(first.sequences, ['a'])
+    assert(first.pastes.len() == 0)
+    var second = buffer.process('line2 世界\x1b[201~b' as [u8])
+    assert_sequences(second.pastes, ['line1\nline2 世界'])
+    assert_sequences(second.sequences, ['b'])
+}
+
+test 'explicit flush returns incomplete escape and clear resets all state' {
+    var buffer = input_buffer.new()
+    buffer.process('\x1b[<35' as [u8])
+    assert_sequences(buffer.flush(), ['\x1b[<35'])
+    assert(buffer.flush().len() == 0)
+    buffer.process('\x1b[200~partial' as [u8])
+    buffer.clear()
+    assert(buffer.get_buffer() == '')
+    var plain = buffer.process('x' as [u8])
+    assert_sequences(plain.sequences, ['x'])
+}

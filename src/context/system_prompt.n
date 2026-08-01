@@ -1,0 +1,74 @@
+import adou.src.context.project
+
+fn build(string cwd, [ref<project.file_t>] context_files, string append_text): string {
+    return build_custom(cwd, context_files, '', append_text)
+}
+
+// Build the same prompt shape as Pi's custom systemPrompt option: supplied
+// text replaces the default assistant instructions, while append text,
+// project context and the working directory remain attached.
+fn build_custom(string cwd, [ref<project.file_t>] context_files, string custom_prompt, string append_text): string {
+    return build_with_tools(cwd, context_files, custom_prompt, append_text, ['read', 'write', 'edit', 'bash', 'grep', 'find', 'ls'])
+}
+
+fn build_with_tools(string cwd, [ref<project.file_t>] context_files, string custom_prompt, string append_text, [string] tool_names): string {
+    string tool_lines = tool_descriptions(tool_names)
+    string prompt = custom_prompt != '' ? custom_prompt : 'You are an expert coding assistant operating inside Adou, a Nature implementation of the Pi coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\nAvailable tools:\n' + (tool_lines == '' ? '(none)' : tool_lines) + '\n\nGuidelines:\n' + prompt_guidelines(tool_names)
+    if append_text != '' {
+        prompt += '\n\n' + append_text
+    }
+    if context_files.len() > 0 {
+        prompt += '\n\n<project_context>\n\nProject-specific instructions and guidelines:\n\n'
+        for file in context_files {
+            prompt += '<project_instructions path="' + file.path + '">\n' + file.content + '\n</project_instructions>\n\n'
+        }
+        prompt += '</project_context>\n'
+    }
+    prompt += '\nCurrent working directory: ' + cwd.replace('\\', '/')
+    return prompt
+}
+
+#local
+fn tool_descriptions([string] tool_names): string {
+    string result = ''
+    for name in tool_names {
+        string description = name == 'read' ? 'Read file contents' : name == 'write' ? 'Create or overwrite files' : name == 'edit' ? 'Make targeted edits to files' : name == 'bash' ? 'Execute bash commands (ls, grep, find, etc.)' : name == 'grep' ? 'Search file contents for patterns (respects .gitignore)' : name == 'find' ? 'Find files by glob pattern (respects .gitignore)' : name == 'ls' ? 'List directory contents' : ''
+        if description == '' {
+            continue
+        }
+        result += '- ' + name + ': ' + description + '\n'
+    }
+    return result.trim(['\n'])
+}
+
+#local
+fn prompt_guidelines([string] tool_names): string {
+    [string] values = []
+    if has_tool(tool_names, 'bash') && !has_tool(tool_names, 'grep') && !has_tool(tool_names, 'find') && !has_tool(tool_names, 'ls') {
+        values.push('Use bash for file operations like ls, rg, find')
+    }
+    if has_tool(tool_names, 'read') {
+        values.push('Use read, grep, find, and ls to inspect before editing when those tools are available')
+    }
+    if has_tool(tool_names, 'edit') {
+        values.push('Use edit for targeted changes')
+    }
+    if has_tool(tool_names, 'write') {
+        values.push('Use write for complete file replacement')
+    }
+    values.push('Be concise in your responses')
+    values.push('Show file paths clearly when working with files')
+    string result = ''
+    for value in values {
+        result += '- ' + value + '\n'
+    }
+    return result.trim(['\n'])
+}
+
+#local
+fn has_tool([string] tool_names, string wanted): bool {
+    for name in tool_names {
+        if name == wanted {return true}
+    }
+    return false
+}

@@ -1,0 +1,54 @@
+import adou.src.tools.path_utils
+import co.mutex
+
+type entry_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    int users
+}
+
+type registry_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    map<string, ref<entry_t>> entries = {}
+}
+
+anyptr global_registry = 0
+
+fn acquire(string file_path): (string, ref<entry_t>)! {
+    string resolved = path_utils.clean(file_path)
+    string key = path_utils.canonicalize_existing(resolved) catch e {
+        resolved
+    }
+    var registry = get_registry()
+    registry.lock.lock()
+    ref<entry_t> entry = new entry_t(lock = mutex.mutex_t.new())
+    if registry.entries.contains(key) {
+        entry = registry.entries[key]
+    } else {
+        registry.entries[key] = entry
+    }
+    entry.users += 1
+    registry.lock.unlock()
+    entry.lock.lock()
+    return (key, entry)
+}
+
+fn release(string key, ref<entry_t> entry) {
+    entry.lock.unlock()
+    var registry = get_registry()
+    registry.lock.lock()
+    entry.users -= 1
+    if entry.users == 0 && registry.entries.contains(key) && registry.entries[key] == entry {
+        registry.entries.del(key)
+    }
+    registry.lock.unlock()
+}
+
+#local
+fn get_registry(): ref<registry_t> {
+    if global_registry != 0 {
+        return global_registry as ref<registry_t>
+    }
+    var registry = new registry_t(lock = mutex.mutex_t.new(), entries = {})
+    global_registry = registry as anyptr
+    return registry
+}

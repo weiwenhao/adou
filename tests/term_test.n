@@ -1,0 +1,18 @@
+import term
+
+test 'terminal package detects non-tty test streams' {
+    assert(!term.is_tty(term.STDIN))
+    assert(!term.is_tty(term.STDOUT))
+}
+
+fn can_open_terminal():bool {
+    var terminal = term.open() catch e {
+        return false
+    }
+    terminal.restore() catch e {}
+    return true
+}
+
+test 'terminal open rejects non-tty streams without changing state' {
+    assert(!can_open_terminal())
+}

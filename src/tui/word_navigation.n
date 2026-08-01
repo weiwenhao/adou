@@ -1,0 +1,154 @@
+import adou.src.tui.unicode
+
+const PUNCTUATION = '(){}[]<>.,;:\'"!?+-=*/\\|&%^$#@~`'
+
+type option_t = struct {
+    [string] atomic_segments = []
+}
+
+fn backward(string text, int cursor, option_t options): int! {
+    if cursor <= 0 {
+        return 0
+    }
+    string before = text.slice(0, cursor)
+    var segments = unicode.words(before)
+    int index = segments.len() - 1
+    int result = cursor
+    for index >= 0 {
+        string value = before.slice(segments[index].start, segments[index].end)
+        if is_atomic(value, options) || !is_whitespace(value) {
+            break
+        }
+        result -= value.len()
+        index -= 1
+    }
+    if index < 0 {
+        return result
+    }
+    int atomic_start = atomic_ending_at(text, result, options)
+    if atomic_start >= 0 {
+        return atomic_start
+    }
+    string last = before.slice(segments[index].start, segments[index].end)
+    if is_atomic(last, options) {
+        return result - last.len()
+    }
+    if segments[index].word_like {
+        int punctuation = last_punctuation(last)
+        return punctuation < 0 ? result - last.len() : result - (last.len() - punctuation - 1)
+    }
+    for index >= 0 {
+        string value = before.slice(segments[index].start, segments[index].end)
+        if is_atomic(value, options) || segments[index].word_like || is_whitespace(value) {
+            break
+        }
+        result -= value.len()
+        index -= 1
+    }
+    return result
+}
+
+fn forward(string text, int cursor, option_t options): int! {
+    if cursor >= text.len() {
+        return text.len()
+    }
+    string after = text.slice(cursor, text.len())
+    var segments = unicode.words(after)
+    int index = 0
+    int result = cursor
+    for index < segments.len() {
+        string value = after.slice(segments[index].start, segments[index].end)
+        if is_atomic(value, options) || !is_whitespace(value) {
+            break
+        }
+        result += value.len()
+        index += 1
+    }
+    if index >= segments.len() {
+        return result
+    }
+    int atomic_end = atomic_starting_at(text, result, options)
+    if atomic_end >= 0 {
+        return atomic_end
+    }
+    string next = after.slice(segments[index].start, segments[index].end)
+    if is_atomic(next, options) {
+        return result + next.len()
+    }
+    if segments[index].word_like {
+        int punctuation = first_punctuation(next)
+        return punctuation < 0 ? result + next.len() : result + punctuation
+    }
+    for index < segments.len() {
+        string value = after.slice(segments[index].start, segments[index].end)
+        if is_atomic(value, options) || segments[index].word_like || is_whitespace(value) {
+            break
+        }
+        result += value.len()
+        index += 1
+    }
+    return result
+}
+
+#local
+fn is_atomic(string value, option_t options): bool {
+    for atomic in options.atomic_segments {
+        if value == atomic {
+            return true
+        }
+    }
+    return false
+}
+
+#local
+fn atomic_ending_at(string text, int cursor, option_t options): int {
+    for atomic in options.atomic_segments {
+        if atomic.len() <= cursor && text.slice(cursor - atomic.len(), cursor) == atomic {
+            return cursor - atomic.len()
+        }
+    }
+    return -1
+}
+
+#local
+fn atomic_starting_at(string text, int cursor, option_t options): int {
+    for atomic in options.atomic_segments {
+        if cursor + atomic.len() <= text.len() && text.slice(cursor, cursor + atomic.len()) == atomic {
+            return cursor + atomic.len()
+        }
+    }
+    return -1
+}
+
+#local
+fn is_whitespace(string value): bool {
+    if value == '' {
+        return false
+    }
+    for byte in value as [u8] {
+        if byte != ' '.char() && byte != '\t'.char() && byte != '\n'.char() && byte != '\r'.char() && byte != 0x0b && byte != 0x0c {
+            return false
+        }
+    }
+    return true
+}
+
+#local
+fn first_punctuation(string value): int {
+    for int index = 0; index < value.len(); index += 1 {
+        if PUNCTUATION.find(value.slice(index, index + 1)) >= 0 {
+            return index
+        }
+    }
+    return -1
+}
+
+#local
+fn last_punctuation(string value): int {
+    for int index = value.len() - 1; index >= 0; index -= 1 {
+        if PUNCTUATION.find(value.slice(index, index + 1)) >= 0 {
+            return index
+        }
+    }
+    return -1
+}

@@ -1,0 +1,15 @@
+import co
+import os.signal
+import syscall
+
+test 'signal package delivers SIGWINCH through the coroutine channel' {
+    var signals = chan<signal.sig_t>.new(1)
+    signal.notify(signals, syscall.SIGWINCH)
+    syscall.kill(syscall.getpid(), syscall.SIGWINCH)
+    co.sleep(100)
+    var (received, ok) = signals.try_recv()
+    signal.stop(signals)
+    signals.close() catch error {}
+    assert(ok)
+    assert(received == syscall.SIGWINCH as signal.sig_t)
+}

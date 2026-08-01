@@ -1,0 +1,182 @@
+import adou.src.tui.editor
+
+fn repeat(string value, int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += value
+    }
+    return result
+}
+
+test 'multiline insertion navigation and newline merging match Pi editor state' {
+    var value = editor.new()
+    value.insert_text('hello\nworld')
+    assert(value.get_text() == 'hello\nworld')
+    assert(value.get_cursor().line == 1 && value.get_cursor().column == 5)
+    value.move_line_start()
+    value.backspace()
+    assert(value.get_text() == 'helloworld')
+    assert(value.get_cursor().line == 0 && value.get_cursor().column == 5)
+    value.add_newline()
+    assert(value.get_text() == 'hello\nworld')
+}
+
+test 'left right backspace and delete are grapheme safe' {
+    var value = editor.new()
+    value.set_text('a👨‍💻e\xcc\x81界')
+    value.move_left()
+    assert(value.get_cursor().column == 'a👨‍💻e\xcc\x81'.len())
+    value.backspace()
+    assert(value.get_text() == 'a👨‍💻界')
+    value.move_line_start()
+    value.move_right()
+    value.delete_forward()
+    assert(value.get_text() == 'a界')
+}
+
+test 'word deletion kill accumulation yank yank-pop and undo follow Pi' {
+    var value = editor.new()
+    value.set_text('one two three')
+    value.delete_word_backward()
+    value.delete_word_backward()
+    assert(value.get_text() == 'one ')
+    value.yank()
+    assert(value.get_text() == 'one two three')
+    assert(value.undo())
+    assert(value.get_text() == 'one ')
+    value.insert_character('x')
+    value.insert_character('y')
+    assert(value.undo() && value.get_text() == 'one ')
+}
+
+test 'line kills preserve deleted newline and multiline yank' {
+    var value = editor.new()
+    value.set_text('abc\ndef')
+    value.move_line_start()
+    value.delete_to_line_start()
+    assert(value.get_text() == 'abcdef')
+    value.yank()
+    assert(value.get_text() == 'abc\ndef')
+}
+
+test 'large paste is atomic and expands on submit' {
+    var value = editor.new()
+    string pasted = repeat('line\n', 11)
+    value.handle_paste(pasted)
+    assert(value.get_text() == '[paste #1 +12 lines]')
+    value.move_left()
+    assert(value.get_cursor().column == 0)
+    value.move_right()
+    assert(value.get_cursor().column == value.get_text().len())
+    var submitted = value.submit()
+    assert(submitted.submitted && submitted.text == pasted.trim(['\n']))
+    assert(value.get_text() == '')
+}
+
+test 'large paste backspace removes and renumbers later markers' {
+    var value = editor.new()
+    string first = repeat('a', 1001)
+    string second = repeat('b', 1002)
+    value.handle_paste(first)
+    value.insert_character(' ')
+    value.handle_paste(second)
+    value.move_line_start()
+    value.move_right()
+    value.backspace()
+    assert(value.get_text() == ' [paste #1 1002 chars]')
+    assert(value.get_expanded_text() == ' ' + second)
+}
+
+test 'paste normalization handles csi-u newline tabs controls and path spacing' {
+    var value = editor.new()
+    value.set_text('open')
+    value.handle_paste('/tmp/a\t\x01\x1b[106;5ub')
+    assert(value.get_text() == 'open /tmp/a    \nb')
+}
+
+test 'vertical movement keeps terminal visual column across Unicode lines' {
+    var value = editor.new()
+    value.set_text('a界b\nxy\n12345')
+    value.move_vertical(-1)
+    value.move_vertical(-1)
+    value.move_line_start()
+    value.move_right()
+    value.move_right()
+    assert(value.get_cursor().column == 'a界'.len())
+    value.move_vertical(1)
+    assert(value.get_cursor().column == 2)
+    value.move_vertical(1)
+    assert(value.get_cursor().column == 3)
+}
+
+test 'key dispatch covers editing controls submission and Kitty printable input' {
+    var value = editor.new()
+    value.handle_key('a', false)
+    value.handle_key('b', false)
+    value.handle_key('\x1b[D', false)
+    value.handle_key('\x7f', false)
+    assert(value.get_text() == 'b')
+    value.handle_key('\x1b[13;2u', true)
+    assert(value.get_text() == '\nb')
+    value.handle_key('\x1b[F', true)
+    value.handle_key('\x1b[128512;1u', true)
+    assert(value.get_text() == '\nb😀')
+    var result = value.handle_key('\r', false)
+    assert(result.submitted && result.text == 'b😀')
+}
+
+test 'Pi editor aliases, escaped enter, and character jump match keybindings' {
+    var value = editor.new()
+    value.set_text('alpha beta gamma')
+    value.handle_key('\x02', false)
+    assert(value.get_cursor().column == 'alpha beta gamm'.len())
+    value.handle_key('\x06', false)
+    assert(value.get_cursor().column == 'alpha beta gamma'.len())
+
+    value.move_line_start()
+    value.handle_key('\x1d', false)
+    value.handle_key('b', false)
+    assert(value.get_cursor().column == 'alpha '.len())
+
+    value.set_text('hello\\')
+    var newline = value.handle_key('\r', false)
+    assert(!newline.submitted && newline.action == 'newline')
+    assert(value.get_text() == 'hello\n')
+
+    value.set_text('one two one')
+    value.move_line_end()
+    value.handle_key('\x1b\x1d', false)
+    value.handle_key('o', false)
+    assert(value.get_cursor().column == 'one two '.len())
+}
+
+test 'Kitty Ctrl+J inserts a newline instead of submitting' {
+    var value = editor.new()
+    value.insert_text('hello')
+    var newline = value.handle_key('\x1b[106;5u', true)
+    assert(!newline.submitted && newline.action == 'newline')
+    assert(value.get_text() == 'hello\n')
+}
+
+test 'Pi undo uses Ctrl+- and Ctrl+Z is left for application suspend' {
+    var value = editor.new()
+    value.insert_text('hello')
+    var undo = value.handle_key('\x1f', false)
+    assert(undo.action == 'handled' && value.get_text() == '')
+    value.insert_text('hello')
+    var suspend = value.handle_key('\x1a', false)
+    assert(suspend.action != 'handled' && value.get_text() == 'hello')
+}
+
+test 'page navigation moves the cursor by a visible page' {
+    var value = editor.new()
+    value.set_text('0\n1\n2\n3\n4\n5\n6\n7\n8\n9\n10\n11')
+    for int index = 0; index < 11; index += 1 {
+        value.move_vertical(-1)
+    }
+    value.move_line_start()
+    value.move_page(1, 5)
+    assert(value.get_cursor().line == 5)
+    value.move_page(-1, 3)
+    assert(value.get_cursor().line == 2)
+}

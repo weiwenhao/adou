@@ -1,0 +1,45 @@
+import adou.src.tui.keys
+
+test 'legacy keys and modifiers match Pi identifiers' {
+    keys.set_kitty_protocol(false)
+    assert(keys.parse_key('\x1b[A') == 'up')
+    assert(keys.parse_key('\x1b[3~') == 'delete')
+    assert(keys.parse_key('\x1b[1;5D') == 'ctrl+left')
+    assert(keys.parse_key('\x1b[1;3C') == 'alt+right')
+    assert(keys.parse_key('\x1b[Z') == 'shift+tab')
+    assert(keys.parse_key('\x03') == 'ctrl+c')
+    assert(keys.parse_key('\x1bq') == 'alt+q')
+    assert(keys.matches('\x1b[D', 'left'))
+    assert(keys.matches('\x1b[1;5D', 'ctrl+left'))
+    assert(keys.matches('\r', 'return'))
+}
+
+test 'Kitty CSI-u and modifyOtherKeys preserve modifiers' {
+    keys.set_kitty_protocol(true)
+    assert(keys.parse_key('\x1b[97;1u') == 'a')
+    assert(keys.parse_key('\x1b[65;2u') == 'shift+a')
+    assert(keys.parse_key('\x1b[99;5u') == 'ctrl+c')
+    assert(keys.parse_key('\x1b[1;5D') == 'ctrl+left')
+    assert(keys.parse_key('\x1b[3;3~') == 'alt+delete')
+    assert(keys.parse_key('\x1b[27;5;99~') == 'ctrl+c')
+    assert(keys.parse_key('\x1b\r') == 'shift+enter')
+    assert(keys.matches('\x1b[13;2u', 'shift+enter'))
+}
+
+test 'printable CSI-u decoding handles Unicode code points' {
+    keys.set_kitty_protocol(true)
+    assert(keys.decode_printable('\x1b[97;1u') == 'a')
+    assert(keys.decode_printable('\x1b[233;1u') == 'é')
+    assert(keys.decode_printable('\x1b[128512;1u') == '😀')
+    assert(keys.decode_printable('\x1b[99;5u') == '')
+    assert(keys.decode_printable('hello') == '')
+}
+
+test 'mode-aware enter and aliases remain compatible' {
+    keys.set_kitty_protocol(false)
+    assert(keys.matches('\n', 'enter'))
+    keys.set_kitty_protocol(true)
+    assert(!keys.matches('\n', 'enter'))
+    assert(keys.matches('\n', 'shift+enter'))
+    assert(keys.matches('\x1b[6~', 'pagedown'))
+}

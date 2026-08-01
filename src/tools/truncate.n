@@ -1,0 +1,145 @@
+import fmt
+import strings
+import adou.src.unicode.utf8
+
+const DEFAULT_MAX_LINES = 2000
+const DEFAULT_MAX_BYTES = 50 * 1024
+
+type result_t = struct {
+    string content
+    bool truncated
+    string truncated_by
+    int total_lines
+    int total_bytes
+    int output_lines
+    int output_bytes
+    bool last_line_partial
+    bool first_line_exceeds_limit
+    int max_lines
+    int max_bytes
+}
+
+fn head(string content): result_t {
+    return head_with_limits(content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES)
+}
+
+fn tail(string content): result_t {
+    return tail_with_limits(content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES)
+}
+
+fn head_with_limits(string content, int max_lines, int max_bytes): result_t {
+    [string] lines = split_lines_for_counting(content)
+    int total_lines = lines.len()
+    int total_bytes = content.len()
+    if total_lines <= max_lines && total_bytes <= max_bytes {
+        return result_t {content: content, total_lines: total_lines, total_bytes: total_bytes, output_lines: total_lines, output_bytes: total_bytes, max_lines: max_lines, max_bytes: max_bytes,}
+    }
+    if lines.len() > 0 && lines[0].len() > max_bytes {
+        return result_t {truncated: true, truncated_by: 'bytes', total_lines: total_lines, total_bytes: total_bytes, first_line_exceeds_limit: true, max_lines: max_lines, max_bytes: max_bytes,}
+    }
+    [string] output = []
+    int bytes = 0
+    string reason = 'lines'
+    for int i = 0; i < lines.len() && i < max_lines; i += 1 {
+        int line_bytes = lines[i].len()
+        if i > 0 {
+            line_bytes += 1
+        }
+        if bytes + line_bytes > max_bytes {
+            reason = 'bytes'
+            break
+        }
+        output.push(lines[i])
+        bytes += line_bytes
+    }
+    if output.len() >= max_lines && bytes <= max_bytes {
+        reason = 'lines'
+    }
+    string output_content = strings.join(output, '\n')
+    return result_t {content: output_content, truncated: true, truncated_by: reason, total_lines: total_lines, total_bytes: total_bytes, output_lines: output.len(), output_bytes: output_content.len(), max_lines: max_lines, max_bytes: max_bytes,}
+}
+
+fn tail_with_limits(string content, int max_lines, int max_bytes): result_t {
+    [string] lines = split_lines_for_counting(content)
+    int total_lines = lines.len()
+    int total_bytes = content.len()
+    if total_lines <= max_lines && total_bytes <= max_bytes {
+        return result_t {content: content, total_lines: total_lines, total_bytes: total_bytes, output_lines: total_lines, output_bytes: total_bytes, max_lines: max_lines, max_bytes: max_bytes,}
+    }
+    if lines.len() == 0 {
+        return result_t {content: '', truncated: true, truncated_by: 'bytes', total_lines: total_lines, total_bytes: total_bytes, max_lines: max_lines, max_bytes: max_bytes,}
+    }
+    int first = lines.len()
+    int bytes = 0
+    string reason = 'lines'
+    for first > 0 && lines.len() - first < max_lines {
+        int line_bytes = lines[first - 1].len()
+        if first < lines.len() {line_bytes += 1}
+        if bytes + line_bytes > max_bytes {
+            reason = 'bytes'
+            break
+        }
+        bytes += line_bytes
+        first -= 1
+    }
+    if first == lines.len() {
+        string last = lines[lines.len() - 1]
+        int start = last.len() - max_bytes
+        if start < 0 {start = 0}
+        // Pi truncates from a UTF-8 buffer and never returns a partial code
+        // point. Nature strings expose the underlying bytes, so a byte
+        // limit can land in the middle of a multibyte character. Advance to
+        // the next non-continuation byte before slicing the tail.
+        start = utf8_boundary_start(last, start)
+        string partial = last.slice(start, last.len())
+        return result_t {content: partial, truncated: true, truncated_by: 'bytes', total_lines: total_lines, total_bytes: total_bytes, output_lines: 1, output_bytes: partial.len(), last_line_partial: start > 0, max_lines: max_lines, max_bytes: max_bytes,}
+    }
+    [string] output = lines.slice(first, lines.len())
+    string output_content = strings.join(output, '\n')
+    bool limited_by_lines = lines.len() - first >= max_lines && first > 0
+    if limited_by_lines {reason = 'lines'}
+    return result_t {content: output_content, truncated: true, truncated_by: reason, total_lines: total_lines, total_bytes: total_bytes, output_lines: output.len(), output_bytes: output_content.len(), max_lines: max_lines, max_bytes: max_bytes,}
+}
+
+#local
+fn utf8_boundary_start(string value, int start): int {
+    int cursor = start
+    for cursor < value.len() && value[cursor] >= 0x80 && value[cursor] <= 0xbf {
+        cursor += 1
+    }
+    return cursor
+}
+
+fn format_size(int bytes): string {
+    if bytes < 1024 {
+        return fmt.sprintf('%dB', bytes)
+    }
+    if bytes < 1024 * 1024 {
+        return fmt.sprintf('%.1fKB', bytes as float / 1024.0)
+    }
+    return fmt.sprintf('%.1fMB', bytes as float / (1024.0 * 1024.0))
+}
+
+fn split_all_lines(string content): [string] {
+    [string] result = []
+    int start = 0
+    for int i = 0; i <= content.len(); i += 1 {
+        if i == content.len() || content[i] == '\n'.char() {
+            result.push(content.slice(start, i))
+            start = i + 1
+        }
+    }
+    return result
+}
+
+#local
+fn split_lines_for_counting(string content): [string] {
+    if content == '' {
+        return []
+    }
+    [string] result = split_all_lines(content)
+    if content.ends_with('\n') {
+        result = result.slice(0, result.len() - 1)
+    }
+    return result
+}

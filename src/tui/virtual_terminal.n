@@ -1,0 +1,148 @@
+type terminal_t = struct {
+    int width
+    int height
+    [string] lines = []
+    int row
+}
+
+fn new(int width, int height): ref<terminal_t> {
+    return new terminal_t(width = width, height = height, lines = vec<string>.new('', height))
+}
+
+fn terminal_t.resize(&self, int width, int height) {
+    self.width = width
+    self.height = height
+    [string] resized = vec<string>.new('', height)
+    int count = self.lines.len() < height ? self.lines.len() : height
+    for int index = 0; index < count; index += 1 {
+        resized[index] = self.lines[index]
+    }
+    self.lines = resized
+    if self.row >= height {
+        int last = height - 1
+        self.row = last
+    }
+}
+
+fn terminal_t.write(&self, string output) {
+    int cursor = 0
+    for cursor < output.len() {
+        if output[cursor] == 0x1b {
+            int consumed = self.consume_escape(output, cursor)
+            if consumed < 1 {
+                consumed = 1
+            }
+            cursor += consumed
+            continue
+        }
+        if output[cursor] == '\r'.char() {
+            cursor += 1
+            continue
+        }
+        if output[cursor] == '\n'.char() {
+            self.move_down(1)
+            cursor += 1
+            continue
+        }
+        int end = cursor
+        for end < output.len() && output[end] != 0x1b && output[end] != '\r'.char() && output[end] != '\n'.char() {
+            end += 1
+        }
+        self.lines[self.row] += output.slice(cursor, end)
+        cursor = end
+    }
+}
+
+fn terminal_t.snapshot(&self): [string] {
+    [string] result = vec<string>.cap_of(self.lines.len())
+    for line in self.lines {
+        result.push(line)
+    }
+    return result
+}
+
+#local
+fn terminal_t.consume_escape(&self, string output, int start): int {
+    int family_index = start + 1
+    if family_index >= output.len() {
+        return 1
+    }
+    u8 family = output[family_index]
+    if family == ']'.char() || family == '_'.char() || family == 'P'.char() {
+        int string_cursor = start + 2
+        for string_cursor < output.len() {
+            if output[string_cursor] == 0x07 {
+                int consumed = string_cursor - start
+                int result = consumed + 1
+                return result
+            }
+            string_cursor += 1
+        }
+        return 1
+    }
+    if family != '['.char() {
+        return 2
+    }
+    int cursor = start + 2
+    for cursor < output.len() {
+        u8 value = output[cursor]
+        if value >= 0x40 && value <= 0x7e {
+            break
+        }
+        cursor += 1
+    }
+    if cursor >= output.len() {
+        return 1
+    }
+    int parameters_start = start + 2
+    string parameters = output.slice(parameters_start, cursor)
+    u8 command = output[cursor]
+    int count = positive_number(parameters)
+    if command == 'A'.char() {
+        int current_row = self.row
+        int target = current_row - count
+        self.row = target < 0 ? 0 : target
+    } else if command == 'B'.char() {
+        self.move_down(count)
+    } else if command == 'H'.char() {
+        self.row = 0
+    } else if command == 'J'.char() && parameters == '2' {
+        self.lines = vec<string>.new('', self.height)
+        self.row = 0
+    } else if command == 'K'.char() && parameters == '2' {
+        self.lines[self.row] = ''
+    }
+    int consumed = cursor - start
+    return consumed + 1
+}
+
+#local
+fn terminal_t.move_down(&self, int count) {
+    for int index = 0; index < count; index += 1 {
+        int current_row = self.row
+        int next = current_row + 1
+        self.row = next
+        if next >= self.height {
+            [string] shifted = vec<string>.new('', self.height)
+            for int source = 1; source < self.lines.len(); source += 1 {
+                int target = source - 1
+                shifted[target] = self.lines[source]
+            }
+            self.lines = shifted
+            int terminal_height = self.height
+            int last = terminal_height - 1
+            self.row = last
+        }
+    }
+}
+
+#local
+fn positive_number(string parameters): int {
+    if parameters == '' || parameters[0] == '?'.char() {
+        return 1
+    }
+    int separator = parameters.find(';')
+    string first = separator >= 0 ? parameters.slice(0, separator) : parameters
+    int value = first.to_int() catch e {1}
+    return value > 0 ? value : 1
+}

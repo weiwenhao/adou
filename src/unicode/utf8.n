@@ -1,0 +1,153 @@
+// UTF-8 helpers shared by text tools and the terminal layer. File reads use
+// the same replacement-character behavior as Buffer.toString("utf8") in Pi.
+const REPLACEMENT = '\xef\xbf\xbd'
+
+fn replacement_decode([u8] input): string {
+    [u8] output = []
+    int cursor = 0
+    for cursor < input.len() {
+        u8 first = input[cursor]
+        if first < 0x80 {
+            output.push(first)
+            cursor += 1
+            continue
+        }
+        int expected = sequence_length(first)
+        if expected == 0 {
+            output.append(REPLACEMENT as [u8])
+            cursor += 1
+            continue
+        }
+        int available = 1
+        for available < expected && cursor + available < input.len() && is_continuation(input[cursor + available]) {
+            available += 1
+        }
+        if available < expected {
+            output.append(REPLACEMENT as [u8])
+            cursor += available
+            continue
+        }
+        u8 second = input[cursor + 1]
+        if !valid_second(first, second) {
+            output.append(REPLACEMENT as [u8])
+            cursor += 1
+            continue
+        }
+        output.append(input.slice(cursor, cursor + expected))
+        cursor += expected
+    }
+    return output as string
+}
+
+fn is_valid(string input): bool {
+    var bytes = input as [u8]
+    int cursor = 0
+    for cursor < bytes.len() {
+        u8 first = bytes[cursor]
+        if first < 0x80 {
+            cursor += 1
+            continue
+        }
+        int expected = sequence_length(first)
+        if expected == 0 || cursor + expected > bytes.len() {
+            return false
+        }
+        for int i = 1; i < expected; i += 1 {
+            if !is_continuation(bytes[cursor + i]) {
+                return false
+            }
+        }
+        if !valid_second(first, bytes[cursor + 1]) {
+            return false
+        }
+        cursor += expected
+    }
+    return true
+}
+
+// JavaScript String.length counts UTF-16 code units. Pi's write result uses
+// that value even though the message labels it as bytes.
+fn utf16_length(string input): int {
+    var value = replacement_decode(input as [u8]) as [u8]
+    int result = 0
+    int cursor = 0
+    for cursor < value.len() {
+        int length = sequence_length(value[cursor])
+        if length == 0 {
+            length = 1
+        }
+        if length == 4 {
+            result += 2
+        } else {
+            result += 1
+        }
+        cursor += length
+    }
+    return result
+}
+
+fn utf16_prefix(string input, int maximum): string {
+    if maximum <= 0 {
+        return ''
+    }
+    var value = replacement_decode(input as [u8]) as [u8]
+    [u8] output = []
+    int units = 0
+    int cursor = 0
+    for cursor < value.len() {
+        int length = sequence_length(value[cursor])
+        if length == 0 {
+            length = 1
+        }
+        int next_units = 1
+        if length == 4 {
+            next_units = 2
+        }
+        if units + next_units > maximum {
+            if next_units == 2 && units + 1 == maximum {
+                output.append(REPLACEMENT as [u8])
+            }
+            break
+        }
+        output.append(value.slice(cursor, cursor + length))
+        units += next_units
+        cursor += length
+    }
+    return output as string
+}
+
+#local
+fn sequence_length(u8 first): int {
+    if first >= 0xc2 && first <= 0xdf {
+        return 2
+    }
+    if first >= 0xe0 && first <= 0xef {
+        return 3
+    }
+    if first >= 0xf0 && first <= 0xf4 {
+        return 4
+    }
+    return 0
+}
+
+#local
+fn is_continuation(u8 value): bool {
+    return value >= 0x80 && value <= 0xbf
+}
+
+#local
+fn valid_second(u8 first, u8 second): bool {
+    if first == 0xe0 && second < 0xa0 {
+        return false
+    }
+    if first == 0xed && second > 0x9f {
+        return false
+    }
+    if first == 0xf0 && second < 0x90 {
+        return false
+    }
+    if first == 0xf4 && second > 0x8f {
+        return false
+    }
+    return true
+}

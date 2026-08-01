@@ -1,0 +1,386 @@
+const ESC = 0x1b
+const STATUS_COMPLETE = 1
+const STATUS_INCOMPLETE = 2
+const STATUS_NOT_ESCAPE = 3
+const PASTE_START = '\x1b[200~'
+const PASTE_END = '\x1b[201~'
+
+type process_result_t = struct {
+    [string] sequences = []
+    [string] pastes = []
+    bool needs_timeout
+}
+
+type extract_result_t = struct {
+    [string] sequences = []
+    [u8] remainder = []
+}
+
+type emission_t = struct {
+    bool emit
+    string sequence
+}
+
+type buffer_t = struct {
+    [u8] buffer = []
+    bool paste_mode
+    [u8] paste_buffer = []
+    int pending_kitty_codepoint = -1
+}
+
+fn new(): ref<buffer_t> {
+    return new buffer_t(buffer = vec<u8>.cap_of(32), paste_buffer = vec<u8>.cap_of(32))
+}
+
+fn buffer_t.process(&self, [u8] data): process_result_t {
+    var result = empty_process_result()
+    if data.len() == 0 && self.buffer.len() == 0 {
+        result.sequences.push('')
+        return result
+    }
+    for byte in data {
+        self.buffer.push(byte)
+    }
+    if self.paste_mode {
+        for byte in self.buffer {
+            self.paste_buffer.push(byte)
+        }
+        self.buffer = vec<u8>.cap_of(32)
+        var finished = self.finish_paste()
+        for sequence in finished.sequences {
+            result.sequences.push(sequence)
+        }
+        for paste in finished.pastes {
+            result.pastes.push(paste)
+        }
+        result.needs_timeout = finished.needs_timeout
+        return result
+    }
+    int start_index = find_bytes(self.buffer, PASTE_START as [u8])
+    if start_index >= 0 {
+        if start_index > 0 {
+            var before = extract(self.buffer.slice(0, start_index))
+            for sequence in before.sequences {
+                var emission = self.emit_sequence(sequence)
+                if emission.emit {
+                    result.sequences.push(emission.sequence)
+                }
+            }
+        }
+        self.pending_kitty_codepoint = -1
+        self.buffer = self.buffer.slice(start_index + PASTE_START.len(), self.buffer.len())
+        self.paste_mode = true
+        self.paste_buffer = vec<u8>.cap_of(32)
+        for byte in self.buffer {
+            self.paste_buffer.push(byte)
+        }
+        self.buffer = vec<u8>.cap_of(32)
+        var finished = self.finish_paste()
+        for sequence in finished.sequences {
+            result.sequences.push(sequence)
+        }
+        for paste in finished.pastes {
+            result.pastes.push(paste)
+        }
+        result.needs_timeout = finished.needs_timeout
+        return result
+    }
+    [u8] current_buffer = vec<u8>.cap_of(self.buffer.len())
+    for byte in self.buffer {
+        current_buffer.push(byte)
+    }
+    self.buffer = vec<u8>.new(0, 0)
+    var extracted = extract(current_buffer)
+    for sequence in extracted.sequences {
+        var emission = self.emit_sequence(sequence)
+        if emission.emit {
+            result.sequences.push(emission.sequence)
+        }
+    }
+    result.needs_timeout = extracted.remainder.len() > 0
+    self.buffer = extracted.remainder
+    return result
+}
+
+fn buffer_t.flush(&self): [string] {
+    if self.buffer.len() == 0 {
+        return []
+    }
+    string sequence = self.buffer as string
+    self.buffer = vec<u8>.cap_of(32)
+    self.pending_kitty_codepoint = -1
+    return [sequence]
+}
+
+fn buffer_t.clear(&self) {
+    self.buffer = vec<u8>.cap_of(32)
+    self.paste_mode = false
+    self.paste_buffer = vec<u8>.cap_of(32)
+    self.pending_kitty_codepoint = -1
+}
+
+fn buffer_t.get_buffer(&self): string {
+    return self.buffer as string
+}
+
+#local
+fn buffer_t.finish_paste(&self): process_result_t {
+    var result = empty_process_result()
+    int end_index = find_bytes(self.paste_buffer, PASTE_END as [u8])
+    if end_index < 0 {
+        return result
+    }
+    string pasted = self.paste_buffer.slice(0, end_index) as string
+    [u8] remaining = self.paste_buffer.slice(end_index + PASTE_END.len(), self.paste_buffer.len())
+    self.paste_mode = false
+    self.paste_buffer = vec<u8>.cap_of(32)
+    self.pending_kitty_codepoint = -1
+    result.pastes.push(pasted)
+    if remaining.len() > 0 {
+        var continued = self.process(remaining)
+        for sequence in continued.sequences {
+            result.sequences.push(sequence)
+        }
+        for paste in continued.pastes {
+            result.pastes.push(paste)
+        }
+        result.needs_timeout = continued.needs_timeout
+    }
+    return result
+}
+
+#local
+fn buffer_t.emit_sequence(&self, string sequence): emission_t {
+    int raw_codepoint = single_codepoint(sequence as [u8])
+    if raw_codepoint >= 0 && raw_codepoint == self.pending_kitty_codepoint {
+        self.pending_kitty_codepoint = -1
+        return emission_t{}
+    }
+    self.pending_kitty_codepoint = kitty_printable_codepoint(sequence)
+    return emission_t {emit: true, sequence: sequence,}
+}
+
+#local
+fn extract([u8] buffer): extract_result_t {
+    var result = extract_result_t {sequences: vec<string>.cap_of(16), remainder: vec<u8>.cap_of(8),}
+    int position = 0
+    for position < buffer.len() {
+        if buffer[position] == ESC {
+            int sequence_end = 1
+            bool advanced = false
+            for sequence_end <= buffer.len() - position {
+                [u8] candidate_bytes = buffer.slice(position, position + sequence_end)
+                int status = complete_status(candidate_bytes)
+                if status == STATUS_COMPLETE {
+                    if candidate_bytes.len() == 2 && candidate_bytes[1] == ESC && position + sequence_end < buffer.len() && starts_escape_family(buffer[position + sequence_end]) {
+                        result.sequences.push('\x1b')
+                        position += 1
+                    } else {
+                        result.sequences.push(candidate_bytes as string)
+                        position += sequence_end
+                    }
+                    advanced = true
+                    break
+                }
+                if status == STATUS_INCOMPLETE {
+                    sequence_end += 1
+                    continue
+                }
+                result.sequences.push(candidate_bytes as string)
+                position += sequence_end
+                advanced = true
+                break
+            }
+            if !advanced {
+                result.remainder = buffer.slice(position, buffer.len())
+                return result
+            }
+            continue
+        }
+        int length = utf8_sequence_length(buffer[position])
+        if length == 0 {
+            result.sequences.push(buffer.slice(position, position + 1) as string)
+            position += 1
+            continue
+        }
+        if position + length > buffer.len() {
+            result.remainder = buffer.slice(position, buffer.len())
+            return result
+        }
+        bool valid = true
+        for int offset = 1; offset < length; offset += 1 {
+            if buffer[position + offset] < 0x80 || buffer[position + offset] > 0xbf {
+                valid = false
+                break
+            }
+        }
+        if !valid {
+            result.sequences.push(buffer.slice(position, position + 1) as string)
+            position += 1
+            continue
+        }
+        result.sequences.push(buffer.slice(position, position + length) as string)
+        position += length
+    }
+    return result
+}
+
+#local
+fn empty_process_result(): process_result_t {
+    return process_result_t {sequences: vec<string>.cap_of(16), pastes: vec<string>.cap_of(2),}
+}
+
+#local
+fn complete_status([u8] data): int {
+    if data.len() == 0 || data[0] != ESC {
+        return STATUS_NOT_ESCAPE
+    }
+    if data.len() == 1 {
+        return STATUS_INCOMPLETE
+    }
+    u8 family = data[1]
+    if family == '['.char() {
+        if data.len() >= 3 && data[2] == 'M'.char() {
+            return data.len() >= 6 ? STATUS_COMPLETE : STATUS_INCOMPLETE
+        }
+        return complete_csi(data)
+    }
+    if family == ']'.char() {
+        return ends_string(data) || data[data.len() - 1] == 0x07 ? STATUS_COMPLETE : STATUS_INCOMPLETE
+    }
+    if family == 'P'.char() || family == '_'.char() {
+        return ends_string(data) ? STATUS_COMPLETE : STATUS_INCOMPLETE
+    }
+    if family == 'O'.char() {
+        return data.len() >= 3 ? STATUS_COMPLETE : STATUS_INCOMPLETE
+    }
+    return data.len() >= 2 ? STATUS_COMPLETE : STATUS_INCOMPLETE
+}
+
+#local
+fn complete_csi([u8] data): int {
+    if data.len() < 3 {
+        return STATUS_INCOMPLETE
+    }
+    u8 last = data[data.len() - 1]
+    if last < 0x40 || last > 0x7e {
+        return STATUS_INCOMPLETE
+    }
+    if data[2] != '<'.char() {
+        return STATUS_COMPLETE
+    }
+    if last != 'M'.char() && last != 'm'.char() {
+        return STATUS_INCOMPLETE
+    }
+    int semicolons = 0
+    bool has_digit = false
+    for int index = 3; index < data.len() - 1; index += 1 {
+        u8 value = data[index]
+        if value == ';'.char() {
+            if !has_digit {
+                return STATUS_INCOMPLETE
+            }
+            semicolons += 1
+            has_digit = false
+        } else if value >= '0'.char() && value <= '9'.char() {
+            has_digit = true
+        } else {
+            return STATUS_INCOMPLETE
+        }
+    }
+    return semicolons == 2 && has_digit ? STATUS_COMPLETE : STATUS_INCOMPLETE
+}
+
+#local
+fn ends_string([u8] data): bool {
+    return data.len() >= 2 && data[data.len() - 2] == ESC && data[data.len() - 1] == '\\'.char()
+}
+
+#local
+fn starts_escape_family(u8 value): bool {
+    return value == '['.char() || value == ']'.char() || value == 'O'.char() || value == 'P'.char() || value == '_'.char()
+}
+
+#local
+fn find_bytes([u8] value, [u8] needle): int {
+    if needle.len() == 0 {
+        return 0
+    }
+    for int index = 0; index + needle.len() <= value.len(); index += 1 {
+        bool matches = true
+        for int offset = 0; offset < needle.len(); offset += 1 {
+            if value[index + offset] != needle[offset] {
+                matches = false
+                break
+            }
+        }
+        if matches {
+            return index
+        }
+    }
+    return -1
+}
+
+#local
+fn kitty_printable_codepoint(string sequence): int {
+    var bytes = sequence as [u8]
+    if bytes.len() < 4 || bytes[0] != ESC || bytes[1] != '['.char() || bytes[bytes.len() - 1] != 'u'.char() {
+        return -1
+    }
+    [u8] digit_bytes = []
+    for int index = 2; index < bytes.len() - 1; index += 1 {
+        u8 value = bytes[index]
+        if value == ';'.char() {
+            return -1
+        }
+        if value == ':'.char() {
+            break
+        }
+        if value < '0'.char() || value > '9'.char() {
+            return -1
+        }
+        digit_bytes.push(value)
+    }
+    string digits = digit_bytes as string
+    int codepoint = digits.to_int() catch error {-1}
+    return codepoint >= 32 ? codepoint : -1
+}
+
+#local
+fn single_codepoint([u8] value): int {
+    if value.len() == 0 {
+        return -1
+    }
+    int length = utf8_sequence_length(value[0])
+    if value[0] < 0x80 {
+        return value.len() == 1 ? value[0] as int : -1
+    }
+    if length == 0 || value.len() != length {
+        return -1
+    }
+    int codepoint = (value[0] as int) & (0x7f >> length)
+    for int index = 1; index < length; index += 1 {
+        if value[index] < 0x80 || value[index] > 0xbf {
+            return -1
+        }
+        codepoint = (codepoint << 6) | ((value[index] as int) & 0x3f)
+    }
+    return codepoint
+}
+
+#local
+fn utf8_sequence_length(u8 first): int {
+    if first < 0x80 {
+        return 1
+    }
+    if first >= 0xc2 && first <= 0xdf {
+        return 2
+    }
+    if first >= 0xe0 && first <= 0xef {
+        return 3
+    }
+    if first >= 0xf0 && first <= 0xf4 {
+        return 4
+    }
+    return 0
+}

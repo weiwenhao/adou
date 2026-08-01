@@ -1,0 +1,11 @@
+name = "adou"
+version = "0.1.0-dev"
+authors = ["Adou contributors"]
+description = "A Pi-derived coding agent implemented in Nature"
+license = "MIT"
+type = "bin"
+
+[links]
+unicode_icu = { darwin_arm64 = 'native/unicode_icu.o', darwin_amd64 = 'native/unicode_icu.o', linux_amd64 = 'native/unicode_icu.o' }
+
+[dependencies]

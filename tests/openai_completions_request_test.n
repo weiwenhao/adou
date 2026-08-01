@@ -1,0 +1,51 @@
+import adou.src.ai.providers.openai_completions_request
+import adou.src.ai.types
+import json
+
+fn model(): ref<types.model_t> {
+    return new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = 'https://api.deepseek.com', reasoning = true, context_window = 1000000, max_tokens = 384000)
+}
+
+test 'builds DeepSeek OpenAI Completions request with reasoning and tools' {
+    json.value_t parameters = json.parse('{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}')
+    var tool = new types.tool_t(name = 'read', description = 'Read a file', parameters = parameters)
+    var context = new types.context_t(system_prompt = 'Be concise', tools = [tool,])
+    context.messages.push(new types.user_message_t(content = 'Read README.md'))
+    var options = new types.stream_options_t(api_key = 'secret', thinking_enabled = true, reasoning_effort = 'high', max_tokens = 256)
+    var body = json.parse(openai_completions_request.build(model(), context, options))
+    assert(body.get('model').as_string() == 'deepseek-v4-flash')
+    assert(body.get('stream').as_bool())
+    assert(body.get('messages').as_array().len() == 2)
+    assert(body.get('thinking').get('type').as_string() == 'enabled')
+    assert(body.get('reasoning_effort').as_string() == 'high')
+    assert(body.get('tools').as_array().len() == 1)
+    assert(body.get('tools').as_array()[0].get('function').get('name').as_string() == 'read')
+    assert(openai_completions_request.endpoint(model()) == 'https://api.deepseek.com/chat/completions')
+    assert(openai_completions_request.authorization(options) == 'Bearer secret')
+}
+
+test 'includes reasoning_content and tool history in assistant replay' {
+    var context = new types.context_t()
+    var thinking = new types.thinking_content_t(thinking = 'plan', thinking_signature = 'reasoning_content')
+    var text = new types.text_content_t(text = 'done')
+    var call = new types.tool_call_t(id = 'call|item', name = 'read', arguments = json.parse('{"path":"README.md"}'))
+    types.content_t thinking_block = thinking
+    types.content_t text_block = text
+    types.content_t call_block = call
+    context.messages.push(new types.assistant_message_t(content = [thinking_block, text_block, call_block]))
+    context.messages.push(new types.tool_result_message_t(tool_call_id = call.id, tool_name = 'read', content = [new types.text_content_t(text = 'contents'),]))
+    var options = new types.stream_options_t(thinking_enabled = false)
+    var body = json.parse(openai_completions_request.build(model(), context, options))
+    var assistant = body.get('messages').as_array()[0]
+    assert(assistant.get('role').as_string() == 'assistant')
+    assert(assistant.get('reasoning_content').as_string() == 'plan')
+    assert(assistant.get('tool_calls').as_array()[0].get('id').as_string() == 'call_item')
+    assert(body.get('messages').as_array()[1].get('role').as_string() == 'tool')
+}
+
+test 'maps branch summaries into Pi user context' {
+    var context = new types.context_t()
+    context.messages.push(new types.branch_summary_message_t(summary = 'abandoned work', from_id = 'entry-1', timestamp = 1))
+    var body = json.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
+    assert(body.get('messages').at(0).get('content').as_string() == 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\nabandoned work</summary>')
+}

@@ -1,0 +1,93 @@
+import adou.src.ai.sse
+fn feed_one_byte(string input): [sse.event_t]! {
+    var parser = sse.parser()
+    [sse.event_t] events = []
+    for byte in input as[u8]{
+        events.append(parser.feed([byte]))
+    }
+    parser.finish()
+    return events
+}
+test 'frames events across every byte boundary' {
+    var events = feed_one_byte('event: response.output_text.delta\r\n' + 'id: evt-1\r\n' + 'retry: 1500\r\n' + 'data: hello\r\n' + 'data: 世界\r\n\r\n',)
+    assert(events.len() == 1)
+    assert(events[0].event == 'response.output_text.delta')
+    assert(events[0].data == 'hello\n世界')
+    assert(events[0].id == 'evt-1')
+    assert(events[0].retry == 1500)
+}
+test 'supports BOM comments and persistent id' {
+    var parser = sse.parser()
+    [sse.event_t] events = []
+    events.append(parser.feed([0xef]))
+    events.append(parser.feed([0xbb, 0xbf]))
+    events.append(parser.feed(': heartbeat\n' as[u8]))
+    events.append(parser.feed('id: first\ndata: one\n\n' as[u8]))
+    events.append(parser.feed('data: two\n\n' as[u8]))
+    parser.finish()
+    assert(events.len() == 2)
+    assert(events[0].event == 'message')
+    assert(events[0].data == 'one')
+    assert(events[0].id == 'first')
+    assert(events[1].data == 'two')
+    assert(events[1].id == 'first')
+}
+test 'accepts bare CR and ignores the LF half of split CRLF' {
+    var parser = sse.parser()
+    [sse.event_t] events = []
+    events.append(parser.feed('data: first\r' as[u8]))
+    events.append(parser.feed('\ndata: second\r\r' as[u8]))
+    parser.finish()
+    assert(events.len() == 1)
+    assert(events[0].data == 'first\nsecond')
+}
+test 'does not dispatch an unterminated event at EOF' {
+    var parser = sse.parser()
+    var events = parser.feed('data: incomplete\n' as[u8])
+    parser.finish()
+    assert(events.len() == 0)
+}
+test 'can opt into Anthropic-compatible trailing event dispatch' {
+    var parser = sse.parser()
+    var events = parser.feed('event: message_stop\ndata: {"type":"message_stop"}' as [u8])
+    events.append(parser.finish_pending())
+    assert(events.len() == 1)
+    assert(events[0].event == 'message_stop')
+}
+test 'rejects malformed UTF-8 after chunk reassembly' {
+    var parser = sse.parser()
+    parser.feed([0x64, 0x61, 0x74, 0x61, 0x3a, 0x20, 0xe4])
+    bool failed = false
+    parser.feed([0x20, 0x80, 0x0a]) catch e {
+        failed = e.msg().starts_with('invalid UTF-8 continuation')
+        []
+    }
+    assert(failed)
+}
+test 'enforces line and event bounds' {
+    var line_parser = sse.parser_with_limits(4, 64)
+    bool line_failed = false
+    line_parser.feed('data:' as[u8]) catch e {
+        line_failed = e.msg() == 'SSE line exceeds 4 bytes'
+        []
+    }
+    assert(line_failed)
+    var event_parser = sse.parser_with_limits(64, 8)
+    bool event_failed = false
+    event_parser.feed('data: abc\n' as[u8]) catch e {
+        event_failed = e.msg() == 'SSE event exceeds 8 bytes'
+        []
+    }
+    assert(event_failed)
+}
+test 'ignores invalid retry and id values containing NUL' {
+    var parser = sse.parser()
+    [sse.event_t] events = []
+    events.append(parser.feed('retry: 100\nid: good\ndata: one\n\n' as[u8]))
+    events.append(parser.feed('retry: 1x\nid: bad\x00id\ndata: two\n\n' as[u8]))
+    parser.finish()
+    assert(events.len() == 2)
+    assert(events[0].retry == 100)
+    assert(events[1].retry == 100)
+    assert(events[1].id == 'good')
+}

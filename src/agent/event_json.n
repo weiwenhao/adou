@@ -1,0 +1,110 @@
+import adou.src.agent.session_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.types as ai_types
+import adou.src.session.message_json
+import adou.src.tools.types as tool_types
+import json
+import fmt
+
+type object_t = map<string, ref<json.value_t>>
+
+// Encode the public event envelope used by `--mode json`.  Pi writes one
+// self-contained JSON object per line; keeping the event type at the top level
+// makes the stream useful to both scripts and a future RPC adapter.
+fn encode(session_stream.event_t event): string! {
+    object_t object = {}
+    object['type'] = boxed_string(event.kind)
+    if event.has_agent_event {
+        object = add_agent_fields(object, event.agent_event)
+    }
+    if event.reason != '' {object['reason'] = boxed_string(event.reason)}
+    if event.aborted {object['aborted'] = boxed_bool(true)}
+    if event.will_retry {object['willRetry'] = boxed_bool(true)}
+    if event.error_message != '' {object['errorMessage'] = boxed_string(event.error_message)}
+    if event.summary != '' {object['summary'] = boxed_string(event.summary)}
+    if event.tokens_before != 0 {object['tokensBefore'] = number_int(event.tokens_before)}
+    if event.estimated_tokens_after != 0 {object['estimatedTokensAfter'] = number_int(event.estimated_tokens_after)}
+    if event.bash_command != '' {object['command'] = boxed_string(event.bash_command)}
+    if event.bash_output != '' {object['output'] = boxed_string(event.bash_output)}
+    if event.bash_exit_code >= 0 {object['exitCode'] = number_int(event.bash_exit_code)}
+    if event.bash_cancelled {object['cancelled'] = boxed_bool(true)}
+    if event.bash_timed_out {object['timedOut'] = boxed_bool(true)}
+    if event.bash_truncated {object['truncated'] = boxed_bool(true)}
+    if event.bash_full_output_path != '' {object['fullOutputPath'] = boxed_string(event.bash_full_output_path)}
+    if event.bash_exclude_from_context {object['excludeFromContext'] = boxed_bool(true)}
+    if event.retry_attempt != 0 {object['attempt'] = number_int(event.retry_attempt)}
+    if event.retry_max_attempts != 0 {object['maxAttempts'] = number_int(event.retry_max_attempts)}
+    if event.retry_delay_ms != 0 {object['delayMs'] = number_int(event.retry_delay_ms)}
+    if event.retry_error_message != '' {object['retryError'] = boxed_string(event.retry_error_message)}
+    if event.kind == session_stream.EVENT_RETRY_END {object['success'] = boxed_bool(event.retry_success)}
+    if event.retry_final_error != '' {object['finalError'] = boxed_string(event.retry_final_error)}
+    return json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn add_agent_fields(object_t object, agent_types.agent_event_t event): object_t! {
+    if event.user_message is ref<ai_types.user_message_t> user {
+        object['message'] = json.box_value(message_json.encode(user))
+    }
+    if event.assistant_message is ref<ai_types.assistant_message_t> assistant {
+        object['assistantMessage'] = json.box_value(message_json.encode(assistant))
+    }
+    if event.tool_message is ref<ai_types.tool_result_message_t> tool {
+        object['toolResult'] = json.box_value(message_json.encode(tool))
+    }
+    if event.tool_call_id != '' {object['toolCallId'] = boxed_string(event.tool_call_id)}
+    if event.tool_name != '' {object['toolName'] = boxed_string(event.tool_name)}
+    if event.args.kind != json.VALUE_NULL {object['args'] = json.box_value(event.args)}
+    if event.is_error {object['isError'] = boxed_bool(true)}
+    if event.assistant_event.kind != '' {
+        object['assistantEvent'] = encode_assistant_event(event.assistant_event)
+    }
+    if event.tool_result.content.len() > 0 {
+        object['toolOutput'] = boxed_string(tool_output(event.tool_result))
+    }
+    return object
+}
+
+#local
+fn encode_assistant_event(ai_types.assistant_event_t event): ref<json.value_t>! {
+    object_t object = {}
+    object['type'] = boxed_string(event.kind)
+    if event.content_index >= 0 {object['contentIndex'] = number_int(event.content_index)}
+    if event.delta != '' {object['delta'] = boxed_string(event.delta)}
+    if event.content != '' {object['content'] = boxed_string(event.content)}
+    if event.reason != '' {object['reason'] = boxed_string(event.reason)}
+    if event.partial is ref<ai_types.assistant_message_t> partial {
+        object['partial'] = json.box_value(message_json.encode(partial))
+    }
+    if event.message is ref<ai_types.assistant_message_t> message {
+        object['message'] = json.box_value(message_json.encode(message))
+    }
+    if event.error is ref<ai_types.assistant_message_t> error_message {
+        object['error'] = json.box_value(message_json.encode(error_message))
+    }
+    if event.tool_call is ref<ai_types.tool_call_t> call {
+        object['toolCallId'] = boxed_string(call.id)
+        object['toolName'] = boxed_string(call.name)
+        object['arguments'] = json.box_value(call.arguments)
+        if call.partial_json != '' {object['partialJson'] = boxed_string(call.partial_json)}
+    }
+    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn tool_output(tool_types.tool_result_t tool_result): string {
+    string result = ''
+    for block in tool_result.content {
+        result += block.text
+    }
+    return result
+}
+
+#local
+fn boxed_string(string value): ref<json.value_t> {return json.box_value(json.string_value(value))}
+
+#local
+fn boxed_bool(bool value): ref<json.value_t> {return json.box_value(json.bool_value(value))}
+
+#local
+fn number_int(int value): ref<json.value_t>! {return json.box_value(json.number_value(fmt.sprintf('%d', value)))}

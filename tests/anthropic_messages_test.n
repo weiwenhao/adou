@@ -1,0 +1,137 @@
+import adou.src.ai.providers.anthropic_messages
+import adou.src.ai.sse
+import adou.src.ai.types
+
+fn anthropic_model(): ref<types.model_t> {
+    var model = new types.model_t(id = 'claude-sonnet-4-5', api = 'anthropic-messages', provider = 'anthropic')
+    model.cost.input = 1000000.0
+    model.cost.output = 2000000.0
+    model.cost.cache_read = 500000.0
+    model.cost.cache_write = 1500000.0
+    return model
+}
+
+fn frame(string event, string data): string {
+    return 'event: ' + event + '\n' + 'data: ' + data + '\n\n'
+}
+
+fn run_fixture(string fixture): (ref<anthropic_messages.processor_t>, [types.assistant_event_t])! {
+    var decoder = sse.parser()
+    var processor = anthropic_messages.processor(anthropic_model(), 123)
+    [types.assistant_event_t] events = [processor.start()]
+    for byte in fixture as [u8] {
+        var frames = decoder.feed([byte])
+        for item in frames {
+            events.append(processor.feed(item))
+        }
+    }
+    var trailing = decoder.finish_pending()
+    for item in trailing {
+        events.append(processor.feed(item))
+    }
+    events.push(processor.finish())
+    return (processor, events)
+}
+
+test 'converts Anthropic thinking redaction text multiple tools usage and stop reason' {
+    string fixture = ''
+    fixture += frame('message_start', '{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":20,"output_tokens":0,"cache_read_input_tokens":2,"cache_creation_input_tokens":3,"cache_creation":{"ephemeral_1h_input_tokens":2}}}}')
+    fixture += frame('ping', '{"type":"ping"}')
+    fixture += frame('content_block_start', '{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}')
+    fixture += frame('content_block_delta', '{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"reason"}}')
+    fixture += frame('content_block_delta', '{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig"}}')
+    fixture += frame('content_block_stop', '{"type":"content_block_stop","index":0}')
+    fixture += frame('content_block_start', '{"type":"content_block_start","index":1,"content_block":{"type":"redacted_thinking","data":"opaque"}}')
+    fixture += frame('content_block_stop', '{"type":"content_block_stop","index":1}')
+    fixture += frame('content_block_start', '{"type":"content_block_start","index":2,"content_block":{"type":"text","text":""}}')
+    fixture += frame('content_block_delta', '{"type":"content_block_delta","index":2,"delta":{"type":"text_delta","text":"你好"}}')
+    fixture += frame('content_block_stop', '{"type":"content_block_stop","index":2}')
+    fixture += frame('content_block_start', '{"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"tool_1","name":"read","input":{}}}')
+    fixture += frame('content_block_delta', '{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":"}}')
+    fixture += frame('content_block_delta', '{"type":"content_block_delta","index":3,"delta":{"type":"input_json_delta","partial_json":"\\"README.md\\"}"}}')
+    fixture += frame('content_block_stop', '{"type":"content_block_stop","index":3}')
+    fixture += frame('content_block_start', '{"type":"content_block_start","index":4,"content_block":{"type":"tool_use","id":"tool_2","name":"write","input":{}}}')
+    fixture += frame('content_block_delta', '{"type":"content_block_delta","index":4,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"out.txt\\",\\"content\\":\\"ok\\"}"}}')
+    fixture += frame('content_block_stop', '{"type":"content_block_stop","index":4}')
+    fixture += frame('message_delta', '{"type":"message_delta","delta":{"stop_reason":"tool_use","stop_sequence":null},"usage":{"output_tokens":10,"output_tokens_details":{"thinking_tokens":4}}}')
+    fixture += frame('message_stop', '{"type":"message_stop"}')
+    var (processor, events) = run_fixture(fixture)
+    assert(events[0].kind == types.EVENT_START)
+    assert(events[events.len() - 1].kind == types.EVENT_DONE)
+    assert(events[events.len() - 1].reason == types.STOP_TOOL_USE)
+    var output = processor.output
+    assert(output.response_id == 'msg_1')
+    assert(output.content.len() == 5)
+    var thinking = output.content[0] as ref<types.thinking_content_t>
+    assert(thinking.thinking == 'reason')
+    assert(thinking.thinking_signature == 'sig')
+    var redacted = output.content[1] as ref<types.thinking_content_t>
+    assert(redacted.redacted)
+    assert(redacted.thinking_signature == 'opaque')
+    var text = output.content[2] as ref<types.text_content_t>
+    assert(text.text == '你好')
+    var read_call = output.content[3] as ref<types.tool_call_t>
+    var write_call = output.content[4] as ref<types.tool_call_t>
+    assert(read_call.arguments.get('path').as_string() == 'README.md')
+    assert(write_call.arguments.get('content').as_string() == 'ok')
+    assert(read_call.partial_json == '')
+    assert(output.usage.input == 20)
+    assert(output.usage.output == 10)
+    assert(output.usage.cache_read == 2)
+    assert(output.usage.cache_write == 3)
+    assert(output.usage.cache_write_1h == 2)
+    assert(output.usage.reasoning == 4)
+    assert(output.usage.total_tokens == 35)
+    assert(output.usage.cost.input == 20.0)
+    assert(output.usage.cost.output == 20.0)
+    assert(output.usage.cost.cache_read == 1.0)
+    assert(output.usage.cost.cache_write == 5.5)
+    assert(output.usage.cost.total == 46.5)
+}
+
+test 'maps max_tokens to length and accepts a final event without a blank line' {
+    string fixture = ''
+    fixture += frame('message_start', '{"type":"message_start","message":{"id":"msg_2","usage":{"input_tokens":1,"output_tokens":0}}}')
+    fixture += frame('message_delta', '{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":5}}')
+    fixture += 'event: message_stop\n' + 'data: {"type":"message_stop"}'
+    var (processor, events) = run_fixture(fixture)
+    assert(processor.output.stop_reason == types.STOP_LENGTH)
+    assert(events[events.len() - 1].reason == types.STOP_LENGTH)
+}
+
+test 'surfaces refusal details and SSE error events' {
+    var processor = anthropic_messages.processor(anthropic_model(), 123)
+    processor.start()
+    var refusal = sse.event_t {event: 'message_delta', data: '{"type":"message_delta","delta":{"stop_reason":"refusal","stop_details":{"explanation":"cannot comply"}},"usage":{"output_tokens":1}}',}
+    processor.feed(refusal)
+    var stop = sse.event_t {event: 'message_stop', data: '{"type":"message_stop"}',}
+    processor.feed(stop)
+    bool refused = false
+    processor.finish() catch e {
+        refused = e.msg() == 'cannot comply'
+        types.assistant_event_t {}
+    }
+    assert(refused)
+    processor = anthropic_messages.processor(anthropic_model(), 123)
+    processor.start()
+    var stream_error = sse.event_t {event: 'error', data: '{"type":"error","error":{"type":"overloaded_error","message":"busy"}}',}
+    bool failed = false
+    processor.feed(stream_error) catch e {
+        failed = e.msg() == 'overloaded_error: busy'
+        []
+    }
+    assert(failed)
+}
+
+test 'rejects EOF after message_start without message_stop' {
+    var processor = anthropic_messages.processor(anthropic_model(), 123)
+    processor.start()
+    var start = sse.event_t {event: 'message_start', data: '{"type":"message_start","message":{"id":"msg_early","usage":{}}}',}
+    processor.feed(start)
+    bool failed = false
+    processor.finish() catch e {
+        failed = e.msg() == 'Anthropic stream ended before message_stop'
+        types.assistant_event_t {}
+    }
+    assert(failed)
+}

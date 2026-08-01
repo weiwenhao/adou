@@ -1,0 +1,42 @@
+import adou.src.tui.unicode
+
+test 'ICU4C segments grapheme clusters at UTF-8 byte boundaries' {
+    unicode.require_icu()
+    string text = 'a\xcc\x81👨‍💻🇨🇳界'
+    var segments = unicode.graphemes(text)
+    assert(segments.len() == 4)
+    assert(text.slice(segments[0].start, segments[0].end) == 'a\xcc\x81')
+    assert(text.slice(segments[1].start, segments[1].end) == '👨‍💻')
+    assert(text.slice(segments[2].start, segments[2].end) == '🇨🇳')
+    assert(text.slice(segments[3].start, segments[3].end) == '界')
+}
+
+test 'Pi terminal widths cover CJK combining emoji ZWJ flags Thai and Lao' {
+    assert(unicode.visible_width('abc') == 3)
+    assert(unicode.visible_width('界') == 2)
+    assert(unicode.visible_width('a\xcc\x81') == 1)
+    assert(unicode.visible_width('\xcc\x81') == 0)
+    assert(unicode.visible_width('🇨') == 2 && unicode.visible_width('🇨🇳') == 2)
+    [string] emoji = ['👍', '👍🏻', '✅', '⚡', '⚡️', '👨', '👨‍💻', '🏳️‍🌈']
+    for sample in emoji {
+        assert(unicode.visible_width(sample) == 2)
+    }
+    assert(unicode.visible_width('ำ') == 1 && unicode.visible_width('ຳ') == 1)
+    assert(unicode.visible_width('กำ') == 2 && unicode.visible_width('ກຳ') == 2)
+    assert(unicode.visible_width('\t界') == 5)
+}
+
+test 'ICU word segmentation preserves word-like and punctuation runs' {
+    string text = 'hello, 世界!'
+    var segments = unicode.words(text)
+    assert(segments.len() >= 5)
+    assert(text.slice(segments[0].start, segments[0].end) == 'hello' && segments[0].word_like)
+    bool found_cjk = false
+    for segment in segments {
+        string value = text.slice(segment.start, segment.end)
+        if value == '世' || value == '世界' {
+            found_cjk = segment.word_like
+        }
+    }
+    assert(found_cjk)
+}

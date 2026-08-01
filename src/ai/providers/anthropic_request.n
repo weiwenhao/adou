@@ -1,0 +1,320 @@
+import adou.src.ai.types
+import fmt
+import json
+import strings
+
+const ANTHROPIC_VERSION = '2023-06-01'
+const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14'
+const FINE_GRAINED_TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-05-14'
+type json_object_t = map<string, ref<json.value_t>>
+
+fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+    json_object_t body = {}
+    body['model'] = boxed_string(model.id)
+    body['messages'] = json.box_value(json.array_value(convert_messages(context.messages, cache_control(model, options))))
+    body['max_tokens'] = json.box_value(json.number_value(fmt.sprintf('%d', max_tokens(model, options))))
+    body['stream'] = json.box_value(json.bool_value(true))
+    var cache = cache_control(model, options)
+    if context.system_prompt != '' {
+        json_object_t block = {}
+        block['type'] = boxed_string('text')
+        block['text'] = boxed_string(context.system_prompt)
+        block = attach_cache(block, cache)
+        body['system'] = json.box_value(json.array_value([json.box_value(object_value(block)),]))
+    }
+    if context.tools.len() > 0 {
+        body['tools'] = json.box_value(json.array_value(convert_tools(context.tools, cache, model.supports_eager_tool_streaming)))
+    }
+    if model.reasoning {
+        json_object_t thinking = {}
+        if options.thinking_enabled {
+            if model.adaptive_thinking {
+                thinking['type'] = boxed_string('adaptive')
+                thinking['display'] = boxed_string(options.thinking_display)
+                if options.reasoning_effort != '' {
+                    json_object_t output_config = {}
+                    output_config['effort'] = boxed_string(options.reasoning_effort)
+                    body['output_config'] = json.box_value(object_value(output_config))
+                }
+            } else {
+                thinking['type'] = boxed_string('enabled')
+                thinking['budget_tokens'] = json.box_value(json.number_value(fmt.sprintf('%d', thinking_budget(options))))
+                thinking['display'] = boxed_string(options.thinking_display)
+            }
+        } else {
+            thinking['type'] = boxed_string('disabled')
+        }
+        body['thinking'] = json.box_value(object_value(thinking))
+    }
+    return json.stringify(object_value(body))
+}
+
+fn endpoint(ref<types.model_t> model): string {
+    string base = model.base_url
+    for base.ends_with('/') {
+        base = base.slice(0, base.len() - 1)
+    }
+    return base + '/messages'
+}
+
+fn api_key(ref<types.stream_options_t> options): string! {
+    if options.api_key == '' {
+        throw errorf('No API key for provider: anthropic')
+    }
+    return options.api_key
+}
+
+fn beta_header(ref<types.model_t> model, ref<types.context_t> context): string {
+    [string] features = []
+    if model.reasoning && !model.adaptive_thinking {
+        features.push(INTERLEAVED_THINKING_BETA)
+    }
+    if context.tools.len() > 0 && !model.supports_eager_tool_streaming {
+        features.push(FINE_GRAINED_TOOL_STREAMING_BETA)
+    }
+    return strings.join(features, ',')
+}
+
+#local
+fn max_tokens(ref<types.model_t> model, ref<types.stream_options_t> options): int {
+    if options.max_tokens > 0 {
+        return options.max_tokens
+    }
+    return model.max_tokens
+}
+
+#local
+fn thinking_budget(ref<types.stream_options_t> options): int {
+    if options.thinking_budget_tokens > 0 {
+        return options.thinking_budget_tokens
+    }
+    return 1024
+}
+
+#local
+fn cache_control(ref<types.model_t> model, ref<types.stream_options_t> options): ref<json.value_t>? {
+    if options.cache_retention == 'none' {
+        return null
+    }
+    json_object_t cache = {}
+    cache['type'] = boxed_string('ephemeral')
+    if options.cache_retention == 'long' && model.supports_long_cache_retention {
+        cache['ttl'] = boxed_string('1h')
+    }
+    return json.box_value(object_value(cache))
+}
+
+#local
+fn attach_cache(json_object_t target, ref<json.value_t>? cache): json_object_t {
+    if cache is ref<json.value_t> value {
+        target['cache_control'] = value
+    }
+    return target
+}
+
+#local
+fn convert_messages([types.message_t] messages, ref<json.value_t>? cache): [ref<json.value_t>]! {
+    [ref<json.value_t>] result = []
+    [ref<json.value_t>] pending_tool_results = []
+    for message in messages {
+        if message is ref<types.tool_result_message_t> tool_result {
+            pending_tool_results.push(tool_result_block(tool_result))
+            continue
+        }
+        if pending_tool_results.len() > 0 {
+            result.push(message_item('user', pending_tool_results))
+            pending_tool_results = []
+        }
+        if message is ref<types.user_message_t> user {
+            if user.content != '' {
+                json_object_t text = {}
+                text['type'] = boxed_string('text')
+                text['text'] = boxed_string(user.content)
+                result.push(message_item('user', [json.box_value(object_value(text)),]))
+            }
+        } else if message is ref<types.assistant_message_t> assistant {
+            var blocks = assistant_blocks(assistant)
+            if blocks.len() > 0 {
+                result.push(message_item('assistant', blocks))
+            }
+        } else if message is ref<types.compaction_summary_message_t> summary {
+            json_object_t text = {}
+            text['type'] = boxed_string('text')
+            text['text'] = boxed_string('The conversation history before this point was compacted into the following summary:\n\n<summary>\n' + summary.summary + '\n</summary>')
+            result.push(message_item('user', [json.box_value(object_value(text)),]))
+        } else if message is ref<types.branch_summary_message_t> summary {
+            json_object_t text = {}
+            text['type'] = boxed_string('text')
+            text['text'] = boxed_string('The following is a summary of a branch that this conversation came back from:\n\n<summary>\n' + summary.summary + '</summary>')
+            result.push(message_item('user', [json.box_value(object_value(text)),]))
+        } else if message is ref<types.custom_message_t> custom {
+            json_object_t text = {}
+            text['type'] = boxed_string('text')
+            text['text'] = boxed_string(custom.content)
+            result.push(message_item('user', [json.box_value(object_value(text)),]))
+        } else if message is ref<types.bash_execution_message_t> bash {
+            if !bash.exclude_from_context {
+                json_object_t text = {}
+                text['type'] = boxed_string('text')
+                text['text'] = boxed_string(types.bash_execution_text(bash))
+                result.push(message_item('user', [json.box_value(object_value(text)),]))
+            }
+        }
+    }
+    if pending_tool_results.len() > 0 {
+        result.push(message_item('user', pending_tool_results))
+    }
+    attach_cache_to_last_user(result, cache)
+    return result
+}
+
+#local
+fn assistant_blocks(ref<types.assistant_message_t> message): [ref<json.value_t>]! {
+    [ref<json.value_t>] result = []
+    for content in message.content {
+        if content is ref<types.text_content_t> text {
+            if text.text != '' {
+                json_object_t block = {}
+                block['type'] = boxed_string('text')
+                block['text'] = boxed_string(text.text)
+                result.push(json.box_value(object_value(block)))
+            }
+        } else if content is ref<types.thinking_content_t> thinking {
+            if thinking.redacted {
+                json_object_t block = {}
+                block['type'] = boxed_string('redacted_thinking')
+                block['data'] = boxed_string(thinking.thinking_signature)
+                result.push(json.box_value(object_value(block)))
+            } else if thinking.thinking_signature != '' {
+                json_object_t block = {}
+                block['type'] = boxed_string('thinking')
+                block['thinking'] = boxed_string(thinking.thinking)
+                block['signature'] = boxed_string(thinking.thinking_signature)
+                result.push(json.box_value(object_value(block)))
+            } else if thinking.thinking != '' {
+                json_object_t block = {}
+                block['type'] = boxed_string('text')
+                block['text'] = boxed_string(thinking.thinking)
+                result.push(json.box_value(object_value(block)))
+            }
+        } else if content is ref<types.tool_call_t> tool_call {
+            json_object_t block = {}
+            block['type'] = boxed_string('tool_use')
+            block['id'] = boxed_string(normalize_tool_id(tool_call.id))
+            block['name'] = boxed_string(tool_call.name)
+            block['input'] = json.box_value(tool_call.arguments)
+            result.push(json.box_value(object_value(block)))
+        }
+    }
+    return result
+}
+
+#local
+fn tool_result_block(ref<types.tool_result_message_t> message): ref<json.value_t> {
+    [string] text = []
+    for block in message.content {
+        text.push(block.text)
+    }
+    string output = strings.join(text, '\n')
+    if output == '' {
+        output = '(no tool output)'
+    }
+    json_object_t block = {}
+    block['type'] = boxed_string('tool_result')
+    block['tool_use_id'] = boxed_string(normalize_tool_id(message.tool_call_id))
+    block['content'] = boxed_string(output)
+    block['is_error'] = json.box_value(json.bool_value(message.is_error))
+    return json.box_value(object_value(block))
+}
+
+#local
+fn message_item(string role, [ref<json.value_t>] content): ref<json.value_t> {
+    json_object_t item = {}
+    item['role'] = boxed_string(role)
+    item['content'] = json.box_value(json.array_value(content))
+    return json.box_value(object_value(item))
+}
+
+#local
+fn attach_cache_to_last_user([ref<json.value_t>] messages, ref<json.value_t>? cache): void! {
+    if messages.len() == 0 || cache is null {
+        return
+    }
+    var item = messages[messages.len() - 1]
+    var object = item.as_object()
+    if object['role'].as_string() != 'user' {
+        return
+    }
+    var content = object['content'].as_array()
+    if content.len() == 0 {
+        return
+    }
+    var block = content[content.len() - 1].as_object()
+    block['cache_control'] = cache as ref<json.value_t>
+    content[content.len() - 1] = json.box_value(object_value(block as json_object_t))
+    object['content'] = json.box_value(json.array_value(content))
+    messages[messages.len() - 1] = json.box_value(object_value(object as json_object_t))
+}
+
+#local
+fn convert_tools([ref<types.tool_t>] tools, ref<json.value_t>? cache, bool eager_input_streaming): [ref<json.value_t>]! {
+    [ref<json.value_t>] result = []
+    for index, tool in tools {
+        json_object_t schema = {}
+        schema['type'] = boxed_string('object')
+        var parameters = tool.parameters.as_object()
+        if parameters.contains('properties') {
+            schema['properties'] = parameters['properties']
+        } else {
+            json_object_t empty_properties = {}
+            schema['properties'] = json.box_value(object_value(empty_properties))
+        }
+        if parameters.contains('required') {
+            schema['required'] = parameters['required']
+        } else {
+            schema['required'] = json.box_value(json.array_value([]))
+        }
+        json_object_t item = {}
+        item['name'] = boxed_string(tool.name)
+        item['description'] = boxed_string(tool.description)
+        item['input_schema'] = json.box_value(object_value(schema))
+        if eager_input_streaming {
+            item['eager_input_streaming'] = json.box_value(json.bool_value(true))
+        }
+        if index == tools.len() - 1 {
+            item = attach_cache(item, cache)
+        }
+        result.push(json.box_value(object_value(item)))
+    }
+    return result
+}
+
+#local
+fn normalize_tool_id(string id): string {
+    [u8] result = []
+    for byte in id as [u8] {
+        if result.len() >= 64 {
+            break
+        }
+        bool allowed = byte >= 'a'.char() && byte <= 'z'.char()
+        allowed = allowed || byte >= 'A'.char() && byte <= 'Z'.char()
+        allowed = allowed || byte >= '0'.char() && byte <= '9'.char()
+        allowed = allowed || byte == '_'.char() || byte == '-'.char()
+        if allowed {
+            result.push(byte)
+        } else {
+            result.push('_'.char())
+        }
+    }
+    return result as string
+}
+
+#local
+fn boxed_string(string value): ref<json.value_t> {
+    return json.box_value(json.string_value(value))
+}
+
+#local
+fn object_value(json_object_t value): json.value_t {
+    return json.object_value(value as map<string, ref<json.value_t>>)
+}

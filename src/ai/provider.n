@@ -1,0 +1,23 @@
+import adou.src.ai.event_stream
+import adou.src.ai.providers.anthropic_provider
+import adou.src.ai.providers.openai_completions_provider
+import adou.src.ai.providers.openai_provider
+import adou.src.ai.types
+
+fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    if model.api == 'openai-responses' {
+        return openai_provider.stream(model, context, options)
+    }
+    if model.api == 'openai-completions' {
+        return openai_completions_provider.stream(model, context, options)
+    }
+    if model.api == 'anthropic-messages' {
+        return anthropic_provider.stream(model, context, options)
+    }
+    var result = event_stream.new()
+    var message = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, stop_reason = types.STOP_ERROR, error_message = 'Unsupported provider API: ' + model.api)
+    var event = types.assistant_event_t {kind: types.EVENT_ERROR, reason: types.STOP_ERROR, error: message,}
+    result.push(event) catch e {}
+    result.end() catch e {}
+    return result
+}

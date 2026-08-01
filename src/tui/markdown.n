@@ -1,0 +1,192 @@
+import adou.src.tui.text_utils
+import adou.src.tui.theme
+
+fn render(string markdown, int width): [string]! {
+    [string] result = vec<string>.cap_of(16)
+    var lines = split_lines(markdown)
+    bool fenced = false
+    for raw in lines {
+        if raw.starts_with('```') || raw.starts_with('~~~') {
+            string fence = raw.slice(0, 3)
+            if !fenced {
+                fenced = true
+                result.push(theme.fg(theme.CODE_BLOCK_BORDER, raw))
+            } else {
+                result.push(theme.fg(theme.CODE_BLOCK_BORDER, fence))
+                fenced = false
+                result.push('')
+            }
+            continue
+        }
+        if fenced {
+            var code_line = text_utils.wrap_text_with_ansi(theme.fg(theme.CODE_BLOCK, '  ' + raw), width > 0 ? width : 1)
+            result.append(code_line)
+            continue
+        }
+        if is_horizontal_rule(raw) {
+            int rule_width = width > 80 ? 80 : width
+            result.push(theme.fg(theme.MUTED, repeat_string('─', rule_width)))
+            result.push('')
+            continue
+        }
+        int indent = leading_spaces(raw)
+        string content = indent > 0 ? raw.slice(indent, raw.len()) : raw
+        string indent_text = repeat_string(' ', indent)
+        string styled = raw
+        int heading = heading_prefix_end(content)
+        if heading > 0 {
+            styled = indent_text + theme.bold(theme.fg(theme.HEADING, content.slice(0, heading))) + inline(content.slice(heading, content.len()))
+        } else if content.starts_with('> ') {
+            styled = indent_text + theme.fg(theme.MUTED, '│ ') + inline(content.slice(2, content.len()))
+        } else if unordered_prefix_end(content) > 0 {
+            int marker_end = unordered_prefix_end(content)
+            styled = indent_text + theme.fg(theme.ACCENT, content.slice(0, marker_end)) + inline(content.slice(marker_end, content.len()))
+        } else {
+            int ordered = ordered_prefix_end(content)
+            styled = ordered > 0 ? indent_text + theme.fg(theme.ACCENT, content.slice(0, ordered)) + inline(content.slice(ordered, content.len())) : inline(raw)
+        }
+        var wrapped = text_utils.wrap_text_with_ansi(styled, width > 0 ? width : 1)
+        for line in wrapped {
+            result.push(line)
+        }
+    }
+    return result
+}
+
+#local
+fn inline(string text): string {
+    string result = ''
+    int cursor = 0
+    for cursor < text.len() {
+        if cursor + 2 <= text.len() && (text.slice(cursor, cursor + 2) == '**' || text.slice(cursor, cursor + 2) == '__') {
+            string delimiter = text.slice(cursor, cursor + 2)
+            int end = text.find_after(delimiter, cursor + 2)
+            if end >= 0 {
+                result += theme.bold(text.slice(cursor + 2, end))
+                cursor = end + 2
+                continue
+            }
+        }
+        if cursor + 2 <= text.len() && text.slice(cursor, cursor + 2) == '~~' {
+            int end = text.find_after('~~', cursor + 2)
+            if end > cursor + 2 {
+                result += theme.strikethrough(text.slice(cursor + 2, end))
+                cursor = end + 2
+                continue
+            }
+        }
+        if text[cursor] == '`'.char() {
+            int end = text.find_after('`', cursor + 1)
+            if end >= 0 {
+                result += theme.INVERSE + theme.CODE + text.slice(cursor + 1, end) + theme.RESET
+                cursor = end + 1
+                continue
+            }
+        }
+        if text[cursor] == '*'.char() || text[cursor] == '_'.char() {
+            string delimiter = text.slice(cursor, cursor + 1)
+            if cursor + 1 < text.len() && text[cursor + 1] == text[cursor] {
+                result += text.slice(cursor, cursor + 1)
+                cursor += 1
+                continue
+            }
+            int end = text.find_after(delimiter, cursor + 1)
+            if end > cursor + 1 {
+                result += theme.italic(text.slice(cursor + 1, end))
+                cursor = end + 1
+                continue
+            }
+        }
+        if text[cursor] == '['.char() {
+            int label_end = text.find_after(']', cursor + 1)
+            if label_end >= 0 && label_end + 1 < text.len() && text[label_end + 1] == '('.char() {
+                int url_end = text.find_after(')', label_end + 2)
+                if url_end >= 0 {
+                    string label = text.slice(cursor + 1, label_end)
+                    string url = text.slice(label_end + 2, url_end)
+                    result += '\x1b]8;;' + url + '\x1b\\' + theme.fg(theme.LINK, label) + '\x1b]8;;\x1b\\'
+                    cursor = url_end + 1
+                    continue
+                }
+            }
+        }
+        result += text.slice(cursor, cursor + 1)
+        cursor += 1
+    }
+    return result
+}
+
+#local
+fn ordered_prefix_end(string text): int {
+    int cursor = 0
+    for cursor < text.len() && text[cursor] >= '0'.char() && text[cursor] <= '9'.char() {
+        cursor += 1
+    }
+    return cursor > 0 && cursor + 1 < text.len() && text[cursor] == '.'.char() && text[cursor + 1] == ' '.char() ? cursor + 2 : 0
+}
+
+#local
+fn unordered_prefix_end(string text): int {
+    return text.len() >= 2 && (text[0] == '-'.char() || text[0] == '*'.char() || text[0] == '+'.char()) && text[1] == ' '.char() ? 2 : 0
+}
+
+#local
+fn heading_prefix_end(string text): int {
+    int cursor = 0
+    for cursor < text.len() && text[cursor] == '#'.char() && cursor < 6 {
+        cursor += 1
+    }
+    return cursor > 0 && cursor < text.len() && text[cursor] == ' '.char() ? cursor + 1 : 0
+}
+
+#local
+fn leading_spaces(string text): int {
+    int count = 0
+    for count < text.len() && text[count] == ' '.char() {
+        count += 1
+    }
+    return count
+}
+
+#local
+fn is_horizontal_rule(string text): bool {
+    string value = text.trim([' ', '\t'])
+    if value.len() < 3 {
+        return false
+    }
+    u8 marker = value[0]
+    if marker != '-'.char() && marker != '*'.char() && marker != '_'.char() {
+        return false
+    }
+    int count = 0
+    for byte in value {
+        if byte == marker {
+            count += 1
+        } else if byte != ' '.char() && byte != '\t'.char() {
+            return false
+        }
+    }
+    return count >= 3
+}
+
+#local
+fn split_lines(string text): [string] {
+    [string] result = vec<string>.cap_of(8)
+    int start = 0
+    for int cursor = 0; cursor <= text.len(); cursor += 1 {
+        if cursor == text.len() || text[cursor] == '\n'.char() {
+            result.push(text.slice(start, cursor))
+            start = cursor + 1
+        }
+    }
+    return result
+}
+
+#local
+fn repeat_string(string value, int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += value
+    }
+    return result
+}

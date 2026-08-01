@@ -1,0 +1,83 @@
+import adou.src.ai.types
+import adou.src.unicode.utf8
+import fmt
+import json
+import strings
+
+const TOOL_RESULT_MAX_CHARS = 2000
+const SUMMARIZATION_SYSTEM_PROMPT = 'You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.'
+
+fn conversation([types.message_t] messages): string! {
+    [string] parts = []
+    for message in messages {
+        if message is ref<types.user_message_t> user {
+            if user.content != '' {
+                parts.push('[User]: ' + user.content)
+            }
+        } else if message is ref<types.assistant_message_t> assistant {
+            [string] thinking_parts = []
+            [string] text_parts = []
+            [string] tool_calls = []
+            for block in assistant.content {
+                if block is ref<types.thinking_content_t> thinking {
+                    thinking_parts.push(thinking.thinking)
+                } else if block is ref<types.text_content_t> text {
+                    text_parts.push(text.text)
+                } else if block is ref<types.tool_call_t> call {
+                    tool_calls.push(format_tool_call(call))
+                }
+            }
+            if thinking_parts.len() > 0 {
+                parts.push('[Assistant thinking]: ' + strings.join(thinking_parts, '\n'))
+            }
+            if text_parts.len() > 0 {
+                parts.push('[Assistant]: ' + strings.join(text_parts, ''))
+            }
+            if tool_calls.len() > 0 {
+                parts.push('[Assistant tool calls]: ' + strings.join(tool_calls, '; '))
+            }
+        } else if message is ref<types.tool_result_message_t> tool {
+            [string] text_parts = []
+            for block in tool.content {
+                text_parts.push(block.text)
+            }
+            string content = strings.join(text_parts, '')
+            if content != '' {
+                parts.push('[Tool result]: ' + truncate_tool_result(content))
+            }
+        } else if message is ref<types.compaction_summary_message_t> summary {
+            parts.push('[User]: The conversation history before this point was compacted into the following summary:\n\n<summary>\n' + summary.summary + '\n</summary>')
+        } else if message is ref<types.branch_summary_message_t> summary {
+            parts.push('[User]: The following is a summary of a branch that this conversation came back from:\n\n<summary>\n' + summary.summary + '</summary>')
+        } else if message is ref<types.custom_message_t> custom {
+            if custom.content != '' {
+                parts.push('[User]: ' + custom.content)
+            }
+        } else if message is ref<types.bash_execution_message_t> bash {
+            if !bash.exclude_from_context {
+                parts.push('[User]: ' + types.bash_execution_text(bash))
+            }
+        }
+    }
+    return strings.join(parts, '\n\n')
+}
+
+fn truncate_tool_result(string text): string {
+    int length = utf8.utf16_length(text)
+    if length <= TOOL_RESULT_MAX_CHARS {
+        return text
+    }
+    return utf8.utf16_prefix(text, TOOL_RESULT_MAX_CHARS) + fmt.sprintf('\n\n[... %d more characters truncated]', length - TOOL_RESULT_MAX_CHARS)
+}
+
+#local
+fn format_tool_call(ref<types.tool_call_t> call): string! {
+    if call.arguments.kind != json.VALUE_OBJECT {
+        return call.name + '(' + json.stringify(call.arguments) + ')'
+    }
+    [string] arguments = []
+    for key, value in call.arguments.as_object() {
+        arguments.push(key + '=' + json.stringify(*value))
+    }
+    return call.name + '(' + strings.join(arguments, ', ') + ')'
+}

@@ -1,0 +1,243 @@
+import adou.src.ai.types
+import fmt
+import json
+import strings
+const MIN_OUTPUT_TOKENS = 16
+const MAX_PROMPT_CACHE_KEY_CHARS = 64
+type json_object_t = map<string, ref < json.value_t >>
+fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+    json_object_t body = {}
+    body['model'] = boxed_string(model.id)
+    body['input'] = json.box_value(json.array_value(convert_messages(model, context)))
+    body['stream'] = json.box_value(json.bool_value(true))
+    body['store'] = json.box_value(json.bool_value(false))
+    int max_tokens = options.max_tokens
+    if max_tokens <= 0 {
+        max_tokens = model.max_tokens
+    }
+    if max_tokens > 0 {
+        if max_tokens < MIN_OUTPUT_TOKENS {
+            max_tokens = MIN_OUTPUT_TOKENS
+        }
+        body['max_output_tokens'] = json.box_value(json.number_value(fmt.sprintf('%d', max_tokens)))
+    }
+    if options.session_id != '' {
+        body['prompt_cache_key'] = boxed_string(clamp_cache_key(options.session_id))
+    }
+    if context.tools.len() > 0 {
+        body['tools'] = json.box_value(json.array_value(convert_tools(context.tools)))
+    }
+    if model.reasoning {
+        json_object_t reasoning = {}
+        if options.reasoning_effort != '' {
+            reasoning['effort'] = boxed_string(options.reasoning_effort)
+            reasoning['summary'] = boxed_string(options.reasoning_summary)
+            body['include'] = json.box_value(json.array_value([boxed_string('reasoning.encrypted_content'),]))
+        } else {
+            reasoning['effort'] = boxed_string('none')
+        }
+        body['reasoning'] = json.box_value(object_value(reasoning))
+    }
+    return json.stringify(object_value(body))
+}
+fn endpoint(ref<types.model_t> model): string {
+    string base = model.base_url
+    for base.ends_with('/') {
+        base = base.slice(0, base.len() - 1)
+    }
+    return base + '/responses'
+}
+fn authorization(ref<types.stream_options_t> options): string! {
+    if options.api_key == '' {
+        throw errorf('No API key for provider: openai')
+    }
+    return 'Bearer ' + options.api_key
+}
+#local
+fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [ref<json.value_t>]! {
+    [ref<json.value_t>] result = []
+    if context.system_prompt != '' {
+        json_object_t system = {}
+        if model.reasoning {
+            system['role'] = boxed_string('developer')
+        } else {
+            system['role'] = boxed_string('system')
+        }
+        system['content'] = boxed_string(context.system_prompt)
+        result.push(json.box_value(object_value(system)))
+    }
+    for index, message in context.messages {
+        if message is ref<types.user_message_t> user {
+            result.push(user_item(user))
+        } else if message is ref<types.assistant_message_t> assistant {
+            result.append(assistant_items(assistant, index))
+        } else if message is ref<types.tool_result_message_t> tool_result {
+            result.push(tool_result_item(tool_result))
+        } else if message is ref<types.compaction_summary_message_t> summary {
+            result.push(summary_item(summary))
+        } else if message is ref<types.branch_summary_message_t> summary {
+            var user = new types.user_message_t(content = 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\n' + summary.summary + '</summary>', timestamp = summary.timestamp)
+            result.push(user_item(user))
+        } else if message is ref<types.custom_message_t> custom {
+            var user = new types.user_message_t(content = custom.content, timestamp = custom.timestamp)
+            result.push(user_item(user))
+        } else if message is ref<types.bash_execution_message_t> bash {
+            if !bash.exclude_from_context {
+                var user = new types.user_message_t(content = types.bash_execution_text(bash), timestamp = bash.timestamp)
+                result.push(user_item(user))
+            }
+        }
+    }
+    return result
+}
+#local
+fn summary_item(ref<types.compaction_summary_message_t> message): ref<json.value_t> {
+    var user = new types.user_message_t(content = 'The conversation history before this point was compacted into the following summary:\n\n<summary>\n' + message.summary + '\n</summary>', timestamp = message.timestamp)
+    return user_item(user)
+}
+#local
+fn user_item(ref<types.user_message_t> message): ref<json.value_t> {
+    json_object_t text = {}
+    text['type'] = boxed_string('input_text')
+    text['text'] = boxed_string(message.content)
+    json_object_t item = {}
+    item['role'] = boxed_string('user')
+    item['content'] = json.box_value(json.array_value([json.box_value(object_value(text)),]))
+    return json.box_value(object_value(item))
+}
+#local
+fn assistant_items(ref<types.assistant_message_t> message, int message_index): [ref<json.value_t>]! {
+    [ref<json.value_t>] result = []
+    int text_index = 0
+    for block in message.content {
+        if block is ref<types.thinking_content_t> thinking {
+            if thinking.thinking_signature != '' {
+                result.push(json.box_value(json.parse(thinking.thinking_signature)))
+            }
+        } else if block is ref<types.text_content_t> text {
+            result.push(assistant_text_item(text, message_index, text_index))
+            text_index += 1
+        } else if block is ref<types.tool_call_t> tool_call {
+            result.push(assistant_tool_item(tool_call))
+        }
+    }
+    return result
+}
+#local
+fn assistant_text_item(ref<types.text_content_t> text, int message_index, int text_index): ref < json.value_t > ! {
+    string fallback_id = fmt.sprintf('msg_pi_%d', message_index)
+    if text_index > 0 {
+        fallback_id += fmt.sprintf('_%d', text_index)
+    }
+    var (message_id, phase) = parse_text_signature(text.text_signature, fallback_id)
+    json_object_t content = {}
+    content['type'] = boxed_string('output_text')
+    content['text'] = boxed_string(text.text)
+    content['annotations'] = json.box_value(json.array_value([]))
+    json_object_t item = {}
+    item['type'] = boxed_string('message')
+    item['role'] = boxed_string('assistant')
+    item['content'] = json.box_value(json.array_value([json.box_value(object_value(content)),]))
+    item['status'] = boxed_string('completed')
+    item['id'] = boxed_string(message_id)
+    if phase != '' {
+        item['phase'] = boxed_string(phase)
+    }
+    return json.box_value(object_value(item))
+}
+#local
+fn assistant_tool_item(ref<types.tool_call_t> tool_call): ref < json.value_t > ! {
+    var parts = tool_call.id.split('|')
+    string call_id = tool_call.id
+    string item_id = ''
+    if parts.len() > 0 {
+        call_id = parts[0]
+    }
+    if parts.len() > 1 {
+        item_id = parts[1]
+    }
+    json_object_t item = {}
+    item['type'] = boxed_string('function_call')
+    item['call_id'] = boxed_string(call_id)
+    if item_id != '' {
+        item['id'] = boxed_string(item_id)
+    }
+    item['name'] = boxed_string(tool_call.name)
+    item['arguments'] = boxed_string(json.stringify(tool_call.arguments))
+    return json.box_value(object_value(item))
+}
+#local
+fn tool_result_item(ref<types.tool_result_message_t> message): ref<json.value_t> {
+    string call_id = message.tool_call_id
+    var parts = call_id.split('|')
+    if parts.len() > 0 {
+        call_id = parts[0]
+    }
+    [string] text = []
+    for block in message.content {
+        text.push(block.text)
+    }
+    string output = strings.join(text, '\n')
+    if output == '' {
+        output = '(no tool output)'
+    }
+    json_object_t item = {}
+    item['type'] = boxed_string('function_call_output')
+    item['call_id'] = boxed_string(call_id)
+    item['output'] = boxed_string(output)
+    return json.box_value(object_value(item))
+}
+#local
+fn convert_tools([ref<types.tool_t>] tools): [ref<json.value_t>]! {
+    [ref<json.value_t>] result = []
+    for tool in tools {
+        json_object_t item = {}
+        item['type'] = boxed_string('function')
+        item['name'] = boxed_string(tool.name)
+        item['description'] = boxed_string(tool.description)
+        item['parameters'] = json.box_value(tool.parameters)
+        item['strict'] = json.box_value(json.bool_value(false))
+        result.push(json.box_value(object_value(item)))
+    }
+    return result
+}
+#local
+fn parse_text_signature(string signature, string fallback): (string, string)! {
+    if signature == '' || !signature.starts_with('{') {
+        if signature != '' {
+            return (signature, '')
+        }
+        return (fallback, '')
+    }
+    var value = json.parse(signature)
+    var object = value.as_object()
+    if!object.contains('v') || object['v'].as_number() != '1' || !object.contains('id') {
+        return (fallback, '')
+    }
+    string phase = ''
+    if object.contains('phase') {
+        var candidate = object['phase'].as_string()
+        if candidate == 'commentary' || candidate == 'final_answer' {
+            phase = candidate
+        }
+    }
+    return (object['id'].as_string(), phase)
+}
+#local
+fn clamp_cache_key(string key): string {
+    // Session IDs generated by Adou are ASCII UUID-like identifiers. Clamp by
+    // bytes here; the session module guarantees this invariant at creation.
+    if key.len() <= MAX_PROMPT_CACHE_KEY_CHARS {
+        return key
+    }
+    return key.slice(0, MAX_PROMPT_CACHE_KEY_CHARS)
+}
+#local
+fn boxed_string(string value): ref<json.value_t> {
+    return json.box_value(json.string_value(value))
+}
+
+#local
+fn object_value(json_object_t value):json.value_t {
+    return json.object_value(value as map<string, ref<json.value_t>>)
+}

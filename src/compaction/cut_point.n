@@ -1,0 +1,96 @@
+import adou.src.ai.types as ai_types
+import adou.src.compaction.token_estimate
+import adou.src.compaction.types
+import adou.src.session.message_json
+import adou.src.session.types as session_types
+import json
+
+fn find_turn_start_index([ref<session_types.entry_t>] entries, int entry_index, int start_index): int! {
+    for int index = entry_index; index >= start_index; index -= 1 {
+        if is_turn_start_entry(entries[index]) {
+            return index
+        }
+    }
+    return -1
+}
+
+fn find([ref<session_types.entry_t>] entries, int start_index, int end_index, int keep_recent_tokens): types.cut_point_t! {
+    [int] cut_points = valid_cut_points(entries, start_index, end_index)
+    if cut_points.len() == 0 {
+        return types.cut_point_t {first_kept_entry_index: start_index,}
+    }
+    int accumulated_tokens = 0
+    int cut_index = cut_points[0]
+    for int index = end_index - 1; index >= start_index; index -= 1 {
+        int message_tokens = 0
+        for message in entry_messages(entries[index]) {
+            message_tokens += token_estimate.estimate_tokens(message)
+        }
+        if message_tokens == 0 {
+            continue
+        }
+        accumulated_tokens += message_tokens
+        if accumulated_tokens >= keep_recent_tokens {
+            for candidate in cut_points {
+                if candidate >= index {
+                    cut_index = candidate
+                    break
+                }
+            }
+            break
+        }
+    }
+    for cut_index > start_index {
+        var previous = entries[cut_index - 1]
+        if previous.kind == session_types.ENTRY_COMPACTION || entry_messages(previous).len() > 0 {
+            break
+        }
+        cut_index -= 1
+    }
+    bool starts_turn = is_turn_start_entry(entries[cut_index])
+    int turn_start_index = -1
+    if !starts_turn {
+        turn_start_index = find_turn_start_index(entries, cut_index, start_index)
+    }
+    return types.cut_point_t {first_kept_entry_index: cut_index, turn_start_index: turn_start_index, is_split_turn: !starts_turn && turn_start_index != -1,}
+}
+
+fn entry_messages(ref<session_types.entry_t> entry): [ai_types.message_t]! {
+    if entry.kind != session_types.ENTRY_MESSAGE {
+        return []
+    }
+    var object = entry.raw.as_object()
+    if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+        return []
+    }
+    return [message_json.decode(object['message'])]
+}
+
+#local
+fn valid_cut_points([ref<session_types.entry_t>] entries, int start_index, int end_index): [int]! {
+    [int] result = []
+    for int index = start_index; index < end_index; index += 1 {
+        if entries[index].kind == session_types.ENTRY_COMPACTION {
+            continue
+        }
+        var messages = entry_messages(entries[index])
+        if messages.len() > 0 && is_cut_point(messages[0]) {
+            result.push(index)
+        }
+    }
+    return result
+}
+
+#local
+fn is_cut_point(ai_types.message_t message): bool {
+    return !(message is ref<ai_types.tool_result_message_t>)
+}
+
+#local
+fn is_turn_start_entry(ref<session_types.entry_t> entry): bool! {
+    if entry.kind == session_types.ENTRY_COMPACTION {
+        return false
+    }
+    var messages = entry_messages(entry)
+    return messages.len() > 0 && (messages[0] is ref<ai_types.user_message_t> || messages[0] is ref<ai_types.custom_message_t> || messages[0] is ref<ai_types.compaction_summary_message_t> || messages[0] is ref<ai_types.branch_summary_message_t>)
+}

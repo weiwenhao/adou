@@ -1,0 +1,107 @@
+import adou.src.agent.types as agent_types
+import adou.src.ai.abort
+import adou.src.tools.read
+import adou.src.tools.shell_tools
+import adou.src.tools.types as tool_types
+import adou.src.tools.write
+import json
+
+type read_executor_t: agent_types.tool_executor_t = struct {
+    string cwd
+}
+
+fn read_executor_t.execute(&self, string tool_call_id, ref<json.value_t> arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    return execute_read(self.cwd, arguments, cancellation)
+}
+
+type write_executor_t: agent_types.tool_executor_t = struct {
+    string cwd
+}
+
+fn write_executor_t.execute(&self, string tool_call_id, ref<json.value_t> arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    return execute_write(self.cwd, arguments, cancellation)
+}
+
+fn read_tool(string cwd): ref<agent_types.agent_tool_t>! {
+    json.value_t parameters = json.parse('{"type":"object","properties":{"path":{"type":"string","description":"Path to the file to read (relative or absolute)"},"offset":{"type":"number","description":"Line number to start reading from (1-indexed)"},"limit":{"type":"number","description":"Maximum number of lines to read"}},"required":["path"]}')
+    agent_types.tool_executor_t executor = read_executor_t {cwd: cwd,}
+    return new agent_types.agent_tool_t(name = 'read', label = 'read', description = 'Read the contents of a UTF-8 text file. Output is truncated to 2000 lines or 50KB, whichever is hit first. Use offset/limit for large files.', parameters = parameters, execution_mode = agent_types.EXECUTION_PARALLEL, executor = executor)
+}
+
+fn write_tool(string cwd): ref<agent_types.agent_tool_t>! {
+    json.value_t parameters = json.parse('{"type":"object","properties":{"path":{"type":"string","description":"Path to the file to write (relative or absolute)"},"content":{"type":"string","description":"Content to write to the file"}},"required":["path","content"]}')
+    agent_types.tool_executor_t executor = write_executor_t {cwd: cwd,}
+    return new agent_types.agent_tool_t(name = 'write', label = 'write', description = "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.", parameters = parameters, execution_mode = agent_types.EXECUTION_PARALLEL, executor = executor)
+}
+
+fn all(string cwd): [ref<agent_types.agent_tool_t>]! {
+    return [
+        read_tool(cwd),
+        write_tool(cwd),
+        shell_tools.edit_tool(cwd),
+        shell_tools.bash_tool(cwd),
+        shell_tools.grep_tool(cwd),
+        shell_tools.find_tool(cwd),
+        shell_tools.ls_tool(cwd),
+    ]
+}
+
+// Apply Pi's CLI tool scope after constructing the complete built-in set.
+// Unknown names are ignored here; the caller can still run with a reduced
+// set, while the system prompt only advertises tools that remain available.
+fn select_tools(string cwd, [string] included, [string] excluded, bool no_tools): [ref<agent_types.agent_tool_t>]! {
+    if no_tools {
+        return []
+    }
+    var available = all(cwd)
+    // Pi starts with the coding quartet enabled.  The read-only helpers are
+    // still available through `--tools grep,find,ls` (and are useful for
+    // review-only sessions), but they are opt-in rather than silently
+    // changing the model's default tool surface.
+    [string] default_names = ['read', 'bash', 'edit', 'write']
+    [string] selected_names = included.len() > 0 ? included : default_names
+    [ref<agent_types.agent_tool_t>] result = []
+    for tool in available {
+        if !contains_name(selected_names, tool.name) {
+            continue
+        }
+        if contains_name(excluded, tool.name) {
+            continue
+        }
+        result.push(tool)
+    }
+    return result
+}
+
+#local
+fn contains_name([string] names, string value): bool {
+    for name in names {
+        if name == value {
+            return true
+        }
+    }
+    return false
+}
+
+#local
+fn execute_read(string cwd, ref<json.value_t> arguments, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
+    var object = arguments.as_object()
+    string input_path = object['path'].as_string()
+    bool has_offset = object.contains('offset')
+    float offset = 0.0
+    if has_offset {
+        offset = object['offset'].as_number().to_float()
+    }
+    bool has_limit = object.contains('limit')
+    float limit = 0.0
+    if has_limit {
+        limit = object['limit'].as_number().to_float()
+    }
+    return read.execute(cwd, input_path, has_offset, offset, has_limit, limit, cancellation)
+}
+
+#local
+fn execute_write(string cwd, ref<json.value_t> arguments, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
+    var object = arguments.as_object()
+    return write.execute(cwd, object['path'].as_string(), object['content'].as_string(), cancellation)
+}

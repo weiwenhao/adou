@@ -1,0 +1,526 @@
+import adou.src.tui.unicode
+import strings
+
+type ansi_t = struct {
+    bool found
+    string code
+    int length
+}
+
+type slice_t = struct {
+    string text
+    int width
+}
+
+type tracker_t = struct {
+    string sgr_history
+    bool underline
+    string hyperlink
+    string hyperlink_terminator
+}
+
+fn extract_ansi(string text, int position): ansi_t {
+    if position < 0 || position >= text.len() || text[position] != 0x1b || position + 1 >= text.len() {
+        return ansi_t{}
+    }
+    u8 family = text[position + 1]
+    if family == '['.char() {
+        for int cursor = position + 2; cursor < text.len(); cursor += 1 {
+            u8 value = text[cursor]
+            if value >= 0x40 && value <= 0x7e {
+                return ansi_t {found: true, code: text.slice(position, cursor + 1), length: cursor + 1 - position,}
+            }
+        }
+        return ansi_t{}
+    }
+    if family == ']'.char() || family == 'P'.char() || family == '_'.char() {
+        for int cursor = position + 2; cursor < text.len(); cursor += 1 {
+            if text[cursor] == 0x07 {
+                return ansi_t {found: true, code: text.slice(position, cursor + 1), length: cursor + 1 - position,}
+            }
+            if text[cursor] == 0x1b && cursor + 1 < text.len() && text[cursor + 1] == '\\'.char() {
+                return ansi_t {found: true, code: text.slice(position, cursor + 2), length: cursor + 2 - position,}
+            }
+        }
+        return ansi_t{}
+    }
+    if family == 'O'.char() && position + 2 < text.len() {
+        return ansi_t {found: true, code: text.slice(position, position + 3), length: 3,}
+    }
+    return ansi_t {found: true, code: text.slice(position, position + 2), length: 2,}
+}
+
+fn visible_width(string text): int! {
+    if text == '' {
+        return 0
+    }
+    string clean = ''
+    int cursor = 0
+    for cursor < text.len() {
+        var ansi = extract_ansi(text, cursor)
+        if ansi.found {
+            cursor += ansi.length
+            continue
+        }
+        if text[cursor] == '\t'.char() {
+            clean += '   '
+            cursor += 1
+            continue
+        }
+        clean += text.slice(cursor, cursor + 1)
+        cursor += 1
+    }
+    return unicode.visible_width(clean)
+}
+
+fn normalize_terminal_output(string text): string {
+    string result = ''
+    int cursor = 0
+    for cursor < text.len() {
+        var ansi = extract_ansi(text, cursor)
+        if ansi.found {
+            result += ansi.code
+            cursor += ansi.length
+            continue
+        }
+        if cursor + 3 <= text.len() && text.slice(cursor, cursor + 3) == 'ำ' {
+            result += 'ํา'
+            cursor += 3
+            continue
+        }
+        if cursor + 3 <= text.len() && text.slice(cursor, cursor + 3) == 'ຳ' {
+            result += 'ໍາ'
+            cursor += 3
+            continue
+        }
+        result += text[cursor] == '\t'.char() ? '   ' : text.slice(cursor, cursor + 1)
+        cursor += 1
+    }
+    return result
+}
+
+fn truncate_to_width(string text, int maximum, string ellipsis, bool pad): string! {
+    if maximum <= 0 {
+        return ''
+    }
+    int text_width = visible_width(text)
+    if text_width <= maximum {
+        return pad ? text + spaces(maximum - text_width) : text
+    }
+    int ellipsis_width = visible_width(ellipsis)
+    if ellipsis_width >= maximum {
+        var clipped = fragment_to_width(ellipsis, maximum)
+        return pad ? clipped.text + spaces(maximum - clipped.width) : clipped.text
+    }
+    var prefix = fragment_to_width(text, maximum - ellipsis_width)
+    string result = prefix.text + '\x1b[0m' + ellipsis + '\x1b[0m'
+    return pad ? result + spaces(maximum - prefix.width - ellipsis_width) : result
+}
+
+fn slice_with_width(string text, int start_column, int length, bool strict): slice_t! {
+    if length <= 0 {
+        return slice_t{}
+    }
+    int end_column = start_column + length
+    int current_column = 0
+    int cursor = 0
+    string pending_ansi = ''
+    string result = ''
+    int result_width = 0
+    for cursor < text.len() && current_column < end_column {
+        var ansi = extract_ansi(text, cursor)
+        if ansi.found {
+            if current_column >= start_column && current_column < end_column {result += ansi.code} else if current_column < start_column {pending_ansi += ansi.code}
+            cursor += ansi.length
+            continue
+        }
+        int end = next_ansi_or_end(text, cursor)
+        var graphemes = unicode.graphemes(text.slice(cursor, end))
+        for grapheme in graphemes {
+            string value = text.slice(cursor + grapheme.start, cursor + grapheme.end)
+            int width = unicode.grapheme_width(value)
+            bool in_range = current_column >= start_column && current_column < end_column
+            bool fits = !strict || current_column + width <= end_column
+            if in_range && fits {
+                if pending_ansi != '' {
+                    result += pending_ansi
+                    pending_ansi = ''
+                }
+                result += value
+                result_width += width
+            }
+            current_column += width
+            if current_column >= end_column {
+                break
+            }
+        }
+        cursor = end
+    }
+    return slice_t {text: result, width: result_width,}
+}
+
+fn wrap_text_with_ansi(string text, int width): [string]! {
+    if text == '' {
+        return ['']
+    }
+    if width <= 0 {
+        return ['']
+    }
+    [string] result = vec<string>.cap_of(8)
+    var input_lines = split_lines(text)
+    var tracker = new tracker_t()
+    for input_line in input_lines {
+        string prefix = ''
+        if result.len() > 0 {
+            prefix = tracker.active_codes()
+        }
+        var wrapped = wrap_single_line(prefix + input_line, width)
+        for line in wrapped {
+            result.push(line)
+        }
+        tracker.update(input_line)
+    }
+    return result.len() > 0 ? result : ['']
+}
+
+#local
+fn fragment_to_width(string text, int maximum): slice_t! {
+    if maximum <= 0 || text == '' {
+        return slice_t{}
+    }
+    string result = ''
+    string pending_ansi = ''
+    int width = 0
+    int cursor = 0
+    for cursor < text.len() {
+        var ansi = extract_ansi(text, cursor)
+        if ansi.found {
+            pending_ansi += ansi.code
+            cursor += ansi.length
+            continue
+        }
+        if text[cursor] == '\t'.char() {
+            if width + 3 > maximum {
+                break
+            }
+            result += pending_ansi + '\t'
+            pending_ansi = ''
+            width += 3
+            cursor += 1
+            continue
+        }
+        int end = next_ansi_or_tab_or_end(text, cursor)
+        var graphemes = unicode.graphemes(text.slice(cursor, end))
+        bool stopped = false
+        for grapheme in graphemes {
+            string value = text.slice(cursor + grapheme.start, cursor + grapheme.end)
+            int grapheme_width = unicode.grapheme_width(value)
+            if width + grapheme_width > maximum {
+                stopped = true
+                break
+            }
+            result += pending_ansi + value
+            pending_ansi = ''
+            width += grapheme_width
+        }
+        if stopped {
+            break
+        }
+        cursor = end
+    }
+    return slice_t {text: result, width: width,}
+}
+
+#local
+fn wrap_single_line(string line, int width): [string]! {
+    if line == '' {
+        return ['']
+    }
+    if visible_width(line) <= width {
+        return [line]
+    }
+    var tokens = split_tokens(line)
+    [string] result = vec<string>.cap_of(8)
+    var tracker = new tracker_t()
+    string current = ''
+    int current_width = 0
+    for token in tokens {
+        int token_width = visible_width(token)
+        bool whitespace = visible_text_is_spaces(token)
+        if token_width > width && !whitespace {
+            if current != '' {
+                result.push(trim_spaces_end(current) + tracker.line_end_reset())
+                current = ''
+                current_width = 0
+            }
+            var broken = break_long_word(token, width, tracker.sgr_history, tracker.underline, tracker.hyperlink, tracker.hyperlink_terminator)
+            for int index = 0; index < broken.len() - 1; index += 1 {
+                result.push(broken[index])
+            }
+            current = broken[broken.len() - 1]
+            current_width = visible_width(current)
+            tracker.update(token)
+            continue
+        }
+        if current_width + token_width > width && current_width > 0 {
+            result.push(trim_spaces_end(current) + tracker.line_end_reset())
+            if whitespace {
+                current = tracker.active_codes()
+                current_width = 0
+            } else {
+                current = tracker.active_codes() + token
+                current_width = token_width
+            }
+        } else {
+            current += token
+            current_width += token_width
+        }
+        tracker.update(token)
+    }
+    if current != '' {
+        result.push(current)
+    }
+    if result.len() == 0 {
+        result.push('')
+    }
+    for int index = 0; index < result.len(); index += 1 {
+        result[index] = trim_spaces_end(result[index])
+    }
+    return result
+}
+
+#local
+fn split_tokens(string text): [string]! {
+    [string] tokens = vec<string>.cap_of(16)
+    string current = ''
+    string pending_ansi = ''
+    int current_kind = 0
+    int cursor = 0
+    for cursor < text.len() {
+        var ansi = extract_ansi(text, cursor)
+        if ansi.found {
+            pending_ansi += ansi.code
+            cursor += ansi.length
+            continue
+        }
+        int end = next_ansi_or_end(text, cursor)
+        var graphemes = unicode.graphemes(text.slice(cursor, end))
+        for grapheme in graphemes {
+            string value = text.slice(cursor + grapheme.start, cursor + grapheme.end)
+            bool space = value == ' '
+            if !space && unicode.is_cjk_break(value) {
+                if current != '' {
+                    tokens.push(current)
+                    current = ''
+                    current_kind = 0
+                }
+                tokens.push(pending_ansi + value)
+                pending_ansi = ''
+                continue
+            }
+            int kind = space ? 1 : 2
+            if current != '' && current_kind != kind {
+                tokens.push(current)
+                current = ''
+            }
+            current += pending_ansi + value
+            pending_ansi = ''
+            current_kind = kind
+        }
+        cursor = end
+    }
+    if pending_ansi != '' {
+        if current != '' {current += pending_ansi} else if tokens.len() > 0 {tokens[tokens.len() - 1] += pending_ansi} else {current = pending_ansi}
+    }
+    if current != '' {
+        tokens.push(current)
+    }
+    return tokens
+}
+
+#local
+fn break_long_word(string word, int width, string sgr_history, bool underline, string hyperlink, string hyperlink_terminator): [string]! {
+    [string] lines = vec<string>.cap_of(8)
+    var tracker = new tracker_t(sgr_history = sgr_history, underline = underline, hyperlink = hyperlink, hyperlink_terminator = hyperlink_terminator)
+    string current = tracker.active_codes()
+    int current_width = 0
+    int cursor = 0
+    for cursor < word.len() {
+        var ansi = extract_ansi(word, cursor)
+        if ansi.found {
+            current += ansi.code
+            tracker.process(ansi.code)
+            cursor += ansi.length
+            continue
+        }
+        int end = next_ansi_or_end(word, cursor)
+        var graphemes = unicode.graphemes(word.slice(cursor, end))
+        for grapheme in graphemes {
+            string value = word.slice(cursor + grapheme.start, cursor + grapheme.end)
+            int grapheme_width = unicode.grapheme_width(value)
+            if current_width + grapheme_width > width && current_width > 0 {
+                lines.push(current + tracker.line_end_reset())
+                current = tracker.active_codes()
+                current_width = 0
+            }
+            current += value
+            current_width += grapheme_width
+        }
+        cursor = end
+    }
+    if current != '' {
+        lines.push(current)
+    }
+    return lines.len() > 0 ? lines : ['']
+}
+
+#local
+fn tracker_t.update(&self, string text) {
+    int cursor = 0
+    for cursor < text.len() {
+        var ansi = extract_ansi(text, cursor)
+        if ansi.found {
+            self.process(ansi.code)
+            cursor += ansi.length
+        } else {
+            cursor += 1
+        }
+    }
+}
+
+#local
+fn tracker_t.process(&self, string code) {
+    if code.contains('\x1b]8;') {
+        bool close = code.contains('\x1b]8;;\x07') || code.contains('\x1b]8;;\x1b\\')
+        if close {
+            self.hyperlink = ''
+            self.hyperlink_terminator = ''
+        } else {
+            self.hyperlink = code
+            self.hyperlink_terminator = code.len() > 0 && code[code.len() - 1] == 0x07 ? '\x07' : '\x1b\\'
+        }
+        return
+    }
+    if code.len() < 3 || code[1] != '['.char() || code[code.len() - 1] != 'm'.char() {
+        return
+    }
+    string parameters = code.slice(2, code.len() - 1)
+    bool full_reset = parameters == ''
+    var parts = parameters.split(';')
+    for part in parts {
+        int value = parse_sgr_value(part)
+        if value == 0 {
+            full_reset = true
+            self.underline = false
+        } else if value == 4 {
+            self.underline = true
+        } else if value == 24 {
+            self.underline = false
+        }
+    }
+    self.sgr_history = full_reset ? code : self.sgr_history + code
+}
+
+#local
+fn tracker_t.active_codes(&self): string {
+    return self.sgr_history + self.hyperlink
+}
+
+#local
+fn tracker_t.line_end_reset(&self): string {
+    string result = self.underline ? '\x1b[24m' : ''
+    if self.hyperlink != '' {
+        result += '\x1b]8;;' + self.hyperlink_terminator
+    }
+    return result
+}
+
+#local
+fn split_lines(string text): [string] {
+    [string] result = vec<string>.cap_of(8)
+    int start = 0
+    int cursor = 0
+    for cursor < text.len() {
+        if text[cursor] == '\r'.char() || text[cursor] == '\n'.char() {
+            result.push(text.slice(start, cursor))
+            if text[cursor] == '\r'.char() && cursor + 1 < text.len() && text[cursor + 1] == '\n'.char() {
+                cursor += 1
+            }
+            start = cursor + 1
+        }
+        cursor += 1
+    }
+    result.push(text.slice(start, text.len()))
+    return result
+}
+
+#local
+fn next_ansi_or_end(string text, int start): int {
+    int cursor = start
+    for cursor < text.len() {
+        if text[cursor] == 0x1b {
+            break
+        }
+        cursor += 1
+    }
+    return cursor
+}
+
+#local
+fn next_ansi_or_tab_or_end(string text, int start): int {
+    int cursor = start
+    for cursor < text.len() {
+        if text[cursor] == 0x1b || text[cursor] == '\t'.char() {
+            break
+        }
+        cursor += 1
+    }
+    return cursor
+}
+
+#local
+fn visible_text_is_spaces(string text): bool {
+    int cursor = 0
+    bool saw = false
+    for cursor < text.len() {
+        var ansi = extract_ansi(text, cursor)
+        if ansi.found {
+            cursor += ansi.length
+            continue
+        }
+        saw = true
+        if text[cursor] != ' '.char() && text[cursor] != '\t'.char() {
+            return false
+        }
+        cursor += 1
+    }
+    return saw
+}
+
+#local
+fn trim_spaces_end(string text): string {
+    int end = text.len()
+    for end > 0 && (text[end - 1] == ' '.char() || text[end - 1] == '\t'.char()) {
+        end -= 1
+    }
+    return text.slice(0, end)
+}
+
+#local
+fn spaces(int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += ' '
+    }
+    return result
+}
+
+#local
+fn parse_sgr_value(string value): int {
+    if value == '' {
+        return 0
+    }
+    return value.to_int() catch e {
+        return -1
+    }
+}

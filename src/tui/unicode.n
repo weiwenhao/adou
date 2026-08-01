@@ -1,0 +1,88 @@
+type segment_t = struct {
+    int start
+    int end
+    bool word_like
+}
+
+#linkid adou_icu_available
+fn icu_available(): bool
+
+#linkid adou_icu_grapheme_breaks
+fn grapheme_breaks_raw(anyptr text, int length, anyptr boundaries, int capacity): int
+
+#linkid adou_icu_word_segments
+fn word_segments_raw(anyptr text, int length, anyptr starts, anyptr ends, anyptr word_like, int capacity): int
+
+#linkid adou_icu_grapheme_width
+fn grapheme_width_raw(anyptr text, int length): int
+
+#linkid adou_icu_visible_width
+fn visible_width_raw(anyptr text, int length): int
+
+#linkid adou_icu_is_cjk_break
+fn is_cjk_break_raw(anyptr text, int length): bool
+
+fn require_icu(): void! {
+    if !icu_available() {
+        throw errorf('ICU4C is required for terminal Unicode segmentation and width')
+    }
+}
+
+fn graphemes(string text): [segment_t]! {
+    require_icu()
+    if text == '' {
+        return []
+    }
+    [int] boundaries = vec<int>.new(0, text.len() + 1)
+    int count = grapheme_breaks_raw(text.ref(), text.len(), boundaries.ref(), boundaries.len())
+    if count < 2 {
+        throw errorf('ICU grapheme segmentation failed: %d', count)
+    }
+    [segment_t] result = vec<segment_t>.cap_of(count - 1)
+    for int index = 0; index < count - 1; index += 1 {
+        result.push(segment_t {start: boundaries[index], end: boundaries[index + 1],})
+    }
+    return result
+}
+
+fn words(string text): [segment_t]! {
+    require_icu()
+    if text == '' {
+        return []
+    }
+    [int] starts = vec<int>.new(0, text.len() + 1)
+    [int] ends = vec<int>.new(0, text.len() + 1)
+    [u8] word_like = vec<u8>.new(0, text.len() + 1)
+    int count = word_segments_raw(text.ref(), text.len(), starts.ref(), ends.ref(), word_like.ref(), starts.len())
+    if count < 0 {
+        throw errorf('ICU word segmentation failed: %d', count)
+    }
+    [segment_t] result = vec<segment_t>.cap_of(count)
+    for int index = 0; index < count; index += 1 {
+        result.push(segment_t {start: starts[index], end: ends[index], word_like: word_like[index] != 0,})
+    }
+    return result
+}
+
+fn grapheme_width(string text): int! {
+    require_icu()
+    int result = grapheme_width_raw(text.ref(), text.len())
+    if result < 0 {
+        throw errorf('ICU grapheme width failed')
+    }
+    return result
+}
+
+fn visible_width(string text): int! {
+    require_icu()
+    int result = visible_width_raw(text.ref(), text.len())
+    if result < 0 {
+        throw errorf('ICU visible width failed')
+    }
+    return result
+}
+
+fn is_cjk_break(string text): bool! {
+    require_icu()
+    return text != '' && is_cjk_break_raw(text.ref(), text.len())
+}

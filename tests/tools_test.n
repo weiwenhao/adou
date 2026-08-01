@@ -1,0 +1,209 @@
+import adou.src.ai.abort
+import adou.src.agent.types as agent_types
+import adou.src.tools.command as command
+import adou.src.tools.path_utils
+import adou.src.tools.read
+import adou.src.tools.shell_tools
+import adou.src.tools.truncate
+import adou.src.tools.types as tool_types
+import adou.src.tools.write
+import adou.src.unicode.utf8
+import fs
+import json
+import os
+import syscall
+
+fn text(ref<tool_types.tool_result_t> result): string {
+    return result.content[0].text
+}
+
+fn value_ref(json.value_t value): ref<json.value_t> {
+    return new json.value_t(kind = value.kind, boolean = value.boolean, number = value.number, text = value.text, array = value.array, object = value.object)
+}
+
+fn write_fixture(string file_path, [u8] content): void! {
+    os.mkdirs(path_utils.clean(file_path + '/..'), 0o755)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    file.write(content)
+    file.close()
+}
+
+test 'UTF-8 replacement and Pi UTF-16 length semantics' {
+    assert(utf8.replacement_decode([0x61, 0xe2, 0x82, 0x28, 0xff]) == 'a\xef\xbf\xbd(\xef\xbf\xbd')
+    assert(utf8.utf16_length('A\xe4\xb8\xad\xf0\x9f\x98\x80') == 4)
+}
+
+test 'path resolution expands tilde strips at and cleans dot segments' {
+    string home = syscall.get_env('HOME')
+    assert(path_utils.resolve_to_cwd('@a/../b.txt', '/tmp/project') == '/tmp/project/b.txt')
+    assert(path_utils.resolve_to_cwd('~/file.txt', '/tmp/project') == home + '/file.txt')
+    assert(path_utils.resolve_to_cwd('/tmp/a/../../b', '/ignored') == '/b')
+}
+
+test 'truncate head preserves complete lines and identifies first oversized line' {
+    var line_limited = truncate.head_with_limits('a\nb\nc', 2, 100)
+    assert(line_limited.content == 'a\nb')
+    assert(line_limited.truncated && line_limited.truncated_by == 'lines')
+    var byte_limited = truncate.head_with_limits('abcd\nef', 10, 3)
+    assert(byte_limited.first_line_exceeds_limit)
+}
+
+test 'truncate tail preserves the final lines for shell output' {
+    var value = truncate.tail_with_limits('one\ntwo\nthree\nfour', 2, 100)
+    assert(value.content == 'three\nfour')
+    assert(value.truncated && value.truncated_by == 'lines')
+    var long_tail = truncate.tail_with_limits('prefix\nabcdefghij', 20, 4)
+    assert(long_tail.content == 'ghij' && long_tail.last_line_partial)
+}
+
+test 'truncate tail never splits a UTF-8 code point' {
+    var value = truncate.tail_with_limits('prefix\n\xe4\xb8\xad\xe6\x96\x87', 20, 4)
+    assert(value.truncated && value.last_line_partial)
+    assert(utf8.is_valid(value.content))
+    assert(value.content == '\xe6\x96\x87')
+}
+
+test 'read preserves Pi truncation details for an oversized first line' {
+    string root = '/tmp/adou-tools-test-truncation-details'
+    os.rmdir(root, true) catch error {}
+    string long_line = ''
+    for int index = 0; index < truncate.DEFAULT_MAX_BYTES + 1; index += 1 {
+        long_line += 'x'
+    }
+    write_fixture(root + '/value.txt', long_line as [u8])
+    var result = read.execute(root, 'value.txt', false, 0.0, false, 0.0, abort.new())
+    var details = result.details.as_object()
+    var truncation = details['truncation'].as_object()
+    assert(truncation['truncated'].boolean && truncation['firstLineExceedsLimit'].boolean)
+    assert(truncation['maxBytes'].as_number().to_int() == truncate.DEFAULT_MAX_BYTES)
+    os.rmdir(root, true)
+}
+
+test 'write creates parents and reports Pi JavaScript string length' {
+    string root = '/tmp/adou-tools-test-write'
+    os.rmdir(root, true) catch e {}
+    var cancellation = abort.new()
+    var result = write.execute(root, 'nested/value.txt', '\xe4\xb8\xad\xf0\x9f\x98\x80', cancellation)
+    assert(result.content[0].text == 'Successfully wrote 3 bytes to nested/value.txt')
+    var file = fs.open(root + '/nested/value.txt', syscall.O_RDONLY, 0)
+    assert(file.content() == '\xe4\xb8\xad\xf0\x9f\x98\x80')
+    file.close()
+    os.rmdir(root, true)
+}
+
+test 'read honors offset user limit and continuation notice' {
+    string root = '/tmp/adou-tools-test-read'
+    os.rmdir(root, true) catch e {}
+    write_fixture(root + '/value.txt', 'one\ntwo\nthree\nfour' as [u8])
+    var result = read.execute(root, 'value.txt', true, 2.0, true, 2.0, abort.new())
+    assert(result.content[0].text == 'two\nthree\n\n[1 more lines in file. Use offset=4 to continue.]')
+    bool failed = false
+    read.execute(root, 'value.txt', true, 6.0, false, 0.0, abort.new()) catch e {
+        failed = e.msg() == 'Offset 6 is beyond end of file (4 lines total)'
+        tool_types.tool_result_t{}
+    }
+    assert(failed)
+    os.rmdir(root, true)
+}
+
+test 'read preserves Pi fractional offset and negative limit behavior' {
+    string root = '/tmp/adou-tools-test-number-semantics'
+    os.rmdir(root, true) catch e {}
+    write_fixture(root + '/value.txt', 'one\ntwo\nthree\nfour' as [u8])
+    var fractional = read.execute(root, 'value.txt', true, 1.5, true, 1.5, abort.new())
+    assert(fractional.content[0].text == 'one\ntwo\n\n[2 more lines in file. Use offset=3 to continue.]')
+    var negative = read.execute(root, 'value.txt', false, 0.0, true, -1.0, abort.new())
+    assert(negative.content[0].text == 'one\ntwo\nthree\n\n[5 more lines in file. Use offset=0 to continue.]')
+    os.rmdir(root, true)
+}
+
+test 'read decodes invalid UTF-8 with replacement characters' {
+    string root = '/tmp/adou-tools-test-invalid'
+    os.rmdir(root, true) catch e {}
+    write_fixture(root + '/value.txt', [0x61, 0xff, 0x62])
+    var result = read.execute(root, 'value.txt', false, 0.0, false, 0.0, abort.new())
+    assert(result.content[0].text == 'a\xef\xbf\xbdb')
+    os.rmdir(root, true)
+}
+
+test 'read accepts an empty file and reports an explicit offset consistently' {
+    string root = '/tmp/adou-tools-test-empty'
+    os.rmdir(root, true) catch error {}
+    [u8] empty = []
+    write_fixture(root + '/empty.txt', empty)
+    var result = read.execute(root, 'empty.txt', false, 0.0, false, 0.0, abort.new())
+    assert(result.content[0].text == '')
+    bool failed = false
+    read.execute(root, 'empty.txt', true, 2.0, false, 0.0, abort.new()) catch e {
+        failed = e.msg() == 'Offset 2 is beyond end of file (1 lines total)'
+        tool_types.tool_result_t{}
+    }
+    assert(failed)
+    os.rmdir(root, true)
+}
+
+test 'read rejects image content explicitly' {
+    string root = '/tmp/adou-tools-test-image'
+    os.rmdir(root, true) catch e {}
+    write_fixture(root + '/value.bin', [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    bool failed = false
+    read.execute(root, 'value.bin', false, 0.0, false, 0.0, abort.new()) catch e {
+        failed = e.msg().contains('does not support image reading')
+        tool_types.tool_result_t{}
+    }
+    assert(failed)
+    os.rmdir(root, true)
+}
+
+test 'bash publishes partial output while the child is still running' {
+    var executor = new shell_tools.bash_executor_t(cwd = '/tmp')
+    var arguments = value_ref(json.parse('{"command":"printf first; sleep 0.2; printf second"}'))
+    int update_count = 0
+    agent_types.tool_update_fn on_update = fn(tool_types.tool_result_t partial) {
+        update_count += 1
+    }
+    var result = executor.execute('stream-test', arguments, abort.new(), on_update)
+    assert(result.content[0].text.contains('first'))
+    assert(result.content[0].text.contains('second'))
+    assert(update_count >= 2)
+}
+
+test 'interactive bash stream forwards chunks and preserves the final result' {
+    [string] chunks = []
+    command.output_chunk_fn on_chunk = fn(string chunk) {
+        chunks.push(chunk)
+    }
+    var result = shell_tools.execute_bash_stream('/tmp', 'printf alpha; sleep 0.1; printf beta', 0, abort.new(), on_chunk)
+    assert(result.output.contains('alpha') && result.output.contains('beta'))
+    assert(chunks.len() >= 1)
+    string streamed = ''
+    for chunk in chunks {
+        streamed += chunk
+    }
+    assert(streamed.contains('alpha') && streamed.contains('beta'))
+}
+
+test 'bash output strips ANSI and terminal control sequences before storage' {
+    string value = command.sanitize_output('\x1b[31mred\x1b[0m\x1b]0;title\x07\x01\n')
+    assert(value == 'red\n')
+    [string] chunks = []
+    command.output_chunk_fn on_chunk = fn(string chunk) {chunks.push(chunk)}
+    var streamed = shell_tools.execute_bash_stream('/tmp', "printf '\\033[31mred'; sleep 0.1; printf '\\033[0mblue\\001\\n'", 0, abort.new(), on_chunk)
+    assert(streamed.output == 'redblue')
+    string joined = ''
+    for chunk in chunks {
+        joined += chunk
+    }
+    assert(joined == 'redblue\n')
+}
+
+test 'bash executor uses bash semantics rather than sh compatibility mode' {
+    var result = shell_tools.execute_bash_stream('/tmp', 'if [[ -n "ok" ]]; then printf bash; fi', 0, abort.new(), fn(string chunk) {})
+    assert(result.output == 'bash')
+}
+
+test 'bash receives Pi session and model environment metadata' {
+    command.configure_agent_environment('session-123', '/tmp/session.jsonl', 'deepseek', 'deepseek-v4-flash', 'medium')
+    var result = shell_tools.execute_bash_stream('/tmp', 'printf "$PI_SESSION_ID|$PI_SESSION_FILE|$PI_PROVIDER|$PI_MODEL|$PI_REASONING_LEVEL"', 0, abort.new(), fn(string chunk) {})
+    assert(result.output == 'session-123|/tmp/session.jsonl|deepseek|deepseek-v4-flash|medium')
+}

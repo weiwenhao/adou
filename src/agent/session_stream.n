@@ -1,0 +1,132 @@
+import adou.src.agent.types as agent_types
+import adou.src.ai.abort
+import adou.src.ai.types as ai_types
+import co.mutex
+
+const EVENT_COMPACTION_START = 'compaction_start'
+const EVENT_COMPACTION_END = 'compaction_end'
+const EVENT_BRANCH_SUMMARY_START = 'branch_summary_start'
+const EVENT_BRANCH_SUMMARY_END = 'branch_summary_end'
+const EVENT_SESSION_END = 'session_end'
+const EVENT_BASH_START = 'bash_start'
+const EVENT_BASH_UPDATE = 'bash_update'
+const EVENT_BASH_END = 'bash_end'
+const EVENT_RETRY_START = 'retry_start'
+const EVENT_RETRY_END = 'retry_end'
+
+type event_t = struct {
+    string kind
+    bool has_agent_event
+    agent_types.agent_event_t agent_event
+    string reason
+    bool aborted
+    bool will_retry
+    string error_message
+    string summary
+    int tokens_before
+    int estimated_tokens_after
+    string bash_command
+    string bash_output
+    int bash_exit_code = -1
+    bool bash_cancelled
+    bool bash_timed_out
+    bool bash_truncated
+    string bash_full_output_path
+    bool bash_exclude_from_context
+    int retry_attempt
+    int retry_max_attempts
+    int retry_delay_ms
+    string retry_error_message
+    bool retry_success
+    string retry_final_error
+}
+
+type stream_t = struct {
+    chan<event_t> events
+    chan<u8> done
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    ref<abort.abort_t> cancellation = abort.new()
+    [ai_types.message_t] final_context = []
+    bool terminal
+    bool ended
+    string failure
+}
+
+fn new(): ref<stream_t> {
+    return new stream_t(events = chan<event_t>.new(128), done = chan<u8>.new())
+}
+
+fn stream_t.push(&self, event_t event): void! {
+    self.lock.lock()
+    if self.terminal || self.ended {
+        self.lock.unlock()
+        return
+    }
+    self.lock.unlock()
+    self.events.send(event)
+}
+
+fn stream_t.finish(&self, [ai_types.message_t] context): void! {
+    self.lock.lock()
+    if self.terminal || self.ended {
+        self.lock.unlock()
+        return
+    }
+    self.final_context = context
+    self.terminal = true
+    self.lock.unlock()
+    self.events.send(event_t {kind: EVENT_SESSION_END,})
+    self.done.close()
+    self.end()
+}
+
+fn stream_t.recv(&self): event_t! {
+    return self.events.recv()
+}
+
+fn stream_t.result(&self): [ai_types.message_t]! {
+    self.lock.lock()
+    bool ready = self.terminal
+    self.lock.unlock()
+    if !ready {
+        self.done.recv() catch error {0}
+    }
+    self.lock.lock()
+    var result = self.final_context
+    ready = self.terminal
+    string failure = self.failure
+    self.lock.unlock()
+    if !ready {
+        if failure != '' {
+            throw errorf('%s', failure)
+        }
+        throw errorf('session stream ended without session_end')
+    }
+    return result
+}
+
+fn stream_t.abort(&self) {
+    self.cancellation.abort()
+}
+
+fn stream_t.fail(&self, string message): void! {
+    self.lock.lock()
+    self.failure = message
+    self.lock.unlock()
+    self.end()
+}
+
+fn stream_t.end(&self): void! {
+    self.lock.lock()
+    if self.ended {
+        self.lock.unlock()
+        return
+    }
+    self.ended = true
+    bool terminal = self.terminal
+    self.lock.unlock()
+    self.events.close()
+    if !terminal {
+        self.done.close()
+    }
+}

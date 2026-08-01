@@ -1,0 +1,190 @@
+import fmt
+import json
+const EVENT_START = 'start'
+const EVENT_TEXT_START = 'text_start'
+const EVENT_TEXT_DELTA = 'text_delta'
+const EVENT_TEXT_END = 'text_end'
+const EVENT_THINKING_START = 'thinking_start'
+const EVENT_THINKING_DELTA = 'thinking_delta'
+const EVENT_THINKING_END = 'thinking_end'
+const EVENT_TOOLCALL_START = 'toolcall_start'
+const EVENT_TOOLCALL_DELTA = 'toolcall_delta'
+const EVENT_TOOLCALL_END = 'toolcall_end'
+const EVENT_DONE = 'done'
+const EVENT_ERROR = 'error'
+const STOP_PENDING = 'pending'
+const STOP_STOP = 'stop'
+const STOP_LENGTH = 'length'
+const STOP_TOOL_USE = 'toolUse'
+const STOP_ERROR = 'error'
+const STOP_ABORTED = 'aborted'
+type cost_tier_t = struct {
+    int input_tokens_above
+    float input
+    float output
+    float cache_read
+    float cache_write
+}
+type cost_t = struct {
+    float input
+    float output
+    float cache_read
+    float cache_write
+    float total
+    [cost_tier_t] tiers = []
+}
+type usage_t = struct {
+    int input
+    int output
+    int cache_read
+    int cache_write
+    int cache_write_1h
+    int reasoning
+    int total_tokens
+    cost_t cost
+}
+type text_content_t = struct {
+    string text
+    string text_signature
+}
+type thinking_content_t = struct {
+    string thinking
+    string thinking_signature
+    bool redacted
+}
+type tool_call_t = struct {
+    string id
+    string name
+    json.value_t arguments
+    string partial_json
+}
+type content_t = ref<text_content_t>| ref<thinking_content_t>| ref<tool_call_t>
+type assistant_message_t = struct {
+    string role = 'assistant'
+    [content_t] content = []
+    string api
+    string provider
+    string model
+    string response_id
+    usage_t usage
+    string stop_reason = STOP_PENDING
+    string error_message
+    int timestamp
+}
+type user_message_t = struct {
+    string role = 'user'
+    string content
+    int timestamp
+}
+type tool_result_message_t = struct {
+    string role = 'toolResult'
+    string tool_call_id
+    string tool_name
+    [ref<text_content_t>] content = []
+    json.value_t details
+    usage_t usage
+    [string] added_tool_names = []
+    bool is_error
+    int timestamp
+}
+type compaction_summary_message_t = struct {
+    string role = 'compactionSummary'
+    string summary
+    int tokens_before
+    int timestamp
+}
+type branch_summary_message_t = struct {
+    string role = 'branchSummary'
+    string summary
+    string from_id
+    int timestamp
+}
+type custom_message_t = struct {
+    string role = 'custom'
+    string custom_type
+    string content
+    bool display
+    json.value_t details
+    int timestamp
+}
+type bash_execution_message_t = struct {
+    string role = 'bashExecution'
+    string command
+    string output
+    int exit_code = -1
+    bool cancelled
+    bool truncated
+    string full_output_path
+    bool exclude_from_context
+    int timestamp
+}
+type message_t = ref<user_message_t>| ref<assistant_message_t>| ref<tool_result_message_t>| ref<compaction_summary_message_t>| ref<branch_summary_message_t>| ref<custom_message_t>| ref<bash_execution_message_t>
+type tool_t = struct {
+    string name
+    string description
+    json.value_t parameters
+    bool sequential
+}
+type context_t = struct {
+    string system_prompt
+    [message_t] messages = []
+    [ref<tool_t>] tools = []
+}
+type model_t = struct {
+    string id
+    string api
+    string provider
+    string base_url
+    bool reasoning
+    bool adaptive_thinking
+    bool supports_long_cache_retention = true
+    bool supports_eager_tool_streaming = true
+    int context_window
+    int max_tokens
+    cost_t cost
+}
+type stream_options_t = struct {
+    string api_key
+    int timeout_ms = 120000
+    int max_tokens
+    int max_retries = 2
+    int max_retry_delay_ms = 60000
+    string session_id
+    string reasoning_effort
+    string reasoning_summary = 'auto'
+    bool thinking_enabled
+    int thinking_budget_tokens = 1024
+    string thinking_display = 'summarized'
+    string cache_retention = 'short'
+}
+// assistant_event_t mirrors Pi's AssistantMessageEvent protocol. Only fields
+// meaningful for a particular event type are populated.
+type assistant_event_t = struct {
+    string kind
+    int content_index = -1
+    string delta
+    string content
+    string reason
+    ref<assistant_message_t>? partial = null
+    ref<assistant_message_t>? message = null
+    ref<assistant_message_t>? error = null
+    ref<tool_call_t>? tool_call = null
+}
+
+fn bash_execution_text(ref<bash_execution_message_t> message): string {
+    string text = 'Ran `' + message.command + '`\n'
+    if message.output != '' {
+        text += '```\n' + message.output + '\n```'
+    } else {
+        text += '(no output)'
+    }
+    if message.cancelled {
+        text += '\n\n(command cancelled)'
+    } else if message.exit_code >= 0 && message.exit_code != 0 {
+        text += '\n\nCommand exited with code ' + fmt.sprintf('%d', message.exit_code)
+    }
+    if message.truncated && message.full_output_path != '' {
+        text += '\n\n[Output truncated. Full output: ' + message.full_output_path + ']'
+    }
+    return text
+}

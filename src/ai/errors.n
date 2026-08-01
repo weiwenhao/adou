@@ -1,0 +1,43 @@
+import adou.src.ai.types
+
+fn is_retryable_assistant_error(ref<types.assistant_message_t> message): bool {
+    if message.stop_reason != types.STOP_ERROR || message.error_message == '' {
+        return false
+    }
+    string error_message = message.error_message.to_lower()
+    [string] non_retryable = ['gousagelimiterror', 'freeusagelimiterror', 'monthly usage limit reached', 'available balance', 'insufficient_quota', 'out of budget', 'quota exceeded', 'billing']
+    if contains_any(error_message, non_retryable) {
+        return false
+    }
+    [string] retryable = ['overloaded', 'rate limit', 'rate-limit', 'too many requests', '429', '500', '502', '503', '504', '524', 'service unavailable', 'server error', 'internal error', 'provider returned error', 'network error', 'connection error', 'connection refused', 'connection lost', 'other side closed', 'fetch failed', 'getaddrinfo', 'enotfound', 'eai_again', 'upstream connect', 'reset before headers', 'socket hang up', 'socket connection was closed', 'timed out', 'timeout', 'terminated', 'websocket closed', 'websocket error', 'ended without', 'stream ended before message_stop', 'stream ended before a terminal response event', 'http2 request did not get a response', 'retry delay', 'you can retry your request', 'try your request again', 'please retry your request', 'resourceexhausted']
+    return contains_any(error_message, retryable)
+}
+
+fn is_context_overflow(ref<types.assistant_message_t> message, int context_window): bool {
+    string error_message = message.error_message.to_lower()
+    if message.stop_reason == types.STOP_ERROR && error_message != '' {
+        [string] exclusions = ['throttling error:', 'service unavailable:', 'rate limit', 'too many requests']
+        [string] overflow = ['prompt is too long', 'request_too_large', 'input is too long for requested model', 'exceeds the context window', 'maximum context length', 'input token count', 'maximum prompt length', 'reduce the length of the messages', 'maximum allowed input length', 'longer than the model', 'exceeds the limit', 'exceeds the available context size', 'greater than the context length', 'context window exceeds limit', 'exceeded model token limit', 'too large for model', 'configured context size', 'model_context_window_exceeded', 'prompt too long', 'range of input length should be', 'context_length_exceeded', 'context length exceeded', 'too many tokens', 'token limit exceeded', '400 status code (no body)', '413 status code (no body)']
+        if !contains_any(error_message, exclusions) && contains_any(error_message, overflow) {
+            return true
+        }
+    }
+    int input_tokens = message.usage.input + message.usage.cache_read
+    if context_window > 0 && message.stop_reason == types.STOP_STOP && input_tokens > context_window {
+        return true
+    }
+    if context_window > 0 && message.stop_reason == types.STOP_LENGTH && message.usage.output == 0 && input_tokens * 100 >= context_window * 99 {
+        return true
+    }
+    return false
+}
+
+#local
+fn contains_any(string value, [string] patterns): bool {
+    for pattern in patterns {
+        if value.contains(pattern) {
+            return true
+        }
+    }
+    return false
+}

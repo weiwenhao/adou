@@ -1,0 +1,54 @@
+import adou.src.ai.abort
+import adou.src.tools.mutation_queue
+import adou.src.tools.path_utils
+import adou.src.tools.types as tool_types
+import adou.src.unicode.utf8
+import fmt
+import fs
+import os
+import path
+import syscall
+
+fn execute(string cwd, string input_path, string content, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
+    string absolute_path = path_utils.resolve_to_cwd(input_path, cwd)
+    var acquired = mutation_queue.acquire(absolute_path)
+    string key = acquired[0]
+    ref<mutation_queue.entry_t> entry = acquired[1]
+    var result = execute_locked(absolute_path, input_path, content, cancellation) catch e {
+        mutation_queue.release(key, entry)
+        throw e
+    }
+    mutation_queue.release(key, entry)
+    return result
+}
+
+#local
+fn execute_locked(string absolute_path, string input_path, string content, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
+    throw_if_aborted(cancellation)
+    os.mkdirs(path.dir(absolute_path), 0o755)
+    throw_if_aborted(cancellation)
+    var file = fs.open(absolute_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    var bytes = content as [u8]
+    int written = 0
+    for written < bytes.len() {
+        int count = file.write_at(bytes.slice(written, bytes.len()), written) catch e {
+            file.close()
+            throw e
+        }
+        if count <= 0 {
+            file.close()
+            throw errorf('Incomplete write to %s', input_path)
+        }
+        written += count
+    }
+    file.close()
+    throw_if_aborted(cancellation)
+    return tool_types.text_result(fmt.sprintf('Successfully wrote %d bytes to %s', utf8.utf16_length(content), input_path))
+}
+
+#local
+fn throw_if_aborted(ref<abort.abort_t> cancellation): void! {
+    if cancellation.is_aborted() {
+        throw errorf('Operation aborted')
+    }
+}

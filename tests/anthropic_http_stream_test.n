@@ -1,0 +1,207 @@
+import adou.src.ai.providers.anthropic_provider
+import adou.src.ai.types
+import co
+import fmt
+import http
+import net.tcp
+
+const SUCCESS_PORT = 18772
+const RETRY_PORT = 18773
+const STREAM_ERROR_PORT = 18774
+const EOF_PORT = 18775
+const ABORT_PORT = 18776
+const TIMEOUT_PORT = 18777
+type capture_t = struct {
+    string body
+    string api_key
+    string version
+    string beta
+    int attempts
+}
+
+fn serve_http(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+fn model(int port): ref<types.model_t> {
+    return new types.model_t(id = 'claude-sonnet-4-5', api = 'anthropic-messages', provider = 'anthropic', base_url = fmt.sprintf('http://127.0.0.1:%d/v1', port), max_tokens = 128,)
+}
+
+fn context(): ref<types.context_t> {
+    var context = new types.context_t(system_prompt = 'system')
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    return context
+}
+
+fn success_sse(): string {
+    string body = ''
+    body += 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_http","usage":{"input_tokens":3,"output_tokens":0}}}\n\n'
+    body += 'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+    body += 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好"}}\n\n'
+    body += 'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
+    body += 'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n'
+    body += 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    return body
+}
+
+fn serve_abort_fixture(): void! {
+    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', ABORT_PORT))
+    var conn = server.accept()
+    var request = vec<u8>.new(0, 4096)
+    conn.read(request)
+    conn.write(('HTTP/1.1 200 OK\r\n' + 'Transfer-Encoding: chunked\r\n' + 'Content-Type: text/event-stream\r\n' + '\r\n') as [u8])
+    co.sleep(500)
+    conn.close()
+    server.close()
+}
+
+fn serve_timeout_fixture(): void! {
+    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', TIMEOUT_PORT))
+    var conn = server.accept()
+    var request = vec<u8>.new(0, 4096)
+    conn.read(request)
+    co.sleep(200)
+    conn.close()
+    server.close()
+}
+
+test 'streams a real Anthropic HTTP response with official headers' {
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = SUCCESS_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.body = request.body
+        capture.api_key = request.headers['x-api-key'] catch e {''}
+        capture.version = request.headers['anthropic-version'] catch e {''}
+        capture.beta = request.headers['anthropic-beta'] catch e {''}
+        response.content_type = 'text/event-stream'
+        response.send(success_sse())
+        server.close()
+    }
+    server.post('/v1/messages', handler)
+    go serve_http(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'test-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = anthropic_provider.stream(model(SUCCESS_PORT), context(), options)
+    [string] kinds = []
+    for true {
+        var event = stream.recv()
+        kinds.push(event.kind)
+        if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
+            break
+        }
+    }
+    var result = stream.result()
+    assert(kinds.len() == 5)
+    assert(kinds[0] == types.EVENT_START)
+    assert(kinds[1] == types.EVENT_TEXT_START)
+    assert(kinds[2] == types.EVENT_TEXT_DELTA)
+    assert(kinds[3] == types.EVENT_TEXT_END)
+    assert(kinds[4] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    var text = result.content[0] as ref<types.text_content_t>
+    assert(text.text == '你好')
+    assert(result.response_id == 'msg_http')
+    assert(result.usage.total_tokens == 5)
+    assert(capture.api_key == 'test-key')
+    assert(capture.version == '2023-06-01')
+    assert(capture.body.find('"stream":true') >= 0)
+    assert(capture.body.find('"system"') >= 0)
+}
+
+test 'retries a retryable Anthropic HTTP response before start' {
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = RETRY_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.attempts += 1
+        if capture.attempts == 1 {
+            response.status = 529
+            response.message = 'Overloaded'
+            response.headers['Retry-After-Ms'] = '1'
+            response.send('{"error":{"type":"overloaded_error","message":"busy"}}')
+            return
+        }
+        response.content_type = 'text/event-stream'
+        response.send(success_sse())
+        server.close()
+    }
+    server.post('/v1/messages', handler)
+    go serve_http(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'test-key', timeout_ms = 5000, max_retries = 2,)
+    var stream = anthropic_provider.stream(model(RETRY_PORT), context(), options)
+    var first = stream.recv()
+    assert(first.kind == types.EVENT_START)
+    var result = stream.result()
+    assert(capture.attempts == 2)
+    assert(result.stop_reason == types.STOP_STOP)
+}
+
+test 'normalizes an Anthropic SSE error event' {
+    var server = http.server()
+    server.port = STREAM_ERROR_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        response.content_type = 'text/event-stream'
+        response.send('event: error\ndata: {"type":"error","error":{"type":"overloaded_error","message":"busy"}}\n\n')
+        server.close()
+    }
+    server.post('/v1/messages', handler)
+    go serve_http(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'test-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = anthropic_provider.stream(model(STREAM_ERROR_PORT), context(), options)
+    assert(stream.recv().kind == types.EVENT_START)
+    var event = stream.recv()
+    var result = stream.result()
+    assert(event.kind == types.EVENT_ERROR)
+    assert(result.stop_reason == types.STOP_ERROR)
+    assert(result.error_message == 'overloaded_error: busy')
+}
+
+test 'rejects an Anthropic HTTP stream that ends before message_stop' {
+    var server = http.server()
+    server.port = EOF_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        response.content_type = 'text/event-stream'
+        response.send('event: message_start\ndata: {"type":"message_start","message":{"id":"early","usage":{}}}\n\n')
+        server.close()
+    }
+    server.post('/v1/messages', handler)
+    go serve_http(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'test-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = anthropic_provider.stream(model(EOF_PORT), context(), options)
+    assert(stream.recv().kind == types.EVENT_START)
+    var event = stream.recv()
+    var result = stream.result()
+    assert(event.kind == types.EVENT_ERROR)
+    assert(result.error_message == 'Anthropic stream ended before message_stop')
+}
+
+test 'abort closes an Anthropic HTTP stream with a pending read' {
+    go serve_abort_fixture()
+    co.sleep(100)
+    var options = new types.stream_options_t(api_key = 'test-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = anthropic_provider.stream(model(ABORT_PORT), context(), options)
+    assert(stream.recv().kind == types.EVENT_START)
+    stream.abort()
+    var event = stream.recv()
+    var result = stream.result()
+    assert(event.kind == types.EVENT_ERROR)
+    assert(event.reason == types.STOP_ABORTED)
+    assert(result.stop_reason == types.STOP_ABORTED)
+}
+
+test 'surfaces Anthropic response header timeout' {
+    go serve_timeout_fixture()
+    co.sleep(100)
+    var options = new types.stream_options_t(api_key = 'test-key', timeout_ms = 50, max_retries = 0,)
+    var stream = anthropic_provider.stream(model(TIMEOUT_PORT), context(), options)
+    var event = stream.recv()
+    var result = stream.result()
+    assert(event.kind == types.EVENT_ERROR)
+    assert(result.stop_reason == types.STOP_ERROR)
+    assert(result.error_message.find('HTTP response read timeout') >= 0)
+}

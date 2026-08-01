@@ -1,0 +1,56 @@
+import adou.src.tui.components
+import adou.src.tui.markdown
+import adou.src.tui.text_utils
+
+test 'container text spacer box and truncation stay within width' {
+    var root = components.container()
+    root.add(components.text('hello 界 world', 1, 0))
+    root.add(components.spacer(1))
+    var box = components.box(1, 1)
+    box.add(components.truncated_text('abcdefghijklmnopqrstuvwxyz', 0, 0))
+    root.add(box)
+    var lines = root.render(12)
+    assert(lines.len() >= 5)
+    for line in lines {
+        assert(text_utils.visible_width(line) <= 12)
+    }
+}
+
+test 'loaders animate and cancellable loader records abort state' {
+    var loading = components.loader('Working...')
+    var first = loading.render(20)
+    loading.tick()
+    var second = loading.render(20)
+    assert(first[1] != second[1])
+    var cancellable = components.cancellable_loader('Request')
+    cancellable.cancel()
+    var cancelled = cancellable.render(30)
+    assert(cancelled[1].contains('(cancelled)'))
+}
+
+test 'markdown covers chat heading list quote code emphasis and links' {
+    string source = '# Head\n- **bold** and *italic*\n> quote\n`code` [site](https://example.com)\n```n\nlet x = 1\n```'
+    var lines = markdown.render(source, 40)
+    assert(lines.len() >= 6)
+    assert(lines[0].contains('\x1b[1m') && lines[1].contains('- '))
+    assert(lines[2].contains('│') && lines[3].contains('\x1b[7m'))
+    assert(lines[3].contains('\x1b]8;;https://example.com'))
+    for line in lines {
+        assert(text_utils.visible_width(line) <= 40)
+    }
+}
+
+test 'markdown handles nested markers, strike, rules, and fenced borders' {
+    string source = '## Title\n  - nested **bold** and ~~removed~~\n_italic_\n---\n~~~nature\nlet x = 1\n~~~'
+    var lines = markdown.render(source, 32)
+    bool has_strike = false
+    bool has_rule = false
+    bool has_fence = false
+    for line in lines {
+        has_strike = has_strike || line.contains('\x1b[9m')
+        has_rule = has_rule || line.contains('───')
+        has_fence = has_fence || line.contains('~~~')
+        assert(text_utils.visible_width(line) <= 32)
+    }
+    assert(has_strike && has_rule && has_fence)
+}

@@ -1,0 +1,1175 @@
+import adou.src.ai.types as ai_types
+import adou.src.session.identity
+import adou.src.session.jsonl
+import adou.src.session.message_json
+import adou.src.session.types
+import adou.src.compaction.token_estimate
+import adou.src.platform.cwd as platform_cwd
+import adou.src.tools.path_utils
+import co.mutex
+import fs
+import fmt
+import json
+import libc
+import os
+import path
+import strings
+import syscall
+
+type object_t = map<string, ref<json.value_t>>
+type branch_collection_t = struct {
+    [ref<types.entry_t>] entries = []
+    bool has_common_ancestor
+    string common_ancestor_id
+}
+type stats_t = struct {
+    int total_messages
+    int user_messages
+    int assistant_messages
+    int tool_calls
+    int tool_results
+    ai_types.usage_t usage
+    int context_tokens
+    int context_window
+}
+type manager_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    string cwd
+    string session_dir
+    string session_file
+    bool persisted
+    ref<types.header_t> header
+    [ref<types.entry_t>] entries = []
+    {string:ref<types.entry_t>} by_id = {}
+    {string:string} labels_by_id = {}
+    {string:string} label_timestamps_by_id = {}
+    bool has_leaf
+    string leaf_id
+    bool needs_separator
+    [string] warnings = []
+}
+
+fn default_session_dir(string cwd): string {
+    string home = syscall.get_env('HOME')
+    string resolved = path_utils.clean(cwd)
+    if resolved.starts_with('/') {
+        resolved = resolved.slice(1, resolved.len())
+    }
+    string safe = resolved.replace('/', '-').replace('\\', '-').replace(':', '-')
+    return path_utils.clean(home + '/.adou/sessions/--' + safe + '--')
+}
+
+// Resolve the session directory without creating it.  Startup selectors use
+// this to inspect persisted sessions while the active repository remains an
+// in-memory placeholder until the user confirms a choice.
+fn directory_for(string cwd, string requested): string! {
+    string resolved_cwd = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
+    return requested == '' ? default_session_dir(resolved_cwd) : path_utils.resolve_to_cwd(requested, platform_cwd.current())
+}
+
+#local
+fn valid_session_id(string value): bool {
+    if value == '' {return false}
+    if !is_session_id_char(value[0]) || !is_session_id_char(value[value.len() - 1]) {return false}
+    for int index = 0; index < value.len(); index += 1 {
+        if !is_session_id_char(value[index]) {return false}
+    }
+    return true
+}
+
+#local
+fn is_session_id_char(u8 value): bool {
+    return (value >= 'a'.char() && value <= 'z'.char()) || (value >= 'A'.char() && value <= 'Z'.char()) || (value >= '0'.char() && value <= '9'.char()) || value == '-'.char() || value == '_'.char() || value == '.'.char()
+}
+
+fn in_memory(string cwd): ref<manager_t>! {
+    string resolved = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
+    string timestamp = identity.iso_now()
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = identity.uuid_v7(), timestamp = timestamp, cwd = resolved, raw = json.null_value())
+    return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = '', persisted = false, header = header)
+}
+
+fn create(string cwd, string session_dir): ref<manager_t>! {
+    return create_with_id(cwd, session_dir, identity.uuid_v7())
+}
+
+// Create a new Pi v3 session while preserving a caller-supplied id.  Pi's
+// --session-id uses this path when the requested project id does not exist.
+fn create_with_id(string cwd, string session_dir, string session_id): ref<manager_t>! {
+    if !valid_session_id(session_id) {
+        throw errorf('Invalid session id: %s', session_id)
+    }
+    string resolved = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
+    string directory = session_dir
+    if directory == '' {
+        directory = default_session_dir(resolved)
+    } else {
+        directory = path_utils.resolve_to_cwd(directory, platform_cwd.current())
+    }
+    os.mkdirs(directory, 0o700)
+    string timestamp = identity.iso_now()
+    string file_timestamp = timestamp.replace(':', '-').replace('.', '-')
+    string file_path = path.join(directory, file_timestamp + '_' + session_id + '.jsonl')
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved, raw = json.null_value())
+    write_new_file(file_path, jsonl.encode_header(header) + '\n')
+    return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = directory, session_file = file_path, persisted = true, header = header)
+}
+
+// Pi creates an explicit --session path when it does not exist yet.  Keep
+// repository.open strict for imports and id lookups, and use this helper only
+// for path-based startup/session switching.
+fn open_or_create(string file_path, string cwd): ref<manager_t>! {
+    string resolved_file = path_utils.resolve_to_cwd(file_path, platform_cwd.current())
+    if path_utils.exists(resolved_file) {
+        return open(resolved_file)
+    }
+    string resolved_cwd = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
+    string directory = path.dir(resolved_file)
+    os.mkdirs(directory, 0o700)
+    string timestamp = identity.iso_now()
+    string session_id = identity.uuid_v7()
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved_cwd, raw = json.null_value())
+    write_new_file(resolved_file, jsonl.encode_header(header) + '\n')
+    return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved_cwd, session_dir = directory, session_file = resolved_file, persisted = true, header = header)
+}
+
+// Pi's /import copies an external JSONL into the active session directory
+// before opening it.  Keep the source untouched and make the imported record
+// part of the same local session search space.
+fn manager_t.import_file(&self, string source_path): ref<manager_t>! {
+    string resolved_source = path_utils.resolve_to_cwd(source_path, platform_cwd.current())
+    var source = fs.open(resolved_source, syscall.O_RDONLY, 0)
+    string content = source.content() catch error {
+        source.close()
+        throw error
+    }
+    source.close()
+    if self.session_dir == '' {
+        throw errorf('Cannot import into an in-memory session')
+    }
+    os.mkdirs(self.session_dir, 0o700)
+    string destination = path.join(self.session_dir, path.base(resolved_source))
+    if destination != resolved_source {
+        var output = fs.open(destination, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+        write_all(output, content as [u8])
+        if libc.fsync(output.fd as i32) != 0 {
+            string message = libc.error_string()
+            output.close()
+            throw errorf('fsync imported session failed: %s', message)
+        }
+        output.close()
+    }
+    return open(destination)
+}
+
+fn open(string file_path): ref<manager_t>! {
+    string resolved_file = path_utils.resolve_to_cwd(file_path, platform_cwd.current())
+    var loaded = jsonl.load(resolved_file)
+    if loaded.migrated {
+        string content = jsonl.encode_header(loaded.header) + '\n'
+        for entry in loaded.entries {
+            content += json.stringify(entry.raw) + '\n'
+        }
+        rewrite_file(resolved_file, content)
+    }
+    var manager = new manager_t(lock = mutex.mutex_t.new(), cwd = loaded.header.cwd, session_dir = path.dir(resolved_file), session_file = resolved_file, persisted = true, header = loaded.header, entries = loaded.entries, needs_separator = loaded.needs_separator, warnings = loaded.warnings)
+    manager.rebuild_index()
+    return manager
+}
+
+fn continue_recent(string cwd, string session_dir): ref<manager_t>! {
+    string resolved = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
+    string directory = session_dir
+    if directory == '' {
+        directory = default_session_dir(resolved)
+    } else {
+        directory = path_utils.resolve_to_cwd(directory, platform_cwd.current())
+    }
+    if path_utils.exists(directory) {
+        var names = os.listdir(directory)
+        string newest_file = ''
+        i64 newest_mtime_sec = 0
+        i64 newest_mtime_nsec = 0
+        for name in names {
+            if !name.ends_with('.jsonl') {
+                continue
+            }
+            string candidate = path.join(directory, name)
+            ref<types.load_result_t>? loaded = try_load(candidate)
+            if loaded is ref<types.load_result_t> found {
+                if found.header.cwd == resolved {
+                    var stat = syscall.stat(candidate) catch error {continue}
+                    bool newer = newest_file == '' || stat.mtim.sec > newest_mtime_sec || (stat.mtim.sec == newest_mtime_sec && stat.mtim.nsec > newest_mtime_nsec)
+                    if newer {
+                        newest_file = candidate
+                        newest_mtime_sec = stat.mtim.sec
+                        newest_mtime_nsec = stat.mtim.nsec
+                    }
+                }
+            }
+        }
+        if newest_file != '' {
+            return open(newest_file)
+        }
+    }
+    return create(resolved, directory)
+}
+
+// Open a project session by its Pi header id.  Pi accepts both an exact UUID
+// and a unique prefix when selecting a session from the command line.  Keep
+// the lookup constrained to the current project so an id from another cwd is
+// never opened accidentally.
+fn open_by_id(string cwd, string session_dir, string requested): ref<manager_t>! {
+    string resolved = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
+    string directory = session_dir == '' ? default_session_dir(resolved) : path_utils.resolve_to_cwd(session_dir, platform_cwd.current())
+    if !path_utils.exists(directory) {
+        throw errorf('Session directory does not exist: %s', directory)
+    }
+    [string] matches = []
+    for name in os.listdir(directory) {
+        if !name.ends_with('.jsonl') {continue}
+        string candidate = path.join(directory, name)
+        var loaded = try_load(candidate)
+        if loaded is ref<types.load_result_t> found {
+            if found.header.cwd != resolved {continue}
+            if found.header.id == requested || found.header.id.starts_with(requested) {
+                matches.push(candidate)
+            }
+        }
+    }
+    if matches.len() == 0 {
+        throw errorf('No session found for id: %s', requested)
+    }
+    if matches.len() > 1 {
+        throw errorf('Session id is ambiguous: %s', requested)
+    }
+    return open(matches[0])
+}
+
+fn open_by_id_or_create(string cwd, string session_dir, string requested): ref<manager_t>! {
+    var existing = open_by_id(cwd, session_dir, requested) catch error {
+        // Pi's --session-id creates a new session only for a genuine miss;
+        // malformed/ambiguous lookup errors remain visible to the caller.
+        if error.msg().starts_with('Session directory does not exist:') || error.msg().starts_with('No session found for id:') {
+            return create_with_id(cwd, session_dir, requested)
+        }
+        throw error
+    }
+    return existing
+}
+
+// Resolve the Pi --session/--fork spelling: values containing a path
+// separator (or ending in .jsonl) are files, everything else is an exact or
+// unique session-id prefix in the current project.
+fn open_reference(string cwd, string session_dir, string reference): ref<manager_t>! {
+    if reference.find('/') >= 0 || reference.find('\\') >= 0 || reference.to_lower().ends_with('.jsonl') || reference.starts_with('~') {
+        return open(reference)
+    }
+    var local = open_by_id(cwd, session_dir, reference) catch error {
+        [string] global_matches = find_global_reference(session_dir, reference)
+        if global_matches.len() == 0 {
+            throw error
+        }
+        if global_matches.len() > 1 {
+            throw errorf('Session id is ambiguous: %s', reference)
+        }
+        return open(global_matches[0])
+    }
+    return local
+}
+
+// Pi resolves --session/--fork id prefixes across all project directories
+// when the reference is not found in the current project.  A custom
+// --session-dir is a flat lookup root; the default store is grouped by
+// encoded cwd, so scan one directory level below ~/.adou/sessions.
+#local
+fn find_global_reference(string session_dir, string reference): [string] {
+    [string] matches = []
+    if session_dir != '' {
+        append_reference_matches(&matches, session_dir, reference)
+        return matches
+    }
+    string home = syscall.get_env('HOME')
+    if home == '' {
+        return matches
+    }
+    string root = path.join(home, '.adou/sessions')
+    var names = os.listdir(root) catch error {return matches}
+    for name in names {
+        string candidate = path.join(root, name)
+        if name.ends_with('.jsonl') {
+            append_reference_file(&matches, candidate, reference)
+            continue
+        }
+        append_reference_matches(&matches, candidate, reference)
+    }
+    return matches
+}
+
+#local
+fn append_reference_matches(ptr<[string]> matches, string directory, string reference) {
+    var names = os.listdir(directory) catch error {return}
+    for name in names {
+        if name.ends_with('.jsonl') {
+            append_reference_file(matches, path.join(directory, name), reference)
+        }
+    }
+}
+
+#local
+fn append_reference_file(ptr<[string]> matches, string file_path, string reference) {
+    var loaded = try_load(file_path)
+    if loaded is ref<types.load_result_t> found {
+        if found.header.id == reference || found.header.id.starts_with(reference) {
+            matches.push(file_path)
+        }
+    }
+}
+
+fn manager_t.rebuild_index(&self) {
+    self.by_id = {}
+    self.labels_by_id = {}
+    self.label_timestamps_by_id = {}
+    self.has_leaf = false
+    self.leaf_id = ''
+    for entry in self.entries {
+        self.by_id[entry.id] = entry
+        self.has_leaf = true
+        self.leaf_id = entry.id
+        if entry.kind == types.ENTRY_LABEL {
+            var object = entry.raw.as_object() catch error {continue}
+            string target_id = optional_string(object as object_t, 'targetId')
+            string label = optional_string(object as object_t, 'label')
+            if target_id != '' {
+                if label != '' {
+                    self.labels_by_id[target_id] = label
+                    self.label_timestamps_by_id[target_id] = entry.timestamp
+                } else {
+                    self.labels_by_id.del(target_id)
+                    self.label_timestamps_by_id.del(target_id)
+                }
+            }
+        }
+    }
+}
+
+fn manager_t.set_leaf(&self, string entry_id): void! {
+    if entry_id == '' {
+        self.has_leaf = false
+        self.leaf_id = ''
+        return
+    }
+    if !self.by_id.contains(entry_id) {
+        throw errorf('Session entry %s not found', entry_id)
+    }
+    self.has_leaf = true
+    self.leaf_id = entry_id
+}
+
+fn manager_t.get_leaf_id(&self): string {
+    return self.leaf_id
+}
+
+fn manager_t.get_entry(&self, string entry_id): ref<types.entry_t>?! {
+    if !self.by_id.contains(entry_id) {
+        return null
+    }
+    return self.by_id[entry_id]
+}
+
+fn manager_t.get_branch(&self, string entry_id): [ref<types.entry_t>]! {
+    if entry_id == '' {
+        return []
+    }
+    return self.path_to(entry_id)
+}
+
+fn manager_t.collect_branch_entries(&self, string old_leaf_id, string target_id): branch_collection_t! {
+    if !self.by_id.contains(target_id) {
+        throw errorf('Session entry %s not found', target_id)
+    }
+    if old_leaf_id == '' {
+        return branch_collection_t{}
+    }
+    if !self.by_id.contains(old_leaf_id) {
+        throw errorf('Session entry %s not found', old_leaf_id)
+    }
+    {string:bool} old_path = {}
+    for entry in self.path_to(old_leaf_id) {
+        old_path[entry.id] = true
+    }
+    bool has_common = false
+    string common_id = ''
+    var target_path = self.path_to(target_id)
+    for int index = target_path.len() - 1; index >= 0; index -= 1 {
+        if old_path.contains(target_path[index].id) {
+            has_common = true
+            common_id = target_path[index].id
+            break
+        }
+    }
+    [ref<types.entry_t>] reversed = []
+    string current_id = old_leaf_id
+    for current_id != '' && (!has_common || current_id != common_id) {
+        if !self.by_id.contains(current_id) {
+            break
+        }
+        var entry = self.by_id[current_id]
+        reversed.push(entry)
+        current_id = entry.has_parent ? entry.parent_id : ''
+    }
+    [ref<types.entry_t>] entries = vec<ref<types.entry_t>>.cap_of(reversed.len())
+    for int index = reversed.len() - 1; index >= 0; index -= 1 {
+        entries.push(reversed[index])
+    }
+    return branch_collection_t {entries: entries, has_common_ancestor: has_common, common_ancestor_id: common_id,}
+}
+
+fn manager_t.active_entries(&self): [ref<types.entry_t>] {
+    if !self.has_leaf || !self.by_id.contains(self.leaf_id) {
+        return []
+    }
+    [ref<types.entry_t>] reversed = []
+    string current_id = self.leaf_id
+    for current_id != '' && self.by_id.contains(current_id) {
+        var current = self.by_id[current_id]
+        reversed.push(current)
+        if current.has_parent {
+            current_id = current.parent_id
+        } else {
+            current_id = ''
+        }
+    }
+    [ref<types.entry_t>] result = vec<ref<types.entry_t>>.cap_of(reversed.len())
+    for int index = reversed.len() - 1; index >= 0; index -= 1 {
+        result.push(reversed[index])
+    }
+    return result
+}
+
+fn manager_t.append_message(&self, ai_types.message_t message): string! {
+    self.lock.lock()
+    object_t object = self.entry_base(types.ENTRY_MESSAGE)
+    object['message'] = json.box_value(message_json.encode(message))
+    var entry = self.append_object_locked(object) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.unlock()
+    return entry.id
+}
+
+fn manager_t.append_compaction(&self, string summary, string first_kept_entry_id, int tokens_before, json.value_t details, ai_types.usage_t usage): string! {
+    self.lock.lock()
+    if !self.by_id.contains(first_kept_entry_id) {
+        self.lock.unlock()
+        throw errorf('Entry %s not found', first_kept_entry_id)
+    }
+    object_t object = self.entry_base(types.ENTRY_COMPACTION)
+    object['summary'] = boxed_string(summary)
+    object['firstKeptEntryId'] = boxed_string(first_kept_entry_id)
+    object['tokensBefore'] = number(tokens_before)
+    if details.kind != json.VALUE_NULL {
+        object['details'] = json.box_value(details)
+    }
+    if has_usage(usage) {
+        object['usage'] = message_json.encode_usage(usage)
+    }
+    var entry = self.append_object_locked(object) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.unlock()
+    return entry.id
+}
+
+fn manager_t.append_branch_summary(&self, string from_id, string summary, json.value_t details, ai_types.usage_t usage): string! {
+    self.lock.lock()
+    if from_id != 'root' && !self.by_id.contains(from_id) {
+        self.lock.unlock()
+        throw errorf('Entry %s not found', from_id)
+    }
+    object_t object = self.entry_base(types.ENTRY_BRANCH_SUMMARY)
+    object['fromId'] = boxed_string(from_id)
+    object['summary'] = boxed_string(summary)
+    if details.kind != json.VALUE_NULL {
+        object['details'] = json.box_value(details)
+    }
+    if has_usage(usage) {
+        object['usage'] = message_json.encode_usage(usage)
+    }
+    var entry = self.append_object_locked(object) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.unlock()
+    return entry.id
+}
+
+fn manager_t.append_model_change(&self, string provider, string model_id): string! {
+    self.lock.lock()
+    object_t object = self.entry_base(types.ENTRY_MODEL_CHANGE)
+    object['provider'] = boxed_string(provider)
+    object['modelId'] = boxed_string(model_id)
+    var entry = self.append_object_locked(object) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.unlock()
+    return entry.id
+}
+
+fn manager_t.append_thinking_change(&self, string level): string! {
+    self.lock.lock()
+    object_t object = self.entry_base(types.ENTRY_THINKING_CHANGE)
+    object['thinkingLevel'] = boxed_string(level)
+    var entry = self.append_object_locked(object) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.unlock()
+    return entry.id
+}
+
+fn manager_t.append_session_info(&self, string name): string! {
+    self.lock.lock()
+    object_t object = self.entry_base(types.ENTRY_SESSION_INFO)
+    string sanitized = name.replace('\r', ' ').replace('\n', ' ').trim([' ', '\t'])
+    if sanitized != '' {
+        object['name'] = boxed_string(sanitized)
+    } else {
+        object['name'] = json.box_value(json.null_value())
+    }
+    var entry = self.append_object_locked(object) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.unlock()
+    return entry.id
+}
+
+fn manager_t.append_label_change(&self, string target_id, string label): string! {
+    self.lock.lock()
+    if !self.by_id.contains(target_id) {
+        self.lock.unlock()
+        throw errorf('Entry %s not found', target_id)
+    }
+    string value = label.trim([' ', '\t', '\n', '\r'])
+    object_t object = self.entry_base(types.ENTRY_LABEL)
+    object['targetId'] = boxed_string(target_id)
+    object['label'] = value == '' ? json.box_value(json.null_value()) : boxed_string(value)
+    var entry = self.append_object_locked(object) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    if value == '' {
+        self.labels_by_id.del(target_id)
+        self.label_timestamps_by_id.del(target_id)
+    } else {
+        self.labels_by_id[target_id] = value
+        self.label_timestamps_by_id[target_id] = entry.timestamp
+    }
+    self.lock.unlock()
+    return entry.id
+}
+
+fn manager_t.get_label(&self, string entry_id): string {
+    if self.labels_by_id.contains(entry_id) {
+        return self.labels_by_id[entry_id]
+    }
+    return ''
+}
+
+fn manager_t.get_label_timestamp(&self, string entry_id): string {
+    if self.label_timestamps_by_id.contains(entry_id) {
+        return self.label_timestamps_by_id[entry_id]
+    }
+    return ''
+}
+
+fn manager_t.get_session_name(&self): string! {
+    string result = ''
+    // Pi treats the display name as session metadata, so branch navigation must
+    // not reveal an older name from the selected path.
+    for entry in self.entries {
+        if entry.kind == types.ENTRY_SESSION_INFO {
+            var object = entry.raw.as_object() as object_t
+            result = optional_string(object, 'name')
+        }
+    }
+    return result
+}
+
+fn manager_t.clone_active(&self): ref<manager_t>! {
+    return self.clone_path(self.has_leaf, self.leaf_id)
+}
+
+// CLI --fork is different from interactive /clone: Pi copies the complete
+// source JSONL history into the target project's session directory.  Keep the
+// target cwd/dir explicit so a session selected from another project is never
+// written back beside its source file.
+fn manager_t.fork_to(&self, string target_cwd, string target_session_dir, string requested_id): ref<manager_t>! {
+    string resolved_cwd = path_utils.resolve_to_cwd(target_cwd, platform_cwd.current())
+    string directory = target_session_dir
+    if directory == '' {
+        directory = default_session_dir(resolved_cwd)
+    } else {
+        directory = path_utils.resolve_to_cwd(directory, platform_cwd.current())
+    }
+    os.mkdirs(directory, 0o700)
+    string session_id = requested_id == '' ? identity.uuid_v7() : requested_id
+    if !valid_session_id(session_id) {
+        throw errorf('Invalid session id: %s', session_id)
+    }
+    for name in os.listdir(directory) {
+        if !name.ends_with('.jsonl') {continue}
+        string candidate = path.join(directory, name)
+        var loaded = try_load(candidate)
+        if loaded is ref<types.load_result_t> found {
+            if found.header.cwd == resolved_cwd && found.header.id == session_id {
+                throw errorf('Session already exists with id: %s', session_id)
+            }
+        }
+    }
+    string timestamp = identity.iso_now()
+    string file_timestamp = timestamp.replace(':', '-').replace('.', '-')
+    string file_path = path.join(directory, file_timestamp + '_' + session_id + '.jsonl')
+    string parent_session = self.persisted ? self.session_file : ''
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved_cwd, parent_session = parent_session, raw = json.null_value())
+    string content = jsonl.encode_header(header) + '\n'
+    for entry in self.entries {
+        content += json.stringify(entry.raw) + '\n'
+    }
+    write_new_file(file_path, content)
+    return open(file_path)
+}
+
+fn manager_t.fork_before(&self, string entry_id): ref<manager_t>! {
+    if !self.by_id.contains(entry_id) {
+        throw errorf('Session entry %s not found', entry_id)
+    }
+    var selected = self.by_id[entry_id]
+    if selected.kind != types.ENTRY_MESSAGE {
+        throw errorf('Session entry %s is not a user message', entry_id)
+    }
+    var object = selected.raw.as_object() as object_t
+    if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+        throw errorf('Session entry %s has no valid message', entry_id)
+    }
+    var message = message_json.decode(object['message'])
+    if !(message is ref<ai_types.user_message_t>) {
+        throw errorf('Session entry %s is not a user message', entry_id)
+    }
+    return self.clone_path(selected.has_parent, selected.parent_id)
+}
+
+#local
+fn manager_t.clone_path(&self, bool has_target, string target_id): ref<manager_t>! {
+    return self.clone_path_to(has_target, target_id, self.cwd, self.session_dir, '')
+}
+
+#local
+fn manager_t.clone_path_to(&self, bool has_target, string target_id, string target_cwd, string target_session_dir, string requested_id): ref<manager_t>! {
+    [ref<types.entry_t>] retained = []
+    if has_target {
+        retained = self.path_to(target_id)
+    }
+    retained = self.rechain_with_labels(retained)
+    string resolved_cwd = path_utils.resolve_to_cwd(target_cwd, platform_cwd.current())
+    string directory = target_session_dir
+    if directory != '' {
+        directory = path_utils.resolve_to_cwd(directory, platform_cwd.current())
+    }
+    string session_id = requested_id == '' ? identity.uuid_v7() : requested_id
+    if !valid_session_id(session_id) {
+        throw errorf('Invalid session id: %s', session_id)
+    }
+    string timestamp = identity.iso_now()
+    string parent_session = self.persisted ? self.session_file : ''
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved_cwd, parent_session = parent_session, raw = json.null_value())
+    if !self.persisted && directory == '' {
+        var manager = new manager_t(lock = mutex.mutex_t.new(), cwd = self.cwd, session_dir = '', persisted = false, header = header, entries = retained)
+        manager.rebuild_index()
+        return manager
+    }
+    if directory == '' {
+        directory = default_session_dir(resolved_cwd)
+    }
+    os.mkdirs(directory, 0o700)
+    string file_timestamp = timestamp.replace(':', '-').replace('.', '-')
+    string file_path = path.join(directory, file_timestamp + '_' + session_id + '.jsonl')
+    string content = jsonl.encode_header(header) + '\n'
+    for entry in retained {
+        content += json.stringify(entry.raw) + '\n'
+    }
+    write_new_file(file_path, content)
+    return open(file_path)
+}
+
+#local
+fn manager_t.rechain_with_labels(&self, [ref<types.entry_t>] source): [ref<types.entry_t>]! {
+    [ref<types.entry_t>] result = []
+    bool has_parent = false
+    string parent_id = ''
+    for entry in source {
+        if entry.kind == types.ENTRY_LABEL {
+            continue
+        }
+        object_t object = {}
+        for key, value in entry.raw.as_object() {
+            object[key] = value
+        }
+        object['parentId'] = has_parent ? boxed_string(parent_id) : json.box_value(json.null_value())
+        var cloned = jsonl.parse_entry(json.parse(json.stringify(json.object_value(object as map<string, ref<json.value_t>>))))
+        result.push(cloned)
+        has_parent = true
+        parent_id = cloned.id
+    }
+    [ref<types.entry_t>] base_entries = result.slice(0, result.len())
+    for entry in base_entries {
+        if !self.labels_by_id.contains(entry.id) {
+            continue
+        }
+        object_t object = {}
+        object['type'] = boxed_string(types.ENTRY_LABEL)
+        object['id'] = boxed_string(identity.uuid_v7())
+        object['parentId'] = has_parent ? boxed_string(parent_id) : json.box_value(json.null_value())
+        string timestamp = self.get_label_timestamp(entry.id)
+        object['timestamp'] = boxed_string(timestamp == '' ? identity.iso_now() : timestamp)
+        object['targetId'] = boxed_string(entry.id)
+        object['label'] = boxed_string(self.labels_by_id[entry.id])
+        var label_entry = jsonl.parse_entry(json.parse(json.stringify(json.object_value(object as map<string, ref<json.value_t>>))))
+        result.push(label_entry)
+        has_parent = true
+        parent_id = label_entry.id
+    }
+    return result
+}
+
+#local
+fn manager_t.path_to(&self, string entry_id): [ref<types.entry_t>]! {
+    if !self.by_id.contains(entry_id) {
+        throw errorf('Session entry %s not found', entry_id)
+    }
+    [ref<types.entry_t>] reversed = []
+    string current_id = entry_id
+    for current_id != '' && self.by_id.contains(current_id) {
+        var current = self.by_id[current_id]
+        reversed.push(current)
+        if current.has_parent {
+            current_id = current.parent_id
+        } else {
+            current_id = ''
+        }
+    }
+    [ref<types.entry_t>] result = vec<ref<types.entry_t>>.cap_of(reversed.len())
+    for int index = reversed.len() - 1; index >= 0; index -= 1 {
+        result.push(reversed[index])
+    }
+    return result
+}
+
+fn manager_t.build_context(&self): types.context_t! {
+    var result = types.context_t{}
+    var active = self.active_entries()
+    int compaction_index = -1
+    ref<types.entry_t>? compaction = null
+    for index, entry in active {
+        if entry.kind == types.ENTRY_MODEL_CHANGE {
+            var object = entry.raw.as_object() as object_t
+            result.provider = optional_string(object, 'provider')
+            result.model_id = optional_string(object, 'modelId')
+            result.has_model = result.provider != '' && result.model_id != ''
+        } else if entry.kind == types.ENTRY_THINKING_CHANGE {
+            result.thinking_level = optional_string(entry.raw.as_object() as object_t, 'thinkingLevel')
+            result.has_thinking_level = result.thinking_level != ''
+        } else if entry.kind == types.ENTRY_MESSAGE {
+            var object = entry.raw.as_object() as object_t
+            if object.contains('message') && object['message'].kind == json.VALUE_OBJECT {
+                var decoded = message_json.decode(object['message'])
+                if decoded is ref<ai_types.assistant_message_t> assistant {
+                    result.provider = assistant.provider
+                    result.model_id = assistant.model
+                    result.has_model = result.provider != '' && result.model_id != ''
+                }
+            }
+        }
+        if entry.kind == types.ENTRY_COMPACTION {
+            compaction_index = index
+            compaction = entry
+        }
+    }
+    int start = 0
+    if compaction is ref<types.entry_t> compact_entry {
+        var object = compact_entry.raw.as_object() as object_t
+        string summary = required_string(object, 'summary')
+        int tokens_before = required_int(object, 'tokensBefore')
+        int timestamp = iso_to_ms(compact_entry.timestamp)
+        ai_types.message_t summary_message = new ai_types.compaction_summary_message_t(summary = summary, tokens_before = tokens_before, timestamp = timestamp)
+        result.messages.push(summary_message)
+        string first_kept = required_string(object, 'firstKeptEntryId')
+        start = find_entry_index(active, first_kept)
+        if start < 0 || start >= compaction_index {
+            throw errorf('Compaction entry %s references missing firstKeptEntryId %s', compact_entry.id, first_kept)
+        }
+    }
+    int before_end = compaction_index
+    if compaction_index < 0 {
+        before_end = active.len()
+    }
+    for int index = start; index < before_end; index += 1 {
+        if active[index].kind == types.ENTRY_MESSAGE {
+            var object = active[index].raw.as_object() as object_t
+            if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+                throw errorf('session message entry %s has no valid message', active[index].id)
+            }
+            result.messages.push(message_json.decode(object['message']))
+        } else if active[index].kind == types.ENTRY_BRANCH_SUMMARY {
+            var object = active[index].raw.as_object() as object_t
+            ai_types.message_t message = new ai_types.branch_summary_message_t(summary = required_string(object, 'summary'), from_id = required_string(object, 'fromId'), timestamp = iso_to_ms(active[index].timestamp))
+            result.messages.push(message)
+        }
+    }
+    if compaction_index >= 0 {
+        for int index = compaction_index + 1; index < active.len(); index += 1 {
+            if active[index].kind == types.ENTRY_MESSAGE {
+                var object = active[index].raw.as_object() as object_t
+                if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+                    throw errorf('session message entry %s has no valid message', active[index].id)
+                }
+                result.messages.push(message_json.decode(object['message']))
+            } else if active[index].kind == types.ENTRY_BRANCH_SUMMARY {
+                var object = active[index].raw.as_object() as object_t
+                ai_types.message_t message = new ai_types.branch_summary_message_t(summary = required_string(object, 'summary'), from_id = required_string(object, 'fromId'), timestamp = iso_to_ms(active[index].timestamp))
+                result.messages.push(message)
+            }
+        }
+    }
+    return result
+}
+
+fn manager_t.get_entries(&self): [ref<types.entry_t>] {
+    return self.entries.slice(0, self.entries.len())
+}
+
+fn manager_t.get_warnings(&self): [string] {
+    return self.warnings.slice(0, self.warnings.len())
+}
+
+// Pi's footer totals usage across the complete session log, not only the
+// currently active (possibly post-compaction) context.  Keep this calculation
+// on the repository so resumed sessions and branch navigation use the same
+// source of truth as the JSONL writer.
+fn manager_t.usage_totals(&self): ai_types.usage_t {
+    ai_types.usage_t total = ai_types.usage_t{}
+    for entry in self.entries {
+        if entry.kind == types.ENTRY_MESSAGE {
+            var object = entry.raw.as_object() catch error {continue}
+            if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+                continue
+            }
+            var message = message_json.decode(object['message']) catch error {continue}
+            if message is ref<ai_types.assistant_message_t> assistant {
+                add_usage(&total, assistant.usage)
+            } else if message is ref<ai_types.tool_result_message_t> tool {
+                add_usage(&total, tool.usage)
+            }
+        } else if entry.kind == types.ENTRY_COMPACTION || entry.kind == types.ENTRY_BRANCH_SUMMARY {
+            var object = entry.raw.as_object() catch error {continue}
+            if object.contains('usage') && object['usage'].kind == json.VALUE_OBJECT {
+                var usage = message_json.decode_usage(object['usage']) catch error {continue}
+                add_usage(&total, usage)
+            }
+        }
+    }
+    return total
+}
+
+// Pi shows the cache hit rate for the most recent assistant request.  Keep
+// this separate from usage_totals(): the latter is cumulative, while this
+// value is intentionally a snapshot of the latest prompt window.
+fn manager_t.latest_cache_hit_rate(&self): float {
+    float result = -1.0
+    for entry in self.entries {
+        if entry.kind != types.ENTRY_MESSAGE {
+            continue
+        }
+        var object = entry.raw.as_object() catch error {continue}
+        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+            continue
+        }
+        var message = message_json.decode(object['message']) catch error {continue}
+        if message is ref<ai_types.assistant_message_t> assistant {
+            int prompt_tokens = assistant.usage.input + assistant.usage.cache_read + assistant.usage.cache_write
+            if prompt_tokens > 0 {
+                result = assistant.usage.cache_read as float * 100.0 / prompt_tokens as float
+            }
+        }
+    }
+    return result
+}
+
+// After a compaction Pi treats the context size as unknown until a successful
+// assistant response reports usage for the new context. Re-estimating the
+// summary and retained messages would suggest a precision the provider has
+// not supplied yet, and can make the footer disagree with the next request.
+fn manager_t.context_usage_known(&self): bool {
+    var active = self.active_entries()
+    int compaction_index = -1
+    for index, entry in active {
+        if entry.kind == types.ENTRY_COMPACTION {
+            compaction_index = index
+        }
+    }
+    if compaction_index < 0 {
+        return true
+    }
+    for int index = active.len() - 1; index > compaction_index; index -= 1 {
+        var entry = active[index]
+        if entry.kind != types.ENTRY_MESSAGE {
+            continue
+        }
+        var object = entry.raw.as_object() catch error {continue}
+        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+            continue
+        }
+        var message = message_json.decode(object['message']) catch error {continue}
+        if message is ref<ai_types.assistant_message_t> assistant {
+            if assistant.stop_reason == ai_types.STOP_ABORTED || assistant.stop_reason == ai_types.STOP_ERROR {
+                continue
+            }
+            if token_estimate.calculate_context_tokens(assistant.usage) > 0 {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+fn manager_t.stats(&self, int context_window): stats_t! {
+    stats_t result = stats_t{context_window: context_window}
+    result.usage = self.usage_totals()
+    for entry in self.entries {
+        if entry.kind != types.ENTRY_MESSAGE {continue}
+        var object = entry.raw.as_object() catch error {continue}
+        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {continue}
+        var message = message_json.decode(object['message']) catch error {continue}
+        result.total_messages += 1
+        if message is ref<ai_types.user_message_t> {
+            result.user_messages += 1
+        } else if message is ref<ai_types.assistant_message_t> assistant {
+            result.assistant_messages += 1
+            for block in assistant.content {
+                if block is ref<ai_types.tool_call_t> {result.tool_calls += 1}
+            }
+        } else if message is ref<ai_types.tool_result_message_t> {
+            result.tool_results += 1
+        }
+    }
+    var context = self.build_context()
+    result.context_tokens = token_estimate.estimate_context_tokens(context.messages).tokens
+    return result
+}
+
+fn manager_t.get_session_file(&self): string {
+    return self.session_file
+}
+
+fn manager_t.header_json(&self): string! {
+    return jsonl.encode_header(self.header)
+}
+
+fn manager_t.get_session_id(&self): string {
+    return self.header.id
+}
+
+fn manager_t.latest_compaction(&self): ref<types.entry_t>? {
+    var active = self.active_entries()
+    for int index = active.len() - 1; index >= 0; index -= 1 {
+        if active[index].kind == types.ENTRY_COMPACTION {
+            return active[index]
+        }
+    }
+    return null
+}
+
+fn timestamp_ms(string value): int {
+    return iso_to_ms(value)
+}
+
+#local
+fn add_usage(ptr<ai_types.usage_t> total, ai_types.usage_t value) {
+    total.input += value.input
+    total.output += value.output
+    total.cache_read += value.cache_read
+    total.cache_write += value.cache_write
+    total.cache_write_1h += value.cache_write_1h
+    total.reasoning += value.reasoning
+    total.total_tokens += value.total_tokens
+    total.cost.input += value.cost.input
+    total.cost.output += value.cost.output
+    total.cost.cache_read += value.cost.cache_read
+    total.cost.cache_write += value.cost.cache_write
+    total.cost.total += value.cost.total
+}
+
+#local
+fn manager_t.entry_base(&self, string kind): object_t! {
+    object_t object = {}
+    object['type'] = boxed_string(kind)
+    object['id'] = boxed_string(self.unique_short_id())
+    if self.has_leaf {
+        object['parentId'] = boxed_string(self.leaf_id)
+    } else {
+        object['parentId'] = json.box_value(json.null_value())
+    }
+    object['timestamp'] = boxed_string(identity.iso_now())
+    return object
+}
+
+#local
+fn manager_t.unique_short_id(&self): string! {
+    for int attempt = 0; attempt < 100; attempt += 1 {
+        string id = identity.short_id()
+        if !self.by_id.contains(id) {
+            return id
+        }
+    }
+    return identity.uuid_v7()
+}
+
+#local
+fn manager_t.append_object_locked(&self, object_t object): ref<types.entry_t>! {
+    string line = json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+    var entry = jsonl.parse_entry(json.parse(line))
+    self.persist_line(line) catch error {
+        throw error
+    }
+    self.entries.push(entry)
+    self.by_id[entry.id] = entry
+    self.has_leaf = true
+    self.leaf_id = entry.id
+    return entry
+}
+
+#local
+fn manager_t.persist_line(&self, string line): void! {
+    if !self.persisted {
+        return
+    }
+    var file = fs.open(self.session_file, syscall.O_WRONLY | syscall.O_APPEND, 0)
+    if self.needs_separator {
+        write_all(file, '\n' as [u8])
+        self.needs_separator = false
+    }
+    write_all(file, (line + '\n') as [u8])
+    if libc.fsync(file.fd as i32) != 0 {
+        string message = libc.error_string()
+        file.close()
+        throw errorf('fsync session failed: %s', message)
+    }
+    file.close()
+}
+
+#local
+fn write_new_file(string file_path, string content): void! {
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_EXCL, 0o600)
+    write_all(file, content as [u8])
+    if libc.fsync(file.fd as i32) != 0 {
+        string message = libc.error_string()
+        file.close()
+        throw errorf('fsync session failed: %s', message)
+    }
+    file.close()
+}
+
+#local
+fn rewrite_file(string file_path, string content): void! {
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_TRUNC, 0o600)
+    write_all(file, content as [u8])
+    if libc.fsync(file.fd as i32) != 0 {
+        string message = libc.error_string()
+        file.close()
+        throw errorf('fsync session failed: %s', message)
+    }
+    file.close()
+}
+
+#local
+fn write_all(ref<fs.file_t> file, [u8] content): void! {
+    int offset = 0
+    for offset < content.len() {
+        int written = file.write(content.slice(offset, content.len()))
+        if written <= 0 {
+            throw errorf('incomplete session write')
+        }
+        offset += written
+    }
+}
+
+#local
+fn find_entry_index([ref<types.entry_t>] entries, string id): int {
+    for index, entry in entries {
+        if entry.id == id {
+            return index
+        }
+    }
+    return -1
+}
+
+#local
+fn iso_to_ms(string value): int {
+    libc.tm parsed = libc.tm{}
+    libc.cstr rest = libc.strptime(value.to_cstr(), '%Y-%m-%dT%H:%M:%S'.to_cstr(), &parsed)
+    if rest == 0 {
+        return 0
+    }
+    return (libc.timegm(&parsed) as int) * 1000
+}
+
+#local
+fn required_string(object_t object, string key): string! {
+    if !object.contains(key) {
+        throw errorf('session JSON missing `%s`', key)
+    }
+    return object[key].as_string()
+}
+
+#local
+fn optional_string(object_t object, string key): string {
+    if !object.contains(key) || object[key].kind != json.VALUE_STRING {
+        return ''
+    }
+    return object[key].text
+}
+
+#local
+fn required_int(object_t object, string key): int! {
+    if !object.contains(key) || object[key].kind != json.VALUE_NUMBER {
+        throw errorf('session JSON missing numeric `%s`', key)
+    }
+    return libc.atol(object[key].number.to_cstr()) as int
+}
+
+#local
+fn number(int value): ref<json.value_t>! {
+    return json.box_value(json.number_value(fmt.sprintf('%d', value)))
+}
+
+#local
+fn boxed_string(string value): ref<json.value_t> {
+    return json.box_value(json.string_value(value))
+}
+
+#local
+fn has_usage(ai_types.usage_t usage): bool {
+    return usage.input != 0 || usage.output != 0 || usage.cache_read != 0 || usage.cache_write != 0 || usage.total_tokens != 0 || usage.cost.total != 0.0
+}
+
+#local
+fn try_load(string file_path): ref<types.load_result_t>? {
+    var result = jsonl.load(file_path) catch error {
+        return null
+    }
+    return result
+}

@@ -1,0 +1,36 @@
+import adou.src.tui.text_utils
+
+test 'visible width strips terminal strings and normalizes tabs' {
+    assert(text_utils.visible_width('\x1b[31m红\x1b[0m\tX') == 6)
+    assert(text_utils.visible_width('\x1b]8;;https://example.com\x07link\x1b]8;;\x07') == 4)
+    assert(text_utils.visible_width('\x1b_payload\x1b\\ok') == 2)
+    assert(text_utils.normalize_terminal_output('กำ\t\x1b]x\t\x07') == 'กํา   \x1b]x\t\x07')
+}
+
+test 'truncate is grapheme safe preserves ANSI and pads by cells' {
+    string plain = text_utils.truncate_to_width('ab界cd', 5, '...', false)
+    assert(text_utils.visible_width(plain) == 5)
+    assert(plain.contains('ab') && !plain.contains('界'))
+    string styled = text_utils.truncate_to_width('\x1b[31mabcdef', 4, '…', true)
+    assert(text_utils.visible_width(styled) == 4)
+    assert(styled.contains('\x1b[0m…\x1b[0m'))
+    assert(text_utils.truncate_to_width('界x', 1, '...', false) == '.')
+}
+
+test 'slice uses visible columns and strict wide boundary handling' {
+    var loose = text_utils.slice_with_width('\x1b[31ma界b', 1, 2, false)
+    assert(loose.text.contains('\x1b[31m') && loose.text.contains('界') && loose.width == 2)
+    var strict = text_utils.slice_with_width('a界b', 1, 1, true)
+    assert(strict.text == '' && strict.width == 0)
+}
+
+test 'wrap preserves styles hyperlinks words and CJK boundaries' {
+    var words = text_utils.wrap_text_with_ansi('one two three', 7)
+    assert(words.len() == 2 && text_utils.visible_width(words[0]) <= 7 && text_utils.visible_width(words[1]) <= 7)
+    var cjk = text_utils.wrap_text_with_ansi('中文测试', 4)
+    assert(cjk.len() == 2 && text_utils.visible_width(cjk[0]) == 4 && text_utils.visible_width(cjk[1]) == 4)
+    var styled = text_utils.wrap_text_with_ansi('\x1b[4;31mabcdef', 3)
+    assert(styled.len() == 2 && styled[0].contains('\x1b[24m') && styled[1].contains('\x1b[4;31m'))
+    var linked = text_utils.wrap_text_with_ansi('\x1b]8;;u\x07abcdef\x1b]8;;\x07', 3)
+    assert(linked.len() == 2 && linked[0].contains('\x1b]8;;\x07') && linked[1].contains('\x1b]8;;u\x07'))
+}

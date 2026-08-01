@@ -1,0 +1,82 @@
+import adou.src.agent.session_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.types
+import adou.src.tui.chat
+import strings
+import time
+
+test 'chat view consumes streaming messages, tools, compaction and errors' {
+    var value = chat.new('mock-model', '/tmp/project')
+    var started = session_stream.event_t {kind: agent_types.EVENT_AGENT_START, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_START,},}
+    value.apply(started)
+    var user = new types.user_message_t(content = 'read file')
+    var user_event = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_START, user_message: user,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_START, has_agent_event: true, agent_event: user_event,})
+    [types.content_t] content = [new types.text_content_t(text = '# Answer\n\nhello **world**')]
+    var assistant = new types.assistant_message_t(content = content, stop_reason = types.STOP_PENDING)
+    var update = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, assistant_message: assistant,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, has_agent_event: true, agent_event: update,})
+    assert(value.streaming_assistant is ref<types.assistant_message_t>)
+    var lines = value.render(60)
+    assert(lines.len() > 0 && strings.join(lines, '\n').contains('hello'))
+    var tool_start = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_START, tool_call_id: 'call-1', tool_name: 'read',}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_TOOL_START, has_agent_event: true, agent_event: tool_start,})
+    assert(strings.join(value.render(60), '\n').contains('read'))
+    var tool = new types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'read', content = [new types.text_content_t(text = 'file contents')])
+    var ended = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, tool_message: tool,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: ended,})
+    value.apply(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_START,})
+    value.apply(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, tokens_before: 100, estimated_tokens_after: 30,})
+    assert(value.compaction_count == 1)
+    value.apply(session_stream.event_t {kind: session_stream.EVENT_SESSION_END,})
+    assert(!value.running)
+}
+
+test 'chat restores history and renders configured context state in the footer' {
+    var value = chat.new('mock-model', '/tmp/project')
+    value.configure(100, 'high')
+    types.message_t history = new types.user_message_t(content = 'hello')
+    value.load_messages([history])
+    string rendered = strings.join(value.render(120), '\n')
+    assert(rendered.contains('hello'))
+    assert(rendered.contains('mock-model • high'))
+    assert(rendered.contains('/100 (auto)'))
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_AGENT_START, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_START,},})
+    rendered = strings.join(value.render(120), '\n')
+    assert(rendered.contains('Thinking...'))
+}
+
+test 'branch summarization status does not increment compaction count' {
+    var value = chat.new('mock-model', '/tmp/project')
+    value.apply(session_stream.event_t {kind: session_stream.EVENT_BRANCH_SUMMARY_START,})
+    assert(value.running && value.status == 'Summarizing branch...')
+    value.apply(session_stream.event_t {kind: session_stream.EVENT_BRANCH_SUMMARY_END, summary: 'done',})
+    assert(value.status == 'Branch summarized')
+    assert(value.compaction_count == 0)
+}
+
+test 'footer keeps Pi-style provider, session and cache details' {
+    var value = chat.new('deepseek-v4-flash', '/Users/tester/project')
+    value.provider = 'deepseek'
+    value.git_branch = 'main'
+    value.session_name = 'release-check'
+    value.configure(1000000, 'off')
+    value.total_input_tokens = 1200
+    value.total_output_tokens = 300
+    value.total_cache_read = 900
+    value.latest_cache_hit_rate = 75.0
+    string rendered = strings.join(value.render(160), '\n')
+    assert(rendered.contains('deepseek-v4-flash • thinking off'))
+    assert(rendered.contains('(deepseek)'))
+    assert(rendered.contains('/Users/tester/project (main)'))
+    assert(rendered.contains('release-check'))
+    assert(rendered.contains('CH75%'))
+}
+
+test 'footer marks post-compaction context usage unknown until a response reports it' {
+    var value = chat.new('deepseek-v4-flash', '/Users/tester/project')
+    value.configure(1000000, 'off')
+    value.set_context_known(false)
+    string rendered = strings.join(value.render(160), '\n')
+    assert(rendered.contains('?/1M (auto)'))
+}

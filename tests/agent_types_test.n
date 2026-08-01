@@ -1,0 +1,12 @@
+import adou.src.agent.event_stream
+import adou.src.agent.types
+import adou.src.ai.types as ai_types
+
+test 'agent event stream stores agent_end result' {
+    var stream = event_stream.new()
+    ai_types.message_t message = new ai_types.user_message_t(content = 'hello')
+    var event = types.agent_event_t {kind: types.EVENT_AGENT_END, messages: [message],}
+    stream.push(event)
+    assert(stream.result().len() == 1)
+    stream.end()
+}

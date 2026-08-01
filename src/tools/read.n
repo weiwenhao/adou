@@ -1,0 +1,177 @@
+import adou.src.ai.abort
+import adou.src.tools.path_utils
+import adou.src.tools.truncate
+import adou.src.tools.types as tool_types
+import adou.src.unicode.utf8
+import fmt
+import fs
+import json
+import libc
+import strings
+import syscall
+
+fn execute(string cwd, string input_path, bool has_offset, float offset, bool has_limit, float limit, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
+    throw_if_aborted(cancellation)
+    string absolute_path = path_utils.resolve_read_path(input_path, cwd)
+    if !path_utils.readable(absolute_path) {
+        throw errorf('Cannot read file %s: %s', input_path, libc.error_string())
+    }
+    var file = fs.open(absolute_path, syscall.O_RDONLY, 0)
+    string raw = file.content() catch e {
+        file.close()
+        throw e
+    }
+    file.close()
+    throw_if_aborted(cancellation)
+    string mime = image_mime(raw as [u8])
+    if mime != '' {
+        throw errorf('Current MVP does not support image reading: %s (%s)', input_path, mime)
+    }
+    string content = utf8.replacement_decode(raw as [u8])
+    [string] all_lines = truncate.split_all_lines(content)
+    // JavaScript's String.split("\n") treats an empty file as one empty
+    // line.  Preserve that distinction so read(empty-file) succeeds while an
+    // explicit offset still reports the real one-line boundary.
+    if all_lines.len() == 0 {
+        all_lines.push('')
+    }
+    float start_value = 0.0
+    if has_offset && offset != 0.0 {
+        start_value = offset - 1.0
+        if start_value < 0.0 {
+            start_value = 0.0
+        }
+    }
+    if start_value >= all_lines.len() as float {
+        throw errorf('Offset %s is beyond end of file (%d lines total)', js_number(offset), all_lines.len())
+    }
+    int start = to_integer(start_value)
+    int end = all_lines.len()
+    bool user_limited = false
+    float end_value = all_lines.len() as float
+    if has_limit {
+        end_value = start_value + limit
+        if end_value > all_lines.len() as float {
+            end_value = all_lines.len() as float
+        }
+        end = slice_index(end_value, all_lines.len())
+        if end < start {
+            end = start
+        }
+        user_limited = true
+    }
+    [string] selected_lines = all_lines.slice(start, end)
+    string selected = strings.join(selected_lines, '\n')
+    var truncated = truncate.head(selected)
+    string output = truncated.content
+    float start_display = start_value + 1.0
+    if truncated.first_line_exceeds_limit {
+        int line_size = all_lines[start].len()
+        output = fmt.sprintf('[Line %s is %s, exceeds %s limit. Use bash: sed -n \'%sp\' %s | head -c %s]', js_number(start_display), truncate.format_size(line_size), truncate.format_size(truncate.DEFAULT_MAX_BYTES), js_number(start_display), input_path, truncate.format_size(truncate.DEFAULT_MAX_BYTES))
+    } else if truncated.truncated {
+        float end_display = start_display + truncated.output_lines as float - 1.0
+        float next_offset = end_display + 1.0
+        if truncated.truncated_by == 'lines' {
+            output += fmt.sprintf('\n\n[Showing lines %s-%s of %d. Use offset=%s to continue.]', js_number(start_display), js_number(end_display), all_lines.len(), js_number(next_offset))
+        } else {
+            output += fmt.sprintf('\n\n[Showing lines %s-%s of %d (%s limit). Use offset=%s to continue.]', js_number(start_display), js_number(end_display), all_lines.len(), truncate.format_size(truncate.DEFAULT_MAX_BYTES), js_number(next_offset))
+        }
+    } else if user_limited && end_value < all_lines.len() as float {
+        float remaining = all_lines.len() as float - end_value
+        float next_offset = end_value + 1.0
+        output += fmt.sprintf('\n\n[%s more lines in file. Use offset=%s to continue.]', js_number(remaining), js_number(next_offset))
+    }
+    throw_if_aborted(cancellation)
+    var result = tool_types.text_result(output)
+    if truncated.truncated {
+        result.details = truncation_details(truncated)
+    }
+    return result
+}
+
+#local
+fn to_integer(float value): int {
+    return value as int
+}
+
+#local
+fn slice_index(float value, int length): int {
+    int result = to_integer(value)
+    if result < 0 {
+        result = length + result
+        if result < 0 {
+            result = 0
+        }
+    }
+    if result > length {
+        result = length
+    }
+    return result
+}
+
+#local
+fn js_number(float value): string {
+    int integer = value as int
+    if integer as float == value {
+        return fmt.sprintf('%d', integer)
+    }
+    return fmt.sprintf('%g', value)
+}
+
+#local
+fn throw_if_aborted(ref<abort.abort_t> cancellation): void! {
+    if cancellation.is_aborted() {
+        throw errorf('Operation aborted')
+    }
+}
+
+#local
+fn truncation_details(truncate.result_t value): json.value_t! {
+    map<string, ref<json.value_t>> object = {}
+    object['truncated'] = json.box_value(json.bool_value(value.truncated))
+    object['truncatedBy'] = json.box_value(json.string_value(value.truncated_by))
+    object['totalLines'] = json.box_value(json.number_value(fmt.sprintf('%d', value.total_lines)))
+    object['totalBytes'] = json.box_value(json.number_value(fmt.sprintf('%d', value.total_bytes)))
+    object['outputLines'] = json.box_value(json.number_value(fmt.sprintf('%d', value.output_lines)))
+    object['outputBytes'] = json.box_value(json.number_value(fmt.sprintf('%d', value.output_bytes)))
+    object['lastLinePartial'] = json.box_value(json.bool_value(value.last_line_partial))
+    object['firstLineExceedsLimit'] = json.box_value(json.bool_value(value.first_line_exceeds_limit))
+    object['maxLines'] = json.box_value(json.number_value(fmt.sprintf('%d', value.max_lines)))
+    object['maxBytes'] = json.box_value(json.number_value(fmt.sprintf('%d', value.max_bytes)))
+    map<string, ref<json.value_t>> details = {}
+    details['truncation'] = json.box_value(json.object_value(object))
+    return json.object_value(details)
+}
+
+#local
+fn image_mime([u8] data): string {
+    if starts(data, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) {
+        return 'image/png'
+    }
+    if starts(data, [0xff, 0xd8, 0xff]) {
+        return 'image/jpeg'
+    }
+    if starts(data, 'GIF87a' as [u8]) || starts(data, 'GIF89a' as [u8]) {
+        return 'image/gif'
+    }
+    if data.len() >= 12 && starts(data, 'RIFF' as [u8]) && data.slice(8, 12) as string == 'WEBP' {
+        return 'image/webp'
+    }
+    if starts(data, 'BM' as [u8]) {
+        return 'image/bmp'
+    }
+    return ''
+}
+
+#local
+fn starts([u8] data, [u8] prefix): bool {
+    if prefix.len() > data.len() {
+        return false
+    }
+    for int i = 0; i < prefix.len(); i += 1 {
+        if data[i] != prefix[i] {
+            return false
+        }
+    }
+    return true
+}

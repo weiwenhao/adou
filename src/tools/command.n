@@ -1,0 +1,298 @@
+import co
+import adou.src.ai.abort
+import fs
+import fmt
+import io
+import process
+import syscall
+
+// Nature's process runtime currently does not pass command_t.cwd through to
+// libuv. Keep all tool subprocesses in the requested directory explicitly.
+type result_t = struct {
+    string stdout
+    string stderr
+    i32 exit_code
+    i32 term_sig
+    bool timed_out
+    bool aborted
+}
+
+type output_chunk_fn = fn(string)
+
+// Pi exposes the active session/model to every bash invocation.  Keep the
+// values in a small process-local configuration rather than mutating Adou's
+// own environment (which would race concurrent tool coroutines).
+type agent_env_t = struct {
+    string session_id
+    string session_file
+    string provider
+    string model
+    string reasoning_level
+}
+
+anyptr global_agent_env = 0
+
+fn configure_agent_environment(string session_id, string session_file, string provider, string model, string reasoning_level) {
+    var configured = new agent_env_t(session_id = session_id, session_file = session_file, provider = provider, model = model, reasoning_level = reasoning_level)
+    global_agent_env = configured as anyptr
+}
+
+// ANSI escape sequences and terminal control bytes are useful when a shell
+// is attached to a human terminal, but they are part of neither the model
+// tool result nor the persisted session. Pi strips them before both streaming
+// and storing command output. Keep a small state machine here so sequences
+// split across libuv chunks are removed as well.
+type sanitizer_t = struct {
+    int state
+}
+
+const SANITIZE_NORMAL = 0
+const SANITIZE_ESC = 1
+const SANITIZE_CSI = 2
+const SANITIZE_OSC = 3
+const SANITIZE_OSC_ESC = 4
+
+fn sanitizer_t.clean(&self, [u8] value): [u8] {
+    [u8] output = []
+    for byte in value {
+        if self.state == SANITIZE_NORMAL {
+            if byte == 0x1b {
+                self.state = SANITIZE_ESC
+            } else if byte == 0x9b {
+                self.state = SANITIZE_CSI
+            } else if byte == 0x9c {
+                // String terminator outside a string: discard it.
+            } else if byte == 0x09 || byte == 0x0a || byte == 0x0d || byte >= 0x20 {
+                output.push(byte)
+            }
+            continue
+        }
+        if self.state == SANITIZE_ESC {
+            if byte == '['.char() {
+                self.state = SANITIZE_CSI
+            } else if byte == ']'.char() || byte == 'P'.char() || byte == '^'.char() || byte == '_'.char() {
+                self.state = SANITIZE_OSC
+            } else if byte == '\\'.char() {
+                self.state = SANITIZE_NORMAL
+            } else {
+                // Two-byte ESC sequences (for example ESC 7) are complete.
+                self.state = SANITIZE_NORMAL
+            }
+            continue
+        }
+        if self.state == SANITIZE_CSI {
+            // CSI is terminated by a final byte in the 0x40-0x7e range.
+            if byte >= 0x40 && byte <= 0x7e {
+                self.state = SANITIZE_NORMAL
+            }
+            continue
+        }
+        if self.state == SANITIZE_OSC {
+            if byte == 0x07 || byte == 0x9c {
+                self.state = SANITIZE_NORMAL
+            } else if byte == 0x1b {
+                self.state = SANITIZE_OSC_ESC
+            }
+            continue
+        }
+        // OSC can be terminated by the two-byte ST sequence ESC \\.
+        if byte == '\\'.char() {
+            self.state = SANITIZE_NORMAL
+        } else if byte != 0x1b {
+            self.state = SANITIZE_OSC
+        }
+    }
+    return output
+}
+
+fn sanitize_output(string value): string {
+    var sanitizer = new sanitizer_t()
+    return sanitizer.clean(value as [u8]) as string
+}
+
+// process.command_t forwards stdout/stderr from libuv reader coroutines into
+// io.writer implementations.  This writer keeps the final capture while also
+// exposing each decoded chunk to the caller, which lets bash publish Pi-style
+// partial tool results before the child exits.
+type streaming_writer_t:io.writer = struct {
+    ref<io.buffer> buffer
+    output_chunk_fn on_chunk
+    ref<sanitizer_t> sanitizer
+}
+
+fn streaming_writer_t.write(&self, [u8] value):int! {
+    var clean = self.sanitizer.clean(value)
+    self.buffer.write(clean)
+    if clean.len() > 0 {
+        self.on_chunk(clean as string)
+    }
+    // A writer must report source bytes consumed, even when sanitization
+    // intentionally removes every byte in the chunk.
+    return value.len()
+}
+
+fn shell(string cwd, string command): result_t! {
+    string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
+    var state = process.run('/bin/bash', ['-lc', script])
+    return result_t {stdout: sanitize_output(state.stdout), stderr: sanitize_output(state.stderr), exit_code: state.exit_code, term_sig: state.term_sig,}
+}
+
+fn shell_timeout(string cwd, string command, int timeout_ms): result_t! {
+    if timeout_ms <= 0 {
+        return shell(cwd, command)
+    }
+    string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
+    var stdout_buffer = io.buffer.new()
+    var stderr_buffer = io.buffer.new()
+    var process_command = new process.command_t(name = '/bin/bash', args = ['-lc', script], cwd = '', env = [], stdin = fs.discard(), stdout = stdout_buffer, stderr = stderr_buffer)
+    var child = process_command.spawn()
+    var finished = chan<u8>.new(1)
+    var timed = chan<u8>.new(1)
+    go wait_for_process(child, finished)
+    go timeout_after(timeout_ms, timed)
+    bool did_timeout = false
+    select {
+        finished.on_recv() -> ignored {
+        }
+        timed.on_recv() -> ignored {
+            did_timeout = true
+            syscall.kill(child.pid, syscall.SIGTERM) catch error {}
+            finished.recv() catch error {}
+        }
+    }
+    string stdout = sanitize_output(stdout_buffer.read_all() as string)
+    string stderr = sanitize_output(stderr_buffer.read_all() as string)
+    if did_timeout {
+        stderr += fmt.sprintf('\nCommand timed out after %dms', timeout_ms)
+    }
+    return result_t {stdout: stdout, stderr: stderr, exit_code: did_timeout ? 124 : child.exit_code, term_sig: child.term_sig, timed_out: did_timeout,}
+}
+
+fn shell_abortable(string cwd, string command, int timeout_ms, ref<abort.abort_t> cancellation): result_t! {
+    string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
+    var stdout_buffer = io.buffer.new()
+    var stderr_buffer = io.buffer.new()
+    var process_command = new process.command_t(name = '/bin/bash', args = ['-lc', script], cwd = '', env = [], stdin = fs.discard(), stdout = stdout_buffer, stderr = stderr_buffer)
+    var child = process_command.spawn()
+    abort.abort_callback_t cancel_child = fn () {
+        syscall.kill(child.pid, syscall.SIGTERM) catch error {}
+    }
+    cancellation.on_abort(cancel_child)
+    if cancellation.is_aborted() {
+        cancel_child()
+    }
+    var finished = chan<u8>.new(1)
+    go wait_for_process(child, finished)
+    bool timed_out = false
+    if timeout_ms > 0 {
+        var timed = chan<u8>.new(1)
+        go timeout_after(timeout_ms, timed)
+        select {
+            finished.on_recv() -> ignored {
+            }
+            timed.on_recv() -> ignored {
+                timed_out = true
+                syscall.kill(child.pid, syscall.SIGTERM) catch error {}
+                finished.recv() catch error {}
+            }
+        }
+    } else {
+        finished.recv() catch error {}
+    }
+    string stdout = sanitize_output(stdout_buffer.read_all() as string)
+    string stderr = sanitize_output(stderr_buffer.read_all() as string)
+    if timed_out {
+        stderr += fmt.sprintf('\nCommand timed out after %dms', timeout_ms)
+    }
+    if cancellation.is_aborted() {
+        stderr += '\nCommand aborted'
+    }
+    return result_t {stdout: stdout, stderr: stderr, exit_code: timed_out ? 124 : child.exit_code, term_sig: child.term_sig, timed_out: timed_out, aborted: cancellation.is_aborted(),}
+}
+
+fn shell_abortable_stream(string cwd, string command, int timeout_ms, ref<abort.abort_t> cancellation, output_chunk_fn on_chunk): result_t! {
+    string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
+    var stdout_buffer = io.buffer.new()
+    var stderr_buffer = io.buffer.new()
+    var stdout_writer = new streaming_writer_t(buffer = stdout_buffer, on_chunk = on_chunk, sanitizer = new sanitizer_t())
+    var stderr_writer = new streaming_writer_t(buffer = stderr_buffer, on_chunk = on_chunk, sanitizer = new sanitizer_t())
+    var process_command = new process.command_t(name = '/bin/bash', args = ['-lc', script], cwd = '', env = [], stdin = fs.discard(), stdout = stdout_writer, stderr = stderr_writer)
+    var child = process_command.spawn()
+    abort.abort_callback_t cancel_child = fn() {
+        syscall.kill(child.pid, syscall.SIGTERM) catch error {}
+    }
+    cancellation.on_abort(cancel_child)
+    if cancellation.is_aborted() {
+        cancel_child()
+    }
+    var finished = chan<u8>.new(1)
+    go wait_for_process(child, finished)
+    bool timed_out = false
+    if timeout_ms > 0 {
+        var timed = chan<u8>.new(1)
+        go timeout_after(timeout_ms, timed)
+        select {
+            finished.on_recv() -> ignored {
+            }
+            timed.on_recv() -> ignored {
+                timed_out = true
+                syscall.kill(child.pid, syscall.SIGTERM) catch error {}
+                finished.recv() catch error {}
+            }
+        }
+    } else {
+        finished.recv() catch error {}
+    }
+    string stdout = stdout_buffer.read_all() as string
+    string stderr = stderr_buffer.read_all() as string
+    if timed_out {
+        stderr += fmt.sprintf('\nCommand timed out after %dms', timeout_ms)
+    }
+    if cancellation.is_aborted() {
+        stderr += '\nCommand aborted'
+    }
+    return result_t {stdout: stdout, stderr: stderr, exit_code: timed_out ? 124 : child.exit_code, term_sig: child.term_sig, timed_out: timed_out, aborted: cancellation.is_aborted(),}
+}
+
+fn argv(string cwd, string name, [string] args): result_t! {
+    string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + 'exec ' + quote(name) + ' "$@"'
+    [string] process_args = ['-lc', script, 'adou-tool']
+    for arg in args {
+        process_args.push(arg)
+    }
+    var state = process.run('/bin/bash', process_args)
+    return result_t {stdout: sanitize_output(state.stdout), stderr: sanitize_output(state.stderr), exit_code: state.exit_code, term_sig: state.term_sig,}
+}
+
+fn quote(string value): string {
+    // Shell single quotes cannot contain a single quote. The concatenated
+    // double-quoted fragment keeps arbitrary user paths out of shell syntax.
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+}
+
+#local
+fn environment_prefix(): string {
+    string prefix = 'unset PI_SESSION_ID PI_SESSION_FILE PI_PROVIDER PI_MODEL PI_REASONING_LEVEL'
+    if global_agent_env == 0 {
+        return prefix + ' && '
+    }
+    var env = global_agent_env as ref<agent_env_t>
+    if env.session_id != '' {prefix += ' && export PI_SESSION_ID=' + quote(env.session_id)}
+    if env.session_file != '' {prefix += ' && export PI_SESSION_FILE=' + quote(env.session_file)}
+    if env.provider != '' {prefix += ' && export PI_PROVIDER=' + quote(env.provider)}
+    if env.model != '' {prefix += ' && export PI_MODEL=' + quote(env.model)}
+    if env.reasoning_level != '' {prefix += ' && export PI_REASONING_LEVEL=' + quote(env.reasoning_level)}
+    return prefix + ' && '
+}
+
+#local
+fn wait_for_process(ref<process.process_t> child, chan<u8> finished): void! {
+    child.wait()
+    finished.send(1)
+}
+
+#local
+fn timeout_after(int timeout_ms, chan<u8> timed): void! {
+    co.sleep(timeout_ms)
+    timed.send(1)
+}

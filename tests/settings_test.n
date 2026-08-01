@@ -1,0 +1,25 @@
+import adou.src.config.settings
+import os
+import syscall
+
+test 'settings round trip preserves core Pi preferences' {
+    string home = '/tmp/adou-settings-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    var original = settings.settings_t {default_provider: 'deepseek', default_model: 'deepseek-v4-flash', default_thinking_level: 'high', auto_compaction: false, steering_mode: 'one-at-a-time', follow_up_mode: 'all', hide_thinking: true, retry_enabled: false, retry_max_attempts: 5, retry_base_delay_ms: 2500, enabled_model_ids: ['deepseek/deepseek-v4-flash', 'openai/gpt-5.1-codex'],}
+    settings.save(original)
+    var loaded = settings.load()
+    assert(loaded.default_provider == 'deepseek' && loaded.default_model == 'deepseek-v4-flash')
+    assert(loaded.default_thinking_level == 'high')
+    assert(!loaded.auto_compaction)
+    assert(loaded.steering_mode == 'one-at-a-time' && loaded.follow_up_mode == 'all')
+    assert(loaded.hide_thinking)
+    assert(!loaded.retry_enabled && loaded.retry_max_attempts == 5 && loaded.retry_base_delay_ms == 2500)
+    assert(loaded.enabled_model_ids.len() == 2)
+    assert(loaded.enabled_model_ids[0] == 'deepseek/deepseek-v4-flash')
+    assert(loaded.enabled_model_ids[1] == 'openai/gpt-5.1-codex')
+    os.rmdir(home, true)
+    var defaults = settings.load()
+    assert(defaults.default_thinking_level == 'medium')
+    assert(defaults.steering_mode == 'one-at-a-time' && defaults.follow_up_mode == 'one-at-a-time')
+}

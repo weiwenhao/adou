@@ -1,0 +1,176 @@
+import adou.src.ai.types as ai_types
+import adou.src.config.auth
+import adou.src.config.models
+import adou.src.config.settings
+import adou.src.compaction.types as compaction_types
+import adou.src.config.types
+import syscall
+
+fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
+    if arguments.errors.len() > 0 {
+        throw errorf('%s', join_errors(arguments.errors))
+    }
+    var preferences = settings.load()
+    string requested_model = first(arguments.model, syscall.get_env('ADOU_MODEL'))
+    string provider = first(arguments.provider, syscall.get_env('ADOU_PROVIDER'))
+    string scoped_thinking = ''
+    // A stale settings file may contain a model/provider from a local mock or
+    // an extension that is outside the Nature MVP.  Pi still starts so the
+    // user can authenticate or choose another model; only use persisted
+    // defaults when their provider belongs to the built-in registry.
+    bool stored_provider_supported = preferences.default_provider == 'deepseek' || preferences.default_provider == 'openai' || preferences.default_provider == 'anthropic'
+    if requested_model == '' && preferences.default_model != '' && (preferences.default_provider == '' || stored_provider_supported) {
+        requested_model = preferences.default_model
+    }
+    if requested_model == '' && arguments.scoped_models.len() > 0 {
+        ref<ai_types.model_t>? scoped = models.first_allowed(arguments.scoped_models)
+        if scoped is ref<ai_types.model_t> scoped_model {
+            requested_model = scoped_model.id
+            provider = scoped_model.provider
+            scoped_thinking = models.thinking_for(scoped_model.provider + '/' + scoped_model.id, arguments.scoped_models)
+        }
+    }
+    if requested_model == '' && preferences.enabled_model_ids.len() > 0 {
+        // Pi uses the persisted model scope as the initial selector when no
+        // explicit model or CLI scope was provided.  Keep that preference
+        // distinct from the session's Ctrl+P scope, which the TUI restores
+        // separately after the runner is created.
+        ref<ai_types.model_t>? scoped = null
+        string saved_reference = preferences.default_provider != '' && preferences.default_model != '' ? preferences.default_provider + '/' + preferences.default_model : ''
+        if saved_reference != '' && models.allowed(saved_reference, preferences.enabled_model_ids) {
+            scoped = models.find(saved_reference)
+        }
+        if !(scoped is ref<ai_types.model_t>) {
+            scoped = models.first_allowed(preferences.enabled_model_ids)
+        }
+        if scoped is ref<ai_types.model_t> scoped_model {
+            requested_model = scoped_model.id
+            provider = scoped_model.provider
+            scoped_thinking = models.thinking_for(scoped_model.provider + '/' + scoped_model.id, preferences.enabled_model_ids)
+        }
+    }
+    string model_suffix_thinking = ''
+    int model_level_separator = requested_model.find(':')
+    if model_level_separator >= 0 {
+        string candidate_level = requested_model.slice(model_level_separator + 1, requested_model.len()).to_lower()
+        if candidate_level == 'off' || candidate_level == 'minimal' || candidate_level == 'low' || candidate_level == 'medium' || candidate_level == 'high' || candidate_level == 'xhigh' || candidate_level == 'max' {
+            model_suffix_thinking = candidate_level
+        }
+        requested_model = requested_model.slice(0, model_level_separator)
+    }
+    if provider == '' && preferences.default_provider != '' && stored_provider_supported {
+        provider = preferences.default_provider
+    }
+    if provider == '' && requested_model.find('/') >= 0 {
+        provider = requested_model.slice(0, requested_model.find('/'))
+    }
+    if provider == '' && requested_model != '' {
+        ref<ai_types.model_t>? inferred_model = models.find(requested_model)
+        if inferred_model is ref<ai_types.model_t> known_model {
+            provider = known_model.provider
+        }
+    }
+    if provider == '' {
+        provider = infer_provider()
+    }
+    if provider != 'openai' && provider != 'anthropic' && provider != 'deepseek' {
+        throw errorf('Unsupported provider: %s. MVP supports deepseek, openai and anthropic.', provider)
+    }
+    string model_id = requested_model
+    int model_separator = model_id.find('/')
+    if model_separator >= 0 {
+        model_id = model_id.slice(model_separator + 1, model_id.len())
+    }
+    if model_id == '' {
+        model_id = provider == 'deepseek' ? 'deepseek-v4-flash' : provider == 'anthropic' ? 'claude-sonnet-4-5' : 'gpt-5.1-codex'
+    }
+    string base_url = arguments.base_url
+    if base_url == '' {
+        base_url = provider == 'deepseek' ? 'https://api.deepseek.com' : provider == 'anthropic' ? 'https://api.anthropic.com' : 'https://api.openai.com/v1'
+    }
+    string api_key = arguments.api_key
+    if api_key == '' {
+        api_key = auth.effective(provider)
+    }
+    int context_window = positive(arguments.context_window, env_int('ADOU_CONTEXT_WINDOW'))
+    int max_tokens = positive(arguments.max_tokens, env_int('ADOU_MAX_TOKENS'))
+    if context_window == 0 && model_id == 'deepseek-v4-flash' {
+        context_window = 1000000
+    } else if context_window == 0 && model_id == 'gpt-5.1-codex' {
+        context_window = 400000
+    } else if context_window == 0 && model_id == 'claude-sonnet-4-5' {
+        context_window = 200000
+    }
+    if max_tokens == 0 && model_id == 'deepseek-v4-flash' {
+        max_tokens = 384000
+    } else if max_tokens == 0 && model_id == 'gpt-5.1-codex' {
+        max_tokens = 128000
+    } else if max_tokens == 0 && model_id == 'claude-sonnet-4-5' {
+        max_tokens = 64000
+    }
+    string api = provider == 'anthropic' ? 'anthropic-messages' : provider == 'deepseek' ? 'openai-completions' : 'openai-responses'
+    bool reasoning = provider == 'openai' || provider == 'deepseek' || provider == 'anthropic'
+    bool adaptive_thinking = provider == 'anthropic'
+    var model = new ai_types.model_t(id = model_id, api = api, provider = provider, base_url = base_url, reasoning = reasoning, adaptive_thinking = adaptive_thinking, context_window = context_window, max_tokens = max_tokens)
+    if provider == 'deepseek' && model_id == 'deepseek-v4-flash' {
+        model.cost.input = 0.14
+        model.cost.output = 0.28
+        model.cost.cache_read = 0.0028
+    }
+    int timeout_ms = positive(arguments.timeout_ms, 120000)
+    int max_retries = arguments.max_retries >= 0 ? arguments.max_retries : 2
+    string thinking = arguments.thinking_explicit ? arguments.thinking : model_suffix_thinking != '' ? model_suffix_thinking : scoped_thinking != '' ? scoped_thinking : preferences.default_thinking_level
+    var options = new ai_types.stream_options_t(api_key = api_key, timeout_ms = timeout_ms, max_tokens = max_tokens, max_retries = max_retries, reasoning_effort = thinking, thinking_enabled = thinking != 'off')
+    int reserve_tokens = positive(arguments.reserve_tokens, 16384)
+    int keep_recent_tokens = positive(arguments.keep_recent_tokens, 20000)
+    var compaction = compaction_types.settings_t {enabled: arguments.no_compaction ? false : preferences.auto_compaction, reserve_tokens: reserve_tokens, keep_recent_tokens: keep_recent_tokens,}
+    string session_dir = first(arguments.session_dir, syscall.get_env('ADOU_SESSION_DIR'))
+    string mode = arguments.mode
+    bool print_mode = arguments.print_mode || mode == 'json'
+    return types.config_t {cwd: cwd, provider: provider, model: model, stream_options: options, compaction: compaction, thinking: thinking, session_path: arguments.session_path, session_id: arguments.session_id, session_dir: session_dir, fork_path: arguments.fork_path, session_name: arguments.session_name, system_prompt: arguments.system_prompt, append_system_prompts: arguments.append_system_prompts, continue_recent: arguments.continue_recent, resume: arguments.resume, print_mode: print_mode, mode: mode, export_path: arguments.export_path, list_models: arguments.list_models, list_models_pattern: arguments.list_models_pattern, verbose: arguments.verbose, offline: arguments.offline, trust_override: arguments.trust_override, trust_override_explicit: arguments.trust_override_explicit, retry_enabled: preferences.retry_enabled, retry_max_attempts: preferences.retry_max_attempts, retry_base_delay_ms: preferences.retry_base_delay_ms, no_context_files: arguments.no_context_files, no_tools: arguments.no_tools, no_builtin_tools: arguments.no_builtin_tools, scoped_models: arguments.scoped_models, tool_names: arguments.tool_names, exclude_tool_names: arguments.exclude_tool_names, no_session: arguments.no_session, provider_explicit: arguments.provider != '' || syscall.get_env('ADOU_PROVIDER') != '', model_explicit: arguments.model != '' || syscall.get_env('ADOU_MODEL') != '', api_key_explicit: arguments.api_key != '', steering_mode: preferences.steering_mode, follow_up_mode: preferences.follow_up_mode, hide_thinking: preferences.hide_thinking, initial_messages: arguments.messages,}
+}
+
+#local
+fn infer_provider(): string {
+    if syscall.get_env('DEEPSEEK_API_KEY') != '' || auth.read('deepseek') != '' {
+        return 'deepseek'
+    }
+    if syscall.get_env('OPENAI_API_KEY') != '' || auth.read('openai') != '' {
+        return 'openai'
+    }
+    if syscall.get_env('ANTHROPIC_API_KEY') != '' || auth.read('anthropic') != '' {
+        return 'anthropic'
+    }
+    return 'deepseek'
+}
+
+#local
+fn first(string primary, string fallback): string {
+    return primary != '' ? primary : fallback
+}
+
+#local
+fn positive(int primary, int fallback): int {
+    return primary > 0 ? primary : fallback
+}
+
+#local
+fn env_int(string name): int {
+    string value = syscall.get_env(name)
+    if value == '' {
+        return 0
+    }
+    return value.to_int() catch error {0}
+}
+
+#local
+fn join_errors([string] errors): string {
+    string result = ''
+    for index, message in errors {
+        if index > 0 {
+            result += '\n'
+        }
+        result += message
+    }
+    return result
+}

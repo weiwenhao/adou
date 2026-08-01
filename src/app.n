@@ -1,0 +1,1280 @@
+import adou.src.agent.session
+import adou.src.agent.session_stream
+import adou.src.agent.event_json
+import adou.src.agent.types as agent_types
+import adou.src.ai.abort
+import adou.src.ai.provider
+import adou.src.ai.event_stream as ai_event_stream
+import adou.src.ai.types as ai_types
+import adou.src.config.args
+import adou.src.config.auth
+import adou.src.config.models
+import adou.src.config.resolve
+import adou.src.config.settings
+import adou.src.config.types as config_types
+import adou.src.context.project
+import adou.src.context.system_prompt
+import adou.src.platform.cwd as platform_cwd
+import adou.src.session.repository
+import adou.src.session.types as session_types
+import adou.src.session.message_json
+import adou.src.session.export_html as session_export
+import adou.src.tools.builtins
+import adou.src.tools.command
+import adou.src.tools.path_utils
+import adou.src.tools.shell_tools
+import adou.src.tui.chat
+import adou.src.tui.session_view
+import fs
+import os
+import strings
+import syscall
+import term
+import path
+import json
+import io
+import io.buf
+import fmt
+import co
+import co.mutex
+import time
+
+const VERSION = '0.1.0-dev'
+
+type rpc_object_t = map<string, ref<json.value_t>>
+
+fn run(): void! {
+    var argv = os.args()
+    var arguments = args.parse(argv)
+    if arguments.version {
+        println('adou ', VERSION)
+        return
+    }
+    if arguments.help {
+        println(args.HELP)
+        return
+    }
+    if arguments.list_models {
+        string listed = models.list_filtered(arguments.list_models_pattern)
+        if listed != '' {println(listed)}
+        return
+    }
+
+    string cwd = platform_cwd.current()
+    // Pi's CLI export is independent of provider/session startup: the first
+    // value names an existing JSONL session and the optional positional value
+    // is the HTML destination.  Resolve it before loading model credentials
+    // or creating a new active session so exporting never mutates state.
+    if arguments.export_path != '' {
+        string output_path = arguments.messages.len() > 0 ? arguments.messages[0] : ''
+        export_session_file(arguments.export_path, output_path, cwd) catch error {
+            println('Error: ' + error.msg())
+            syscall.exit(1) catch exit_error {}
+        }
+        return
+    }
+    // Configuration errors are user input, not runtime panics.  Pi reports
+    // invalid provider/model/option combinations as a concise startup error
+    // and exits normally; letting Nature propagate the error would expose a
+    // coroutine backtrace (and, in a TTY, can leave the caller with no useful
+    // guidance).  Validate the complete set of errors that resolve() can
+    // produce before constructing its value-typed config result.
+    if !report_startup_config_error(arguments) {
+        return
+    }
+    var config = resolve.resolve(arguments, cwd)
+    if config.offline && config.initial_messages.len() > 0 {
+        if config.mode == 'json' {
+            println(json_error('Offline mode cannot send prompts to a provider'))
+        } else {
+            println('Offline mode cannot send prompts to a provider')
+        }
+        return
+    }
+    if arguments.file_args.len() > 0 {
+        string file_text = load_file_arguments(arguments.file_args, cwd)
+        if file_text != '' {
+            [string] messages = [file_text]
+            messages.append(config.initial_messages)
+            config.initial_messages = messages
+        }
+    }
+    bool stdin_tty = term.is_tty(term.STDIN)
+    bool stdout_tty = term.is_tty(term.STDOUT)
+    bool interactive = stdin_tty
+    if !stdout_tty {
+        interactive = false
+    }
+    // RPC owns stdin as its command stream.  Reading piped stdin here would
+    // consume the JSONL commands before run_rpc() gets a chance to decode
+    // them, making `--mode rpc` appear to hang with no responses.
+    // A positional prompt is already authoritative.  Avoid probing stdin in
+    // that case: on some Nature runtimes a closed non-TTY descriptor reports
+    // a full zero-filled buffer instead of a zero-byte read, which would
+    // silently prepend thousands of NULs to the real prompt.
+    if !stdin_tty && config.mode != 'rpc' && config.initial_messages.len() == 0 && stdin_can_contain_prompt() {
+        string piped = read_piped_stdin()
+        if piped != '' {
+            [string] messages = [piped]
+            messages.append(config.initial_messages)
+            config.initial_messages = messages
+            config.print_mode = true
+        }
+    }
+    if config.print_mode && config.initial_messages.len() == 0 {
+        println('--print requires a prompt argument')
+        return
+    }
+    if config.initial_messages.len() == 0 && !interactive && !config.print_mode && config.mode != 'rpc' {
+        println('adou requires a TTY for interactive mode; pass a prompt argument for one-shot mode')
+        return
+    }
+    var repository = open_repository(config, cwd)
+    // A selected Pi session carries its own working directory.  All project
+    // resources, built-in tool executors, and footer paths must follow that
+    // session cwd rather than the directory from which Adou was launched.
+    string session_cwd = repository.cwd
+    if config.session_name != '' {
+        repository.append_session_info(config.session_name) catch error {
+            println('Could not set session name')
+            ''
+        }
+    }
+    if !config.provider_explicit && !config.model_explicit {
+        var stored = repository.build_context()
+        if stored.has_model {
+            ref<ai_types.model_t>? restored = models.find(stored.provider + '/' + stored.model_id)
+            if restored is ref<ai_types.model_t> session_model {
+                config.model = session_model
+                config.provider = session_model.provider
+                config.stream_options.max_tokens = session_model.max_tokens
+                if !config.api_key_explicit {
+                    config.stream_options.api_key = auth.effective(session_model.provider)
+                }
+            }
+        }
+    }
+    // Pi restores the session's persisted thinking preference independently of
+    // model/provider restoration. An explicit CLI thinking value still wins.
+    // Without this step a resumed session silently falls back to the global
+    // default even though its thinking_level_change entry is present in JSONL.
+    var stored_context = repository.build_context()
+    if !arguments.thinking_explicit && stored_context.has_thinking_level {
+        config.thinking = stored_context.thinking_level
+        config.stream_options.reasoning_effort = stored_context.thinking_level
+        config.stream_options.thinking_enabled = stored_context.thinking_level != 'off'
+    }
+    command.configure_agent_environment(repository.get_session_id(), repository.get_session_file(), config.provider, config.model.id, config.thinking)
+    config.stream_options.session_id = repository.get_session_id()
+    [ref<project.file_t>] context_files = []
+    if !config.no_context_files {
+        var loaded = project.load(session_cwd, '')
+        context_files = loaded.files
+    }
+    string append_prompt = strings.join(config.append_system_prompts, '\n\n')
+    var tools = builtins.select_tools(session_cwd, config.tool_names, config.exclude_tool_names, config.no_tools || config.no_builtin_tools)
+    [string] tool_names = []
+    for tool in tools {
+        tool_names.push(tool.name)
+    }
+    string system = system_prompt.build_with_tools(session_cwd, context_files, config.system_prompt, append_prompt, tool_names)
+    var context = new agent_types.context_t(system_prompt = system, tools = tools)
+    var agent_config = new agent_types.config_t(model = config.model, stream_options = config.stream_options)
+    agent_config.queues.steering_mode = config.steering_mode
+    agent_config.queues.follow_up_mode = config.follow_up_mode
+    var runner = session.new(repository, context, agent_config, stream_provider(), config.compaction)
+    runner.retry_enabled = config.retry_enabled
+    runner.retry_max_attempts = config.retry_max_attempts
+    runner.retry_base_delay_ms = config.retry_base_delay_ms
+
+    if config.mode == 'rpc' {
+        run_rpc(runner, config.no_context_files, config.system_prompt, config.append_system_prompts, config.scoped_models)
+        return
+    }
+
+    if config.initial_messages.len() > 0 && (config.print_mode || !interactive) {
+        run_headless(runner, strings.join(config.initial_messages, ' '), config.print_mode, config.mode == 'json')
+        return
+    }
+    if !interactive {
+        return
+    }
+
+    var terminal = term.open()
+    var view = session_view.new(terminal, runner, config.model.id, session_cwd)
+    view.model_scope_patterns = config.scoped_models
+    view.system_prompt_override = config.system_prompt
+    view.append_system_prompts = config.append_system_prompts
+    view.no_context_files = config.no_context_files
+    view.chat.thinking_visible = !config.hide_thinking
+    if config.resume && config.initial_messages.len() == 0 {
+        // Pi's --resume opens the session picker.  Keep the headless path
+        // deterministic (open_repository already selected the recent
+        // session there), while interactive startup gets the same selector
+        // affordance as /resume.
+        view.startup_session_picker = true
+        view.show_session_overlay()
+    }
+    if config.initial_messages.len() > 0 {
+        view.active_stream = runner.prompt(strings.join(config.initial_messages, ' '))
+    }
+    view.run() catch error {
+        terminal.restore() catch restore_error {}
+        throw error
+    }
+    terminal.restore()
+}
+
+#local
+fn stream_provider(): agent_types.stream_fn {
+    agent_types.stream_fn result = fn(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> options): ref<ai_event_stream.assistant_stream_t> {
+        return provider.stream(model, context, options)
+    }
+    return result
+}
+
+#local
+fn report_startup_config_error(config_types.cli_args_t arguments): bool {
+    string message = ''
+    if arguments.errors.len() > 0 {
+        for index, item in arguments.errors {
+            if index > 0 {
+                message += '\n'
+            }
+            message += item
+        }
+    } else {
+        // resolve() accepts a provider from the CLI or environment.  Check
+        // those explicit sources before entering the value-typed resolver so
+        // malformed command-line input cannot become an uncaught coroutine
+        // error.  A stale persisted provider is deliberately not rejected:
+        // Pi starts interactively without credentials and lets /login repair
+        // the configuration.
+        string provider = arguments.provider
+        if provider == '' {
+            provider = syscall.get_env('ADOU_PROVIDER')
+        }
+        // An invalid persisted default is recoverable: resolve() ignores it
+        // and falls back to the built-in model so `/login` remains available.
+        // Only an explicit CLI/environment provider is a startup error.
+        if provider != '' && provider != 'deepseek' && provider != 'openai' && provider != 'anthropic' {
+            message = 'Unsupported provider: ' + provider + '. MVP supports deepseek, openai and anthropic.'
+        }
+    }
+    if message == '' {
+        return true
+    }
+    if arguments.mode == 'json' {
+        string encoded = json_error(message) catch error {message}
+        println(encoded)
+    } else {
+        println('Error: ' + message)
+    }
+    syscall.exit(1) catch exit_error {}
+    return false
+}
+
+#local
+fn open_repository(config_types.config_t config, string cwd): ref<repository.manager_t>! {
+    if config.no_session {
+        return repository.in_memory(cwd)
+    }
+    if config.session_path != '' {
+        if config.session_path.find('/') >= 0 || config.session_path.find('\\') >= 0 || config.session_path.to_lower().ends_with('.jsonl') || config.session_path.starts_with('~') {
+            return repository.open(config.session_path)
+        }
+        return repository.open_reference(cwd, config.session_dir, config.session_path)
+    }
+    if config.session_id != '' {
+        return repository.open_by_id_or_create(cwd, config.session_dir, config.session_id)
+    }
+    if config.fork_path != '' {
+        var source = repository.open_reference(cwd, config.session_dir, config.fork_path)
+        // Pi's CLI --fork copies the complete source JSONL into the current
+        // project's session directory.  --session-id is an optional exact
+        // target id for this new child session.
+        return source.fork_to(cwd, config.session_dir, config.session_id)
+    }
+    if config.resume {
+        // Pi presents the session selector before binding a runtime to any
+        // existing JSONL. Keep the placeholder in memory so cancelling the
+        // picker cannot silently continue the newest project session or
+        // create a new file.
+        var placeholder = repository.in_memory(cwd)
+        placeholder.session_dir = repository.directory_for(cwd, config.session_dir)
+        return placeholder
+    }
+    if config.continue_recent {
+        return repository.continue_recent(cwd, config.session_dir)
+    }
+    return repository.create(cwd, config.session_dir)
+}
+
+#local
+fn run_headless(ref<session.runner_t> runner, string prompt, bool plain, bool json_mode): void! {
+    if json_mode {
+        run_json(runner, prompt)
+        return
+    }
+    if plain {
+        var stream = runner.prompt(prompt)
+        for true {
+            var event = stream.recv() catch error {
+                break
+            }
+            if event.kind == session_stream.EVENT_SESSION_END {
+                break
+            }
+        }
+        var messages = stream.result() catch error {
+            string message = error.msg()
+            println('Error: ' + message)
+            return
+        }
+        string answer = last_assistant_text(messages)
+        if answer != '' {
+            println(answer)
+        }
+        return
+    }
+    var view = chat.new(runner.agent_config.model.id, runner.repository.cwd)
+    string thinking = runner.agent_config.stream_options.reasoning_effort
+    if !runner.agent_config.stream_options.thinking_enabled {
+        thinking = 'off'
+    } else if thinking == '' {
+        thinking = 'on'
+    }
+    view.configure(runner.agent_config.model.context_window, thinking)
+    var stream = runner.prompt(prompt)
+    for true {
+        var event = stream.recv() catch error {
+            break
+        }
+        view.apply(event)
+        if event.kind == session_stream.EVENT_SESSION_END {
+            break
+        }
+    }
+    stream.result() catch error {
+        view.error_message = error.msg()
+    }
+    var lines = view.render(120)
+    println(strings.join(lines, '\n'))
+}
+
+#local
+fn run_json(ref<session.runner_t> runner, string prompt): void! {
+    if runner.repository.persisted {
+        println(runner.repository.header_json())
+    }
+    var stream = runner.prompt(prompt)
+    for true {
+        var event = stream.recv() catch error {break}
+        println(event_json.encode(event))
+        if event.kind == session_stream.EVENT_SESSION_END {break}
+    }
+    var ignored = stream.result() catch error {
+        println(json_error(error.msg()))
+        return
+    }
+}
+
+#local
+fn json_error(string message): string! {
+    map<string, ref<json.value_t>> object = {}
+    object['type'] = json.box_value(json.string_value('error'))
+    object['message'] = json.box_value(json.string_value(message))
+    return json.stringify(json.object_value(object))
+}
+
+#local
+fn export_repository(ref<repository.manager_t> repository, string target): void! {
+    string absolute = write_export(repository, target)
+    println('Exported session to ' + absolute)
+}
+
+#local
+fn export_session_file(string source_path, string requested_output, string cwd): void! {
+    string source = path_utils.resolve_to_cwd(source_path, cwd)
+    var session_repository = repository.open(source)
+    string target = requested_output
+    if target == '' {
+        string basename = path.base(source)
+        if basename.to_lower().ends_with('.jsonl') {
+            basename = basename.slice(0, basename.len() - 5)
+        }
+        target = 'adou-session-' + basename + '.html'
+    }
+    string absolute = path_utils.resolve_to_cwd(target, cwd)
+    os.mkdirs(path.dir(absolute), 0o755)
+    string html = session_export.render(session_repository)
+    var destination = fs.open(absolute, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    int written = destination.write(html as [u8])
+    destination.close()
+    if written != html.len() {
+        throw errorf('Could not write export file: %s', absolute)
+    }
+    println('Exported to: ' + absolute)
+}
+
+#local
+fn write_export(ref<repository.manager_t> repository, string target): string! {
+    if !repository.persisted {
+        throw errorf('Cannot export an in-memory session')
+    }
+    string source_path = repository.get_session_file()
+    var source = fs.open(source_path, syscall.O_RDONLY, 0)
+    string content = source.content() catch error {
+        source.close()
+        throw error
+    }
+    source.close()
+    string absolute = path_utils.resolve_to_cwd(target, repository.cwd)
+    os.mkdirs(path.dir(absolute), 0o755)
+    // Pi chooses HTML unless the caller explicitly asks for a JSONL export.
+    // Keep the CLI, RPC, and interactive `/export` paths consistent.
+    string output = content
+    if !target.to_lower().ends_with('.jsonl') {
+        output = session_export.render(repository)
+    }
+    var destination = fs.open(absolute, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    int written = destination.write(output as [u8])
+    destination.close()
+    if written != output.len() {throw errorf('Could not write export file: %s', absolute)}
+    return absolute
+}
+
+#local
+fn html_escape(string value): string {
+    return value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+}
+
+// Pi's RPC mode is a newline-delimited command protocol. The command reader
+// stays live while prompt/compact/bash workers stream events in the
+// background; session mutations still go through the runner's busy lock.
+#local
+fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): void! {
+    var input = fs.stdin()
+    var reader = new buf.reader<ref<fs.file_t>>(rd = input)
+    var output_lock = mutex.mutex_t.new()
+    for true {
+        string line = reader.read_line() catch error {break}
+        line = line.trim([' ', '\t', '\r', '\n'])
+        if line == '' {continue}
+        var parsed = json.parse(line) catch error {
+            rpc_write(output_lock, rpc_error('', 'parse', error.msg()))
+            continue
+        }
+        if parsed.kind != json.VALUE_OBJECT {
+            rpc_write(output_lock, rpc_error('', 'parse', 'RPC command must be a JSON object'))
+            continue
+        }
+        rpc_object_t object = parsed.as_object() catch error {
+            rpc_write(output_lock, rpc_error('', 'parse', error.msg()))
+            continue
+        } as rpc_object_t
+        string command = rpc_string(object, 'type')
+        string id = rpc_string(object, 'id')
+        if command == 'prompt' {
+            string prompt_behavior = rpc_string(object, 'streamingBehavior')
+            rpc_run_prompt(runner, id, rpc_string(object, 'message'), prompt_behavior, output_lock)
+        } else if command == 'steer' {
+            rpc_queue_message(runner, id, rpc_string(object, 'message'), true, output_lock)
+        } else if command == 'follow_up' {
+            rpc_queue_message(runner, id, rpc_string(object, 'message'), false, output_lock)
+        } else if command == 'abort' {
+            runner.abort_active()
+            rpc_write(output_lock, rpc_ok(id, 'abort'))
+        } else if command == 'abort_retry' {
+            // Retry waits are owned by the session stream.  Aborting that
+            // stream interrupts both the provider request and the bounded
+            // retry sleep, matching Pi's abortRetry command.
+            runner.abort_active()
+            rpc_write(output_lock, rpc_ok(id, 'abort_retry'))
+        } else if command == 'get_state' {
+            rpc_write(output_lock, rpc_ok_data(id, 'get_state', rpc_state(runner)))
+        } else if command == 'get_available_models' {
+            rpc_write(output_lock, rpc_ok_data(id, 'get_available_models', rpc_models(runner)))
+        } else if command == 'set_model' {
+            rpc_set_model(runner, id, rpc_string(object, 'provider'), rpc_string(object, 'modelId'), output_lock)
+        } else if command == 'cycle_model' {
+            rpc_cycle_model(runner, id, model_scope_patterns, output_lock)
+        } else if command == 'set_thinking_level' {
+            runner.set_thinking_level(rpc_string(object, 'level')) catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
+            rpc_write(output_lock, rpc_ok(id, command))
+        } else if command == 'cycle_thinking_level' {
+            rpc_cycle_thinking(runner, id, output_lock)
+        } else if command == 'get_available_thinking_levels' {
+            rpc_write(output_lock, rpc_ok_data(id, command, rpc_thinking_levels()))
+        } else if command == 'set_steering_mode' {
+            rpc_set_queue_mode(runner, id, true, rpc_string(object, 'mode'), output_lock)
+        } else if command == 'set_follow_up_mode' {
+            rpc_set_queue_mode(runner, id, false, rpc_string(object, 'mode'), output_lock)
+        } else if command == 'set_auto_compaction' {
+            runner.compaction_settings.enabled = rpc_bool(object, 'enabled', true)
+            rpc_write(output_lock, rpc_ok(id, command))
+        } else if command == 'set_auto_retry' {
+            runner.retry_enabled = rpc_bool(object, 'enabled', true)
+            rpc_write(output_lock, rpc_ok(id, command))
+        } else if command == 'compact' {
+            rpc_run_compaction(runner, id, rpc_string(object, 'customInstructions'), output_lock)
+        } else if command == 'bash' {
+            rpc_run_bash(runner, id, rpc_string(object, 'command'), rpc_bool(object, 'excludeFromContext', false), output_lock)
+        } else if command == 'abort_bash' {
+            runner.abort_active()
+            rpc_write(output_lock, rpc_ok(id, 'abort_bash'))
+        } else if command == 'get_session_stats' {
+            var stats = runner.repository.stats(runner.agent_config.model.context_window) catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
+            rpc_write(output_lock, rpc_ok_data(id, command, rpc_stats(stats, runner.repository)))
+        } else if command == 'export_html' {
+            rpc_export_html(runner, id, rpc_string(object, 'outputPath'), output_lock)
+        } else if command == 'get_messages' {
+            rpc_write(output_lock, rpc_ok_data(id, command, rpc_messages(runner.copy_active_messages())))
+        } else if command == 'get_last_assistant_text' {
+            rpc_write(output_lock, rpc_ok_data(id, command, rpc_text_data('text', last_assistant_text(runner.copy_active_messages()))))
+        } else if command == 'get_commands' {
+            rpc_write(output_lock, rpc_ok_data(id, command, rpc_commands()))
+        } else if command == 'set_session_name' {
+            string name = rpc_string(object, 'name').trim([' ', '\t', '\n', '\r'])
+            if name == '' {
+                rpc_write(output_lock, rpc_error(id, command, 'Session name cannot be empty'))
+                continue
+            }
+            runner.repository.append_session_info(name) catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
+            rpc_write(output_lock, rpc_ok(id, command))
+        } else if command == 'new_session' {
+            runner.start_new_session() catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
+            rpc_write(output_lock, rpc_ok_data(id, command, rpc_cancelled_data(false)))
+        } else if command == 'switch_session' {
+            rpc_switch_session(runner, id, rpc_string(object, 'sessionPath'), no_context_files, system_prompt_override, append_system_prompts, output_lock)
+        } else if command == 'fork' {
+            string fork_text = rpc_fork_message_text(runner.repository, rpc_string(object, 'entryId'))
+            runner.fork_session(rpc_string(object, 'entryId')) catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
+            rpc_object_t fork_data = {}
+            fork_data['text'] = boxed_string(fork_text)
+            fork_data['cancelled'] = boxed_bool(false)
+            rpc_write(output_lock, rpc_ok_data(id, command, json.box_value(json.object_value(fork_data as map<string, ref<json.value_t>>))))
+        } else if command == 'clone' {
+            runner.clone_session() catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
+            rpc_write(output_lock, rpc_ok_data(id, command, rpc_cancelled_data(false)))
+        } else if command == 'get_entries' {
+            var entries_data = rpc_entries(runner.repository, rpc_string(object, 'since')) catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
+            rpc_write(output_lock, rpc_ok_data(id, command, entries_data))
+        } else if command == 'get_tree' {
+            var tree_data = rpc_tree(runner.repository) catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
+            rpc_write(output_lock, rpc_ok_data(id, command, tree_data))
+        } else if command == 'get_fork_messages' {
+            var fork_data = rpc_fork_messages(runner.repository) catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
+            rpc_write(output_lock, rpc_ok_data(id, command, fork_data))
+        } else {
+            rpc_write(output_lock, rpc_error(id, command, 'Unknown RPC command: ' + command))
+        }
+    }
+    // A piped RPC client may close stdin immediately after sending a prompt.
+    // Keep the process alive until the background operation has emitted its
+    // terminal event and released the runner, otherwise the final response
+    // would be lost at EOF.
+    for runner.busy {
+        co.sleep(5)
+    }
+}
+
+#local
+fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string streaming_behavior, ref<mutex.mutex_t> output_lock): void! {
+    if prompt == '' {
+        rpc_write(output_lock, rpc_error(id, 'prompt', 'prompt message is required'))
+        return
+    }
+    // Pi lets clients use `prompt` as a convenience queue operation while an
+    // assistant turn is already running.  Keep explicit steer/follow_up
+    // commands equivalent, but accept the streamingBehavior spelling too.
+    if streaming_behavior == 'steer' || streaming_behavior == 'followUp' {
+        runner.lock.lock()
+        bool active = runner.busy
+        runner.lock.unlock()
+        if active {
+            rpc_queue_message(runner, id, prompt, streaming_behavior == 'steer', output_lock)
+            return
+        }
+    }
+    var stream = runner.prompt(prompt) catch error {
+        rpc_write(output_lock, rpc_error(id, 'prompt', error.msg()))
+        return
+    }
+    go rpc_prompt_worker(runner, stream, id, output_lock)
+}
+
+#local
+fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<mutex.mutex_t> output_lock): void! {
+    rpc_write(output_lock, rpc_ok(id, 'prompt'))
+    for true {
+        var event = stream.recv() catch error {break}
+        rpc_write(output_lock, event_json.encode(event))
+        if event.kind == session_stream.EVENT_SESSION_END {break}
+    }
+    stream.result() catch error {
+        rpc_write(output_lock, rpc_error(id, 'prompt', error.msg()))
+        return
+    }
+}
+
+#local
+fn rpc_queue_message(ref<session.runner_t> runner, string id, string text, bool steering, ref<mutex.mutex_t> output_lock): void! {
+    if text == '' {
+        rpc_write(output_lock, rpc_error(id, steering ? 'steer' : 'follow_up', 'message is required'))
+        return
+    }
+    var message = new ai_types.user_message_t(content = text, timestamp = time.now().ms_timestamp())
+    if steering {
+        runner.agent_config.queues.enqueue_steering(message)
+    } else {
+        runner.agent_config.queues.enqueue_follow_up(message)
+    }
+    rpc_write(output_lock, rpc_ok(id, steering ? 'steer' : 'follow_up'))
+}
+
+#local
+fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope_patterns, ref<mutex.mutex_t> output_lock): void! {
+    [ref<ai_types.model_t>] available = []
+    for model in models.all() {
+        if !models.allowed(model.provider + '/' + model.id, model_scope_patterns) {
+            continue
+        }
+        if auth.effective(model.provider) != '' || (model.provider == runner.agent_config.model.provider && runner.agent_config.stream_options.api_key != '') {
+            available.push(model)
+        }
+    }
+    if available.len() <= 1 {
+        rpc_write(output_lock, rpc_ok_data(id, 'cycle_model', json.box_value(json.null_value())))
+        return
+    }
+    int current = 0
+    for index, model in available {
+        if model.provider == runner.agent_config.model.provider && model.id == runner.agent_config.model.id {
+            current = index
+            break
+        }
+    }
+    var next = available[(current + 1) % available.len()]
+    runner.set_model(next) catch error {
+        rpc_write(output_lock, rpc_error(id, 'cycle_model', error.msg()))
+        return
+    }
+    string scoped_thinking = models.thinking_for(next.provider + '/' + next.id, model_scope_patterns)
+    if scoped_thinking != '' {
+        runner.set_thinking_level(scoped_thinking) catch error {
+            rpc_write(output_lock, rpc_error(id, 'cycle_model', error.msg()))
+            return
+        }
+    }
+    rpc_object_t result = {}
+    result['model'] = rpc_model_data(next)
+    result['thinkingLevel'] = boxed_string(runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off')
+    result['isScoped'] = boxed_bool(model_scope_patterns.len() > 0)
+    rpc_write(output_lock, rpc_ok_data(id, 'cycle_model', json.box_value(json.object_value(result as map<string, ref<json.value_t>>))))
+}
+
+#local
+fn rpc_cycle_thinking(ref<session.runner_t> runner, string id, ref<mutex.mutex_t> output_lock): void! {
+    if !runner.agent_config.model.reasoning {
+        rpc_write(output_lock, rpc_ok_data(id, 'cycle_thinking_level', json.box_value(json.null_value())))
+        return
+    }
+    [string] levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+    string current = runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off'
+    int index = 0
+    for candidate, level in levels {
+        if level == current {index = candidate; break}
+    }
+    string next = levels[(index + 1) % levels.len()]
+    runner.set_thinking_level(next) catch error {
+        rpc_write(output_lock, rpc_error(id, 'cycle_thinking_level', error.msg()))
+        return
+    }
+    rpc_object_t result = {}
+    string effective = runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off'
+    result['level'] = boxed_string(effective)
+    rpc_write(output_lock, rpc_ok_data(id, 'cycle_thinking_level', json.box_value(json.object_value(result as map<string, ref<json.value_t>>))))
+}
+
+#local
+fn rpc_set_queue_mode(ref<session.runner_t> runner, string id, bool steering, string mode, ref<mutex.mutex_t> output_lock): void! {
+    if mode != agent_types.QUEUE_ALL && mode != agent_types.QUEUE_ONE {
+        rpc_write(output_lock, rpc_error(id, steering ? 'set_steering_mode' : 'set_follow_up_mode', 'mode must be all or one-at-a-time'))
+        return
+    }
+    if steering {
+        runner.agent_config.queues.steering_mode = mode
+    } else {
+        runner.agent_config.queues.follow_up_mode = mode
+    }
+    rpc_write(output_lock, rpc_ok(id, steering ? 'set_steering_mode' : 'set_follow_up_mode'))
+}
+
+#local
+fn rpc_run_bash(ref<session.runner_t> runner, string id, string command_text, bool excluded, ref<mutex.mutex_t> output_lock): void! {
+    if command_text == '' {
+        rpc_write(output_lock, rpc_error(id, 'bash', 'command is required'))
+        return
+    }
+    runner.begin_operation() catch error {
+        rpc_write(output_lock, rpc_error(id, 'bash', error.msg()))
+        return
+    }
+    var stream = session_stream.new()
+    runner.attach_stream(stream)
+    go rpc_bash_worker(runner, stream, command_text, excluded, id, output_lock)
+}
+
+#local
+fn rpc_bash_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string command_text, bool excluded, string id, ref<mutex.mutex_t> output_lock): void! {
+    var result = shell_tools.execute_bash_capture(runner.repository.cwd, command_text, 0, stream.cancellation) catch error {
+        rpc_write(output_lock, rpc_error(id, 'bash', error.msg()))
+        runner.end_operation()
+        return
+    }
+    runner.record_bash_during_operation(command_text, result.output, result.cancelled ? -1 : result.exit_code, result.cancelled, result.truncated, result.full_output_path, excluded) catch error {
+        rpc_write(output_lock, rpc_error(id, 'bash', error.msg()))
+        runner.end_operation()
+        return
+    }
+    rpc_object_t data = {}
+    data['output'] = boxed_string(result.output)
+    data['exitCode'] = number_json(result.exit_code)
+    data['cancelled'] = boxed_bool(result.cancelled)
+    data['timedOut'] = boxed_bool(result.timed_out)
+    data['truncated'] = boxed_bool(result.truncated)
+    data['fullOutputPath'] = boxed_string(result.full_output_path)
+    rpc_write(output_lock, rpc_ok_data(id, 'bash', json.box_value(json.object_value(data as map<string, ref<json.value_t>>))))
+    runner.end_operation()
+}
+
+#local
+fn rpc_export_html(ref<session.runner_t> runner, string id, string requested_path, ref<mutex.mutex_t> output_lock): void! {
+    if !runner.repository.persisted {
+        rpc_write(output_lock, rpc_error(id, 'export_html', 'Cannot export an in-memory session'))
+        return
+    }
+    string target = requested_path
+    if target == '' {
+        target = runner.repository.get_session_file() + '.html'
+    }
+    if !target.to_lower().ends_with('.html') {
+        target += '.html'
+    }
+    string absolute = write_export(runner.repository, target) catch error {
+        rpc_write(output_lock, rpc_error(id, 'export_html', error.msg()))
+        return
+    }
+    rpc_object_t data = {}
+    data['path'] = boxed_string(absolute)
+    rpc_write(output_lock, rpc_ok_data(id, 'export_html', json.box_value(json.object_value(data as map<string, ref<json.value_t>>))))
+}
+
+#local
+fn rpc_switch_session(ref<session.runner_t> runner, string id, string session_path, bool no_context_files, string system_prompt_override, [string] append_system_prompts, ref<mutex.mutex_t> output_lock): void! {
+    if session_path == '' {
+        rpc_write(output_lock, rpc_error(id, 'switch_session', 'sessionPath is required'))
+        return
+    }
+    var next = repository.open(session_path) catch error {
+        rpc_write(output_lock, rpc_error(id, 'switch_session', error.msg()))
+        return
+    }
+    runner.replace_repository(next) catch error {
+        rpc_write(output_lock, rpc_error(id, 'switch_session', error.msg()))
+        return
+    }
+    rebind_rpc_context(runner, next.cwd, no_context_files, system_prompt_override, append_system_prompts) catch error {
+        rpc_write(output_lock, rpc_error(id, 'switch_session', error.msg()))
+        return
+    }
+    rpc_write(output_lock, rpc_ok_data(id, 'switch_session', rpc_cancelled_data(false)))
+}
+
+// Session switching changes the runtime cwd.  Pi rebuilds project-bound
+// tools and the system prompt at that boundary; RPC must do the same as the
+// interactive TUI instead of continuing to execute tools in the old project.
+#local
+fn rebind_rpc_context(ref<session.runner_t> runner, string cwd, bool no_context_files, string system_prompt_override, [string] append_system_prompts): void! {
+    [string] tool_names = []
+    for tool in runner.base_context.tools {
+        tool_names.push(tool.name)
+    }
+    [ref<project.file_t>] context_files = []
+    if !no_context_files {
+        var loaded = project.load(cwd, '')
+        context_files = loaded.files
+    }
+    [ref<agent_types.agent_tool_t>] tools = []
+    if tool_names.len() > 0 {
+        tools = builtins.select_tools(cwd, tool_names, [], false)
+    }
+    runner.base_context.tools = tools
+    string append_prompt = strings.join(append_system_prompts, '\n\n')
+    runner.base_context.system_prompt = system_prompt.build_with_tools(cwd, context_files, system_prompt_override, append_prompt, tool_names)
+}
+
+#local
+fn rpc_run_compaction(ref<session.runner_t> runner, string id, string instructions, ref<mutex.mutex_t> output_lock): void! {
+    var stream = runner.compact_now(instructions) catch error {
+        rpc_write(output_lock, rpc_error(id, 'compact', error.msg()))
+        return
+    }
+    go rpc_compaction_worker(runner, stream, id, output_lock)
+}
+
+#local
+fn rpc_compaction_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<mutex.mutex_t> output_lock): void! {
+    string summary = ''
+    int tokens_before = 0
+    int estimated_after = 0
+    string failure = ''
+    for true {
+        var event = stream.recv() catch error {break}
+        rpc_write(output_lock, event_json.encode(event))
+        if event.kind == session_stream.EVENT_COMPACTION_END {
+            summary = event.summary
+            tokens_before = event.tokens_before
+            estimated_after = event.estimated_tokens_after
+            if event.error_message != '' {failure = event.error_message}
+        }
+        if event.kind == session_stream.EVENT_SESSION_END {break}
+    }
+    stream.result() catch error {
+        rpc_write(output_lock, rpc_error(id, 'compact', error.msg()))
+        return
+    }
+    if failure != '' {
+        rpc_write(output_lock, rpc_error(id, 'compact', failure))
+        return
+    }
+    rpc_object_t data = {}
+    data['summary'] = boxed_string(summary)
+    data['tokensBefore'] = number_json(tokens_before)
+    data['estimatedTokensAfter'] = number_json(estimated_after)
+    ref<session_types.entry_t>? latest = runner.repository.latest_compaction()
+    if latest is ref<session_types.entry_t> entry {
+        var raw = entry.raw.as_object() catch error {
+            rpc_write(output_lock, rpc_ok_data(id, 'compact', json.box_value(json.object_value(data as map<string, ref<json.value_t>>))))
+            return
+        }
+        if raw.contains('firstKeptEntryId') && raw['firstKeptEntryId'].kind == json.VALUE_STRING {
+            data['firstKeptEntryId'] = boxed_string(raw['firstKeptEntryId'].text)
+        }
+    }
+    rpc_write(output_lock, rpc_ok_data(id, 'compact', json.box_value(json.object_value(data as map<string, ref<json.value_t>>))))
+}
+
+#local
+fn rpc_set_model(ref<session.runner_t> runner, string id, string provider_name, string model_id, ref<mutex.mutex_t> output_lock): void! {
+    ref<ai_types.model_t>? selected = models.find(provider_name + '/' + model_id)
+    if !(selected is ref<ai_types.model_t>) {
+        rpc_write(output_lock, rpc_error(id, 'set_model', 'Model not found: ' + provider_name + '/' + model_id))
+        return
+    }
+    runner.set_model(selected as ref<ai_types.model_t>) catch error {
+        rpc_write(output_lock, rpc_error(id, 'set_model', error.msg()))
+        return
+    }
+    rpc_write(output_lock, rpc_ok_data(id, 'set_model', rpc_model_data(selected as ref<ai_types.model_t>)))
+}
+
+#local
+fn rpc_state(ref<session.runner_t> runner): ref<json.value_t>! {
+    rpc_object_t object = {}
+    object['model'] = rpc_model_data(runner.agent_config.model)
+    object['thinkingLevel'] = boxed_string(runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off')
+    object['isStreaming'] = boxed_bool(runner.busy)
+    object['isCompacting'] = boxed_bool(runner.compacting)
+    object['steeringMode'] = boxed_string(runner.agent_config.queues.steering_mode)
+    object['followUpMode'] = boxed_string(runner.agent_config.queues.follow_up_mode)
+    object['sessionFile'] = rpc_nullable_string(runner.repository.get_session_file())
+    object['sessionId'] = boxed_string(runner.repository.get_session_id())
+    object['sessionName'] = rpc_nullable_string(runner.repository.get_session_name())
+    object['autoCompactionEnabled'] = boxed_bool(runner.compaction_settings.enabled)
+    object['messageCount'] = number_json(runner.active_messages.len())
+    object['pendingMessageCount'] = number_json(runner.agent_config.queues.pending_count())
+    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_models(ref<session.runner_t> runner): ref<json.value_t>! {
+    [ref<json.value_t>] values = []
+    for model in models.all() {
+        if auth.effective(model.provider) == '' && !(model.provider == runner.agent_config.model.provider && runner.agent_config.stream_options.api_key != '') {
+            continue
+        }
+        values.push(rpc_model_data(model))
+    }
+    rpc_object_t result = {}
+    result['models'] = json.box_value(json.array_value(values))
+    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_model_data(ref<ai_types.model_t> model): ref<json.value_t>! {
+    rpc_object_t object = {}
+    object['provider'] = boxed_string(model.provider)
+    object['id'] = boxed_string(model.id)
+    object['name'] = boxed_string(model.id)
+    object['api'] = boxed_string(model.api)
+    object['baseUrl'] = boxed_string(model.base_url)
+    object['reasoning'] = boxed_bool(model.reasoning)
+    [ref<json.value_t>] inputs = [boxed_string('text')]
+    object['input'] = json.box_value(json.array_value(inputs))
+    object['contextWindow'] = number_json(model.context_window)
+    object['maxTokens'] = number_json(model.max_tokens)
+    rpc_object_t cost = {}
+    cost['input'] = float_json(model.cost.input)
+    cost['output'] = float_json(model.cost.output)
+    cost['cacheRead'] = float_json(model.cost.cache_read)
+    cost['cacheWrite'] = float_json(model.cost.cache_write)
+    object['cost'] = json.box_value(json.object_value(cost as map<string, ref<json.value_t>>))
+    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_thinking_levels(): ref<json.value_t>! {
+    [ref<json.value_t>] values = [boxed_string('off'), boxed_string('minimal'), boxed_string('low'), boxed_string('medium'), boxed_string('high'), boxed_string('xhigh'), boxed_string('max')]
+    rpc_object_t result = {}
+    result['levels'] = json.box_value(json.array_value(values))
+    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_messages([ai_types.message_t] messages): ref<json.value_t>! {
+    [ref<json.value_t>] values = []
+    for message in messages {
+        var encoded = message_json.encode(message)
+        values.push(json.box_value(encoded))
+    }
+    rpc_object_t result = {}
+    result['messages'] = json.box_value(json.array_value(values))
+    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_entries(ref<repository.manager_t> repository, string since): ref<json.value_t>! {
+    [ref<json.value_t>] values = []
+    bool found_since = since == ''
+    for entry in repository.get_entries() {
+        if !found_since {
+            if entry.id == since {
+                found_since = true
+            }
+            continue
+        }
+        var boxed = json.box_value(entry.raw)
+        values.push(boxed)
+    }
+    if since != '' && !found_since {
+        // Keep the helper errable so callers can surface the same explicit
+        // error Pi returns for an unknown cursor.
+        throw errorf('Entry not found: %s', since)
+    }
+    rpc_object_t result = {}
+    result['entries'] = json.box_value(json.array_value(values))
+    result['leafId'] = rpc_nullable_string(repository.get_leaf_id())
+    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_tree(ref<repository.manager_t> repository): ref<json.value_t>! {
+    [ref<json.value_t>] roots = rpc_tree_nodes(repository, '')
+    rpc_object_t result = {}
+    result['tree'] = json.box_value(json.array_value(roots))
+    result['leafId'] = rpc_nullable_string(repository.get_leaf_id())
+    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_tree_nodes(ref<repository.manager_t> repository, string parent_id): [ref<json.value_t>]! {
+    [ref<json.value_t>] values = []
+    for entry in repository.get_entries() {
+        bool matches = parent_id == '' ? !entry.has_parent : entry.has_parent && entry.parent_id == parent_id
+        if !matches {continue}
+        rpc_object_t node = {}
+        node['entry'] = json.box_value(entry.raw)
+        [ref<json.value_t>] children = rpc_tree_nodes(repository, entry.id)
+        node['children'] = json.box_value(json.array_value(children))
+        string label = repository.get_label(entry.id)
+        if label != '' {
+            node['label'] = boxed_string(label)
+            string label_timestamp = repository.get_label_timestamp(entry.id)
+            if label_timestamp != '' {
+                node['labelTimestamp'] = boxed_string(label_timestamp)
+            }
+        }
+        values.push(json.box_value(json.object_value(node as map<string, ref<json.value_t>>)))
+    }
+    return values
+}
+
+#local
+fn rpc_fork_messages(ref<repository.manager_t> repository): ref<json.value_t>! {
+    [ref<json.value_t>] values = []
+    for entry in repository.get_entries() {
+        if entry.kind != session_types.ENTRY_MESSAGE {continue}
+        string text = rpc_fork_message_text(repository, entry.id)
+        if text == '' {continue}
+        rpc_object_t item = {}
+        item['entryId'] = boxed_string(entry.id)
+        item['text'] = boxed_string(text)
+        values.push(json.box_value(json.object_value(item as map<string, ref<json.value_t>>)))
+    }
+    rpc_object_t result = {}
+    result['messages'] = json.box_value(json.array_value(values))
+    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_fork_message_text(ref<repository.manager_t> repository, string entry_id): string {
+    ref<session_types.entry_t>? possible = repository.get_entry(entry_id) catch error {return ''}
+    if !(possible is ref<session_types.entry_t>) {return ''}
+    var entry = possible as ref<session_types.entry_t>
+    if entry.kind != session_types.ENTRY_MESSAGE {return ''}
+    var object = entry.raw.as_object() catch error {return ''}
+    if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {return ''}
+    var message = message_json.decode(object['message']) catch error {return ''}
+    if message is ref<ai_types.user_message_t> user {return user.content}
+    return ''
+}
+
+#local
+fn rpc_nullable_string(string value): ref<json.value_t> {
+    return value == '' ? json.box_value(json.null_value()) : boxed_string(value)
+}
+
+#local
+fn rpc_cancelled_data(bool cancelled): ref<json.value_t>! {
+    rpc_object_t object = {}
+    object['cancelled'] = boxed_bool(cancelled)
+    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_commands(): ref<json.value_t>! {
+    [string] names = ['/settings', '/model', '/scoped-models', '/export', '/import', '/share', '/copy', '/name', '/session', '/changelog', '/hotkeys', '/fork', '/clone', '/tree', '/trust', '/login', '/logout', '/new', '/compact', '/resume', '/reload', '/quit']
+    [ref<json.value_t>] values = []
+    for name in names {
+        rpc_object_t command = {}
+        command['name'] = boxed_string(name.slice(1, name.len()))
+        command['source'] = boxed_string('builtin')
+        values.push(json.box_value(json.object_value(command as map<string, ref<json.value_t>>)))
+    }
+    rpc_object_t result = {}
+    result['commands'] = json.box_value(json.array_value(values))
+    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): ref<json.value_t>! {
+    rpc_object_t object = {}
+    object['sessionFile'] = rpc_nullable_string(repository.get_session_file())
+    object['sessionId'] = boxed_string(repository.get_session_id())
+    object['userMessages'] = number_json(stats.user_messages)
+    object['assistantMessages'] = number_json(stats.assistant_messages)
+    object['toolCalls'] = number_json(stats.tool_calls)
+    object['toolResults'] = number_json(stats.tool_results)
+    object['totalMessages'] = number_json(stats.total_messages)
+    rpc_object_t tokens = {}
+    tokens['input'] = number_json(stats.usage.input)
+    tokens['output'] = number_json(stats.usage.output)
+    tokens['cacheRead'] = number_json(stats.usage.cache_read)
+    tokens['cacheWrite'] = number_json(stats.usage.cache_write)
+    tokens['total'] = number_json(stats.usage.total_tokens)
+    object['tokens'] = json.box_value(json.object_value(tokens as map<string, ref<json.value_t>>))
+    object['cost'] = float_json(stats.usage.cost.total)
+    if stats.context_window > 0 {
+        rpc_object_t context_usage = {}
+        context_usage['tokens'] = number_json(stats.context_tokens)
+        context_usage['contextWindow'] = number_json(stats.context_window)
+        context_usage['percent'] = float_json(stats.context_tokens as float * 100.0 / stats.context_window as float)
+        object['contextUsage'] = json.box_value(json.object_value(context_usage as map<string, ref<json.value_t>>))
+    }
+    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_text_data(string key, string value): ref<json.value_t>! {
+    rpc_object_t object = {}
+    object[key] = boxed_string(value)
+    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_ok(string id, string command): string! {
+    rpc_object_t object = {}
+    if id != '' {object['id'] = boxed_string(id)}
+    object['type'] = boxed_string('response')
+    object['command'] = boxed_string(command)
+    object['success'] = boxed_bool(true)
+    return json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_ok_data(string id, string command, ref<json.value_t> data): string! {
+    rpc_object_t object = {}
+    if id != '' {object['id'] = boxed_string(id)}
+    object['type'] = boxed_string('response')
+    object['command'] = boxed_string(command)
+    object['success'] = boxed_bool(true)
+    object['data'] = data
+    return json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_error(string id, string command, string message): string! {
+    rpc_object_t object = {}
+    if id != '' {object['id'] = boxed_string(id)}
+    object['type'] = boxed_string('response')
+    object['command'] = boxed_string(command)
+    object['success'] = boxed_bool(false)
+    object['error'] = boxed_string(message)
+    return json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn rpc_write(ref<mutex.mutex_t> output_lock, string line) {
+    output_lock.lock()
+    println(line)
+    output_lock.unlock()
+}
+
+#local
+fn rpc_string(rpc_object_t object, string key): string {
+    if object.contains(key) && object[key].kind == json.VALUE_STRING {return object[key].text}
+    return ''
+}
+
+#local
+fn rpc_bool(rpc_object_t object, string key, bool fallback): bool {
+    if object.contains(key) && object[key].kind == json.VALUE_BOOL {return object[key].boolean}
+    return fallback
+}
+
+#local
+fn boxed_string(string value): ref<json.value_t> {return json.box_value(json.string_value(value))}
+
+#local
+fn boxed_bool(bool value): ref<json.value_t> {return json.box_value(json.bool_value(value))}
+
+#local
+fn float_json(float value): ref<json.value_t>! {
+    if value == 0.0 {
+        return json.box_value(json.number_value('0'))
+    }
+    return json.box_value(json.number_value(fmt.sprintf('%.8f', value)))
+}
+
+#local
+fn number_json(int value): ref<json.value_t>! {return json.box_value(json.number_value(fmt.sprintf('%d', value)))}
+
+#local
+fn last_assistant_text([ai_types.message_t] messages): string {
+    for int index = messages.len() - 1; index >= 0; index -= 1 {
+        if messages[index] is ref<ai_types.assistant_message_t> assistant {
+            string text = ''
+            for block in assistant.content {
+                if block is ref<ai_types.text_content_t> content {
+                    text += content.text
+                }
+            }
+            return text
+        }
+    }
+    return ''
+}
+
+#local
+fn load_file_arguments([string] file_args, string cwd): string! {
+    string result = ''
+    for file_arg in file_args {
+        string absolute = path_utils.resolve_to_cwd(file_arg, cwd)
+        var input = fs.open(absolute, syscall.O_RDONLY, 0) catch error {
+            throw errorf('Could not read @ file %s: %s', absolute, error.msg())
+        }
+        string content = input.content() catch error {
+            input.close()
+            throw errorf('Could not read @ file %s: %s', absolute, error.msg())
+        }
+        input.close()
+        if content == '' {
+            continue
+        }
+        result += '<file name="' + absolute + '">\n' + content + '\n</file>\n'
+    }
+    return result
+}
+
+#local
+fn read_piped_stdin(): string! {
+    var input = fs.stdin()
+    [u8] output = vec<u8>.new(0, 4096)
+    for true {
+        var buffer = vec<u8>.new(0, 4096)
+        int count = input.read(buffer)
+        if count <= 0 {
+            break
+        }
+        var chunk = buffer.slice(0, count)
+        // Treat a zero-filled read from an empty/closed descriptor as EOF.
+        // This is defensive for the current Nature fs runtime, which can
+        // report the destination length while leaving the bytes untouched.
+        bool has_nonzero = false
+        for byte in chunk {
+            if byte != 0 {
+                has_nonzero = true
+                break
+            }
+        }
+        if !has_nonzero {
+            break
+        }
+        output.append(chunk)
+    }
+    return output as string
+}
+
+// A non-TTY stdin is not necessarily a pipe.  The process launcher commonly
+// gives CLI programs /dev/null when there is no redirected input; Nature's
+// fs.read implementation may report a full zero-filled buffer for that
+// character device instead of an EOF.  Pi treats that case as "no piped
+// prompt".  Inspect the descriptor type before reading so a bare `adou`
+// never manufactures a prompt containing NUL bytes, while regular-file and
+// FIFO redirection continue to work.
+#local
+fn stdin_can_contain_prompt(): bool {
+    var status = syscall.fstat(term.STDIN) catch error {
+        return false
+    }
+    return syscall.stat_is_reg(status.mode) || syscall.stat_is_fifo(status.mode) || syscall.stat_is_sock(status.mode)
+}

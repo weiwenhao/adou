@@ -1,0 +1,714 @@
+import adou.src.agent.session_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.types as ai_types
+import adou.src.compaction.token_estimate
+import adou.src.tools.types as tool_types
+import adou.src.tui.markdown
+import adou.src.tui.text_utils
+import adou.src.tui.theme
+import fmt
+import strings
+import syscall
+import time
+
+type tool_view_t = struct {
+    string id
+    string name
+    string detail
+    bool done
+    bool is_error
+}
+
+type chat_t = struct {
+    [ai_types.message_t] messages = []
+    ref<ai_types.assistant_message_t>? streaming_assistant = null
+    [ref<tool_view_t>] active_tools = []
+    string model
+    string provider
+    bool show_provider = true
+    string cwd
+    string git_branch
+    string session_name
+    string status
+    string error_message
+    int compaction_count
+    string thinking = 'off'
+    int context_window
+    bool running
+    bool auto_compaction = true
+    bool tool_output_expanded
+    bool thinking_visible = true
+    ref<ai_types.bash_execution_message_t>? active_bash = null
+    int spinner_index
+    i64 spinner_last_ms
+    int total_input_tokens
+    int total_output_tokens
+    int total_cache_read
+    int total_cache_write
+    float total_cost
+    float latest_cache_hit_rate = -1.0
+    bool context_known = true
+}
+
+fn new(string model, string cwd): ref<chat_t> {
+    return new chat_t(model = model, cwd = cwd, active_tools = vec<ref<tool_view_t>>.cap_of(4))
+}
+
+fn chat_t.configure(&self, int context_window, string thinking) {
+    self.context_window = context_window
+    self.thinking = thinking == '' ? 'off' : thinking
+}
+
+fn chat_t.set_auto_compaction(&self, bool enabled) {
+    self.auto_compaction = enabled
+}
+
+fn chat_t.toggle_tool_output(&self): bool {
+    self.tool_output_expanded = !self.tool_output_expanded
+    return self.tool_output_expanded
+}
+
+fn chat_t.toggle_thinking_visibility(&self): bool {
+    self.thinking_visible = !self.thinking_visible
+    return self.thinking_visible
+}
+
+fn chat_t.load_messages(&self, [ai_types.message_t] messages) {
+    self.messages = messages.slice(0, messages.len())
+}
+
+fn chat_t.set_usage_totals(&self, ai_types.usage_t usage) {
+    self.total_input_tokens = usage.input
+    self.total_output_tokens = usage.output
+    self.total_cache_read = usage.cache_read
+    self.total_cache_write = usage.cache_write
+    self.total_cost = usage.cost.total
+}
+
+fn chat_t.set_latest_cache_hit_rate(&self, float rate) {
+    self.latest_cache_hit_rate = rate
+}
+
+fn chat_t.set_context_known(&self, bool known) {
+    self.context_known = known
+}
+
+fn chat_t.set_provider_visibility(&self, bool visible) {
+    self.show_provider = visible
+}
+
+fn chat_t.apply(&self, session_stream.event_t event): void! {
+    if event.kind == session_stream.EVENT_BASH_START {
+        self.active_bash = new ai_types.bash_execution_message_t(command = event.bash_command, exclude_from_context = event.bash_exclude_from_context)
+        self.running = true
+        self.status = 'Running bash...'
+        self.error_message = ''
+        return
+    }
+    if event.kind == session_stream.EVENT_BASH_UPDATE {
+        if self.active_bash is ref<ai_types.bash_execution_message_t> bash {
+            bash.output += event.bash_output
+        }
+        self.running = true
+        self.status = 'Running bash...'
+        return
+    }
+    if event.kind == session_stream.EVENT_BASH_END {
+        var bash = new ai_types.bash_execution_message_t(command = event.bash_command, output = event.bash_output, exit_code = event.bash_exit_code, cancelled = event.bash_cancelled, truncated = event.bash_truncated, full_output_path = event.bash_full_output_path, exclude_from_context = event.bash_exclude_from_context)
+        ai_types.message_t message = bash
+        self.messages.push(message)
+        self.active_bash = null
+        if bash.cancelled {
+            self.status = 'Command cancelled'
+        } else if event.bash_timed_out {
+            self.status = 'Command timed out'
+        } else if bash.exit_code >= 0 && bash.exit_code != 0 {
+            self.status = fmt.sprintf('Command exited with code %d', bash.exit_code)
+        } else {
+            self.status = 'Command completed'
+        }
+        self.running = false
+        return
+    }
+    if event.kind == session_stream.EVENT_COMPACTION_START {
+        self.running = true
+        self.status = 'Compacting context...'
+        return
+    }
+    if event.kind == session_stream.EVENT_COMPACTION_END {
+        if event.error_message != '' {
+            self.error_message = event.error_message
+            self.status = 'Compaction failed'
+        } else if !event.aborted {
+            self.compaction_count += 1
+            self.status = fmt.sprintf('Context compacted: %d -> %d tokens', event.tokens_before, event.estimated_tokens_after)
+        }
+        return
+    }
+    if event.kind == session_stream.EVENT_RETRY_START {
+        self.running = true
+        self.status = fmt.sprintf('Retrying request (%d/%d) in %.1fs...', event.retry_attempt, event.retry_max_attempts, event.retry_delay_ms as float / 1000.0)
+        self.error_message = ''
+        return
+    }
+    if event.kind == session_stream.EVENT_RETRY_END {
+        if event.retry_success {
+            self.status = 'Retrying request...'
+        } else {
+            self.error_message = event.retry_final_error
+            self.status = event.retry_final_error == 'Retry cancelled' ? 'Retry cancelled' : 'Retry failed'
+        }
+        return
+    }
+    if event.kind == session_stream.EVENT_BRANCH_SUMMARY_START {
+        self.running = true
+        self.status = 'Summarizing branch...'
+        self.error_message = ''
+        return
+    }
+    if event.kind == session_stream.EVENT_BRANCH_SUMMARY_END {
+        if event.error_message != '' {
+            self.error_message = event.error_message
+            self.status = 'Branch summarization failed'
+        } else if event.aborted {
+            self.status = 'Branch summarization cancelled'
+        } else {
+            self.status = 'Branch summarized'
+        }
+        return
+    }
+    if event.kind == session_stream.EVENT_SESSION_END {
+        self.running = false
+        self.status = ''
+        return
+    }
+    if !event.has_agent_event {
+        return
+    }
+    var agent_event = event.agent_event
+    if agent_event.kind == agent_types.EVENT_AGENT_START || agent_event.kind == agent_types.EVENT_TURN_START {
+        self.running = true
+        self.status = 'Thinking...'
+        self.error_message = ''
+        return
+    }
+    if agent_event.kind == agent_types.EVENT_AGENT_END {
+        self.running = false
+        self.status = ''
+        return
+    }
+    if agent_event.kind == agent_types.EVENT_MESSAGE_START {
+        if agent_event.user_message is ref<ai_types.user_message_t> user {
+            ai_types.message_t message = user
+            self.messages.push(message)
+        }
+        return
+    }
+    if agent_event.kind == agent_types.EVENT_MESSAGE_UPDATE {
+        if agent_event.assistant_message is ref<ai_types.assistant_message_t> assistant {
+            self.streaming_assistant = assistant
+        }
+        return
+    }
+    if agent_event.kind == agent_types.EVENT_MESSAGE_END {
+        if agent_event.assistant_message is ref<ai_types.assistant_message_t> assistant {
+            ai_types.message_t message = assistant
+            self.messages.push(message)
+            self.streaming_assistant = null
+            self.status = assistant.stop_reason == ai_types.STOP_ERROR ? 'Model error' : 'Thinking...'
+        } else if agent_event.tool_message is ref<ai_types.tool_result_message_t> tool {
+            ai_types.message_t message = tool
+            self.messages.push(message)
+            self.remove_tool(tool.tool_call_id)
+        }
+        return
+    }
+    if agent_event.kind == agent_types.EVENT_TOOL_START {
+        self.active_tools.push(new tool_view_t(id = agent_event.tool_call_id, name = agent_event.tool_name))
+        self.status = 'Running ' + agent_event.tool_name + '...'
+        return
+    }
+    if agent_event.kind == agent_types.EVENT_TOOL_UPDATE {
+        ref<tool_view_t>? active = self.find_tool(agent_event.tool_call_id)
+        if active is ref<tool_view_t> tool {
+            tool.detail = tool_result_text(agent_event.tool_result)
+        }
+        return
+    }
+    if agent_event.kind == agent_types.EVENT_TOOL_END {
+        ref<tool_view_t>? active = self.find_tool(agent_event.tool_call_id)
+        if active is ref<tool_view_t> tool {
+            tool.detail = tool_result_text(agent_event.tool_result)
+            tool.done = true
+            tool.is_error = agent_event.is_error
+        }
+        return
+    }
+    if agent_event.kind == agent_types.EVENT_TURN_END {
+        self.status = 'Thinking...'
+    }
+}
+
+fn chat_t.render(&self, int width): [string]! {
+    if width <= 0 {
+        throw errorf('chat width must be positive')
+    }
+    [string] result = vec<string>.cap_of(64)
+    for message in self.messages {
+        result.append(render_message_lines(message, width, self.tool_output_expanded, self.thinking_visible))
+    }
+    if self.streaming_assistant is ref<ai_types.assistant_message_t> assistant {
+        result.append(render_assistant_lines(assistant, width, true, self.thinking_visible))
+    }
+    if self.active_bash is ref<ai_types.bash_execution_message_t> bash {
+        result.append(render_active_bash_lines(bash, width, self.spinner_index))
+    }
+    for tool in self.active_tools {
+        string marker = tool.done ? '✓ ' : spinner_frame(self.spinner_index) + ' '
+        string color = tool.is_error ? theme.ERROR : tool.done ? theme.SUCCESS : theme.ACCENT
+        string line = color + marker + theme.TEXT + tool.name + theme.RESET
+        if tool.detail != '' {
+            int detail_width = width - text_utils.visible_width(line) - 1
+            if detail_width < 1 {detail_width = 1}
+            line += ' ' + theme.fg(theme.MUTED, text_utils.truncate_to_width(tool.detail, detail_width, '...', false))
+        }
+        string background = tool.is_error ? theme.TOOL_ERROR_BG : tool.done ? theme.TOOL_SUCCESS_BG : theme.TOOL_PENDING_BG
+        result.push(colored_row(background, line, width))
+        if self.tool_output_expanded && tool.detail != '' {
+            for detail_line in tool.detail.replace('\r\n', '\n').replace('\r', '\n').split('\n') {
+                result.append(wrapped_lines(theme.fg(theme.MUTED, '  ' + detail_line), width))
+            }
+        }
+    }
+    if self.error_message != '' {
+        result.append(wrapped_lines(theme.fg(theme.ERROR, 'Error: ' + self.error_message), width))
+    }
+    if self.status != '' {
+        result.append(render_status_lines(self.status, self.running, width, self.spinner_index))
+        if self.running {
+            i64 now = time.now().ms_timestamp()
+            if self.spinner_last_ms == 0 || now - self.spinner_last_ms >= 80 {
+                self.spinner_index = (self.spinner_index + 1) % 10
+                self.spinner_last_ms = now
+            }
+        }
+    }
+    if self.model != '' || self.cwd != '' {
+        result.push('')
+        string cwd_display = shorten_cwd(self.cwd)
+        if self.git_branch != '' {
+            cwd_display += ' (' + self.git_branch + ')'
+        }
+        if self.session_name != '' {
+            cwd_display += ' • ' + self.session_name
+        }
+        string cwd_line = theme.fg(theme.DIM_COLOR, text_utils.truncate_to_width(cwd_display, width, '...', false))
+        result.append(wrapped_lines(cwd_line, width))
+        [string] stats = []
+        if self.total_input_tokens > 0 {stats.push('↑' + format_tokens(self.total_input_tokens))}
+        if self.total_output_tokens > 0 {stats.push('↓' + format_tokens(self.total_output_tokens))}
+        if self.total_cache_read > 0 {stats.push('R' + format_tokens(self.total_cache_read))}
+        if self.total_cache_write > 0 {stats.push('W' + format_tokens(self.total_cache_write))}
+        if (self.total_cache_read > 0 || self.total_cache_write > 0) && self.latest_cache_hit_rate >= 0.0 {
+            stats.push(fmt.sprintf('CH%.1f%%', self.latest_cache_hit_rate))
+        }
+        if self.total_cost > 0.0 {stats.push(fmt.sprintf('$%.3f', self.total_cost))}
+        if self.context_window > 0 {
+            string context_display = ''
+            if !self.context_known {
+                context_display = '?/' + format_tokens(self.context_window) + (self.auto_compaction ? ' (auto)' : '')
+            } else {
+                var estimate = token_estimate.estimate_context_tokens(self.messages)
+                float percent_value = estimate.tokens as float * 100.0 / self.context_window as float
+                context_display = format_percent(estimate.tokens, self.context_window) + '/' + format_tokens(self.context_window) + (self.auto_compaction ? ' (auto)' : '')
+                if percent_value > 90.0 {
+                    context_display = theme.fg(theme.ERROR, context_display)
+                } else if percent_value > 70.0 {
+                    context_display = theme.fg(theme.WARNING, context_display)
+                }
+            }
+            stats.push(context_display)
+        }
+        string left = strings.join(stats, ' ')
+        string right = self.model != '' ? self.model : 'no-model'
+        right += self.thinking == 'off' ? ' • thinking off' : ' • ' + self.thinking
+        if self.provider != '' && self.show_provider {
+            right = '(' + self.provider + ') ' + right
+        }
+        int left_width = text_utils.visible_width(left)
+        int right_width = text_utils.visible_width(right)
+        string footer = left
+        if left_width + 2 + right_width <= width {
+            footer += repeat_spaces(width - left_width - right_width) + right
+        } else if left == '' && right_width <= width {
+            footer = repeat_spaces(width - right_width) + right
+        } else if left_width < width {
+            int available = width - left_width - 2
+            string fitted = available > 0 ? text_utils.truncate_to_width(right, available, '', false) : ''
+            footer += repeat_spaces(width - left_width - text_utils.visible_width(fitted)) + fitted
+        }
+        result.push(theme.fg(theme.DIM_COLOR, text_utils.truncate_to_width(footer, width, '...', false)))
+    }
+    return result
+}
+
+fn chat_t.clear(&self) {
+    self.messages = []
+    self.streaming_assistant = null
+    self.active_bash = null
+    self.active_tools = vec<ref<tool_view_t>>.cap_of(4)
+    self.status = ''
+    self.error_message = ''
+    self.compaction_count = 0
+    self.running = false
+    self.spinner_index = 0
+    self.spinner_last_ms = 0
+    self.total_input_tokens = 0
+    self.total_output_tokens = 0
+    self.total_cache_read = 0
+    self.total_cache_write = 0
+    self.total_cost = 0.0
+    self.latest_cache_hit_rate = -1.0
+    self.context_known = true
+}
+
+#local
+fn render_message_lines(ai_types.message_t message, int width, bool tool_output_expanded, bool thinking_visible): [string]! {
+    [string] result = vec<string>.cap_of(8)
+    if message is ref<ai_types.user_message_t> user {
+        // Pi renders user messages through Markdown inside a Box with one
+        // column of horizontal and one row of vertical padding. Keep the
+        // complete row on the user background (including blank lines).
+        result.push(colored_row(theme.USER_BG, '', width))
+        result.append(render_markdown_rows(user.content, width, theme.USER_BG))
+        result.push(colored_row(theme.USER_BG, '', width))
+    } else if message is ref<ai_types.assistant_message_t> assistant {
+        result.append(render_assistant_lines(assistant, width, false, thinking_visible))
+    } else if message is ref<ai_types.tool_result_message_t> tool {
+        string color = tool.is_error ? theme.ERROR : theme.SUCCESS
+        string prefix = color + (tool.is_error ? '✗ ' : '✓ ') + theme.TEXT + tool.tool_name + theme.RESET
+        string body = tool_message_text(*tool)
+        string preview = body.replace('\r\n', '\n').replace('\r', '\n').replace('\n', ' ')
+        string line = prefix + (preview != '' ? ' ' + theme.fg(theme.MUTED, preview) : '')
+        string background = tool.is_error ? theme.TOOL_ERROR_BG : theme.TOOL_SUCCESS_BG
+        result.push(colored_row(background, line, width))
+        if body != '' && tool_output_expanded {
+            for body_line in body.replace('\r\n', '\n').replace('\r', '\n').split('\n') {
+                result.append(wrapped_lines(theme.fg(theme.MUTED, '  ' + body_line), width))
+            }
+        }
+    } else if message is ref<ai_types.compaction_summary_message_t> summary {
+        result.append(wrapped_lines(theme.fg(theme.MUTED, '[Context summary] ' + summary.summary), width))
+    } else if message is ref<ai_types.branch_summary_message_t> summary {
+        result.append(wrapped_lines(theme.fg(theme.MUTED, '[Branch summary] ' + summary.summary), width))
+    } else if message is ref<ai_types.custom_message_t> custom {
+        if custom.display {
+            result.append(wrapped_lines(theme.fg(theme.MUTED, custom.content), width))
+        }
+    } else if message is ref<ai_types.bash_execution_message_t> bash {
+        result.append(render_bash_lines(bash, width))
+    }
+    return result
+}
+
+#local
+fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width): [string]! {
+    [string] result = vec<string>.cap_of(8)
+    string color = bash.exclude_from_context ? theme.DIM_COLOR : theme.ACCENT
+    result.push('')
+    result.push(theme.fg(color, text_utils.truncate_to_width('$ ' + bash.command, width, '...', false)))
+    if bash.output != '' {
+        for line in bash.output.replace('\r\n', '\n').replace('\r', '\n').split('\n') {
+            result.append(wrapped_lines(theme.fg(theme.MUTED, line), width))
+        }
+    } else {
+        result.push(theme.fg(theme.MUTED, '(no output)'))
+    }
+    string footer = ''
+    if bash.cancelled {
+        footer = '(command cancelled)'
+    } else if bash.exit_code >= 0 && bash.exit_code != 0 {
+        footer = fmt.sprintf('Command exited with code %d', bash.exit_code)
+    }
+    if footer != '' {
+        result.append(wrapped_lines(theme.fg(theme.ERROR, footer), width))
+    }
+    return result
+}
+
+#local
+fn render_active_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, int spinner_index): [string]! {
+    [string] result = vec<string>.cap_of(24)
+    string color = bash.exclude_from_context ? theme.DIM_COLOR : theme.SUCCESS
+    result.push('')
+    result.push(theme.fg(color, text_utils.truncate_to_width('$ ' + bash.command, width, '...', false)))
+    string normalized = bash.output.replace('\r\n', '\n').replace('\r', '\n')
+    [string] lines = normalized == '' ? [] : normalized.split('\n')
+    int first = lines.len() > 20 ? lines.len() - 20 : 0
+    if first > 0 {
+        result.push(theme.fg(theme.DIM_COLOR, fmt.sprintf('... (%d earlier lines)', first)))
+    }
+    for int index = first; index < lines.len(); index += 1 {
+        result.append(wrapped_lines(theme.fg(theme.MUTED, lines[index]), width))
+    }
+    result.append(wrapped_lines(theme.fg(color, spinner_frame(spinner_index) + ' Running... (escape to cancel)'), width))
+    return result
+}
+
+#local
+fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width, bool streaming, bool thinking_visible): [string]! {
+    [string] result = vec<string>.cap_of(16)
+    bool had_content = false
+    bool had_tool_calls = false
+    bool has_visible_content = false
+    for block in assistant.content {
+        if block is ref<ai_types.text_content_t> text {
+            if text.text.trim([' ', '\t', '\n', '\r']) != '' {
+                has_visible_content = true
+            }
+        } else if block is ref<ai_types.thinking_content_t> thinking {
+            if thinking.thinking.trim([' ', '\t', '\n', '\r']) != '' {
+                has_visible_content = true
+            }
+        } else if block is ref<ai_types.tool_call_t> {
+            had_tool_calls = true
+        }
+    }
+    // Pi gives assistant output one blank line of breathing room.  Tool calls
+    // are rendered by the tool execution component, so they do not create an
+    // extra assistant block of their own.
+    if has_visible_content {
+        result.push('')
+    }
+    int index = 0
+    for index < assistant.content.len() {
+        var block = assistant.content[index]
+        if block is ref<ai_types.text_content_t> text {
+            string value = text.text.trim([' ', '\t', '\n', '\r'])
+            if value != '' {
+                result.append(render_markdown_rows(value, width, ''))
+                had_content = true
+            }
+            index += 1
+            continue
+        }
+        if block is ref<ai_types.thinking_content_t> {
+            [string] thinking_blocks = []
+            for index < assistant.content.len() {
+                var next = assistant.content[index]
+                if !(next is ref<ai_types.thinking_content_t>) {
+                    break
+                }
+                var thinking_block = next as ref<ai_types.thinking_content_t>
+                string value = thinking_block.thinking.trim([' ', '\t', '\n', '\r'])
+                if value != '' {
+                    thinking_blocks.push(value)
+                }
+                index += 1
+            }
+            if thinking_blocks.len() > 0 {
+                string value = thinking_visible ? strings.join(thinking_blocks, '\n\n') : 'Thinking...'
+                result.append(render_padded_text(theme.italic(theme.fg(theme.THINKING, value)), width))
+                had_content = true
+                bool has_visible_after = false
+                for int after = index; after < assistant.content.len(); after += 1 {
+                    var after_block = assistant.content[after]
+                    if after_block is ref<ai_types.text_content_t> after_text {
+                        if after_text.text.trim([' ', '\t', '\n', '\r']) != '' {
+                            has_visible_after = true
+                            break
+                        }
+                    }
+                    if after_block is ref<ai_types.thinking_content_t> after_thinking {
+                        if after_thinking.thinking.trim([' ', '\t', '\n', '\r']) != '' {
+                            has_visible_after = true
+                            break
+                        }
+                    }
+                }
+                if has_visible_after {
+                    result.push('')
+                }
+            }
+            continue
+        }
+        // Tool calls are intentionally consumed without an assistant text row;
+        // the active/done tool rows below carry their name and result.
+        index += 1
+    }
+    // Pi surfaces terminal failures after any partial text.  Tool calls own
+    // their errors in the tool-result component, so avoid duplicating those
+    // messages here.
+    if !streaming {
+        if assistant.stop_reason == ai_types.STOP_LENGTH {
+            result.push('')
+            result.append(render_padded_text(theme.fg(theme.ERROR, 'Error: Model stopped because it reached the maximum output token limit. The response may be incomplete.'), width))
+        } else if !had_tool_calls && assistant.stop_reason == ai_types.STOP_ABORTED {
+            string message = assistant.error_message
+            if message == '' || message == 'Request was aborted' {
+                message = 'Operation aborted'
+            }
+            result.push('')
+            result.append(render_padded_text(theme.fg(theme.ERROR, message), width))
+        } else if !had_tool_calls && assistant.stop_reason == ai_types.STOP_ERROR {
+            string message = assistant.error_message == '' ? 'Unknown error' : 'Error: ' + assistant.error_message
+            result.push('')
+            result.append(render_padded_text(theme.fg(theme.ERROR, message), width))
+        } else if !had_content && assistant.error_message != '' {
+            result.append(render_padded_text(theme.fg(theme.ERROR, assistant.error_message), width))
+        }
+    }
+    if streaming && had_content {
+        result.push(theme.fg(theme.ACCENT, '▌'))
+    }
+    return result
+}
+
+#local
+fn render_markdown_rows(string value, int width, string background): [string]! {
+    int content_width = width - 2
+    if content_width < 1 {
+        content_width = 1
+    }
+    var markdown_lines = markdown.render(value, content_width)
+    [string] result = vec<string>.cap_of(markdown_lines.len())
+    for line in markdown_lines {
+        string styled = theme.fg(theme.TEXT, line)
+        string padded = pad_terminal_line(' ' + styled + ' ', width)
+        result.push(background == '' ? padded : theme.background_line(background, padded, width))
+    }
+    return result
+}
+
+#local
+fn render_padded_text(string value, int width): [string]! {
+    int content_width = width - 2
+    if content_width < 1 {
+        content_width = 1
+    }
+    var wrapped = text_utils.wrap_text_with_ansi(value, content_width)
+    [string] result = vec<string>.cap_of(wrapped.len())
+    for line in wrapped {
+        result.push(pad_terminal_line(' ' + line + ' ', width))
+    }
+    return result
+}
+
+#local
+fn pad_terminal_line(string value, int width): string! {
+    string fitted = value
+    if text_utils.visible_width(fitted) > width {
+        fitted = text_utils.truncate_to_width(fitted, width, '...', false)
+    }
+    int remaining = width - text_utils.visible_width(fitted)
+    return fitted + repeat_spaces(remaining > 0 ? remaining : 0)
+}
+
+#local
+fn render_status_lines(string status, bool running, int width, int spinner_index): [string]! {
+    string prefix = running ? theme.fg(theme.ACCENT, spinner_frame(spinner_index) + ' ') : ''
+    return wrapped_lines(prefix + theme.fg(theme.MUTED, status), width)
+}
+
+#local
+fn spinner_frame(int index): string {
+    [string] frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+    int normalized = index % frames.len()
+    if normalized < 0 {normalized += frames.len()}
+    return frames[normalized]
+}
+
+#local
+fn colored_row(string background, string line, int width): string! {
+    string fitted = line
+    if text_utils.visible_width(fitted) > width {
+        fitted = text_utils.truncate_to_width(fitted, width, '...', false)
+    }
+    return theme.background_line(background, fitted, width)
+}
+
+#local
+fn shorten_cwd(string cwd): string {
+    string home = syscall.get_env('HOME')
+    if home != '' && cwd == home {
+        return '~'
+    }
+    if home != '' && cwd.starts_with(home + '/') {
+        return '~' + cwd.slice(home.len(), cwd.len())
+    }
+    return cwd
+}
+
+#local
+fn format_tokens(int count): string {
+    if count < 1000 {return fmt.sprintf('%d', count)}
+    if count < 10000 {return fmt.sprintf('%.1fk', count as float / 1000.0)}
+    if count < 1000000 {return fmt.sprintf('%dk', (count + 500) / 1000)}
+    if count < 10000000 {return fmt.sprintf('%.1fM', count as float / 1000000.0)}
+    return fmt.sprintf('%dM', (count + 500000) / 1000000)
+}
+
+#local
+fn format_percent(int tokens, int context_window): string {
+    int tenths = context_window > 0 ? tokens * 1000 / context_window : 0
+    return fmt.sprintf('%d.%d%%', tenths / 10, tenths % 10)
+}
+
+#local
+fn repeat_spaces(int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += ' '
+    }
+    return result
+}
+
+#local
+fn wrapped_lines(string text, int width): [string]! {
+    return text_utils.wrap_text_with_ansi(text, width)
+}
+
+#local
+fn tool_result_text(tool_types.tool_result_t result): string {
+    string text = ''
+    for content in result.content {
+        if text != '' {
+            text += '\n'
+        }
+        text += content.text
+    }
+    return text
+}
+
+#local
+fn tool_message_text(ai_types.tool_result_message_t tool): string {
+    string text = ''
+    for content in tool.content {
+        if text != '' {
+            text += '\n'
+        }
+        text += content.text
+    }
+    return text
+}
+
+#local
+fn chat_t.find_tool(&self, string id): ref<tool_view_t>? {
+    for tool in self.active_tools {
+        if tool.id == id {
+            return tool
+        }
+    }
+    return null
+}
+
+#local
+fn chat_t.remove_tool(&self, string id) {
+    [ref<tool_view_t>] remaining = vec<ref<tool_view_t>>.cap_of(self.active_tools.len())
+    for tool in self.active_tools {
+        if tool.id != id {
+            remaining.push(tool)
+        }
+    }
+    self.active_tools = remaining
+}

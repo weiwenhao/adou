@@ -1,0 +1,95 @@
+import adou.src.ai.providers.openai_request
+import adou.src.ai.types
+import json
+fn fixture_model(bool reasoning): ref<types.model_t> {
+    return new types.model_t(id = 'gpt-5-mini', api = 'openai-responses', provider = 'openai', base_url = 'https://api.openai.com/v1/', reasoning = reasoning, context_window = 400000, max_tokens = 8,)
+}
+test 'builds Pi-compatible OpenAI Responses request' {
+    var context = new types.context_t(system_prompt = 'You are concise.')
+    types.message_t user = new types.user_message_t(content = 'hello', timestamp = 1)
+    context.messages.push(user)
+    var assistant = new types.assistant_message_t(api = 'openai-responses', provider = 'openai', model = 'gpt-5-mini',)
+    var text = new types.text_content_t(text = 'checking', text_signature = '{"v":1,"id":"msg_1","phase":"commentary"}',)
+    types.content_t text_content = text
+    assistant.content.push(text_content)
+    var call = new types.tool_call_t(id = 'call_1|fc_1', name = 'read', arguments = json.parse('{"path":"README.md"}'),)
+    types.content_t call_content = call
+    assistant.content.push(call_content)
+    types.message_t assistant_message = assistant
+    context.messages.push(assistant_message)
+    var result_text = new types.text_content_t(text = 'file contents')
+    var tool_result = new types.tool_result_message_t(tool_call_id = 'call_1|fc_1', tool_name = 'read', content = [result_text],)
+    types.message_t tool_message = tool_result
+    context.messages.push(tool_message)
+    var schema = json.parse('{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}')
+    context.tools.push(new types.tool_t(name = 'read', description = 'Read a file', parameters = schema,))
+    var options = new types.stream_options_t(api_key = 'secret', max_tokens = 8, session_id = 'session-1', reasoning_effort = 'medium',)
+    var payload = json.parse(openai_request.build(fixture_model(true), context, options))
+    assert(payload.get('model').as_string() == 'gpt-5-mini')
+    assert(payload.get('stream').as_bool())
+    assert(!payload.get('store').as_bool())
+    assert(payload.get('max_output_tokens').as_number() == '16')
+    assert(payload.get('prompt_cache_key').as_string() == 'session-1')
+    assert(payload.get('reasoning').get('effort').as_string() == 'medium')
+    assert(payload.get('tools').as_array().len() == 1)
+    var input = payload.get('input').as_array()
+    assert(input.len() == 5)
+    assert(input[0].get('role').as_string() == 'developer')
+    assert(input[1].get('role').as_string() == 'user')
+    assert(input[2].get('type').as_string() == 'message')
+    assert(input[2].get('id').as_string() == 'msg_1')
+    assert(input[2].get('phase').as_string() == 'commentary')
+    assert(input[3].get('type').as_string() == 'function_call')
+    assert(input[3].get('call_id').as_string() == 'call_1')
+    assert(input[4].get('type').as_string() == 'function_call_output')
+    assert(input[4].get('output').as_string() == 'file contents')
+    assert(openai_request.endpoint(fixture_model(true)) == 'https://api.openai.com/v1/responses')
+    assert(openai_request.authorization(options) == 'Bearer secret')
+}
+test 'uses system role for non-reasoning models and fallback message ids' {
+    var context = new types.context_t(system_prompt = 'system')
+    var assistant = new types.assistant_message_t()
+    var first = new types.text_content_t(text = 'one')
+    var second = new types.text_content_t(text = 'two')
+    types.content_t first_content = first
+    types.content_t second_content = second
+    assistant.content.push(first_content)
+    assistant.content.push(second_content)
+    types.message_t message = assistant
+    context.messages.push(message)
+    var options = new types.stream_options_t(api_key = 'secret')
+    var payload = json.parse(openai_request.build(fixture_model(false), context, options))
+    var input = payload.get('input').as_array()
+    assert(input[0].get('role').as_string() == 'system')
+    assert(input[1].get('id').as_string() == 'msg_pi_0')
+    assert(input[2].get('id').as_string() == 'msg_pi_0_1')
+}
+
+test 'maps ! bash results into user context and excludes !! results' {
+    var context = new types.context_t()
+    context.messages.push(new types.bash_execution_message_t(command = 'pwd', output = '/tmp/project', exit_code = 0, timestamp = 1))
+    context.messages.push(new types.bash_execution_message_t(command = 'env', output = 'SECRET=value', exit_code = 0, exclude_from_context = true, timestamp = 2))
+    var payload = json.parse(openai_request.build(fixture_model(false), context, new types.stream_options_t(api_key = 'secret')))
+    var input = payload.get('input').as_array()
+    assert(input.len() == 1)
+    assert(input[0].get('role').as_string() == 'user')
+    assert(input[0].get('content').as_array()[0].get('text').as_string().contains('Ran `pwd`'))
+}
+
+test 'maps branch summaries into Pi user context' {
+    var context = new types.context_t()
+    context.messages.push(new types.branch_summary_message_t(summary = 'abandoned work', from_id = 'entry-1', timestamp = 1))
+    var payload = json.parse(openai_request.build(fixture_model(false), context, new types.stream_options_t(api_key = 'secret')))
+    string text = payload.get('input').at(0).get('content').at(0).get('text').as_string()
+    assert(text == 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\nabandoned work</summary>')
+}
+
+test 'rejects a missing API key' {
+    var options = new types.stream_options_t()
+    bool failed = false
+    openai_request.authorization(options) catch e {
+        failed = e.msg() == 'No API key for provider: openai'
+        ''
+    }
+    assert(failed)
+}

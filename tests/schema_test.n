@@ -1,0 +1,34 @@
+import adou.src.agent.schema
+import json
+
+test 'schema coerces Pi-compatible primitive tool arguments' {
+    var definition = json.parse('{"type":"object","properties":{"count":{"type":"number"},"enabled":{"type":"boolean"},"label":{"type":"string"}},"required":["count","enabled","label"]}')
+    var input = json.parse('{"count":"42","enabled":"true","label":1}')
+    var result = schema.validate_and_coerce('echo', definition, input)
+    assert(result.get('count').as_number() == '42')
+    assert(result.get('enabled').as_bool())
+    assert(result.get('label').as_string() == '1')
+}
+
+test 'schema validates required and nested array values' {
+    var definition = json.parse('{"type":"object","properties":{"items":{"type":"array","items":{"type":"string"}}},"required":["items"]}')
+    var result = schema.validate_and_coerce('echo', definition, json.parse('{"items":[1,true]}'))
+    assert(result.get('items').at(0).as_string() == '1')
+    assert(result.get('items').at(1).as_string() == 'true')
+    bool failed = false
+    schema.validate_and_coerce('echo', definition, json.parse('{}')) catch e {
+        failed = e.msg().contains('items: Expected required property')
+        json.null_value()
+    }
+    assert(failed)
+}
+
+test 'schema rejects invalid boolean coercion' {
+    var definition = json.parse('{"type":"object","properties":{"value":{"type":"boolean"}},"required":["value"]}')
+    bool failed = false
+    schema.validate_and_coerce('echo', definition, json.parse('{"value":"1"}')) catch e {
+        failed = e.msg().contains('Validation failed for tool "echo"')
+        json.null_value()
+    }
+    assert(failed)
+}

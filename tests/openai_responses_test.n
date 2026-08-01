@@ -1,0 +1,134 @@
+import adou.src.ai.providers.openai_responses
+import adou.src.ai.sse
+import adou.src.ai.types
+fn frame(string data): string {
+    return 'data: ' + data + '\n\n'
+}
+fn test_model(): ref<types.model_t> {
+    var model = new types.model_t(id = 'gpt-5-mini', api = 'openai-responses', provider = 'openai',)
+    model.cost.input = 1000000.0
+    model.cost.output = 2000000.0
+    model.cost.cache_read = 500000.0
+    model.cost.cache_write = 1500000.0
+    return model
+}
+fn run_fixture(string fixture): (ref<openai_responses.processor_t>, [types.assistant_event_t])! {
+    var decoder = sse.parser()
+    var processor = openai_responses.processor(test_model(), 123)
+    [types.assistant_event_t] events = [processor.start()]
+    for byte in fixture as[u8]{
+        var frames = decoder.feed([byte])
+        for item in frames {
+            events.append(processor.feed(item))
+        }
+    }
+    decoder.finish()
+    processor.finish()
+    return (processor, events)
+}
+test 'converts Pi OpenAI Responses text tool and usage events' {
+    string fixture = ''
+    fixture += frame('{"type":"response.created","response":{"id":"resp_1"}}')
+    fixture += frame('{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_1","phase":"commentary","content":[]}}')
+    fixture += frame('{"type":"response.output_text.delta","output_index":0,"delta":"hello "}')
+    fixture += frame('{"type":"response.output_text.delta","output_index":0,"delta":"world"}')
+    fixture += frame('{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_1","phase":"final_answer","content":[{"type":"output_text","text":"hello world"}]}}')
+    fixture += frame('{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_read","call_id":"call_read","name":"read","arguments":""}}')
+    fixture += frame('{"type":"response.function_call_arguments.delta","output_index":1,"delta":"{\\"path\\":\\"README.md\\"}"}')
+    fixture += frame('{"type":"response.function_call_arguments.done","output_index":1,"arguments":"{\\"path\\":\\"README.md\\"}"}')
+    fixture += frame('{"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_read","call_id":"call_read","name":"read","arguments":"{\\"path\\":\\"README.md\\"}"}}')
+    fixture += frame('{"type":"response.completed","response":{"id":"resp_1","status":"completed","usage":{"input_tokens":20,"output_tokens":7,"total_tokens":27,"input_tokens_details":{"cached_tokens":2,"cache_write_tokens":3},"output_tokens_details":{"reasoning_tokens":1}}}}')
+    var (processor, events) = run_fixture(fixture)
+    assert(events.len() == 9)
+    assert(events[0].kind == types.EVENT_START)
+    assert(events[1].kind == types.EVENT_TEXT_START)
+    assert(events[2].kind == types.EVENT_TEXT_DELTA && events[2].delta == 'hello ')
+    assert(events[3].kind == types.EVENT_TEXT_DELTA && events[3].delta == 'world')
+    assert(events[4].kind == types.EVENT_TEXT_END && events[4].content == 'hello world')
+    assert(events[5].kind == types.EVENT_TOOLCALL_START)
+    assert(events[6].kind == types.EVENT_TOOLCALL_DELTA)
+    assert(events[7].kind == types.EVENT_TOOLCALL_END)
+    assert(events[8].kind == types.EVENT_DONE && events[8].reason == types.STOP_TOOL_USE)
+    var output = processor.output
+    assert(output.response_id == 'resp_1')
+    assert(output.stop_reason == types.STOP_TOOL_USE)
+    assert(output.usage.input == 15)
+    assert(output.usage.output == 7)
+    assert(output.usage.cache_read == 2)
+    assert(output.usage.cache_write == 3)
+    assert(output.usage.reasoning == 1)
+    assert(output.usage.total_tokens == 27)
+    assert(output.usage.cost.input == 15.0)
+    assert(output.usage.cost.output == 14.0)
+    assert(output.usage.cost.cache_read == 1.0)
+    assert(output.usage.cost.cache_write == 4.5)
+    assert(output.usage.cost.total == 34.5)
+    assert(output.content.len() == 2)
+    var text = output.content[0] as ref<types.text_content_t>
+    assert(text.text == 'hello world')
+    assert(text.text_signature == '{"v":1,"id":"msg_1","phase":"final_answer"}')
+    var tool = output.content[1] as ref<types.tool_call_t>
+    assert(tool.id == 'call_read|fc_read')
+    assert(tool.name == 'read')
+    assert(tool.partial_json == '')
+    assert(tool.arguments.get('path').as_string() == 'README.md')
+}
+test 'converts reasoning and incomplete terminal status' {
+    string fixture = ''
+    fixture += frame('{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[]}}')
+    fixture += frame('{"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"first"}')
+    fixture += frame('{"type":"response.reasoning_summary_part.done","output_index":0}')
+    fixture += frame('{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"final reasoning"}]}}')
+    fixture += frame('{"type":"response.incomplete","response":{"id":"resp_2","status":"incomplete"}}')
+    var (processor, events) = run_fixture(fixture)
+    assert(events.len() == 6)
+    assert(events[1].kind == types.EVENT_THINKING_START)
+    assert(events[2].kind == types.EVENT_THINKING_DELTA && events[2].delta == 'first')
+    assert(events[3].kind == types.EVENT_THINKING_DELTA && events[3].delta == '\n\n')
+    assert(events[4].kind == types.EVENT_THINKING_END && events[4].content == 'final reasoning')
+    assert(events[5].kind == types.EVENT_DONE && events[5].reason == types.STOP_LENGTH)
+    var thinking = processor.output.content[0] as ref<types.thinking_content_t>
+    assert(thinking.thinking == 'final reasoning')
+    assert(thinking.thinking_signature != '')
+}
+test 'rejects an early EOF before a terminal response event' {
+    var processor = openai_responses.processor(test_model(), 123)
+    processor.start()
+    var frame = sse.event_t {
+        event: 'message', data: '{"type":"response.created","response":{"id":"resp_early"}}', id: '', retry: -1,
+    }
+    processor.feed(frame)
+    bool failed = false
+    processor.finish() catch e {
+        failed = e.msg() == 'OpenAI Responses stream ended before a terminal response event'
+    }
+    assert(failed)
+}
+
+test 'dispatches the terminal response when EOF omits the final blank line' {
+    var decoder = sse.parser()
+    var processor = openai_responses.processor(test_model(), 123)
+    processor.start()
+    string terminal = 'data: {"type":"response.completed","response":{"id":"resp_eof","status":"completed"}}\n'
+    var frames = decoder.feed(terminal as [u8])
+    assert(frames.len() == 0)
+    var pending = decoder.finish_pending()
+    assert(pending.len() == 1)
+    var events = processor.feed(pending[0])
+    assert(events.len() == 1 && events[0].kind == types.EVENT_DONE)
+    processor.finish()
+    assert(processor.output.response_id == 'resp_eof')
+}
+test 'surfaces response.failed details' {
+    var processor = openai_responses.processor(test_model(), 123)
+    processor.start()
+    var frame = sse.event_t {
+        event: 'message', data: '{"type":"response.failed","response":{"status":"failed","error":{"code":"server_error","message":"boom"}}}', id: '', retry: -1,
+    }
+    bool failed = false
+    processor.feed(frame) catch e {
+        failed = e.msg() == 'server_error: boom'
+        []
+    }
+    assert(failed)
+}

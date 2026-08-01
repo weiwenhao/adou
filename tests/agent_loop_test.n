@@ -1,0 +1,543 @@
+import adou.src.agent.loop
+import adou.src.agent.event_stream as agent_event_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.event_stream
+import adou.src.ai.abort
+import adou.src.ai.types
+import adou.src.tools.types as tool_types
+import co
+import co.mutex
+import json
+
+fn model(): ref<types.model_t> {
+    return new types.model_t(id = 'mock', api = 'openai-responses', provider = 'mock', base_url = 'http://example.invalid', context_window = 8192, max_tokens = 2048)
+}
+
+type provider_fixture_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    [ref<types.assistant_message_t>] responses = []
+    [[string]] tool_result_orders = []
+    [int] user_counts = []
+    int index
+}
+
+fn provider_fn(ref<provider_fixture_t> fixture): agent_types.stream_fn {
+    agent_types.stream_fn result = fn(ref<types.model_t> current_model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+        fixture.lock.lock()
+        [string] order = []
+        int user_count = 0
+        for context_message in context.messages {
+            if context_message is ref<types.user_message_t> user_message {
+                user_count += 1
+            }
+            if context_message is ref<types.tool_result_message_t> tool_message {
+                order.push(tool_message.tool_call_id)
+            }
+        }
+        fixture.tool_result_orders.push(order)
+        fixture.user_counts.push(user_count)
+        var message = fixture.responses[fixture.index]
+        fixture.index += 1
+        fixture.lock.unlock()
+        var stream = event_stream.new()
+        var event = types.assistant_event_t {kind: message.stop_reason == types.STOP_ERROR || message.stop_reason == types.STOP_ABORTED ? types.EVENT_ERROR : types.EVENT_DONE, reason: message.stop_reason,}
+        if event.kind == types.EVENT_ERROR {
+            event.error = message
+        } else {
+            event.message = message
+        }
+        stream.push(event) catch e {}
+        stream.end() catch e {}
+        return stream
+    }
+    return result
+}
+
+fn assistant_text(string value): ref<types.assistant_message_t> {
+    var message = new types.assistant_message_t(api = 'openai-responses', provider = 'mock', model = 'mock', stop_reason = types.STOP_STOP)
+    types.content_t block = new types.text_content_t(text = value)
+    message.content.push(block)
+    return message
+}
+
+fn assistant_tools([ref<types.tool_call_t>] calls, string stop_reason): ref<types.assistant_message_t> {
+    var message = new types.assistant_message_t(api = 'openai-responses', provider = 'mock', model = 'mock', stop_reason = stop_reason)
+    for call in calls {
+        types.content_t block = call
+        message.content.push(block)
+    }
+    return message
+}
+
+type execution_state_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    [string] starts = []
+    [string] ends = []
+    int active
+    bool parallel_seen
+}
+
+type fixture_executor_t: agent_types.tool_executor_t = struct {
+    string name
+    int delay_ms
+    string output
+    bool terminate
+    bool fail
+    ref<execution_state_t> state
+}
+
+fn fixture_executor_t.execute(&self, string tool_call_id, ref<json.value_t> arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    self.state.lock.lock()
+    self.state.starts.push(tool_call_id)
+    self.state.active += 1
+    if self.state.active > 1 {
+        self.state.parallel_seen = true
+    }
+    self.state.lock.unlock()
+    on_update(tool_types.text_result('working ' + tool_call_id))
+    co.sleep(self.delay_ms)
+    self.state.lock.lock()
+    self.state.ends.push(tool_call_id)
+    self.state.active -= 1
+    self.state.lock.unlock()
+    if self.fail {
+        throw errorf('fixture failure ' + tool_call_id)
+    }
+    var result = tool_types.text_result(self.output)
+    result.terminate = self.terminate
+    return result
+}
+
+fn fixture_tool(string name, string mode, int delay_ms, string output, bool terminate, bool fail, ref<execution_state_t> state): ref<agent_types.agent_tool_t>! {
+    var parameters = json.parse('{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}')
+    agent_types.tool_executor_t executor = fixture_executor_t {name: name, delay_ms: delay_ms, output: output, terminate: terminate, fail: fail, state: state,}
+    return new agent_types.agent_tool_t(name = name, label = name, description = name, parameters = parameters, execution_mode = mode, executor = executor)
+}
+
+type abort_executor_t: agent_types.tool_executor_t = struct {}
+
+fn abort_executor_t.execute(&self, string tool_call_id, ref<json.value_t> arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    cancellation.abort()
+    return tool_types.text_result('cancelled')
+}
+
+fn abort_tool(): ref<agent_types.agent_tool_t>! {
+    var parameters = json.parse('{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}')
+    agent_types.tool_executor_t executor = abort_executor_t{}
+    return new agent_types.agent_tool_t(name = 'abort', label = 'abort', description = 'abort', parameters = parameters, executor = executor)
+}
+
+type late_executor_t: agent_types.tool_executor_t = struct {}
+
+fn late_executor_t.execute(&self, string tool_call_id, ref<json.value_t> arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    go emit_late_update(on_update)
+    return tool_types.text_result('settled')
+}
+
+fn emit_late_update(agent_types.tool_update_fn on_update) {
+    co.sleep(5)
+    on_update(tool_types.text_result('late'))
+}
+
+fn late_tool(): ref<agent_types.agent_tool_t>! {
+    var parameters = json.parse('{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}')
+    agent_types.tool_executor_t executor = late_executor_t{}
+    return new agent_types.agent_tool_t(name = 'late', label = 'late', description = 'late', parameters = parameters, executor = executor)
+}
+
+fn first_text(ref<types.assistant_message_t> message): string {
+    for block in message.content {
+        if block is ref<types.text_content_t> text {
+            return text.text
+        }
+    }
+    return ''
+}
+
+fn config_with(ref<provider_fixture_t> fixture): (ref<agent_types.config_t>, agent_types.stream_fn) {
+    return (new agent_types.config_t(model = model(), stream_options = new types.stream_options_t()), provider_fn(fixture))
+}
+
+test 'agent loop emits Pi lifecycle for a prompt and final response' {
+    agent_types.stream_fn stream_function = fn(ref<types.model_t> current_model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+        var stream = event_stream.new()
+        var message = new types.assistant_message_t(api = 'openai-responses', provider = 'mock', model = 'mock', stop_reason = types.STOP_STOP)
+        types.content_t content = new types.text_content_t(text = 'hello')
+        message.content.push(content)
+        var event = types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,}
+        stream.push(event) catch e {}
+        stream.end() catch e {}
+        return stream
+    }
+    var context = new agent_types.context_t(system_prompt = 'system')
+    var config = new agent_types.config_t(model = model(), stream_options = new types.stream_options_t())
+    types.message_t prompt_message = new types.user_message_t(content = 'hi')
+    var stream = loop.prompt([prompt_message], context, config, stream_function)
+    [string] event_kinds = []
+    for true {
+        var event = stream.recv() catch e {break}
+        event_kinds.push(event.kind)
+    }
+    var messages = stream.result()
+    assert(messages.len() == 2)
+    assert(event_kinds.len() == 8)
+    assert(event_kinds[0] == agent_types.EVENT_AGENT_START)
+    assert(event_kinds[1] == agent_types.EVENT_TURN_START)
+    assert(event_kinds[2] == agent_types.EVENT_MESSAGE_START && event_kinds[3] == agent_types.EVENT_MESSAGE_END)
+    assert(event_kinds[4] == agent_types.EVENT_MESSAGE_START && event_kinds[5] == agent_types.EVENT_MESSAGE_END)
+    assert(event_kinds[6] == agent_types.EVENT_TURN_END && event_kinds[7] == agent_types.EVENT_AGENT_END)
+}
+
+test 'parallel tools end in completion order and persist in source order' {
+    var fixture = new provider_fixture_t()
+    fixture.responses.push(assistant_tools([new types.tool_call_t(id = 'slow-call', name = 'slow', arguments = json.parse('{"value":"a"}')), new types.tool_call_t(id = 'fast-call', name = 'fast', arguments = json.parse('{"value":"b"}'))], types.STOP_TOOL_USE))
+    fixture.responses.push(assistant_text('done'))
+    var execution = new execution_state_t()
+    var context = new agent_types.context_t(tools = [fixture_tool('slow', agent_types.EXECUTION_PARALLEL, 40, 'slow-result', false, false, execution), fixture_tool('fast', agent_types.EXECUTION_PARALLEL, 5, 'fast-result', false, false, execution)])
+    var configured = config_with(fixture)
+    var config = configured[0]
+    var stream_function = configured[1]
+    types.message_t prompt_message = new types.user_message_t(content = 'run tools')
+    var stream = loop.prompt([prompt_message], context, config, stream_function)
+    [string] end_order = []
+    [string] persisted_order = []
+    int updates = 0
+    for true {
+        var event = stream.recv() catch e {break}
+        if event.kind == agent_types.EVENT_TOOL_UPDATE {
+            updates += 1
+        }
+        if event.kind == agent_types.EVENT_TOOL_END {
+            end_order.push(event.tool_call_id)
+        }
+        if event.kind == agent_types.EVENT_MESSAGE_START && event.tool_message is ref<types.tool_result_message_t> tool_message {
+            persisted_order.push(tool_message.tool_call_id)
+        }
+    }
+    var messages = stream.result()
+    assert(execution.parallel_seen)
+    assert(updates == 2)
+    assert(end_order.len() == 2 && end_order[0] == 'fast-call' && end_order[1] == 'slow-call')
+    assert(persisted_order.len() == 2 && persisted_order[0] == 'slow-call' && persisted_order[1] == 'fast-call')
+    assert(fixture.tool_result_orders.len() == 2 && fixture.tool_result_orders[1][0] == 'slow-call' && fixture.tool_result_orders[1][1] == 'fast-call')
+    assert(messages.len() == 5)
+}
+
+test 'one sequential tool forces the whole batch sequential' {
+    var fixture = new provider_fixture_t(responses = [assistant_tools([new types.tool_call_t(id = 'first', name = 'slow', arguments = json.parse('{"value":"a"}')), new types.tool_call_t(id = 'second', name = 'fast', arguments = json.parse('{"value":"b"}'))], types.STOP_TOOL_USE), assistant_text('done')])
+    var execution = new execution_state_t()
+    var context = new agent_types.context_t(tools = [fixture_tool('slow', agent_types.EXECUTION_SEQUENTIAL, 20, 'one', false, false, execution), fixture_tool('fast', agent_types.EXECUTION_PARALLEL, 1, 'two', false, false, execution)])
+    var configured = config_with(fixture)
+    types.message_t prompt_message = new types.user_message_t(content = 'run')
+    var stream = loop.prompt([prompt_message], context, configured[0], configured[1])
+    for true {
+        stream.recv() catch e {break}
+    }
+    stream.result()
+    assert(!execution.parallel_seen)
+    assert(execution.starts.len() == 2 && execution.ends.len() == 2)
+    assert(execution.starts[0] == 'first' && execution.ends[0] == 'first' && execution.starts[1] == 'second' && execution.ends[1] == 'second')
+}
+
+test 'length stop fails every tool call without execution and continues' {
+    var fixture = new provider_fixture_t(responses = [assistant_tools([new types.tool_call_t(id = 'cut-1', name = 'echo', arguments = json.parse('{"value":"hel"}')), new types.tool_call_t(id = 'cut-2', name = 'echo', arguments = json.parse('{"value":"wor"}'))], types.STOP_LENGTH), assistant_text('done')])
+    var execution = new execution_state_t()
+    var context = new agent_types.context_t(tools = [fixture_tool('echo', agent_types.EXECUTION_PARALLEL, 1, 'unused', false, false, execution)])
+    var configured = config_with(fixture)
+    types.message_t prompt_message = new types.user_message_t(content = 'run')
+    var stream = loop.prompt([prompt_message], context, configured[0], configured[1])
+    int errors = 0
+    for true {
+        var event = stream.recv() catch e {break}
+        if event.kind == agent_types.EVENT_TOOL_END && event.is_error && event.tool_result.content[0].text.contains('output token limit') {
+            errors += 1
+        }
+    }
+    var messages = stream.result()
+    assert(execution.starts.len() == 0)
+    assert(errors == 2)
+    assert(messages.len() == 5)
+}
+
+test 'streaming partial snapshots follow start update end ordering' {
+    agent_types.stream_fn stream_function = fn(ref<types.model_t> current_model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+        var stream = event_stream.new()
+        var partial = assistant_text('h')
+        var final_message = assistant_text('hello')
+        stream.push(types.assistant_event_t {kind: types.EVENT_START, partial: partial,}) catch e {}
+        stream.push(types.assistant_event_t {kind: types.EVENT_TEXT_DELTA, content_index: 0, delta: 'ello', partial: final_message,}) catch e {}
+        stream.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: final_message,}) catch e {}
+        stream.end() catch e {}
+        return stream
+    }
+    var context = new agent_types.context_t()
+    var config = new agent_types.config_t(model = model(), stream_options = new types.stream_options_t())
+    types.message_t prompt_message = new types.user_message_t(content = 'hi')
+    var stream = loop.prompt([prompt_message], context, config, stream_function)
+    [string] assistant_events = []
+    [string] assistant_texts = []
+    for true {
+        var event = stream.recv() catch e {break}
+        if event.assistant_message is ref<types.assistant_message_t> message {
+            assistant_events.push(event.kind)
+            assistant_texts.push(first_text(message))
+        }
+    }
+    stream.result()
+    assert(assistant_events.len() == 4)
+    assert(assistant_events[0] == agent_types.EVENT_MESSAGE_START && assistant_texts[0] == 'h')
+    assert(assistant_events[1] == agent_types.EVENT_MESSAGE_UPDATE && assistant_texts[1] == 'hello')
+    assert(assistant_events[2] == agent_types.EVENT_MESSAGE_END && assistant_texts[2] == 'hello')
+    assert(assistant_events[3] == agent_types.EVENT_TURN_END && assistant_texts[3] == 'hello')
+}
+
+test 'missing tools and invalid schemas become ordered error tool results' {
+    var missing = new types.tool_call_t(id = 'missing', name = 'unknown', arguments = json.parse('{}'))
+    var invalid = new types.tool_call_t(id = 'invalid', name = 'echo', arguments = json.parse('{}'))
+    var fixture = new provider_fixture_t(responses = [assistant_tools([missing, invalid], types.STOP_TOOL_USE), assistant_text('done')])
+    var execution = new execution_state_t()
+    var context = new agent_types.context_t(tools = [fixture_tool('echo', agent_types.EXECUTION_PARALLEL, 1, 'unused', false, false, execution)])
+    var configured = config_with(fixture)
+    types.message_t prompt_message = new types.user_message_t(content = 'run')
+    var stream = loop.prompt([prompt_message], context, configured[0], configured[1])
+    [string] ids = []
+    [string] errors = []
+    for true {
+        var event = stream.recv() catch e {break}
+        if event.kind == agent_types.EVENT_TOOL_END {
+            ids.push(event.tool_call_id)
+            if event.is_error {
+                errors.push(event.tool_result.content[0].text)
+            }
+        }
+    }
+    stream.result()
+    assert(execution.starts.len() == 0)
+    assert(ids.len() == 2 && ids[0] == 'missing' && ids[1] == 'invalid')
+    assert(errors.len() == 2 && errors[0] == 'Tool unknown not found' && errors[1].contains('Validation failed for tool "echo"'))
+}
+
+test 'late updates after a tool settles are ignored while peers still run' {
+    var fixture = new provider_fixture_t(responses = [assistant_tools([new types.tool_call_t(id = 'late-call', name = 'late', arguments = json.parse('{"value":"a"}')), new types.tool_call_t(id = 'slow-call', name = 'slow', arguments = json.parse('{"value":"b"}'))], types.STOP_TOOL_USE), assistant_text('done')])
+    var execution = new execution_state_t()
+    var context = new agent_types.context_t(tools = [late_tool(), fixture_tool('slow', agent_types.EXECUTION_PARALLEL, 30, 'slow', false, false, execution)])
+    var configured = config_with(fixture)
+    types.message_t prompt_message = new types.user_message_t(content = 'run')
+    var stream = loop.prompt([prompt_message], context, configured[0], configured[1])
+    int late_updates = 0
+    for true {
+        var event = stream.recv() catch e {break}
+        if event.kind == agent_types.EVENT_TOOL_UPDATE && event.tool_call_id == 'late-call' {
+            late_updates += 1
+        }
+    }
+    stream.result()
+    assert(late_updates == 0)
+}
+
+test 'tool batch terminates only when every finalized result requests it' {
+    var mixed_fixture = new provider_fixture_t(responses = [assistant_tools([new types.tool_call_t(id = 'yes', name = 'yes', arguments = json.parse('{"value":"a"}')), new types.tool_call_t(id = 'no', name = 'no', arguments = json.parse('{"value":"b"}'))], types.STOP_TOOL_USE), assistant_text('continued')])
+    var mixed_state = new execution_state_t()
+    var mixed_context = new agent_types.context_t(tools = [fixture_tool('yes', agent_types.EXECUTION_PARALLEL, 1, 'yes', true, false, mixed_state), fixture_tool('no', agent_types.EXECUTION_PARALLEL, 1, 'no', false, false, mixed_state)])
+    var mixed_configured = config_with(mixed_fixture)
+    types.message_t mixed_prompt = new types.user_message_t(content = 'mixed')
+    var mixed_stream = loop.prompt([mixed_prompt], mixed_context, mixed_configured[0], mixed_configured[1])
+    for true {
+        mixed_stream.recv() catch e {break}
+    }
+    mixed_stream.result()
+    assert(mixed_fixture.index == 2)
+    var all_fixture = new provider_fixture_t(responses = [assistant_tools([new types.tool_call_t(id = 'one', name = 'one', arguments = json.parse('{"value":"a"}')), new types.tool_call_t(id = 'two', name = 'two', arguments = json.parse('{"value":"b"}'))], types.STOP_TOOL_USE)])
+    var all_state = new execution_state_t()
+    var all_context = new agent_types.context_t(tools = [fixture_tool('one', agent_types.EXECUTION_PARALLEL, 1, 'one', true, false, all_state), fixture_tool('two', agent_types.EXECUTION_PARALLEL, 1, 'two', true, false, all_state)])
+    var all_configured = config_with(all_fixture)
+    types.message_t all_prompt = new types.user_message_t(content = 'all')
+    var all_stream = loop.prompt([all_prompt], all_context, all_configured[0], all_configured[1])
+    for true {
+        all_stream.recv() catch e {break}
+    }
+    all_stream.result()
+    assert(all_fixture.index == 1)
+}
+
+test 'before and after callbacks block or override tool outcomes' {
+    var fixture = new provider_fixture_t(responses = [assistant_tools([new types.tool_call_t(id = 'blocked', name = 'blocked', arguments = json.parse('{"value":"a"}')), new types.tool_call_t(id = 'patched', name = 'patched', arguments = json.parse('{"value":"b"}'))], types.STOP_TOOL_USE), assistant_text('done')])
+    var execution = new execution_state_t()
+    var context = new agent_types.context_t(tools = [fixture_tool('blocked', agent_types.EXECUTION_PARALLEL, 1, 'blocked-ran', false, false, execution), fixture_tool('patched', agent_types.EXECUTION_PARALLEL, 1, 'original', false, false, execution)])
+    var configured = config_with(fixture)
+    agent_types.before_tool_call_fn before = fn(ref<types.assistant_message_t> assistant_message, ref<types.tool_call_t> call, ref<json.value_t> arguments, ref<agent_types.context_t> current_context, ref<abort.abort_t> cancellation): agent_types.before_result_t! {
+        if call.id == 'blocked' {
+            return agent_types.before_result_t {block: true, reason: 'blocked by callback',}
+        }
+        return agent_types.before_result_t{}
+    }
+    agent_types.after_tool_call_fn after = fn(ref<types.assistant_message_t> assistant_message, ref<types.tool_call_t> call, ref<json.value_t> arguments, tool_types.tool_result_t original, bool is_error, ref<agent_types.context_t> current_context, ref<abort.abort_t> cancellation): agent_types.after_result_t! {
+        if call.id == 'patched' {
+            return agent_types.after_result_t {has_content: true, content: [new types.text_content_t(text = 'patched by callback')], has_is_error: true, is_error: true,}
+        }
+        return agent_types.after_result_t{}
+    }
+    configured[0].before_tool_call = before
+    configured[0].after_tool_call = after
+    types.message_t prompt_message = new types.user_message_t(content = 'run')
+    var stream = loop.prompt([prompt_message], context, configured[0], configured[1])
+    [string] errors = []
+    for true {
+        var event = stream.recv() catch e {break}
+        if event.kind == agent_types.EVENT_TOOL_END && event.is_error {
+            errors.push(event.tool_result.content[0].text)
+        }
+    }
+    stream.result()
+    assert(execution.starts.len() == 1 && execution.starts[0] == 'patched')
+    assert(errors.len() == 2 && errors[0] == 'blocked by callback' && errors[1] == 'patched by callback')
+}
+
+test 'one-at-a-time steering and follow-up queues drain at Pi boundaries' {
+    var steering_fixture = new provider_fixture_t(responses = [assistant_text('first'), assistant_text('second')])
+    var steering_context = new agent_types.context_t()
+    var steering_configured = config_with(steering_fixture)
+    steering_configured[0].queues.steering_mode = agent_types.QUEUE_ONE
+    types.message_t steer_one = new types.user_message_t(content = 'steer one')
+    types.message_t steer_two = new types.user_message_t(content = 'steer two')
+    steering_configured[0].queues.enqueue_steering(steer_one)
+    steering_configured[0].queues.enqueue_steering(steer_two)
+    types.message_t prompt_message = new types.user_message_t(content = 'prompt')
+    var steering_stream = loop.prompt([prompt_message], steering_context, steering_configured[0], steering_configured[1])
+    for true {
+        steering_stream.recv() catch e {break}
+    }
+    steering_stream.result()
+    assert(steering_fixture.user_counts.len() == 2 && steering_fixture.user_counts[0] == 2 && steering_fixture.user_counts[1] == 3)
+    var follow_fixture = new provider_fixture_t(responses = [assistant_text('first'), assistant_text('second')])
+    var follow_context = new agent_types.context_t()
+    var follow_configured = config_with(follow_fixture)
+    types.message_t follow = new types.user_message_t(content = 'follow')
+    follow_configured[0].queues.enqueue_follow_up(follow)
+    var follow_stream = loop.prompt([prompt_message], follow_context, follow_configured[0], follow_configured[1])
+    for true {
+        follow_stream.recv() catch e {break}
+    }
+    follow_stream.result()
+    assert(follow_fixture.user_counts.len() == 2 && follow_fixture.user_counts[0] == 1 && follow_fixture.user_counts[1] == 2)
+}
+
+test 'queued steering and follow-up messages can be restored in insertion groups' {
+    var queues = new agent_types.queue_t()
+    types.message_t steering = new types.user_message_t(content = 'steer')
+    types.message_t follow = new types.user_message_t(content = 'follow')
+    queues.enqueue_steering(steering)
+    queues.enqueue_follow_up(follow)
+    var restored = queues.restore_all()
+    assert(restored.len() == 2)
+    assert(queues.steering.len() == 0 && queues.follow_up.len() == 0)
+    var first = restored[0] as ref<types.user_message_t>
+    var second = restored[1] as ref<types.user_message_t>
+    assert(first.content == 'steer' && second.content == 'follow')
+}
+
+test 'continue rejects empty and assistant tails and returns only new messages' {
+    var fixture = new provider_fixture_t(responses = [assistant_text('continued')])
+    var configured = config_with(fixture)
+    bool empty_failed = false
+    loop.continue_from(new agent_types.context_t(), configured[0], configured[1]) catch e {
+        empty_failed = e.msg() == 'Cannot continue: no messages in context'
+        agent_stream_placeholder()
+    }
+    assert(empty_failed)
+    types.message_t old_assistant = assistant_text('old')
+    bool assistant_failed = false
+    loop.continue_from(new agent_types.context_t(messages = [old_assistant]), configured[0], configured[1]) catch e {
+        assistant_failed = e.msg() == 'Cannot continue from message role: assistant'
+        agent_stream_placeholder()
+    }
+    assert(assistant_failed)
+    types.message_t old_user = new types.user_message_t(content = 'old')
+    var stream = loop.continue_from(new agent_types.context_t(messages = [old_user]), configured[0], configured[1])
+    for true {
+        stream.recv() catch e {break}
+    }
+    var messages = stream.result()
+    assert(messages.len() == 1 && messages[0] is ref<types.assistant_message_t>)
+}
+
+type hook_state_t = struct {
+    int prepared
+    int stopped
+}
+
+test 'prepare-next-turn runs before graceful should-stop and skips queues' {
+    var fixture = new provider_fixture_t(responses = [assistant_text('first')])
+    var configured = config_with(fixture)
+    var hooks = new hook_state_t()
+    agent_types.prepare_next_turn_fn prepare = fn(ref<types.assistant_message_t> message, [ref<types.tool_result_message_t>] results, ref<agent_types.context_t> current_context, [types.message_t] new_messages): agent_types.turn_update_t! {
+        hooks.prepared += 1
+        return agent_types.turn_update_t {has_thinking_level: true, thinking_level: 'high',}
+    }
+    agent_types.should_stop_after_turn_fn stop = fn(ref<types.assistant_message_t> message, [ref<types.tool_result_message_t>] results, ref<agent_types.context_t> current_context, [types.message_t] new_messages): bool! {
+        hooks.stopped += 1
+        return true
+    }
+    configured[0].prepare_next_turn = prepare
+    configured[0].should_stop_after_turn = stop
+    types.message_t steering = new types.user_message_t(content = 'queued steering')
+    types.message_t follow = new types.user_message_t(content = 'queued follow')
+    configured[0].queues.enqueue_steering(steering)
+    configured[0].queues.enqueue_follow_up(follow)
+    types.message_t prompt_message = new types.user_message_t(content = 'prompt')
+    var stream = loop.prompt([prompt_message], new agent_types.context_t(), configured[0], configured[1])
+    for true {
+        stream.recv() catch e {break}
+    }
+    stream.result()
+    assert(hooks.prepared == 1 && hooks.stopped == 1)
+    assert(fixture.index == 1)
+    assert(configured[0].queues.follow_up.len() == 1)
+}
+
+test 'abort is bridged into a pending provider stream and ends normally' {
+    agent_types.stream_fn hanging = fn(ref<types.model_t> current_model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+        var response = event_stream.new()
+        abort.abort_callback_t finish = fn() {
+            var message = new types.assistant_message_t(api = 'openai-responses', provider = 'mock', model = 'mock', stop_reason = types.STOP_ABORTED, error_message = 'Operation aborted')
+            response.push(types.assistant_event_t {kind: types.EVENT_ERROR, reason: types.STOP_ABORTED, error: message,}) catch e {}
+            response.end() catch e {}
+        }
+        response.cancellation.on_abort(finish)
+        return response
+    }
+    var config = new agent_types.config_t(model = model(), stream_options = new types.stream_options_t())
+    types.message_t prompt_message = new types.user_message_t(content = 'wait')
+    var stream = loop.prompt([prompt_message], new agent_types.context_t(), config, hanging)
+    for int i = 0; i < 4; i += 1 {
+        stream.recv()
+    }
+    stream.abort()
+    [string] remaining = []
+    for true {
+        var event = stream.recv() catch e {break}
+        remaining.push(event.kind)
+    }
+    var messages = stream.result()
+    assert(messages.len() == 2)
+    var final_message = messages[1] as ref<types.assistant_message_t>
+    assert(final_message.stop_reason == types.STOP_ABORTED)
+    assert(remaining.len() == 4 && remaining[0] == agent_types.EVENT_MESSAGE_START && remaining[1] == agent_types.EVENT_MESSAGE_END && remaining[2] == agent_types.EVENT_TURN_END && remaining[3] == agent_types.EVENT_AGENT_END)
+}
+
+test 'cancelling a tool batch does not start another model turn' {
+    var fixture = new provider_fixture_t(responses = [assistant_tools([new types.tool_call_t(id = 'abort-call', name = 'abort', arguments = json.parse('{"value":"x"}'))], types.STOP_TOOL_USE), assistant_text('must not run')])
+    var config = config_with(fixture)
+    var context = new agent_types.context_t(tools = [abort_tool()])
+    var stream = loop.prompt([new types.user_message_t(content = 'cancel tool')], context, config[0], config[1])
+    for true {
+        stream.recv() catch e {break}
+    }
+    var messages = stream.result()
+    assert(fixture.index == 1)
+    assert(messages.len() == 3)
+}
+
+fn agent_stream_placeholder(): ref<agent_event_stream.stream_t> {
+    return agent_event_stream.new()
+}

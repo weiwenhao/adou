@@ -1,0 +1,65 @@
+import adou.src.tui.renderer
+import adou.src.tui.virtual_terminal
+
+test 'first render appends with synchronized output and no clear' {
+    var value = renderer.new()
+    var result = value.render(['one', 'two'], 20, 5)
+    assert(result.strategy == renderer.STRATEGY_FIRST)
+    assert(result.output.starts_with('\x1b[?2026h'))
+    assert(!result.output.contains('\x1b[2J') && result.output.ends_with('\x1b[?2026l'))
+    var terminal = virtual_terminal.new(20, 5)
+    terminal.write(result.output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'one' && screen[1] == 'two')
+}
+
+test 'ordinary update clears and replaces only changed range' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    var first = value.render(['one', 'two', 'three'], 20, 5)
+    terminal.write(first.output)
+    var changed = value.render(['one', 'TWO', 'three'], 20, 5)
+    assert(changed.strategy == renderer.STRATEGY_DIFF && changed.first_changed == 1 && changed.last_changed == 1)
+    assert(changed.output.contains('\x1b[2K') && !changed.output.contains('\x1b[2J'))
+    terminal.write(changed.output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'one' && screen[1] == 'TWO' && screen[2] == 'three')
+}
+
+test 'width height and changes above viewport force full redraw' {
+    var width_value = renderer.new()
+    width_value.render(['a'], 20, 5)
+    assert(width_value.render(['a'], 21, 5).strategy == renderer.STRATEGY_FULL)
+    var height_value = renderer.new()
+    height_value.render(['a'], 20, 5)
+    assert(height_value.render(['a'], 20, 4).strategy == renderer.STRATEGY_FULL)
+    var viewport = renderer.new()
+    viewport.render(['0', '1', '2', '3', '4', '5'], 20, 3)
+    var redraw = viewport.render(['X', '1', '2', '3', '4', '5'], 20, 3)
+    assert(redraw.strategy == renderer.STRATEGY_FULL && redraw.output.contains('\x1b[2J\x1b[H\x1b[3J'))
+}
+
+test 'shrink clears deleted rows through differential output' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    terminal.write(value.render(['one', 'two', 'three'], 20, 5).output)
+    var shrink = value.render(['one'], 20, 5)
+    assert(shrink.strategy == renderer.STRATEGY_DIFF)
+    terminal.write(shrink.output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'one' && screen[1] == '' && screen[2] == '')
+}
+
+test 'no changes emit nothing and oversized lines are rejected' {
+    var value = renderer.new()
+    value.render(['same'], 10, 3)
+    var unchanged = value.render(['same'], 10, 3)
+    assert(unchanged.strategy == renderer.STRATEGY_NONE && unchanged.output == '')
+    bool failed = false
+    try {
+        value.render(['this is too long'], 5, 3)
+    } catch e {
+        failed = e.msg().contains('exceeds terminal width')
+    }
+    assert(failed)
+}

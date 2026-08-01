@@ -1,0 +1,28 @@
+import adou.src.agent.event_json
+import adou.src.agent.session_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.types as ai_types
+import json
+
+test 'json mode serializes session lifecycle and retry fields' {
+    var start = session_stream.event_t {kind: session_stream.EVENT_RETRY_START, retry_attempt: 1, retry_max_attempts: 3, retry_delay_ms: 2000, retry_error_message: '503 service unavailable',}
+    string encoded = event_json.encode(start)
+    var value = json.parse(encoded)
+    assert(value.kind == json.VALUE_OBJECT)
+    var object = value.as_object()
+    assert(object['type'].as_string() == session_stream.EVENT_RETRY_START)
+    assert(object['attempt'].number == '1')
+    assert(object['maxAttempts'].number == '3')
+    assert(object['delayMs'].number == '2000')
+    assert(object['retryError'].as_string() == '503 service unavailable')
+}
+
+test 'json mode emits assistant message payloads on message end' {
+    var assistant = new ai_types.assistant_message_t(provider = 'deepseek', model = 'deepseek-v4-flash', stop_reason = ai_types.STOP_STOP)
+    var event = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, assistant_message: assistant,}
+    var envelope = session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: event,}
+    var value = json.parse(event_json.encode(envelope))
+    var object = value.as_object()
+    assert(object['type'].as_string() == agent_types.EVENT_MESSAGE_END)
+    assert(object['assistantMessage'].kind == json.VALUE_OBJECT)
+}

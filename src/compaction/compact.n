@@ -1,0 +1,157 @@
+import adou.src.ai.abort
+import adou.src.ai.errors
+import adou.src.ai.event_stream
+import adou.src.ai.provider_retry
+import adou.src.ai.types as ai_types
+import adou.src.compaction.prepare
+import adou.src.compaction.serialize
+import adou.src.compaction.types
+import adou.src.session.identity
+import strings
+import time
+
+type stream_fn = fn(ref<ai_types.model_t>, ref<ai_types.context_t>, ref<ai_types.stream_options_t>): ref<event_stream.assistant_stream_t>
+
+const SUMMARIZATION_PROMPT = 'The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or "(none)" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or "(none)" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.'
+const UPDATE_SUMMARIZATION_PROMPT = 'The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\nUpdate the existing structured summary with new information. RULES:\n- PRESERVE all existing information from the previous summary\n- ADD new progress, decisions, and context from the new messages\n- UPDATE the Progress section: move items from "In Progress" to "Done" when completed\n- UPDATE "Next Steps" based on what was accomplished\n- PRESERVE exact file paths, function names, and error messages\n- If something is no longer relevant, you may remove it\n\nUse this EXACT format:\n\n## Goal\n[Preserve existing goals, add new ones if the task expanded]\n\n## Constraints & Preferences\n- [Preserve existing, add new ones discovered]\n\n## Progress\n### Done\n- [x] [Include previously done items AND newly completed items]\n\n### In Progress\n- [ ] [Current work - update based on progress]\n\n### Blocked\n- [Current blockers - remove if resolved]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale] (preserve all previous, add new)\n\n## Next Steps\n1. [Update based on current state]\n\n## Critical Context\n- [Preserve important context, add new if needed]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.'
+const TURN_PREFIX_SUMMARIZATION_PROMPT = 'This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what\'s needed to understand the kept suffix.'
+
+fn run(ref<types.preparation_t> preparation, ref<ai_types.model_t> model, ref<ai_types.stream_options_t> base_options, stream_fn stream_function, ref<abort.abort_t> cancellation, string custom_instructions, string thinking_level): types.summary_result_t! {
+    string summary = ''
+    ai_types.usage_t usage = ai_types.usage_t{}
+    if preparation.is_split_turn && preparation.turn_prefix_messages.len() > 0 {
+        string history = 'No prior history.'
+        bool has_history_usage = false
+        ai_types.usage_t history_usage = ai_types.usage_t{}
+        if preparation.messages_to_summarize.len() > 0 {
+            var history_result = generate(preparation.messages_to_summarize, model, base_options, stream_function, cancellation, custom_instructions, preparation.has_previous_summary, preparation.previous_summary, thinking_level, preparation.settings.reserve_tokens, false)
+            history = history_result[0]
+            history_usage = history_result[1]
+            has_history_usage = true
+        }
+        var prefix_result = generate(preparation.turn_prefix_messages, model, base_options, stream_function, cancellation, '', false, '', thinking_level, preparation.settings.reserve_tokens, true)
+        summary = history + '\n\n---\n\n**Turn Context (split turn):**\n\n' + prefix_result[0]
+        usage = prefix_result[1]
+        if has_history_usage {
+            usage = combine_usage(history_usage, usage)
+        }
+    } else {
+        var result = generate(preparation.messages_to_summarize, model, base_options, stream_function, cancellation, custom_instructions, preparation.has_previous_summary, preparation.previous_summary, thinking_level, preparation.settings.reserve_tokens, false)
+        summary = result[0]
+        usage = result[1]
+    }
+    var (read_files, modified_files) = prepare.file_lists(preparation.file_ops)
+    summary += format_file_operations(read_files, modified_files)
+    return types.summary_result_t {summary: summary, first_kept_entry_id: preparation.first_kept_entry_id, tokens_before: preparation.tokens_before, usage: usage, read_files: read_files, modified_files: modified_files,}
+}
+
+#local
+fn generate([ai_types.message_t] messages, ref<ai_types.model_t> model, ref<ai_types.stream_options_t> base_options, stream_fn stream_function, ref<abort.abort_t> cancellation, string custom_instructions, bool has_previous_summary, string previous_summary, string thinking_level, int reserve_tokens, bool turn_prefix): (string, ai_types.usage_t)! {
+    string conversation_text = serialize.conversation(messages)
+    string base_prompt = SUMMARIZATION_PROMPT
+    if has_previous_summary {
+        base_prompt = UPDATE_SUMMARIZATION_PROMPT
+    }
+    if turn_prefix {
+        base_prompt = TURN_PREFIX_SUMMARIZATION_PROMPT
+    } else if custom_instructions != '' {
+        base_prompt += '\n\nAdditional focus: ' + custom_instructions
+    }
+    string prompt_text = '<conversation>\n' + conversation_text + '\n</conversation>\n\n'
+    if has_previous_summary && !turn_prefix {
+        prompt_text += '<previous-summary>\n' + previous_summary + '\n</previous-summary>\n\n'
+    }
+    prompt_text += base_prompt
+    ai_types.message_t prompt = new ai_types.user_message_t(content = prompt_text, timestamp = time.now().ms_timestamp())
+    var context = new ai_types.context_t(system_prompt = serialize.SUMMARIZATION_SYSTEM_PROMPT, messages = [prompt])
+    int max_tokens = reserve_tokens * 8 / 10
+    if turn_prefix {
+        max_tokens = reserve_tokens / 2
+    }
+    if model.max_tokens > 0 && max_tokens > model.max_tokens {
+        max_tokens = model.max_tokens
+    }
+    var options = copy_options(base_options)
+    options.max_tokens = max_tokens
+    options.cache_retention = 'none'
+    options.session_id = identity.uuid_v7()
+    if model.reasoning && thinking_level != '' && thinking_level != 'off' {
+        options.reasoning_effort = thinking_level
+        options.thinking_enabled = true
+    }
+    var response = complete_with_retry(model, context, options, stream_function, cancellation)
+    if response.stop_reason == ai_types.STOP_ABORTED {
+        throw errorf('Summarization aborted: %s', response.error_message)
+    }
+    if response.stop_reason == ai_types.STOP_ERROR {
+        string message = response.error_message
+        if message == '' {
+            message = 'Unknown error'
+        }
+        if turn_prefix {
+            throw errorf('Turn prefix summarization failed: %s', message)
+        }
+        throw errorf('Summarization failed: %s', message)
+    }
+    return (content_text(response), response.usage)
+}
+
+fn complete_with_retry(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> options, stream_fn stream_function, ref<abort.abort_t> cancellation): ref<ai_types.assistant_message_t>! {
+    int attempt = 0
+    for true {
+        if cancellation.is_aborted() {
+            return new ai_types.assistant_message_t(stop_reason = ai_types.STOP_ABORTED)
+        }
+        var stream = stream_function(model, context, options)
+        abort.abort_callback_t forward_abort = fn () {
+            stream.abort()
+        }
+        cancellation.on_abort(forward_abort)
+        for true {
+            stream.recv() catch error {
+                break
+            }
+        }
+        var response = stream.result()
+        if response.stop_reason != ai_types.STOP_ERROR || attempt >= options.max_retries || !errors.is_retryable_assistant_error(response) {
+            return response
+        }
+        provider_retry.sleep(cancellation, provider_retry.exponential_delay_ms(attempt))
+        attempt += 1
+    }
+    throw errorf('unreachable')
+}
+
+fn copy_options(ref<ai_types.stream_options_t> source): ref<ai_types.stream_options_t> {
+    return new ai_types.stream_options_t(api_key = source.api_key, timeout_ms = source.timeout_ms, max_tokens = source.max_tokens, max_retries = source.max_retries, max_retry_delay_ms = source.max_retry_delay_ms, session_id = source.session_id, reasoning_effort = source.reasoning_effort, reasoning_summary = source.reasoning_summary, thinking_enabled = source.thinking_enabled, thinking_budget_tokens = source.thinking_budget_tokens, thinking_display = source.thinking_display, cache_retention = source.cache_retention)
+}
+
+fn content_text(ref<ai_types.assistant_message_t> message): string {
+    [string] text = []
+    for block in message.content {
+        if block is ref<ai_types.text_content_t> content {
+            text.push(content.text)
+        }
+    }
+    return strings.join(text, '')
+}
+
+#local
+fn combine_usage(ai_types.usage_t first, ai_types.usage_t second): ai_types.usage_t {
+    ai_types.cost_t cost = ai_types.cost_t {input: first.cost.input + second.cost.input, output: first.cost.output + second.cost.output, cache_read: first.cost.cache_read + second.cost.cache_read, cache_write: first.cost.cache_write + second.cost.cache_write, total: first.cost.total + second.cost.total,}
+    return ai_types.usage_t {input: first.input + second.input, output: first.output + second.output, cache_read: first.cache_read + second.cache_read, cache_write: first.cache_write + second.cache_write, cache_write_1h: first.cache_write_1h + second.cache_write_1h, reasoning: first.reasoning + second.reasoning, total_tokens: first.total_tokens + second.total_tokens, cost: cost,}
+}
+
+fn format_file_operations([string] read_files, [string] modified_files): string {
+    [string] sections = []
+    if read_files.len() > 0 {
+        sections.push('<read-files>\n' + strings.join(read_files, '\n') + '\n</read-files>')
+    }
+    if modified_files.len() > 0 {
+        sections.push('<modified-files>\n' + strings.join(modified_files, '\n') + '\n</modified-files>')
+    }
+    if sections.len() == 0 {
+        return ''
+    }
+    return '\n\n' + strings.join(sections, '\n\n')
+}

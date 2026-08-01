@@ -1,0 +1,748 @@
+import adou.src.agent.loop
+import adou.src.agent.event_stream as agent_stream
+import adou.src.agent.session_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.abort
+import adou.src.ai.errors
+import adou.src.ai.event_stream as ai_event_stream
+import adou.src.ai.types as ai_types
+import adou.src.compaction.compact
+import adou.src.compaction.branch
+import adou.src.compaction.prepare
+import adou.src.compaction.token_estimate
+import adou.src.compaction.types as compaction_types
+import adou.src.config.auth
+import adou.src.config.models
+import adou.src.config.settings
+import adou.src.session.message_json
+import adou.src.session.repository
+import adou.src.session.types as session_types
+import adou.src.tools.command
+import co
+import co.mutex
+import json
+import time
+
+type runner_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    bool busy
+    ref<repository.manager_t> repository
+    ref<agent_types.context_t> base_context
+    ref<agent_types.config_t> agent_config
+    agent_types.stream_fn stream_function
+    compaction_types.settings_t compaction_settings
+    [ai_types.message_t] active_messages = []
+    // Pi retries transient assistant failures at the session layer, after the
+    // provider's own request retry budget is exhausted. These are deliberately
+    // separate from stream_options.max_retries, which belongs to one HTTP
+    // request attempt.
+    bool retry_enabled = true
+    int retry_max_attempts = 3
+    int retry_base_delay_ms = 2000
+    // Pi exposes streaming and compaction as separate state flags.  A
+    // compaction still owns the session's busy slot, but callers should be
+    // able to tell that it is not waiting on a normal assistant turn.
+    bool compacting
+    ref<session_stream.stream_t>? active_stream = null
+}
+
+type tree_target_t = struct {
+    string target_id
+    string new_leaf_id
+    string editor_text
+    bool current
+}
+
+fn new(ref<repository.manager_t> session_repository, ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function, compaction_types.settings_t settings): ref<runner_t>! {
+    var stored = session_repository.build_context()
+    return new runner_t(lock = mutex.mutex_t.new(), repository = session_repository, base_context = context, agent_config = config, stream_function = stream_function, compaction_settings = settings, active_messages = stored.messages)
+}
+
+fn runner_t.prompt(&self, string text): ref<session_stream.stream_t>! {
+    self.begin_operation()
+    var stream = session_stream.new()
+    self.lock.lock()
+    self.active_stream = stream
+    self.lock.unlock()
+    go run_prompt(self, stream, text)
+    return stream
+}
+
+fn runner_t.compact_now(&self, string instructions): ref<session_stream.stream_t>! {
+    self.begin_operation()
+    var stream = session_stream.new()
+    self.lock.lock()
+    self.active_stream = stream
+    self.lock.unlock()
+    go run_manual_compaction(self, stream, instructions)
+    return stream
+}
+
+fn runner_t.start_new_session(&self): void! {
+    self.lock.lock()
+    if self.busy {
+        self.lock.unlock()
+        throw errorf('Agent session is already running')
+    }
+    self.busy = true
+    bool persisted = self.repository.persisted
+    string session_dir = self.repository.session_dir
+    string cwd = self.repository.cwd
+    string steering_mode = self.agent_config.queues.steering_mode
+    string follow_up_mode = self.agent_config.queues.follow_up_mode
+    self.lock.unlock()
+    ref<repository.manager_t> next = persisted ? repository.create(cwd, session_dir) : repository.in_memory(cwd) catch error {
+        self.lock.lock()
+        self.busy = false
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.lock()
+    self.repository = next
+    self.active_messages = []
+    self.agent_config.queues = new agent_types.queue_t(steering_mode = steering_mode, follow_up_mode = follow_up_mode)
+    self.busy = false
+    self.lock.unlock()
+    self.sync_agent_environment()
+}
+
+fn runner_t.replace_repository(&self, ref<repository.manager_t> next): void! {
+    self.lock.lock()
+    if self.busy {
+        self.lock.unlock()
+        throw errorf('Agent session is already running')
+    }
+    var loaded = next.build_context()
+    string previous_provider = self.agent_config.model.provider
+    string previous_key = self.agent_config.stream_options.api_key
+    self.repository = next
+    self.active_messages = loaded.messages
+    self.agent_config.stream_options.session_id = next.get_session_id()
+    if loaded.has_model {
+        ref<ai_types.model_t>? selected = models.find(loaded.provider + '/' + loaded.model_id)
+        if selected is ref<ai_types.model_t> model {
+            self.agent_config.model = model
+            string restored_key = auth.effective(model.provider)
+            if restored_key == '' && model.provider == previous_provider {
+                // Keep a CLI --api-key while switching between sessions that
+                // use models from the same provider. Never carry it across a
+                // provider boundary, where it would be an invalid credential.
+                restored_key = previous_key
+            }
+            self.agent_config.stream_options.api_key = restored_key
+            self.agent_config.stream_options.max_tokens = model.max_tokens
+        }
+    }
+    if loaded.has_thinking_level {
+        self.agent_config.stream_options.reasoning_effort = loaded.thinking_level
+        self.agent_config.stream_options.thinking_enabled = loaded.thinking_level != 'off'
+    }
+    self.lock.unlock()
+    self.sync_agent_environment()
+}
+
+fn runner_t.select_leaf(&self, string entry_id): void! {
+    self.lock.lock()
+    if self.busy {
+        self.lock.unlock()
+        throw errorf('Agent session is already running')
+    }
+    self.repository.set_leaf(entry_id) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    var loaded = self.repository.build_context()
+    string previous_provider = self.agent_config.model.provider
+    string previous_key = self.agent_config.stream_options.api_key
+    self.active_messages = loaded.messages
+    if loaded.has_model {
+        ref<ai_types.model_t>? selected = models.find(loaded.provider + '/' + loaded.model_id)
+        if selected is ref<ai_types.model_t> model {
+            self.agent_config.model = model
+            string restored_key = auth.effective(model.provider)
+            if restored_key == '' && model.provider == previous_provider {
+                restored_key = previous_key
+            }
+            self.agent_config.stream_options.api_key = restored_key
+            self.agent_config.stream_options.max_tokens = model.max_tokens
+        }
+    }
+    if loaded.has_thinking_level {
+        self.agent_config.stream_options.reasoning_effort = loaded.thinking_level
+        self.agent_config.stream_options.thinking_enabled = loaded.thinking_level != 'off'
+    }
+    self.lock.unlock()
+    self.sync_agent_environment()
+}
+
+fn runner_t.inspect_tree_target(&self, string entry_id): tree_target_t! {
+    ref<session_types.entry_t>? possible = self.repository.get_entry(entry_id)
+    if !(possible is ref<session_types.entry_t>) {
+        throw errorf('Session entry %s not found', entry_id)
+    }
+    var entry = possible as ref<session_types.entry_t>
+    var result = tree_target_t {target_id: entry_id, new_leaf_id: entry_id, current: entry_id == self.repository.get_leaf_id(),}
+    if entry.kind != session_types.ENTRY_MESSAGE {
+        return result
+    }
+    var object = entry.raw.as_object()
+    if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+        return result
+    }
+    var message = message_json.decode(object['message'])
+    if message is ref<ai_types.user_message_t> user {
+        result.new_leaf_id = entry.has_parent ? entry.parent_id : ''
+        result.editor_text = user.content
+    } else if message is ref<ai_types.custom_message_t> custom {
+        result.new_leaf_id = entry.has_parent ? entry.parent_id : ''
+        result.editor_text = custom.content
+    }
+    return result
+}
+
+fn runner_t.navigate_tree(&self, string entry_id): string! {
+    self.lock.lock()
+    if self.busy {
+        self.lock.unlock()
+        throw errorf('Agent session is already running')
+    }
+    var target = self.inspect_tree_target(entry_id) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    if target.current {
+        self.lock.unlock()
+        return ''
+    }
+    self.apply_tree_target(target) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.unlock()
+    return target.editor_text
+}
+
+fn runner_t.navigate_tree_with_summary(&self, string entry_id, string instructions): ref<session_stream.stream_t>! {
+    self.begin_operation()
+    var target = self.inspect_tree_target(entry_id) catch error {
+        self.end_operation()
+        throw error
+    }
+    var output = session_stream.new()
+    self.lock.lock()
+    self.active_stream = output
+    self.lock.unlock()
+    go run_tree_navigation(self, output, target, instructions)
+    return output
+}
+
+fn runner_t.clone_session(&self): void! {
+    var next = self.repository.clone_active()
+    self.replace_repository(next)
+}
+
+fn runner_t.fork_session(&self, string entry_id): void! {
+    var next = self.repository.fork_before(entry_id)
+    self.replace_repository(next)
+}
+
+fn runner_t.set_model(&self, ref<ai_types.model_t> model): void! {
+    string api_key = auth.effective(model.provider)
+    // A CLI --api-key is an in-memory credential and is intentionally not
+    // persisted by auth.save. Keep it when selecting another model from the
+    // same provider, just as Pi keeps runtime credential overrides alive.
+    if api_key == '' && model.provider == self.agent_config.model.provider {
+        api_key = self.agent_config.stream_options.api_key
+    }
+    if api_key == '' {
+        throw errorf('No API key for %s/%s. Run /login %s first.', model.provider, model.id, model.provider)
+    }
+    self.lock.lock()
+    if self.busy {
+        self.lock.unlock()
+        throw errorf('Agent session is already running')
+    }
+    self.busy = true
+    self.lock.unlock()
+    self.repository.append_model_change(model.provider, model.id) catch error {
+        self.lock.lock()
+        self.busy = false
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.lock()
+    self.agent_config.model = model
+    self.agent_config.stream_options.api_key = api_key
+    self.agent_config.stream_options.max_tokens = model.max_tokens
+    string thinking = self.agent_config.stream_options.thinking_enabled ? self.agent_config.stream_options.reasoning_effort : 'off'
+    self.busy = false
+    self.lock.unlock()
+    settings.set_default_model(model.provider, model.id)
+    // Pi re-clamps the session thinking preference whenever the model
+    // changes.  This matters for non-reasoning providers and for models that
+    // expose only a subset of the extended levels.
+    self.set_thinking_level(thinking)
+    self.sync_agent_environment()
+}
+
+#local
+fn runner_t.sync_agent_environment(&self) {
+    string thinking = self.agent_config.stream_options.thinking_enabled ? self.agent_config.stream_options.reasoning_effort : 'off'
+    command.configure_agent_environment(self.repository.get_session_id(), self.repository.get_session_file(), self.agent_config.model.provider, self.agent_config.model.id, thinking)
+}
+
+fn runner_t.set_thinking_level(&self, string level): void! {
+    if level != 'off' && level != 'minimal' && level != 'low' && level != 'medium' && level != 'high' && level != 'xhigh' && level != 'max' {
+        throw errorf('Invalid thinking level "%s". Valid values: off, minimal, low, medium, high, xhigh, max', level)
+    }
+    self.lock.lock()
+    if self.busy {
+        self.lock.unlock()
+        throw errorf('Agent session is already running')
+    }
+    string effective = self.agent_config.model.reasoning ? level : 'off'
+    string previous = self.agent_config.stream_options.reasoning_effort
+    if !self.agent_config.stream_options.thinking_enabled {previous = 'off'}
+    if previous == effective {
+        self.lock.unlock()
+        return
+    }
+    self.repository.append_thinking_change(effective) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.agent_config.stream_options.reasoning_effort = effective
+    self.agent_config.stream_options.thinking_enabled = effective != 'off'
+    self.lock.unlock()
+    settings.set_default_thinking(effective)
+    self.sync_agent_environment()
+}
+
+fn runner_t.refresh_auth(&self): void! {
+    self.lock.lock()
+    if self.busy {
+        self.lock.unlock()
+        throw errorf('Agent session is already running')
+    }
+    string provider = self.agent_config.model.provider
+    self.agent_config.stream_options.api_key = auth.effective(provider)
+    self.lock.unlock()
+}
+
+fn runner_t.record_bash(&self, string command, string output, int exit_code, bool cancelled, bool truncated, string full_output_path, bool exclude_from_context): void! {
+    self.record_bash_inner(command, output, exit_code, cancelled, truncated, full_output_path, exclude_from_context, true)
+}
+
+// Interactive user-bash is itself the active session operation, so it must
+// be able to append its result while the busy flag is held.  Model-facing and
+// RPC callers continue to use record_bash(), which retains the idle check.
+fn runner_t.record_bash_during_operation(&self, string command, string output, int exit_code, bool cancelled, bool truncated, string full_output_path, bool exclude_from_context): void! {
+    self.record_bash_inner(command, output, exit_code, cancelled, truncated, full_output_path, exclude_from_context, false)
+}
+
+#local
+fn runner_t.record_bash_inner(&self, string command, string output, int exit_code, bool cancelled, bool truncated, string full_output_path, bool exclude_from_context, bool require_idle): void! {
+    self.lock.lock()
+    if require_idle && self.busy {
+        self.lock.unlock()
+        throw errorf('Agent session is already running')
+    }
+    ai_types.message_t message = new ai_types.bash_execution_message_t(command = command, output = output, exit_code = exit_code, cancelled = cancelled, truncated = truncated, full_output_path = full_output_path, exclude_from_context = exclude_from_context, timestamp = time.now().ms_timestamp())
+    self.repository.append_message(message) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.active_messages.push(message)
+    self.lock.unlock()
+}
+
+fn runner_t.begin_operation(&self): void! {
+    self.lock.lock()
+    if self.busy {
+        self.lock.unlock()
+        throw errorf('Agent session is already running')
+    }
+    self.busy = true
+    self.lock.unlock()
+}
+
+fn runner_t.end_operation(&self) {
+    self.lock.lock()
+    self.busy = false
+    self.compacting = false
+    self.active_stream = null
+    self.lock.unlock()
+}
+
+fn runner_t.abort_active(&self) {
+    self.lock.lock()
+    ref<session_stream.stream_t>? active = self.active_stream
+    self.lock.unlock()
+    if active is ref<session_stream.stream_t> stream {
+        stream.abort()
+    }
+}
+
+// Attach non-model operations (for example interactive `!bash`) to the same
+// cancellation slot as prompts.  This keeps RPC/TUI abort and busy-state
+// checks consistent across every user-visible operation.
+fn runner_t.attach_stream(&self, ref<session_stream.stream_t> stream) {
+    self.lock.lock()
+    self.active_stream = stream
+    self.lock.unlock()
+}
+
+#local
+fn runner_t.apply_tree_target(&self, tree_target_t target): void! {
+    self.repository.set_leaf(target.new_leaf_id)
+    self.restore_repository_context()
+}
+
+#local
+fn runner_t.restore_repository_context(&self): void! {
+    var loaded = self.repository.build_context()
+    string previous_provider = self.agent_config.model.provider
+    string previous_key = self.agent_config.stream_options.api_key
+    self.active_messages = loaded.messages
+    if loaded.has_model {
+        ref<ai_types.model_t>? selected = models.find(loaded.provider + '/' + loaded.model_id)
+        if selected is ref<ai_types.model_t> model {
+            self.agent_config.model = model
+            string restored_key = auth.effective(model.provider)
+            if restored_key == '' && model.provider == previous_provider {
+                restored_key = previous_key
+            }
+            self.agent_config.stream_options.api_key = restored_key
+            self.agent_config.stream_options.max_tokens = model.max_tokens
+        }
+    }
+    if loaded.has_thinking_level {
+        self.agent_config.stream_options.reasoning_effort = loaded.thinking_level
+        self.agent_config.stream_options.thinking_enabled = loaded.thinking_level != 'off'
+    }
+    self.sync_agent_environment()
+}
+
+#local
+fn run_tree_navigation(ref<runner_t> runner, ref<session_stream.stream_t> output, tree_target_t target, string instructions): void! {
+    run_tree_navigation_inner(runner, output, target, instructions) catch error {
+        output.fail(error.msg()) catch stream_error {}
+    }
+    runner.end_operation()
+}
+
+#local
+fn run_tree_navigation_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, tree_target_t target, string instructions): void! {
+    if target.current {
+        output.finish(runner.copy_active_messages())
+        return
+    }
+    string old_leaf_id = runner.repository.get_leaf_id()
+    var collection = runner.repository.collect_branch_entries(old_leaf_id, target.target_id)
+    if collection.entries.len() == 0 {
+        runner.apply_tree_target(target)
+        output.finish(runner.copy_active_messages())
+        return
+    }
+    output.push(session_stream.event_t {kind: session_stream.EVENT_BRANCH_SUMMARY_START,})
+    var cancellation = abort.new()
+    abort.abort_callback_t forward_abort = fn () {
+        cancellation.abort()
+    }
+    output.cancellation.on_abort(forward_abort)
+    compact.stream_fn summarization_stream = fn(ref<ai_types.model_t> model, ref<ai_types.context_t> summary_context, ref<ai_types.stream_options_t> options): ref<ai_event_stream.assistant_stream_t> {
+        return runner.stream_function(model, summary_context, options)
+    }
+    var result = branch.run(collection.entries, runner.agent_config.model, runner.agent_config.stream_options, summarization_stream, cancellation, instructions, runner.agent_config.stream_options.reasoning_effort, 16384) catch error {
+        bool aborted = cancellation.is_aborted()
+        output.push(session_stream.event_t {kind: session_stream.EVENT_BRANCH_SUMMARY_END, aborted: aborted, error_message: aborted ? '' : error.msg(),})
+        output.finish(runner.copy_active_messages())
+        return
+    }
+    runner.repository.set_leaf(target.new_leaf_id)
+    json.value_t details = details_json(result.read_files, result.modified_files)
+    runner.repository.append_branch_summary(target.new_leaf_id == '' ? 'root' : target.new_leaf_id, result.summary, details, result.usage)
+    runner.restore_repository_context()
+    output.push(session_stream.event_t {kind: session_stream.EVENT_BRANCH_SUMMARY_END, summary: result.summary,})
+    output.finish(runner.copy_active_messages())
+}
+
+#local
+fn run_prompt(ref<runner_t> runner, ref<session_stream.stream_t> output, string text): void! {
+    run_prompt_inner(runner, output, text) catch error {
+        output.fail(error.msg()) catch stream_error {}
+    }
+    runner.end_operation()
+}
+
+#local
+fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, string text): void! {
+    var context = runner.context_from_repository()
+    ai_types.message_t prompt = new ai_types.user_message_t(content = text, timestamp = time.now().ms_timestamp())
+    var current = loop.prompt([prompt], context, runner.agent_config, runner.stream_function)
+    bool overflow_recovery_attempted = false
+    int retry_attempt = 0
+    for true {
+        ref<ai_types.assistant_message_t>? last_assistant = runner.forward_agent_stream(output, current)
+        current.result()
+        if output.cancellation.is_aborted() {
+            break
+        }
+        if !(last_assistant is ref<ai_types.assistant_message_t>) {
+            break
+        }
+        var assistant = last_assistant as ref<ai_types.assistant_message_t>
+        if assistant.stop_reason == ai_types.STOP_ABORTED {
+            break
+        }
+        bool same_model = assistant.provider == runner.agent_config.model.provider && assistant.model == runner.agent_config.model.id
+        if same_model && errors.is_context_overflow(assistant, runner.agent_config.model.context_window) {
+            bool will_retry = assistant.stop_reason != ai_types.STOP_STOP
+            if will_retry && overflow_recovery_attempted {
+                output.push(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, reason: 'overflow', error_message: 'Context overflow recovery failed after one compact-and-retry attempt. Try reducing context or switching to a larger-context model.',})
+                break
+            }
+            if will_retry {
+                overflow_recovery_attempted = true
+            }
+            bool compacted = runner.run_compaction(output, 'overflow', will_retry, '')
+            if compacted && will_retry {
+                context = runner.context_from_repository()
+                current = loop.continue_from(context, runner.agent_config, runner.stream_function)
+                continue
+            }
+            break
+        }
+        if retry_attempt > 0 && assistant.stop_reason != ai_types.STOP_ERROR {
+            output.push(session_stream.event_t {kind: session_stream.EVENT_RETRY_END, retry_attempt: retry_attempt, retry_max_attempts: runner.retry_max_attempts, retry_success: true,})
+            retry_attempt = 0
+        }
+        if errors.is_retryable_assistant_error(assistant) && runner.retry_enabled {
+            if retry_attempt < runner.retry_max_attempts {
+                retry_attempt += 1
+                int delay_ms = retry_delay_ms(runner.retry_base_delay_ms, retry_attempt)
+                output.push(session_stream.event_t {kind: session_stream.EVENT_RETRY_START, retry_attempt: retry_attempt, retry_max_attempts: runner.retry_max_attempts, retry_delay_ms: delay_ms, retry_error_message: assistant.error_message,})
+                // Keep the failed assistant message in the append-only session
+                // log, but remove it from the active LLM context before the
+                // continuation. This is the same invariant Pi uses for retry.
+                runner.remove_last_active_error(assistant)
+                wait_retry(output, delay_ms)
+                if output.cancellation.is_aborted() {
+                    output.push(session_stream.event_t {kind: session_stream.EVENT_RETRY_END, retry_attempt: retry_attempt, retry_max_attempts: runner.retry_max_attempts, retry_success: false, retry_final_error: 'Retry cancelled',})
+                    break
+                }
+                context = runner.context_from_repository()
+                current = loop.continue_from(context, runner.agent_config, runner.stream_function)
+                continue
+            }
+            output.push(session_stream.event_t {kind: session_stream.EVENT_RETRY_END, retry_attempt: retry_attempt, retry_max_attempts: runner.retry_max_attempts, retry_success: false, retry_final_error: assistant.error_message,})
+            retry_attempt = 0
+        } else if retry_attempt > 0 && assistant.stop_reason == ai_types.STOP_ERROR {
+            output.push(session_stream.event_t {kind: session_stream.EVENT_RETRY_END, retry_attempt: retry_attempt, retry_max_attempts: runner.retry_max_attempts, retry_success: false, retry_final_error: assistant.error_message,})
+            retry_attempt = 0
+        }
+        if runner.should_threshold_compact(assistant) {
+            runner.run_compaction(output, 'threshold', false, '')
+        }
+        break
+    }
+    output.finish(runner.copy_active_messages())
+}
+
+#local
+fn retry_delay_ms(int base_delay_ms, int attempt): int {
+    int delay = base_delay_ms
+    if delay < 0 {delay = 0}
+    for int index = 1; index < attempt && delay < 60000; index += 1 {
+        delay *= 2
+    }
+    if delay > 60000 {delay = 60000}
+    return delay
+}
+
+#local
+fn wait_retry(ref<session_stream.stream_t> output, int milliseconds): void! {
+    int remaining = milliseconds
+    for remaining > 0 {
+        if output.cancellation.is_aborted() {return}
+        int slice = remaining > 25 ? 25 : remaining
+        co.sleep(slice)
+        remaining -= slice
+    }
+}
+
+#local
+fn run_manual_compaction(ref<runner_t> runner, ref<session_stream.stream_t> output, string instructions): void! {
+    runner.run_compaction(output, 'manual', false, instructions) catch error {
+        // A manual compaction runs in the same session operation state as a
+        // prompt.  Always close the stream and release the busy flag on
+        // provider, filesystem, or cancellation failures; otherwise a failed
+        // `/compact` would permanently lock the session.
+        output.fail(error.msg()) catch stream_error {}
+        runner.end_operation()
+        return
+    }
+    output.finish(runner.copy_active_messages())
+    runner.end_operation()
+}
+
+#local
+fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output, ref<agent_stream.stream_t> input): ref<ai_types.assistant_message_t>?! {
+    abort.abort_callback_t forward_abort = fn () {
+        input.abort()
+    }
+    output.cancellation.on_abort(forward_abort)
+    ref<ai_types.assistant_message_t>? last_assistant = null
+    for true {
+        var event = input.recv() catch error {
+            break
+        }
+        if event.kind == agent_types.EVENT_MESSAGE_END {
+            var message = event.message()
+            self.repository.append_message(message)
+            self.append_active_message(message)
+            if message is ref<ai_types.assistant_message_t> assistant {
+                last_assistant = assistant
+            }
+        }
+        output.push(session_stream.event_t {kind: event.kind, has_agent_event: true, agent_event: event,})
+    }
+    return last_assistant
+}
+
+#local
+fn runner_t.context_from_repository(&self): ref<agent_types.context_t>! {
+    return new agent_types.context_t(system_prompt = self.base_context.system_prompt, messages = self.copy_active_messages(), tools = self.base_context.tools)
+}
+
+#local
+fn runner_t.copy_active_messages(&self): [ai_types.message_t] {
+    self.lock.lock()
+    var result = self.active_messages.slice(0, self.active_messages.len())
+    self.lock.unlock()
+    return result
+}
+
+fn runner_t.append_active_message(&self, ai_types.message_t message) {
+    self.lock.lock()
+    self.active_messages.push(message)
+    self.lock.unlock()
+}
+
+#local
+fn runner_t.remove_last_active_error(&self, ref<ai_types.assistant_message_t> expected) {
+    self.lock.lock()
+    if self.active_messages.len() > 0 {
+        int last = self.active_messages.len() - 1
+        if self.active_messages[last] is ref<ai_types.assistant_message_t> current {
+            if current == expected {
+                self.active_messages = self.active_messages.slice(0, last)
+            }
+        }
+    }
+    self.lock.unlock()
+}
+
+#local
+fn runner_t.should_threshold_compact(&self, ref<ai_types.assistant_message_t> assistant): bool! {
+    if !self.compaction_settings.enabled {
+        return false
+    }
+    var latest_compaction = self.repository.latest_compaction()
+    if latest_compaction is ref<session_types.entry_t> compact_entry {
+        if assistant.timestamp <= repository.timestamp_ms(compact_entry.timestamp) {
+            return false
+        }
+    }
+    int direct_tokens = token_estimate.calculate_context_tokens(assistant.usage)
+    int context_tokens = direct_tokens
+    if assistant.stop_reason == ai_types.STOP_ERROR || direct_tokens == 0 {
+        var context = self.repository.build_context()
+        var estimate = token_estimate.estimate_context_tokens(context.messages)
+        if estimate.last_usage_index < 0 {
+            return false
+        }
+        if latest_compaction is ref<session_types.entry_t> compact_entry {
+            var usage_message = context.messages[estimate.last_usage_index]
+            if usage_message is ref<ai_types.assistant_message_t> usage_assistant {
+                if usage_assistant.timestamp <= repository.timestamp_ms(compact_entry.timestamp) {
+                    return false
+                }
+            }
+        }
+        context_tokens = estimate.tokens
+    }
+    return token_estimate.should_compact(context_tokens, self.agent_config.model.context_window, self.compaction_settings)
+}
+
+#local
+fn runner_t.run_compaction(&self, ref<session_stream.stream_t> output, string reason, bool will_retry, string instructions): bool! {
+    self.lock.lock()
+    self.compacting = true
+    self.lock.unlock()
+    var context = self.repository.build_context()
+    var prepared = prepare.prepare(self.repository.get_entries(), context.messages, self.compaction_settings)
+    if !(prepared is ref<compaction_types.preparation_t>) {
+        if reason == 'manual' {
+            output.push(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, reason: reason, error_message: 'Nothing to compact',})
+        }
+        self.lock.lock()
+        self.compacting = false
+        self.lock.unlock()
+        return false
+    }
+    var preparation = prepared as ref<compaction_types.preparation_t>
+    output.push(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_START, reason: reason, will_retry: will_retry,})
+    var cancellation = abort.new()
+    abort.abort_callback_t forward_abort = fn () {
+        cancellation.abort()
+    }
+    output.cancellation.on_abort(forward_abort)
+    compact.stream_fn summarization_stream = fn(ref<ai_types.model_t> model, ref<ai_types.context_t> summary_context, ref<ai_types.stream_options_t> options): ref<ai_event_stream.assistant_stream_t> {
+        return self.stream_function(model, summary_context, options)
+    }
+    var result = compact.run(preparation, self.agent_config.model, self.agent_config.stream_options, summarization_stream, cancellation, instructions, self.agent_config.stream_options.reasoning_effort) catch error {
+        bool aborted = cancellation.is_aborted()
+        output.push(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, reason: reason, aborted: aborted, will_retry: false, error_message: error.msg(),})
+        self.lock.lock()
+        self.compacting = false
+        self.lock.unlock()
+        return false
+    }
+    json.value_t details = details_json(result.read_files, result.modified_files)
+    self.repository.append_compaction(result.summary, result.first_kept_entry_id, result.tokens_before, details, result.usage)
+    var compacted_messages = self.repository.build_context().messages
+    self.lock.lock()
+    self.active_messages = compacted_messages
+    if will_retry && self.active_messages.len() > 0 {
+        var last_message = self.active_messages[self.active_messages.len() - 1]
+        if last_message is ref<ai_types.assistant_message_t> failed_assistant {
+            if failed_assistant.stop_reason == ai_types.STOP_ERROR {
+                self.active_messages = self.active_messages.slice(0, self.active_messages.len() - 1)
+            }
+        }
+    }
+    self.lock.unlock()
+    int estimated_after = token_estimate.estimate_context_tokens(self.active_messages).tokens
+    output.push(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, reason: reason, will_retry: will_retry, summary: result.summary, tokens_before: result.tokens_before, estimated_tokens_after: estimated_after,})
+    self.lock.lock()
+    self.compacting = false
+    self.lock.unlock()
+    return true
+}
+
+#local
+fn details_json([string] read_files, [string] modified_files): json.value_t {
+    [ref<json.value_t>] read_values = []
+    for file in read_files {
+        read_values.push(json.box_value(json.string_value(file)))
+    }
+    [ref<json.value_t>] modified_values = []
+    for file in modified_files {
+        modified_values.push(json.box_value(json.string_value(file)))
+    }
+    map<string, ref<json.value_t>> object = {}
+    object['readFiles'] = json.box_value(json.array_value(read_values))
+    object['modifiedFiles'] = json.box_value(json.array_value(modified_values))
+    return json.object_value(object)
+}

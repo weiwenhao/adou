@@ -1,0 +1,136 @@
+import libc
+import path
+import strings
+import syscall
+
+const NARROW_NO_BREAK_SPACE = '\xe2\x80\xaf'
+const RIGHT_SINGLE_QUOTE = '\xe2\x80\x99'
+
+fn normalize_input(string input): string {
+    string result = normalize_unicode_spaces(input)
+    if result.starts_with('@') {
+        result = result.slice(1, result.len())
+    }
+    if result == '~' {
+        return home_dir()
+    }
+    if result.starts_with('~/') {
+        return home_dir() + result.slice(1, result.len())
+    }
+    return result
+}
+
+fn resolve_to_cwd(string input, string cwd): string {
+    string normalized = normalize_input(input)
+    if normalized.starts_with('/') {
+        return clean(normalized)
+    }
+    return clean(clean(cwd) + '/' + normalized)
+}
+
+fn resolve_read_path(string input, string cwd): string {
+    string resolved = resolve_to_cwd(input, cwd)
+    if exists(resolved) {
+        return resolved
+    }
+    string am_pm = screenshot_am_pm_variant(resolved)
+    if am_pm != resolved && exists(am_pm) {
+        return am_pm
+    }
+    string curly = resolved.replace("'", RIGHT_SINGLE_QUOTE)
+    if curly != resolved && exists(curly) {
+        return curly
+    }
+    return resolved
+}
+
+fn exists(string input): bool {
+    return libc.access(input.to_cstr(), libc.F_OK) == 0
+}
+
+fn readable(string input): bool {
+    return libc.access(input.to_cstr(), libc.R_OK) == 0
+}
+
+fn canonicalize_existing(string input): string! {
+    libc.cstr raw = libc.realpath(input.to_cstr(), 0)
+    if raw == 0 {
+        throw errorf('%s', libc.error_string())
+    }
+    string result = raw.to_string()
+    libc.free(raw as anyptr)
+    return result
+}
+
+fn clean(string input): string {
+    bool absolute = input.starts_with('/')
+    [string] parts = split_path(input)
+    [string] stack = []
+    for part in parts {
+        if part == '' || part == '.' {
+            continue
+        }
+        if part == '..' {
+            if stack.len() > 0 && stack[stack.len() - 1] != '..' {
+                stack = stack.slice(0, stack.len() - 1)
+            } else if !absolute {
+                stack.push(part)
+            }
+            continue
+        }
+        stack.push(part)
+    }
+    string joined = strings.join(stack, '/')
+    if absolute {
+        if joined == '' {
+            return '/'
+        }
+        return '/' + joined
+    }
+    if joined == '' {
+        return '.'
+    }
+    return joined
+}
+
+#local
+fn home_dir(): string {
+    string result = syscall.get_env('HOME')
+    if result == '' {
+        return '/'
+    }
+    return result
+}
+
+#local
+fn normalize_unicode_spaces(string input): string {
+    string result = input
+    [string] spaces = ['\xc2\xa0', '\xe2\x80\x80', '\xe2\x80\x81', '\xe2\x80\x82', '\xe2\x80\x83', '\xe2\x80\x84', '\xe2\x80\x85', '\xe2\x80\x86', '\xe2\x80\x87', '\xe2\x80\x88', '\xe2\x80\x89', '\xe2\x80\x8a', NARROW_NO_BREAK_SPACE, '\xe2\x81\x9f', '\xe3\x80\x80']
+    for space in spaces {
+        result = result.replace(space, ' ')
+    }
+    return result
+}
+
+#local
+fn split_path(string input): [string] {
+    [string] result = []
+    int start = 0
+    for int i = 0; i <= input.len(); i += 1 {
+        if i == input.len() || input[i] == '/'.char() {
+            result.push(input.slice(start, i))
+            start = i + 1
+        }
+    }
+    return result
+}
+
+#local
+fn screenshot_am_pm_variant(string input): string {
+    string result = input
+    result = result.replace(' AM.', NARROW_NO_BREAK_SPACE + 'AM.')
+    result = result.replace(' PM.', NARROW_NO_BREAK_SPACE + 'PM.')
+    result = result.replace(' am.', NARROW_NO_BREAK_SPACE + 'am.')
+    result = result.replace(' pm.', NARROW_NO_BREAK_SPACE + 'pm.')
+    return result
+}

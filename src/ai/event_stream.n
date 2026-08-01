@@ -1,0 +1,117 @@
+import adou.src.ai.abort
+import adou.src.ai.clone
+import adou.src.ai.types
+import co.mutex
+const DEFAULT_CAPACITY = 32
+// assistant_stream_t preserves Pi's two related stream concepts: a bounded
+// sequence of events and a separately awaitable final AssistantMessage.
+type assistant_stream_t = struct {
+    chan<types.assistant_event_t> events
+    chan<u8> done
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    ref<abort.abort_t> cancellation = abort.new()
+    ref<types.assistant_message_t> final_message = new types.assistant_message_t()
+    bool terminal
+    bool ended
+}
+fn new(): ref<assistant_stream_t> {
+    return with_capacity(DEFAULT_CAPACITY)
+}
+fn with_capacity(int capacity): ref<assistant_stream_t> {
+    if capacity <= 0 {
+        capacity = 1
+    }
+    return new assistant_stream_t(events = chan<types.assistant_event_t>.new(capacity), done = chan<u8>.new(),)
+}
+// push blocks when the bounded channel is full. This is intentional
+// backpressure: provider input cannot outgrow a slow TUI without bound.
+fn assistant_stream_t.push(&self, types.assistant_event_t event): void! {
+    self.lock.lock()
+    if self.terminal || self.ended {
+        self.lock.unlock()
+        return
+    }
+    // Provider processors keep one mutable `output` object and update it for
+    // every SSE frame.  Never put that object on the channel directly: a
+    // buffered send lets the provider continue mutating it before the agent,
+    // TUI, or JSON encoder receives the event.  Apart from producing torn
+    // snapshots, that race can make the runtime walk a concurrently resized
+    // content vector and crash with SIGSEGV.  Snapshot while the producer is
+    // still stopped inside push, then only publish the immutable copy.
+    var snapshot = snapshot_event(event)
+    bool is_terminal = snapshot.kind == types.EVENT_DONE || snapshot.kind == types.EVENT_ERROR
+    if is_terminal {
+        if snapshot.kind == types.EVENT_DONE {
+            self.final_message = snapshot.message as ref<types.assistant_message_t>
+        } else {
+            self.final_message = snapshot.error as ref<types.assistant_message_t>
+        }
+        self.terminal = true
+    }
+    self.lock.unlock()
+    self.events.send(snapshot)
+    if is_terminal {
+        self.done.close()
+    }
+}
+fn assistant_stream_t.recv(&self): types.assistant_event_t! {
+    return self.events.recv()
+}
+// result may be called before or after completion and may be called more than
+// once. Closing done acts as a broadcast; every waiter then reads final_message.
+fn assistant_stream_t.result(&self): ref < types.assistant_message_t > ! {
+    self.lock.lock()
+    bool ready = self.terminal
+    self.lock.unlock()
+    if!ready {
+        self.done.recv() catch e {
+            0
+        }
+    }
+    self.lock.lock()
+    var result = self.final_message
+    ready = self.terminal
+    self.lock.unlock()
+    if!ready {
+        throw errorf('assistant stream ended without a terminal event')
+    }
+    return result
+}
+fn assistant_stream_t.end(&self): void! {
+    self.lock.lock()
+    if self.ended {
+        self.lock.unlock()
+        return
+    }
+    self.ended = true
+    bool has_terminal = self.terminal
+    self.lock.unlock()
+    self.events.close()
+    if!has_terminal {
+        self.done.close()
+    }
+}
+fn assistant_stream_t.abort(&self) {
+    self.cancellation.abort()
+}
+fn assistant_stream_t.is_aborted(&self): bool {
+    return self.cancellation.is_aborted()
+}
+
+#local
+fn snapshot_event(types.assistant_event_t source): types.assistant_event_t {
+    var result = types.assistant_event_t {kind: source.kind, content_index: source.content_index, delta: source.delta, content: source.content, reason: source.reason,}
+    if source.partial is ref<types.assistant_message_t> partial {
+        result.partial = clone.assistant(partial)
+    }
+    if source.message is ref<types.assistant_message_t> message {
+        result.message = clone.assistant(message)
+    }
+    if source.error is ref<types.assistant_message_t> error_message {
+        result.error = clone.assistant(error_message)
+    }
+    if source.tool_call is ref<types.tool_call_t> call {
+        result.tool_call = new types.tool_call_t(id = call.id, name = call.name, arguments = call.arguments, partial_json = call.partial_json)
+    }
+    return result
+}

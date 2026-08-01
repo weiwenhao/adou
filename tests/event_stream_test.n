@@ -1,0 +1,101 @@
+import adou.src.ai.abort
+import adou.src.ai.event_stream
+import adou.src.ai.types
+import co
+fn produce_events(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message): void! {
+    var started = types.assistant_event_t {
+        kind: types.EVENT_START, partial: message,
+    }
+    stream.push(started)
+    var delta = types.assistant_event_t {
+        kind: types.EVENT_TEXT_DELTA, delta: 'hello', partial: message,
+    }
+    stream.push(delta)
+    var done = types.assistant_event_t {
+        kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,
+    }
+    stream.push(done)
+}
+fn produce_done_later(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message): void! {
+    co.sleep(20)
+    var done = types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,}
+    stream.push(done)
+}
+fn mutate_after_start(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message, chan<u8> started, chan<u8> release, chan<u8> mutated): void! {
+    stream.push(types.assistant_event_t {kind: types.EVENT_START, partial: message,})
+    started.send(1)
+    release.recv()
+    message.content.push(new types.text_content_t(text = 'mutated after start'))
+    mutated.send(1)
+    stream.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,})
+}
+test 'bounded assistant stream preserves event order and final result' {
+    var stream = event_stream.with_capacity(1)
+    var message = new types.assistant_message_t(model = 'fixture')
+    go produce_events(stream, message)
+    assert(stream.recv().kind == types.EVENT_START)
+    assert(stream.recv().kind == types.EVENT_TEXT_DELTA)
+    assert(stream.recv().kind == types.EVENT_DONE)
+    assert(stream.result().model == 'fixture')
+    assert(stream.result().model == 'fixture')
+    stream.end()
+}
+test 'events after the terminal event are ignored' {
+    var stream = event_stream.new()
+    var message = new types.assistant_message_t(model = 'final')
+    var done = types.assistant_event_t {
+        kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,
+    }
+    stream.push(done)
+    var late = types.assistant_event_t {
+        kind: types.EVENT_TEXT_DELTA, delta: 'late', partial: message,
+    }
+    stream.push(late)
+    assert(stream.recv().kind == types.EVENT_DONE)
+    var (ignored, received) = stream.events.try_recv()
+    assert(!received)
+    stream.end()
+}
+test 'result waiting before terminal is awakened by channel close' {
+    var stream = event_stream.new()
+    var message = new types.assistant_message_t(model = 'delayed')
+    go produce_done_later(stream, message)
+    assert(stream.result().model == 'delayed')
+    assert(stream.recv().kind == types.EVENT_DONE)
+    stream.end()
+}
+test 'stream snapshots provider messages before the provider mutates them' {
+    var stream = event_stream.new()
+    var message = new types.assistant_message_t(model = 'snapshot')
+    message.content.push(new types.text_content_t(text = 'initial'))
+    chan<u8> started = chan<u8>.new(1)
+    chan<u8> release = chan<u8>.new(1)
+    chan<u8> mutated = chan<u8>.new(1)
+    go mutate_after_start(stream, message, started, release, mutated)
+    started.recv()
+    release.send(1)
+    mutated.recv()
+    var event = stream.recv()
+    var partial = event.partial as ref<types.assistant_message_t>
+    assert(partial.content.len() == 1)
+    assert((partial.content[0] as ref<types.text_content_t>).text == 'initial')
+    stream.recv()
+    stream.result()
+    stream.end()
+}
+test 'abort callbacks run exactly once including late registration' {
+    var token = abort.new()
+    int calls = 0
+    abort.abort_callback_t first = fn () {
+        calls += 1
+    }
+    token.on_abort(first)
+    token.abort()
+    token.abort()
+    abort.abort_callback_t late = fn () {
+        calls += 1
+    }
+    token.on_abort(late)
+    assert(token.is_aborted())
+    assert(calls == 2)
+}

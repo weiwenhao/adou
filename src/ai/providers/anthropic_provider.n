@@ -1,0 +1,192 @@
+import adou.src.ai.abort
+import adou.src.ai.event_stream
+import adou.src.ai.provider_retry
+import adou.src.ai.providers.anthropic_messages
+import adou.src.ai.providers.anthropic_request
+import adou.src.ai.sse
+import adou.src.ai.types
+import fmt
+import http.client
+import time
+
+const ERROR_BODY_LIMIT = 64 * 1024
+type run_state_t = struct {
+    ref<event_stream.assistant_stream_t> stream
+    ref<types.model_t> model
+    ref<types.context_t> context
+    ref<types.stream_options_t> options
+    ref<anthropic_messages.processor_t> processor
+    string body
+    ref<client.response_t>? response = null
+}
+
+fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    var result = event_stream.new()
+    go run(result, model, context, options)
+    return result
+}
+
+#local
+fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
+    var processor = anthropic_messages.processor(model, time.now().ms_timestamp())
+    var state = new run_state_t(stream = stream, model = model, context = context, options = options, processor = processor,)
+    run_inner(stream, state) catch e {
+        fail(stream, state, e.msg())
+        return
+    }
+}
+
+#local
+fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
+    if stream.is_aborted() {
+        throw errorf('Operation aborted')
+    }
+    state.body = anthropic_request.build(state.model, state.context, state.options)
+    var current = send_with_retry(state, 0)
+    stream.push(state.processor.start())
+    var decoder = sse.parser()
+    [u8] scratch = vec<u8>.new(0, 8192)
+    bool saw_stop = false
+    for true {
+        int n = current.read(scratch) catch e {
+            if provider_retry.is_clean_eof(e.msg()) {
+                break
+            }
+            throw e
+        }
+        var frames = decoder.feed(scratch.slice(0, n))
+        saw_stop = push_frames(stream, state.processor, frames)
+        if saw_stop {
+            break
+        }
+    }
+    if !saw_stop {
+        push_frames(stream, state.processor, decoder.finish_pending())
+    }
+    stream.push(state.processor.finish())
+    stream.end()
+}
+
+#local
+fn push_frames(ref<event_stream.assistant_stream_t> stream, ref<anthropic_messages.processor_t> processor, [sse.event_t] frames): bool! {
+    bool saw_stop = false
+    for frame in frames {
+        var events = processor.feed(frame)
+        for event in events {
+            stream.push(event)
+        }
+        if processor.saw_message_stop {
+            saw_stop = true
+        }
+    }
+    return saw_stop
+}
+
+#local
+fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response_t>! {
+    var stream = state.stream
+    if stream.is_aborted() {
+        throw errorf('Request aborted')
+    }
+    var current = send_once(state) catch e {
+        if stream.is_aborted() || retry_index >= state.options.max_retries {
+            throw e
+        }
+        provider_retry.sleep(stream.cancellation, provider_retry.exponential_delay_ms(retry_index))
+        return send_with_retry(state, retry_index + 1)
+    }
+    state.response = current
+    abort.abort_callback_t close_response = fn () {
+        current.close()
+    }
+    stream.cancellation.on_abort(close_response)
+    if stream.is_aborted() {
+        current.close()
+        throw errorf('Request aborted')
+    }
+    if current.status >= 200 && current.status < 300 {
+        return current
+    }
+    int status = current.status
+    string status_message = current.message
+    var headers = response_headers(current)
+    string error_body = read_error_body(current)
+    string provider_error = format_http_error(status, status_message, error_body)
+    if retry_index >= state.options.max_retries || !provider_retry.should_retry(status, headers) {
+        throw errorf('%s', provider_error)
+    }
+    int delay = provider_retry.delay_ms(headers, retry_index, state.options.max_retry_delay_ms, provider_error)
+    provider_retry.sleep(stream.cancellation, delay)
+    return send_with_retry(state, retry_index + 1)
+}
+
+#local
+fn send_once(ref<run_state_t> state): ref<client.response_t>! {
+    var request = client.new().post(anthropic_request.endpoint(state.model)).timeout(state.options.timeout_ms).header('x-api-key', anthropic_request.api_key(state.options)).header('anthropic-version', anthropic_request.ANTHROPIC_VERSION).header('Content-Type', 'application/json').header('Accept', 'text/event-stream').content(state.body)
+    string beta = anthropic_request.beta_header(state.model, state.context)
+    if beta != '' {
+        request.header('anthropic-beta', beta)
+    }
+    return request.send()
+}
+
+#local
+fn response_headers(ref<client.response_t> response): [provider_retry.header_t] {
+    [provider_retry.header_t] result = []
+    for name, value in response.headers {
+        var item = provider_retry.header_t {name: name, value: value,}
+        result.push(item)
+    }
+    return result
+}
+
+#local
+fn format_http_error(int status, string message, string body): string {
+    return fmt.sprintf('Anthropic API error: HTTP %d %s: %s', status, message, body)
+}
+
+#local
+fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
+    // The failed read owns transport cleanup. Re-dispatching close through
+    // Nature's connable interface here can corrupt the receiver on a TTY
+    // coroutine schedule and raise SIGBUS.
+    state.processor.output.stop_reason = types.STOP_ERROR
+    if stream.is_aborted() {
+        state.processor.output.stop_reason = types.STOP_ABORTED
+    }
+    state.processor.output.error_message = message
+    clear_streaming_scratch(state.processor.output)
+    var event = types.assistant_event_t {kind: types.EVENT_ERROR, reason: state.processor.output.stop_reason, error: state.processor.output,}
+    stream.push(event) catch push_error {}
+    stream.end() catch end_error {}
+}
+
+#local
+fn read_error_body(ref<client.response_t> response): string! {
+    [u8] result = []
+    [u8] scratch = vec<u8>.new(0, 4096)
+    for result.len() < ERROR_BODY_LIMIT {
+        int n = response.read(scratch) catch e {
+            if provider_retry.is_clean_eof(e.msg()) {
+                break
+            }
+            throw e
+        }
+        int allowed = ERROR_BODY_LIMIT - result.len()
+        if n > allowed {
+            n = allowed
+        }
+        result.append(scratch.slice(0, n))
+    }
+    response.close()
+    return result as string
+}
+
+#local
+fn clear_streaming_scratch(ref<types.assistant_message_t> message) {
+    for block in message.content {
+        if block is ref<types.tool_call_t> tool_call {
+            tool_call.partial_json = ''
+        }
+    }
+}

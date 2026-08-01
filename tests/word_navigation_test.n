@@ -1,0 +1,28 @@
+import adou.src.tui.word_navigation
+
+test 'word movement skips whitespace words and punctuation like Pi' {
+    var options = word_navigation.option_t {atomic_segments: vec<string>.cap_of(0),}
+    string text = 'hello,  world!'
+    assert(word_navigation.backward(text, text.len(), options) == 13)
+    assert(word_navigation.backward(text, 13, options) == 8)
+    assert(word_navigation.forward(text, 0, options) == 5)
+    assert(word_navigation.forward(text, 5, options) == 6)
+    assert(word_navigation.forward(text, 6, options) == 13)
+}
+
+test 'word movement uses ICU byte offsets for Unicode' {
+    var options = word_navigation.option_t {atomic_segments: vec<string>.cap_of(0),}
+    string text = '你好 世界'
+    int first = word_navigation.forward(text, 0, options)
+    assert(first > 0 && first <= '你好'.len())
+    assert(word_navigation.backward(text, text.len(), options) >= '你好 '.len())
+}
+
+test 'atomic segments move as one unit' {
+    string marker = '[paste #1 +20 lines]'
+    var options = word_navigation.option_t {atomic_segments: [marker],}
+    string text = 'a ' + marker + ' b'
+    int after_marker = 'a '.len() + marker.len()
+    assert(word_navigation.backward(text, after_marker, options) == 'a '.len())
+    assert(word_navigation.forward(text, 'a '.len(), options) == after_marker)
+}

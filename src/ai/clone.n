@@ -1,0 +1,52 @@
+import adou.src.ai.types
+
+fn assistant(ref<types.assistant_message_t> source): ref<types.assistant_message_t> {
+    var result = new types.assistant_message_t(role = source.role, api = source.api, provider = source.provider, model = source.model, response_id = source.response_id, usage = source.usage, stop_reason = source.stop_reason, error_message = source.error_message, timestamp = source.timestamp)
+    for block in source.content {
+        if block is ref<types.text_content_t> text {
+            types.content_t copied = new types.text_content_t(text = text.text, text_signature = text.text_signature)
+            result.content.push(copied)
+        } else if block is ref<types.thinking_content_t> thinking {
+            types.content_t copied = new types.thinking_content_t(thinking = thinking.thinking, thinking_signature = thinking.thinking_signature, redacted = thinking.redacted)
+            result.content.push(copied)
+        } else if block is ref<types.tool_call_t> call {
+            types.content_t copied = new types.tool_call_t(id = call.id, name = call.name, arguments = call.arguments, partial_json = call.partial_json)
+            result.content.push(copied)
+        }
+    }
+    return result
+}
+
+fn message(types.message_t source): types.message_t {
+    if source is ref<types.user_message_t> user {
+        types.message_t result = new types.user_message_t(role = user.role, content = user.content, timestamp = user.timestamp)
+        return result
+    }
+    if source is ref<types.assistant_message_t> assistant_message {
+        types.message_t result = assistant(assistant_message)
+        return result
+    }
+    if source is ref<types.tool_result_message_t> tool {
+        [ref<types.text_content_t>] content = []
+        for item in tool.content {
+            content.push(new types.text_content_t(text = item.text, text_signature = item.text_signature))
+        }
+        types.message_t result = new types.tool_result_message_t(role = tool.role, tool_call_id = tool.tool_call_id, tool_name = tool.tool_name, content = content, details = tool.details, usage = tool.usage, added_tool_names = tool.added_tool_names, is_error = tool.is_error, timestamp = tool.timestamp)
+        return result
+    }
+    if source is ref<types.compaction_summary_message_t> summary {
+        types.message_t result = new types.compaction_summary_message_t(role = summary.role, summary = summary.summary, tokens_before = summary.tokens_before, timestamp = summary.timestamp)
+        return result
+    }
+    if source is ref<types.branch_summary_message_t> summary {
+        types.message_t result = new types.branch_summary_message_t(role = summary.role, summary = summary.summary, from_id = summary.from_id, timestamp = summary.timestamp)
+        return result
+    }
+    if source is ref<types.custom_message_t> custom {
+        types.message_t result = new types.custom_message_t(role = custom.role, custom_type = custom.custom_type, content = custom.content, display = custom.display, details = custom.details, timestamp = custom.timestamp)
+        return result
+    }
+    var bash = source as ref<types.bash_execution_message_t>
+    types.message_t result = new types.bash_execution_message_t(role = bash.role, command = bash.command, output = bash.output, exit_code = bash.exit_code, cancelled = bash.cancelled, truncated = bash.truncated, full_output_path = bash.full_output_path, exclude_from_context = bash.exclude_from_context, timestamp = bash.timestamp)
+    return result
+}

@@ -1,0 +1,2849 @@
+import adou.src.agent.session
+import adou.src.agent.session_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.provider
+import adou.src.ai.abort
+import adou.src.ai.types as ai_types
+import adou.src.config.auth
+import adou.src.config.models
+import adou.src.config.settings as config_settings
+import adou.src.config.trust as trust
+import adou.src.config.types
+import adou.src.context.project
+import adou.src.context.system_prompt
+import adou.src.session.message_json
+import adou.src.session.export_html as session_export
+import adou.src.session.repository
+import adou.src.session.types as session_types
+import adou.src.tui.chat
+import adou.src.tui.editor
+import adou.src.tui.input_buffer
+import adou.src.tui.keys
+import adou.src.tui.renderer
+import adou.src.tui.text_utils
+import adou.src.tui.theme
+import adou.src.tools.shell_tools
+import adou.src.tools.command
+import adou.src.tools.path_utils
+import adou.src.tools.builtins
+import base64
+import co
+import co.mutex
+import fmt
+import fs
+import json
+import os
+import os.signal
+import path
+import process
+import strings
+import syscall
+import term
+import time
+
+type input_t = struct {
+    string data
+    bool paste
+}
+
+type interactive_bash_state_t = struct {
+    ref<mutex.mutex_t> lock
+    string output
+    int sent_bytes
+    bool done
+    chan<u8> relay_done
+}
+
+const OVERLAY_AUTH_METHOD = 1
+const OVERLAY_API_KEY = 2
+const OVERLAY_MODEL = 3
+const OVERLAY_LOGOUT = 4
+const OVERLAY_SETTINGS = 5
+const OVERLAY_HELP = 6
+const OVERLAY_PROVIDER = 7
+const OVERLAY_SESSION = 8
+const OVERLAY_TREE = 9
+const OVERLAY_NAME = 10
+const OVERLAY_FORK = 11
+const OVERLAY_LABEL = 12
+const OVERLAY_BRANCH_SUMMARY = 13
+const OVERLAY_BRANCH_CUSTOM = 14
+const OVERLAY_SCOPED_MODELS = 15
+const OVERLAY_SESSION_INFO = 16
+const OVERLAY_VISIBLE_OPTIONS = 12
+
+type overlay_t = struct {
+    int kind
+    string title
+    string provider
+    [string] options = []
+    int selected
+    string query
+    bool confirming_delete
+    string delete_path
+    bool show_paths
+    bool named_only
+    int sort_mode
+}
+
+type view_t = struct {
+    ref<term.terminal_t> terminal
+    ref<session.runner_t> runner
+    ref<chat.chat_t> chat
+    ref<editor.editor_t> editor
+    ref<input_buffer.buffer_t> input_buffer
+    ref<renderer.renderer_t> renderer
+    chan<input_t> input_events
+    chan<signal.sig_t> signals
+    ref<session_stream.stream_t>? active_stream
+    ref<overlay_t>? overlay
+    bool command_menu
+    int command_index
+    bool kitty_protocol
+    bool quitting
+    // --resume opens the selector before the normal prompt. Escape/cancel
+    // exits that startup flow instead of silently continuing a session.
+    bool startup_session_picker
+    bool pending_tree_navigation
+    string pending_tree_editor_text
+    string pending_tree_target_id
+    i64 last_escape_time
+    i64 last_sigint_time
+    // CLI --models patterns limit Ctrl+P cycling and the model selector for
+    // this session.  Settings-backed /scoped-models remains a separate,
+    // persistent selector and is applied when no CLI scope is present.
+    [string] model_scope_patterns = []
+    [string] scoped_model_ids = []
+    // Pi distinguishes an unset scope (all models) from a session scope that
+    // currently contains no enabled models.  The latter is useful while the
+    // selector is being edited and is persisted as the default/all state.
+    bool scoped_models_active
+    // Keep CLI system-prompt overrides available for `/reload`; Pi reloads
+    // project context without silently dropping those session-wide options.
+    string system_prompt_override
+    [string] append_system_prompts = []
+    bool no_context_files
+}
+
+fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model, string cwd): ref<view_t> {
+    var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, command_menu = false, command_index = 0, kitty_protocol = true)
+    string thinking = runner.agent_config.stream_options.reasoning_effort
+    if !runner.agent_config.stream_options.thinking_enabled {
+        thinking = 'off'
+    } else if thinking == '' {
+        thinking = 'on'
+    }
+    view.chat.configure(runner.agent_config.model.context_window, thinking)
+    view.chat.set_auto_compaction(runner.compaction_settings.enabled)
+    view.chat.git_branch = detect_git_branch(cwd)
+    view.chat.load_messages(runner.active_messages)
+    var stored_settings = config_settings.load()
+    view.scoped_model_ids = stored_settings.enabled_model_ids
+    view.scoped_models_active = stored_settings.enabled_model_ids.len() > 0
+    if runner.repository.get_warnings().len() > 0 {
+        view.chat.status = 'Session recovered: ' + runner.repository.get_warnings()[0]
+    }
+    return view
+}
+
+fn view_t.run(&self): void! {
+    signal.notify(self.signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGWINCH)
+    go read_input(self.terminal, self.input_buffer, self.input_events)
+    go read_signals(self)
+    self.run_loop() catch error {
+        self.stop_signals()
+        throw error
+    }
+    self.stop_signals()
+}
+
+fn view_t.run_loop(&self): void! {
+    self.render()
+    for !self.quitting {
+        if self.active_stream is ref<session_stream.stream_t> stream {
+            bool finished = self.consume_stream(stream)
+            if finished {
+                self.active_stream = null
+            }
+            continue
+        }
+        var incoming = self.input_events.recv() catch e {
+            self.quitting = true
+            break
+        }
+        ref<session_stream.stream_t>? next = self.handle_idle_input(incoming)
+        if next is ref<session_stream.stream_t> stream {
+            self.active_stream = stream
+        }
+    }
+}
+
+fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! {
+    bool branch_aborted = false
+    string branch_error = ''
+    bool stream_failed = false
+    for true {
+        var (incoming, input_received) = self.input_events.try_recv() catch error {
+            self.quitting = true
+            stream.abort()
+            break
+        }
+        if input_received {
+            self.handle_stream_input(stream, incoming)
+        } else if self.input_events.is_closed() {
+            self.quitting = true
+            stream.abort()
+            break
+        }
+        var (event, event_received) = stream.events.try_recv() catch error {
+            self.chat.error_message = error.msg()
+            self.chat.status = 'Request failed'
+            self.redraw()
+            break
+        }
+        if event_received {
+            if event.kind == session_stream.EVENT_BRANCH_SUMMARY_END {
+                branch_aborted = event.aborted
+                branch_error = event.error_message
+            }
+            self.chat.apply(event)
+            self.render()
+            if event.kind == session_stream.EVENT_SESSION_END {
+                break
+            }
+            continue
+        }
+        if stream.events.is_closed() {
+            break
+        }
+        co.sleep(8)
+    }
+    var final_messages = stream.result() catch error {
+        stream_failed = true
+        self.chat.error_message = error.msg()
+        self.chat.status = 'Request failed'
+        self.render()
+        []
+    }
+    // The terminal event carries the canonical active branch.  Reload it
+    // after every operation so compaction, tree navigation, retry cleanup,
+    // and cancellation cannot leave stale messages rendered in the TUI.
+    if !stream_failed {
+        self.chat.load_messages(final_messages)
+    }
+    if self.pending_tree_navigation {
+        string target_id = self.pending_tree_target_id
+        if !stream_failed && !branch_aborted && branch_error == '' {
+            self.chat.load_messages(self.runner.active_messages)
+            if self.pending_tree_editor_text != '' && self.editor.get_text().trim([' ', '\t', '\n', '\r']) == '' {
+                self.editor.set_text(self.pending_tree_editor_text)
+            }
+            self.chat.status = 'Navigated to selected point'
+            self.chat.error_message = ''
+        } else if branch_aborted {
+            self.chat.status = 'Branch summarization cancelled'
+            self.restore_tree_overlay(target_id)
+        }
+        self.pending_tree_navigation = false
+        self.pending_tree_editor_text = ''
+        self.pending_tree_target_id = ''
+        self.render()
+    }
+    return true
+}
+
+fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream_t>? {
+    if self.overlay is ref<overlay_t> active_overlay {
+        self.handle_overlay_input(active_overlay, input)
+        return null
+    }
+    if input.paste {
+        self.editor.handle_paste(input.data)
+        self.update_command_menu()
+        self.redraw()
+        return null
+    }
+    string key = keys.parse_key(input.data)
+    if self.command_menu {
+        if key == 'escape' {
+            self.command_menu = false
+            self.redraw()
+            return null
+        }
+        if key == 'up' {
+            self.command_index -= 1
+            if self.command_index < 0 {
+                self.command_index = 0
+            }
+            self.redraw()
+            return null
+        }
+        if key == 'down' {
+            int count = matching_command_names(self.editor.get_text()).len()
+            self.command_index += 1
+            if self.command_index >= count {
+                self.command_index = count - 1
+            }
+            self.redraw()
+            return null
+        }
+        if key == 'tab' {
+            self.complete_command()
+            self.redraw()
+            return null
+        }
+        if key == 'enter' {
+            string command = self.complete_command()
+            self.command_menu = false
+            if command != '' {
+                self.editor.add_history(command)
+                return self.start_prompt(command)
+            }
+        }
+    }
+    if key == 'escape' {
+        if self.editor.get_text().trim([' ', '\t', '\n', '\r']) == '' {
+            i64 now = time.now().ms_timestamp()
+            if now - self.last_escape_time < 500 {
+                self.last_escape_time = 0
+                self.show_tree_overlay()
+                self.redraw()
+            } else {
+                self.last_escape_time = now
+            }
+        }
+        return null
+    }
+    if key == 'ctrl+c' {
+        i64 now = time.now().ms_timestamp()
+        if now - self.last_sigint_time < 500 {
+            self.quitting = true
+        } else {
+            self.editor.clear()
+            self.last_sigint_time = now
+            self.redraw()
+        }
+        return null
+    }
+    if key == 'ctrl+d' && self.editor.get_text() == '' {
+        self.quitting = true
+        return null
+    }
+    if key == 'ctrl+z' {
+        self.suspend_terminal()
+        return null
+    }
+    if key == 'ctrl+g' {
+        self.open_external_editor()
+        return null
+    }
+    if key == 'shift+tab' {
+        self.cycle_thinking_level()
+        return null
+    }
+    if key == 'ctrl+p' {
+        self.cycle_model(1)
+        return null
+    }
+    if key == 'shift+ctrl+p' {
+        self.cycle_model(-1)
+        return null
+    }
+    if key == 'ctrl+l' {
+        self.show_model_overlay('')
+        self.redraw()
+        return null
+    }
+    if key == 'ctrl+o' {
+        bool expanded = self.chat.toggle_tool_output()
+        self.chat.status = 'Tool output: ' + (expanded ? 'expanded' : 'collapsed')
+        self.redraw()
+        return null
+    }
+    if key == 'ctrl+t' {
+        bool visible = self.chat.toggle_thinking_visibility()
+        self.chat.status = 'Thinking blocks: ' + (visible ? 'visible' : 'hidden')
+        self.save_preferences()
+        self.redraw()
+        return null
+    }
+    if key == 'ctrl+x' {
+        self.copy_last_response()
+        return null
+    }
+    if key == 'alt+enter' {
+        var submitted = self.editor.submit()
+        if submitted.text != '' {
+            self.editor.add_history(submitted.text)
+            return self.start_prompt(submitted.text)
+        }
+        return null
+    }
+    var result = self.editor.handle_key(input.data, self.kitty_protocol) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return null
+    }
+    self.apply_editor_action(result)
+    if result.submitted {
+        if result.text == '' {
+            self.redraw()
+            return null
+        }
+        self.command_menu = false
+        self.editor.add_history(result.text)
+        return self.start_prompt(result.text)
+    }
+    self.update_command_menu()
+    self.redraw()
+    return null
+}
+
+fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, input_t input) {
+    if input.paste {
+        self.editor.handle_paste(input.data)
+        self.redraw()
+        return
+    }
+    string key = keys.parse_key(input.data)
+    if key == 'escape' || key == 'ctrl+c' {
+        stream.abort()
+        self.chat.status = 'Cancelling...'
+        self.redraw()
+        return
+    }
+    if key == 'ctrl+z' {
+        self.suspend_terminal()
+        return
+    }
+    if key == 'ctrl+o' {
+        bool expanded = self.chat.toggle_tool_output()
+        self.chat.status = 'Tool output: ' + (expanded ? 'expanded' : 'collapsed')
+        self.redraw()
+        return
+    }
+    if key == 'ctrl+t' {
+        bool visible = self.chat.toggle_thinking_visibility()
+        self.chat.status = 'Thinking blocks: ' + (visible ? 'visible' : 'hidden')
+        self.save_preferences()
+        self.redraw()
+        return
+    }
+    if key == 'alt+up' {
+        self.restore_queued_messages()
+        return
+    }
+    if key == 'alt+enter' {
+        var submitted = self.editor.submit()
+        if submitted.text != '' {
+            var message = new ai_types.user_message_t(content = submitted.text, timestamp = time.now().ms_timestamp())
+            self.runner.agent_config.queues.enqueue_follow_up(message)
+        }
+        self.redraw()
+        return
+    }
+    var result = self.editor.handle_key(input.data, self.kitty_protocol) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    self.apply_editor_action(result)
+    if result.submitted && result.text != '' {
+        var message = new ai_types.user_message_t(content = result.text, timestamp = time.now().ms_timestamp())
+        self.runner.agent_config.queues.enqueue_steering(message)
+    }
+    self.redraw()
+}
+
+#local
+fn view_t.apply_editor_action(&self, editor.key_result_t result) {
+    if result.action != editor.ACTION_SCROLL_UP && result.action != editor.ACTION_SCROLL_DOWN {
+        return
+    }
+    var size = self.terminal.size() catch error {term.size_t {rows: 24, columns: 80,}}
+    int page_size = size.rows * 30 / 100
+    if page_size < 5 {
+        page_size = 5
+    }
+    int direction = result.action == editor.ACTION_SCROLL_UP ? -1 : 1
+    self.editor.move_page(direction, page_size) catch error {}
+}
+
+// Pi restores the terminal before sending SIGTSTP and re-enters raw mode when
+// the foreground job is continued. Keep that lifecycle here as well so
+// Ctrl+Z does not leave the shell in raw mode or turn into editor undo.
+#local
+fn view_t.suspend_terminal(&self) {
+    self.terminal.restore() catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    syscall.kill(0, syscall.SIGTSTP) catch error {
+        self.chat.error_message = error.msg()
+    }
+    self.reenter_terminal() catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    self.chat.error_message = ''
+    self.redraw()
+}
+
+#local
+fn view_t.reenter_terminal(&self): void! {
+    term.enter_raw(self.terminal.input_fd)
+    self.terminal.restored = false
+    self.terminal.active = true
+    self.terminal.write(term.BRACKETED_PASTE_ON + term.CURSOR_HIDE + term.KEYBOARD_PROTOCOL_ON)
+}
+
+// Ctrl+G follows Pi's external-editor action. The TUI is restored while the
+// user's editor owns the terminal, then the edited file is read back into the
+// multiline prompt and raw mode is enabled again.
+#local
+fn view_t.open_external_editor(&self) {
+    string editor_command = syscall.get_env('VISUAL')
+    if editor_command == '' {
+        editor_command = syscall.get_env('EDITOR')
+    }
+    if editor_command == '' {
+        editor_command = 'vi'
+    }
+    int pid = syscall.getpid() catch error {0}
+    string temp_path = '/tmp/adou-editor-' + fmt.sprintf('%d', pid) + '.txt'
+    var file = fs.open(temp_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600) catch error {
+        self.chat.error_message = 'Could not create editor buffer: ' + error.msg()
+        self.redraw()
+        return
+    }
+    file.write(self.editor.get_expanded_text() as [u8]) catch error {
+        file.close()
+        self.chat.error_message = 'Could not write editor buffer: ' + error.msg()
+        self.redraw()
+        return
+    }
+    file.close()
+    self.terminal.restore() catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    var stdin_file = fs.stdin() catch error {
+        self.reenter_terminal() catch reenter_error {}
+        self.chat.error_message = 'Could not open terminal input: ' + error.msg()
+        self.redraw()
+        return
+    }
+    var stdout_file = fs.stdout() catch error {
+        self.reenter_terminal() catch reenter_error {}
+        self.chat.error_message = 'Could not open terminal output: ' + error.msg()
+        self.redraw()
+        return
+    }
+    var stderr_file = fs.stderr() catch error {
+        self.reenter_terminal() catch reenter_error {}
+        self.chat.error_message = 'Could not open terminal error output: ' + error.msg()
+        self.redraw()
+        return
+    }
+    var command = new process.command_t(name = '/bin/sh', args = ['-c', editor_command + ' "$1"', 'adou-editor', temp_path], cwd = '', env = [], stdin = stdin_file, stdout = stdout_file, stderr = stderr_file)
+    var child = command.spawn() catch error {
+        self.reenter_terminal() catch reenter_error {}
+        self.chat.error_message = 'Could not launch editor: ' + error.msg()
+        self.redraw()
+        return
+    }
+    child.wait() catch error {
+        self.chat.error_message = 'External editor failed: ' + error.msg()
+    }
+    self.reenter_terminal() catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    var edited = fs.open(temp_path, syscall.O_RDONLY, 0) catch error {
+        os.remove(temp_path) catch remove_error {}
+        self.chat.error_message = 'Could not read editor buffer: ' + error.msg()
+        self.redraw()
+        return
+    }
+    string content = edited.content() catch error {
+        edited.close()
+        os.remove(temp_path) catch remove_error {}
+        self.chat.error_message = 'Could not read editor buffer: ' + error.msg()
+        self.redraw()
+        return
+    }
+    edited.close()
+    os.remove(temp_path) catch remove_error {}
+    self.editor.set_text(content)
+    self.chat.status = 'Loaded text from external editor'
+    self.chat.error_message = ''
+    self.redraw()
+}
+
+fn view_t.start_prompt(&self, string text): ref<session_stream.stream_t>? {
+    self.command_menu = false
+    self.overlay = null
+    if text.starts_with('!') {
+        bool excluded = text.starts_with('!!')
+        string command = excluded ? text.slice(2, text.len()).trim([' ', '\t']) : text.slice(1, text.len()).trim([' ', '\t'])
+        if command == '' {
+            self.chat.status = 'Usage: !<command>'
+            self.redraw()
+            return null
+        }
+        self.runner.begin_operation() catch error {
+            self.chat.error_message = error.msg()
+            self.chat.status = 'Request failed'
+            self.redraw()
+            return null
+        }
+        var stream = session_stream.new()
+        self.runner.attach_stream(stream)
+        go run_interactive_bash(self.runner, stream, command, excluded)
+        return stream
+    }
+    if text.starts_with('/') {
+        var command_stream = self.run_command(text)
+        // Selecting a slash-command from completion does not go through
+        // editor.submit(), so clear the command line here just like Pi does.
+        self.editor.clear()
+        return command_stream
+    }
+    var stream = self.runner.prompt(text) catch error {
+        self.chat.error_message = error.msg()
+        self.chat.status = 'Request failed'
+        self.redraw()
+        return null
+    }
+    return stream
+}
+
+fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
+    var parts = command_tokens(text)
+    if parts.len() == 0 {
+        return null
+    }
+    string command = parts[0]
+    if command == '/quit' || command == '/exit' {
+        self.quitting = true
+        return null
+    }
+    if command == '/new' {
+        self.runner.start_new_session() catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return null
+        }
+        self.chat.clear()
+        self.editor.clear()
+        self.chat.status = 'Started new session'
+        self.redraw()
+        return null
+    }
+    if command == '/help' {
+        self.show_help_overlay()
+        self.redraw()
+        return null
+    }
+    if command == '/session' {
+        var stats = self.runner.repository.stats(self.runner.agent_config.model.context_window) catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return null
+        }
+        self.show_session_info_overlay(stats)
+        self.redraw()
+        return null
+    }
+    if command == '/hotkeys' {
+        self.show_hotkeys_overlay()
+        self.redraw()
+        return null
+    }
+    if command == '/scoped-models' {
+        self.show_scoped_models_overlay()
+        self.redraw()
+        return null
+    }
+    if command == '/resume' {
+        if parts.len() > 1 {
+            return self.open_session(parts[1])
+        }
+        self.show_session_overlay()
+        self.redraw()
+        return null
+    }
+    if command == '/reload' {
+        [ref<project.file_t>] context_files = []
+        [string] warnings = []
+        if !self.no_context_files {
+            var loaded = project.load(self.runner.repository.cwd, '') catch error {
+                self.chat.error_message = error.msg()
+                self.redraw()
+                return null
+            }
+            context_files = loaded.files
+            warnings = loaded.warnings
+        }
+        [string] tool_names = []
+        for tool in self.runner.base_context.tools {
+            tool_names.push(tool.name)
+        }
+        string append_prompt = strings.join(self.append_system_prompts, '\n\n')
+        self.runner.base_context.system_prompt = system_prompt.build_with_tools(self.runner.repository.cwd, context_files, self.system_prompt_override, append_prompt, tool_names)
+        self.chat.status = warnings.len() > 0 ? 'Project instructions reloaded with warnings' : 'Project instructions reloaded'
+        self.redraw()
+        return null
+    }
+    if command == '/changelog' {
+        self.chat.status = 'Adou changelog\n0.1.0-dev · Pi core parity work\n• streaming agent loop and tool events\n• append-only Pi v3 sessions and automatic compaction\n• transient request retry with cancellation\n• JSON and RPC headless protocols'
+        self.redraw()
+        return null
+    }
+    if command == '/copy' {
+        self.copy_last_response()
+        return null
+    }
+    if command == '/import' {
+        if parts.len() == 1 {
+            self.show_session_overlay()
+            self.redraw()
+            return null
+        }
+        string import_path = command_path_argument(text, '/import')
+        if import_path == '' {
+            self.chat.status = 'Usage: /import <session.jsonl>'
+            self.redraw()
+            return null
+        }
+        return self.import_session(import_path)
+    }
+    if command == '/export' {
+        return self.export_session(text, parts)
+    }
+    if command == '/name' {
+        if parts.len() > 1 {
+            return self.set_session_name(text.slice(text.find(' ') + 1, text.len()).trim([' ', '\t']))
+        }
+        self.show_name_overlay()
+        self.redraw()
+        return null
+    }
+    if command == '/tree' {
+        self.show_tree_overlay()
+        self.redraw()
+        return null
+    }
+    if command == '/fork' {
+        self.show_fork_overlay()
+        self.redraw()
+        return null
+    }
+    if command == '/clone' {
+        self.runner.clone_session() catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return null
+        }
+        self.chat.model = self.runner.agent_config.model.id
+        self.chat.load_messages(self.runner.active_messages)
+        self.chat.status = 'Cloned session ' + self.runner.repository.get_session_id()
+        self.redraw()
+        return null
+    }
+    if command == '/trust' {
+        trust.save(self.runner.repository.cwd, true) catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return null
+        }
+        self.chat.status = 'Saved project trust decision: trusted. Restart Adou to reload project resources.'
+        self.redraw()
+        return null
+    }
+    if command == '/share' {
+        if !self.runner.repository.persisted {
+            self.chat.status = 'Cannot share an in-memory session; start a persisted session first.'
+            self.redraw()
+            return null
+        }
+        string target = self.runner.repository.get_session_file() + '.share.jsonl'
+        self.export_session('/export ' + target, ['/export', target])
+        if path_utils.exists(target) {
+            self.chat.status = 'Created a local share artifact at ' + target + ' (remote GitHub sharing requires GITHUB_TOKEN).'
+        }
+        self.redraw()
+        return null
+    }
+    if command == '/settings' {
+        self.show_settings_overlay()
+        self.redraw()
+        return null
+    }
+    if command == '/model' {
+        if parts.len() == 1 {
+            self.show_model_overlay('')
+            self.redraw()
+            return null
+        }
+        if parts.len() != 2 {
+            self.chat.error_message = 'Usage: /model <provider/model>'
+            self.redraw()
+            return null
+        }
+        ref<ai_types.model_t>? selected = models.find(parts[1])
+        if selected is ref<ai_types.model_t> model {
+            self.runner.set_model(model) catch error {
+                self.chat.error_message = error.msg()
+                self.redraw()
+                return null
+            }
+            self.apply_scoped_thinking(model)
+    self.chat.model = model.id
+    self.chat.configure(model.context_window, self.chat.thinking)
+    self.save_default_model()
+    self.chat.error_message = ''
+            self.chat.status = 'Model: ' + model.provider + '/' + model.id
+            self.redraw()
+            return null
+        }
+        // Pi treats a non-exact /model argument as the selector's initial
+        // search query, so users can type a partial provider or model id.
+        self.show_model_overlay(parts[1])
+        self.redraw()
+        return null
+    }
+    if command == '/login' {
+        string provider = ''
+        if parts.len() >= 2 {
+            provider = parts[1]
+        }
+        if provider != '' {
+            models.default_for(provider) catch error {
+                self.chat.error_message = error.msg()
+                self.redraw()
+                return null
+            }
+        }
+        string key = parts.len() >= 3 ? parts[2] : ''
+        if key == '' {
+            self.show_auth_overlay(provider)
+            self.redraw()
+            return null
+        }
+        auth.save(provider, key) catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return null
+        }
+        self.runner.refresh_auth() catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return null
+        }
+        self.chat.error_message = ''
+        self.chat.status = 'Logged in to ' + provider
+        self.redraw()
+        return null
+    }
+    if command == '/logout' {
+        string provider = self.runner.agent_config.model.provider
+        if parts.len() >= 2 {
+            provider = parts[1]
+        }
+        models.default_for(provider) catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return null
+        }
+        if parts.len() == 1 {
+            self.show_logout_overlay()
+            self.redraw()
+            return null
+        }
+        auth.remove(provider) catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return null
+        }
+        self.runner.refresh_auth() catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return null
+        }
+        self.chat.error_message = ''
+        self.chat.status = 'Logged out of ' + provider
+        self.redraw()
+        return null
+    }
+    if command == '/compact' {
+        string instructions = parts.len() > 1 ? text.slice(text.find(' ') + 1, text.len()).trim([' ', '\t']) : ''
+        var stream = self.runner.compact_now(instructions) catch error {
+            self.chat.error_message = error.msg()
+            self.chat.status = 'Compaction failed'
+            self.redraw()
+            return null
+        }
+        return stream
+    }
+    self.chat.error_message = 'Unknown command: ' + text
+    self.redraw()
+    return null
+}
+
+fn view_t.open_session(&self, string file_path): ref<session_stream.stream_t>? {
+    var next = repository.open_reference(self.runner.repository.cwd, self.runner.repository.session_dir, file_path) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return null
+    }
+    return self.finish_session_switch(next)
+}
+
+fn view_t.import_session(&self, string file_path): ref<session_stream.stream_t>? {
+    var next = self.runner.repository.import_file(file_path) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return null
+    }
+    return self.finish_session_switch(next)
+}
+
+#local
+fn view_t.finish_session_switch(&self, ref<repository.manager_t> next): ref<session_stream.stream_t>? {
+    self.startup_session_picker = false
+    self.runner.replace_repository(next) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return null
+    }
+    self.rebind_project_context(next.cwd) catch error {
+        self.chat.status = 'Session resumed; could not rebuild project tools'
+    }
+    self.chat.model = self.runner.agent_config.model.id
+    self.chat.cwd = next.cwd
+    self.chat.git_branch = detect_git_branch(next.cwd)
+    string thinking = self.runner.agent_config.stream_options.reasoning_effort
+    if !self.runner.agent_config.stream_options.thinking_enabled {thinking = 'off'}
+    self.chat.configure(self.runner.agent_config.model.context_window, thinking)
+    self.chat.load_messages(self.runner.active_messages)
+    self.chat.error_message = ''
+    self.chat.status = 'Resumed session ' + self.runner.repository.get_session_id()
+    self.overlay = null
+    self.redraw()
+    return null
+}
+
+// Session replacement can move to a different project cwd (for example
+// `/import` or an explicit --session path).  Pi recreates its runtime-bound
+// resources in that case; rebuild the Nature tool executors and system prompt
+// while keeping the current tool selection and CLI prompt overrides.
+#local
+fn view_t.rebind_project_context(&self, string cwd): void! {
+    [string] tool_names = []
+    for tool in self.runner.base_context.tools {
+        tool_names.push(tool.name)
+    }
+    [ref<project.file_t>] context_files = []
+    if !self.no_context_files {
+        var loaded = project.load(cwd, '') catch error {
+            self.chat.status = 'Session resumed; project instructions unavailable'
+            project.load_result_t{}
+        }
+        context_files = loaded.files
+    }
+    var tools = tool_names.len() > 0 ? builtins.select_tools(cwd, tool_names, [], false) : []
+    self.runner.base_context.tools = tools
+    string append_prompt = strings.join(self.append_system_prompts, '\n\n')
+    self.runner.base_context.system_prompt = system_prompt.build_with_tools(cwd, context_files, self.system_prompt_override, append_prompt, tool_names)
+}
+
+fn view_t.set_session_name(&self, string name): ref<session_stream.stream_t>? {
+    self.runner.repository.append_session_info(name) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return null
+    }
+    self.chat.status = name.trim([' ', '\t', '\n', '\r']) == '' ? 'Session name cleared' : 'Session named ' + name.trim([' ', '\t', '\n', '\r'])
+    self.overlay = null
+    self.redraw()
+    return null
+}
+
+fn view_t.export_session(&self, string command_text, [string] parts): ref<session_stream.stream_t>? {
+    if !self.runner.repository.persisted {
+        self.chat.status = 'Cannot export an in-memory session'
+        self.redraw()
+        return null
+    }
+    string target = command_path_argument(command_text, '/export')
+    if target == '' {
+        target = self.runner.repository.get_session_file() + '.html'
+    }
+    var source = fs.open(self.runner.repository.get_session_file(), syscall.O_RDONLY, 0) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return null
+    }
+    string content = source.content() catch error {
+        source.close()
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return null
+    }
+    source.close()
+    // Pi defaults `/export` to HTML and only writes raw JSONL when the path
+    // explicitly ends in `.jsonl`.
+    string output = content
+    if !target.to_lower().ends_with('.jsonl') {
+        output = session_export.render(self.runner.repository) catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return null
+        }
+    }
+    os.mkdirs(path.dir(path_utils.resolve_to_cwd(target, self.runner.repository.cwd)), 0o755) catch error {}
+    string absolute_target = path_utils.resolve_to_cwd(target, self.runner.repository.cwd)
+    var destination = fs.open(absolute_target, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return null
+    }
+    destination.write(output as [u8]) catch error {
+        destination.close()
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return null
+    }
+    destination.close()
+    self.chat.status = 'Exported session to ' + target
+    self.redraw()
+    return null
+}
+
+fn view_t.show_session_overlay(&self) {
+    if self.runner.repository.session_dir == '' {
+        self.chat.status = 'No persisted sessions are available'
+        if self.startup_session_picker {
+            self.startup_session_picker = false
+            self.quitting = true
+        }
+        return
+    }
+    [string] options = []
+    var names = os.listdir(self.runner.repository.session_dir) catch error {
+        if self.startup_session_picker {
+            self.startup_session_picker = false
+            self.quitting = true
+        } else {
+            self.chat.error_message = error.msg()
+        }
+        return
+    }
+    for name in names {
+        if name.ends_with('.jsonl') {
+            options.push(path.join(self.runner.repository.session_dir, name))
+        }
+    }
+    // Pi's resume picker can broaden from the current project to all
+    // projects. Include the default shared store here as well; explicit
+    // --session-dir remains intentionally scoped to that directory.
+    string home = syscall.get_env('HOME')
+    string shared_root = home == '' ? '' : path.join(home, '.adou/sessions')
+    if shared_root != '' && path.dir(self.runner.repository.session_dir) == shared_root {
+        var project_dirs = os.listdir(shared_root) catch error {[]}
+        for project_name in project_dirs {
+            string project_dir = path.join(shared_root, project_name)
+            var project_entries = os.listdir(project_dir) catch error {[]}
+            for session_name in project_entries {
+                if !session_name.ends_with('.jsonl') {continue}
+                string candidate = path.join(project_dir, session_name)
+                bool duplicate = false
+                for existing in options {
+                    if existing == candidate {
+                        duplicate = true
+                        break
+                    }
+                }
+                if !duplicate {options.push(candidate)}
+            }
+        }
+    }
+    options = sort_session_paths(options)
+    if options.len() == 0 {
+        self.chat.status = 'No persisted sessions are available'
+        if self.startup_session_picker {
+            self.startup_session_picker = false
+            self.quitting = true
+        }
+        return
+    }
+    self.overlay = new overlay_t(kind = OVERLAY_SESSION, title = 'Resume session:', options = options, sort_mode = 0)
+}
+
+#local
+fn sort_session_paths([string] values): [string] {
+    [string] remaining = values.slice(0, values.len())
+    [string] result = vec<string>.cap_of(values.len())
+    for remaining.len() > 0 {
+        int newest = 0
+        i64 newest_sec = 0
+        i64 newest_nsec = 0
+        for index, value in remaining {
+            var stat = syscall.stat(value) catch error {continue}
+            if index == 0 || stat.mtim.sec > newest_sec || (stat.mtim.sec == newest_sec && stat.mtim.nsec > newest_nsec) {
+                newest = index
+                newest_sec = stat.mtim.sec
+                newest_nsec = stat.mtim.nsec
+            }
+        }
+        result.push(remaining[newest])
+        [string] next = vec<string>.cap_of(remaining.len() - 1)
+        for index, value in remaining {
+            if index != newest {next.push(value)}
+        }
+        remaining = next
+    }
+    return result
+}
+
+#local
+fn sort_session_paths_alpha([string] values): [string] {
+    [string] result = values.slice(0, values.len())
+    for int outer = 0; outer < result.len(); outer += 1 {
+        for int inner = outer + 1; inner < result.len(); inner += 1 {
+            string left = session_option_display(result[outer], false).to_lower()
+            string right = session_option_display(result[inner], false).to_lower()
+            if right < left {
+                string swap = result[outer]
+                result[outer] = result[inner]
+                result[inner] = swap
+            }
+        }
+    }
+    return result
+}
+
+fn view_t.show_tree_overlay(&self) {
+    [string] options = []
+    for entry in self.runner.repository.get_entries() {
+        if entry.kind == session_types.ENTRY_LABEL {
+            continue
+        }
+        string label = self.runner.repository.get_label(entry.id)
+        options.push(entry.id + (label == '' ? '' : ' [' + label + ']') + ' ' + entry.kind)
+    }
+    if options.len() == 0 {
+        self.chat.status = 'Session tree is empty'
+        return
+    }
+    self.overlay = new overlay_t(kind = OVERLAY_TREE, title = 'Session tree:', options = options)
+    var active = self.overlay as ref<overlay_t>
+    string leaf = self.runner.repository.get_leaf_id()
+    var active_entries = self.runner.repository.active_entries()
+    for int index = active_entries.len() - 1; index >= 0; index -= 1 {
+        if active_entries[index].kind != session_types.ENTRY_LABEL {
+            leaf = active_entries[index].id
+            break
+        }
+    }
+    for index, option in active.options {
+        if option.starts_with(leaf + ' ') {
+            active.selected = index
+            break
+        }
+    }
+}
+
+fn view_t.restore_tree_overlay(&self, string entry_id) {
+    self.show_tree_overlay()
+    if self.overlay is ref<overlay_t> tree {
+        for index, option in tree.options {
+            if option_entry_id(option) == entry_id {
+                tree.selected = index
+                break
+            }
+        }
+    }
+}
+
+fn view_t.show_branch_summary_overlay(&self, string entry_id) {
+    self.overlay = new overlay_t(kind = OVERLAY_BRANCH_SUMMARY, title = 'Summarize branch?', provider = entry_id, options = ['No summary', 'Summarize', 'Summarize with custom prompt'])
+}
+
+fn view_t.show_fork_overlay(&self) {
+    [string] options = []
+    for entry in self.runner.repository.get_entries() {
+        if entry.kind != session_types.ENTRY_MESSAGE {
+            continue
+        }
+        var object = entry.raw.as_object() catch error {continue}
+        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+            continue
+        }
+        var message = message_json.decode(object['message']) catch error {continue}
+        if message is ref<ai_types.user_message_t> user {
+            string preview = user.content.replace('\n', ' ')
+            if preview.len() > 72 {
+                preview = preview.slice(0, 72) + '...'
+            }
+            options.push(entry.id + ' ' + preview)
+        }
+    }
+    if options.len() == 0 {
+        self.chat.status = 'No messages to fork from'
+        return
+    }
+    self.overlay = new overlay_t(kind = OVERLAY_FORK, title = 'Fork from user message:', options = options)
+}
+
+fn view_t.fork_message_text(&self, string entry_id): string {
+    for entry in self.runner.repository.get_entries() {
+        if entry.id != entry_id || entry.kind != session_types.ENTRY_MESSAGE {
+            continue
+        }
+        var object = entry.raw.as_object() catch error {return ''}
+        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+            return ''
+        }
+        var message = message_json.decode(object['message']) catch error {return ''}
+        if message is ref<ai_types.user_message_t> user {
+            return user.content
+        }
+        return ''
+    }
+    return ''
+}
+
+fn view_t.show_name_overlay(&self) {
+    string name = self.runner.repository.get_session_name() catch error {''}
+    self.overlay = new overlay_t(kind = OVERLAY_NAME, title = 'Session name:', query = name)
+}
+
+fn view_t.show_session_info_overlay(&self, repository.stats_t stats) {
+    string file = self.runner.repository.persisted ? self.runner.repository.get_session_file() : 'In-memory'
+    [string] options = [
+        'Session Info',
+        '',
+        'File: ' + file,
+        'ID: ' + self.runner.repository.get_session_id(),
+        '',
+        'Messages',
+        'Total: ' + fmt.sprintf('%d', stats.total_messages),
+        'User: ' + fmt.sprintf('%d', stats.user_messages),
+        'Assistant: ' + fmt.sprintf('%d', stats.assistant_messages),
+        'Tools: ' + fmt.sprintf('%d calls, %d results', stats.tool_calls, stats.tool_results),
+        '',
+        'Tokens',
+        'Input: ' + fmt.sprintf('%d', stats.usage.input + stats.usage.cache_read + stats.usage.cache_write),
+        'Output: ' + fmt.sprintf('%d', stats.usage.output),
+        'Total: ' + fmt.sprintf('%d', stats.usage.total_tokens),
+    ]
+    if stats.usage.cost.total > 0.0 {
+        options.append(['', 'Cost', 'Total: ' + fmt.sprintf('$%.3f', stats.usage.cost.total)])
+    }
+    if stats.context_window > 0 {
+        options.append(['', 'Context', fmt.sprintf('Current: %d / %d', stats.context_tokens, stats.context_window)])
+    }
+    self.overlay = new overlay_t(kind = OVERLAY_SESSION_INFO, title = 'Session Info', options = options)
+}
+
+#local
+fn html_escape(string value): string {
+    return value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+}
+
+#local
+fn run_interactive_bash(ref<session.runner_t> runner, ref<session_stream.stream_t> output, string script, bool excluded): void! {
+    run_interactive_bash_inner(runner, output, script, excluded) catch error {
+        output.fail(error.msg()) catch stream_error {}
+    }
+    runner.end_operation()
+}
+
+#local
+fn run_interactive_bash_inner(ref<session.runner_t> runner, ref<session_stream.stream_t> output, string script, bool excluded): void! {
+    output.push(session_stream.event_t {kind: session_stream.EVENT_BASH_START, bash_command: script, bash_exclude_from_context: excluded,})
+    var state = new interactive_bash_state_t(lock = mutex.mutex_t.new(), relay_done = chan<u8>.new(1))
+    go relay_interactive_bash(state, output, script, excluded)
+    var result = shell_tools.execute_bash_stream(runner.repository.cwd, script, 0, output.cancellation, fn(string chunk) {
+        state.lock.lock()
+        state.output += chunk
+        state.lock.unlock()
+    }) catch error {
+        state.lock.lock()
+        state.done = true
+        string partial = state.output
+        state.lock.unlock()
+        state.relay_done.recv() catch relay_error {}
+        // An aborted or failed subprocess can finish before producing the
+        // normal result object. Still close the visible bash component and
+        // persist the partial command entry, matching Pi's cancellation
+        // semantics instead of leaving the TUI in a permanently running
+        // state.
+        bool cancelled = output.cancellation.is_aborted()
+        runner.record_bash_during_operation(script, partial, -1, cancelled, false, '', excluded) catch record_error {
+            output.push(session_stream.event_t {kind: session_stream.EVENT_BASH_END, bash_command: script, bash_output: partial, bash_exit_code: -1, bash_cancelled: cancelled, bash_exclude_from_context: excluded,}) catch push_error {}
+            output.fail(record_error.msg()) catch stream_error {}
+            return
+        }
+        output.push(session_stream.event_t {kind: session_stream.EVENT_BASH_END, bash_command: script, bash_output: partial, bash_exit_code: -1, bash_cancelled: cancelled, bash_exclude_from_context: excluded,}) catch push_error {}
+        output.fail(error.msg()) catch stream_error {}
+        return
+    }
+    state.lock.lock()
+    state.done = true
+    state.lock.unlock()
+    state.relay_done.recv() catch relay_error {}
+    int exit_code = result.cancelled ? -1 : result.exit_code
+    runner.record_bash_during_operation(script, result.output, exit_code, result.cancelled, result.truncated, result.full_output_path, excluded) catch error {
+        output.fail(error.msg()) catch stream_error {}
+        return
+    }
+    output.push(session_stream.event_t {kind: session_stream.EVENT_BASH_END, bash_command: script, bash_output: result.output, bash_exit_code: exit_code, bash_cancelled: result.cancelled, bash_timed_out: result.timed_out, bash_truncated: result.truncated, bash_full_output_path: result.full_output_path, bash_exclude_from_context: excluded,})
+    output.finish(runner.copy_active_messages())
+}
+
+#local
+fn relay_interactive_bash(ref<interactive_bash_state_t> state, ref<session_stream.stream_t> output, string script, bool excluded): void! {
+    for true {
+        state.lock.lock()
+        int available = state.output.len() - state.sent_bytes
+        bool done = state.done
+        string chunk = available > 0 ? state.output.slice(state.sent_bytes, state.output.len()) : ''
+        state.sent_bytes = state.output.len()
+        state.lock.unlock()
+        if chunk != '' {
+            output.push(session_stream.event_t {kind: session_stream.EVENT_BASH_UPDATE, bash_command: script, bash_output: chunk, bash_exclude_from_context: excluded,}) catch error {}
+        }
+        if done {
+            state.relay_done.close()
+            return
+        }
+        co.sleep(50)
+    }
+}
+
+#local
+fn command_tokens(string text): [string] {
+    [string] result = []
+    for token in text.trim([' ', '\t']).split(' ') {
+        if token != '' {
+            result.push(token)
+        }
+    }
+    return result
+}
+
+// /export and /import accept the same quoted path convention as Pi.  The
+// other slash commands intentionally keep their free-form remainder parsing.
+#local
+fn command_path_argument(string text, string command): string {
+    if text == command || !text.starts_with(command + ' ') {
+        return ''
+    }
+    string remainder = text.slice(command.len() + 1, text.len()).trim([' ', '\t', '\n', '\r'])
+    if remainder == '' {
+        return ''
+    }
+    string first = remainder.slice(0, 1)
+    if first == '"' || first == "'" {
+        int closing = remainder.slice(1, remainder.len()).find(first)
+        if closing < 0 {
+            return ''
+        }
+        return remainder.slice(1, closing + 1)
+    }
+    int space = remainder.find(' ')
+    int tab = remainder.find('\t')
+    int split = space
+    if split < 0 || (tab >= 0 && tab < split) {
+        split = tab
+    }
+    return split < 0 ? remainder : remainder.slice(0, split)
+}
+
+#local
+fn env_name(string provider): string {
+    if provider == 'deepseek' {
+        return 'DEEPSEEK_API_KEY'
+    }
+    if provider == 'anthropic' {
+        return 'ANTHROPIC_API_KEY'
+    }
+    return 'OPENAI_API_KEY'
+}
+
+fn view_t.render(&self): void! {
+    var size = self.terminal.size()
+    self.chat.model = self.runner.agent_config.model.id
+    self.chat.provider = self.runner.agent_config.model.provider
+    self.chat.set_provider_visibility(authenticated_provider_count(self.runner) > 1)
+    self.chat.session_name = self.runner.repository.get_session_name() catch error {''}
+    self.chat.set_usage_totals(self.runner.repository.usage_totals())
+    self.chat.set_latest_cache_hit_rate(self.runner.repository.latest_cache_hit_rate())
+    self.chat.set_context_known(self.runner.repository.context_usage_known())
+    [string] lines = self.chat.render(size.columns)
+    [string] editor_lines = []
+    if self.overlay is ref<overlay_t> active_overlay {
+        editor_lines = render_overlay(active_overlay, size.columns)
+    } else {
+        editor_lines = render_editor(self.editor, size.columns, self.command_menu, self.command_index, self.chat.thinking, size.rows)
+    }
+    lines.append(editor_lines)
+    if lines.len() > size.rows {
+        lines = lines.slice(lines.len() - size.rows, lines.len())
+    }
+    var result = self.renderer.render(lines, size.columns, size.rows)
+    self.terminal.write(result.output)
+}
+
+#local
+fn authenticated_provider_count(ref<session.runner_t> runner): int {
+    [string] seen = []
+    for model in models.all() {
+        if !model_is_authenticated(runner, model) {
+            continue
+        }
+        bool already_seen = false
+        for provider in seen {
+            if provider == model.provider {
+                already_seen = true
+                break
+            }
+        }
+        if !already_seen {
+            seen.push(model.provider)
+        }
+    }
+    return seen.len()
+}
+
+#local
+fn detect_git_branch(string cwd): string {
+    var result = command.argv(cwd, '/usr/bin/git', ['branch', '--show-current']) catch error {return ''}
+    if result.exit_code != 0 {
+        return ''
+    }
+    return result.stdout.trim([' ', '\t', '\n', '\r'])
+}
+
+fn view_t.redraw(&self) {
+    self.render() catch error {
+        self.chat.error_message = error.msg()
+        self.chat.status = 'Render failed'
+    }
+}
+
+#local
+fn read_signals(ref<view_t> view): void! {
+    for true {
+        var received = view.signals.recv() catch error {
+            return
+        }
+        if received == syscall.SIGWINCH as signal.sig_t {
+            view.redraw()
+            continue
+        }
+        if received == syscall.SIGINT as signal.sig_t {
+            if view.active_stream is ref<session_stream.stream_t> stream {
+                stream.abort()
+                view.chat.status = 'Cancelling...'
+                view.redraw()
+                continue
+            }
+            view.input_events.try_send(input_t {data: '\x03',}) catch error {}
+            continue
+        }
+        view.quitting = true
+        if view.active_stream is ref<session_stream.stream_t> stream {
+            stream.abort()
+        }
+        view.input_events.try_send(input_t {data: '\x1b',}) catch error {}
+    }
+}
+
+#local
+fn view_t.stop_signals(&self) {
+    signal.stop(self.signals)
+    self.signals.close() catch error {}
+}
+
+#local
+fn read_input(ref<term.terminal_t> terminal, ref<input_buffer.buffer_t> input_buffer, chan<input_t> output): void! {
+    bool pending_timeout = false
+    int idle_reads = 0
+    for true {
+        var bytes = terminal.read()
+        if bytes.len() == 0 {
+            if terminal.is_eof() {
+                output.close()
+                return
+            }
+            if pending_timeout {
+                idle_reads += 1
+                if idle_reads >= 3 {
+                    var flushed = input_buffer.flush()
+                    for sequence in flushed {
+                        output.send(input_t {data: sequence,})
+                    }
+                    pending_timeout = false
+                    idle_reads = 0
+                }
+            }
+            continue
+        }
+        idle_reads = 0
+        var processed = input_buffer.process(bytes)
+        pending_timeout = processed.needs_timeout
+        for sequence in processed.sequences {
+            output.send(input_t {data: sequence,})
+        }
+        for paste in processed.pastes {
+            output.send(input_t {data: paste, paste: true,})
+        }
+    }
+}
+
+#local
+fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int command_index, string thinking, int terminal_rows): [string]! {
+    [string] result = vec<string>.cap_of(16)
+    bool bash_mode = editor.get_text().starts_with('!')
+    result.push(theme.editor_border_line(thinking, bash_mode, width))
+    var lines = editor.get_lines()
+    var cursor = editor.get_cursor()
+    int visible_lines = terminal_rows * 30 / 100
+    if visible_lines < 5 {
+        visible_lines = 5
+    }
+    int first_line = 0
+    if lines.len() > visible_lines && cursor.line >= visible_lines {
+        first_line = cursor.line - visible_lines + 1
+    }
+    int last_line = first_line + visible_lines
+    if last_line > lines.len() {
+        last_line = lines.len()
+    }
+    for int index = first_line; index < last_line; index += 1 {
+        string value = lines[index]
+        string display = value
+        if index == cursor.line {
+            if cursor.column < value.len() {
+                display = value.slice(0, cursor.column) + theme.cursor(value.slice(cursor.column, cursor.column + 1)) + value.slice(cursor.column + 1, value.len())
+            } else {
+                display += theme.cursor(' ')
+            }
+        }
+        string line = ' ' + display
+        if text_utils.visible_width(line) > width {
+            line = text_utils.truncate_to_width(line, width, '...', false)
+        }
+        result.push(line)
+    }
+    result.push(theme.editor_border_line(thinking, bash_mode, width))
+    if command_menu {
+        result.append(render_command_menu(editor.get_text(), command_index, width))
+    }
+    return result
+}
+
+fn view_t.update_command_menu(&self) {
+    string text = self.editor.get_text()
+    self.command_menu = text.starts_with('/') && !text.contains(' ') && matching_command_names(text).len() > 0
+    if !self.command_menu {
+        self.command_index = 0
+        return
+    }
+    int count = matching_command_names(text).len()
+    if self.command_index >= count {
+        self.command_index = count - 1
+    }
+}
+
+fn view_t.complete_command(&self): string {
+    var matches = matching_command_names(self.editor.get_text())
+    if matches.len() == 0 || self.command_index < 0 || self.command_index >= matches.len() {
+        return ''
+    }
+    string value = matches[self.command_index]
+    self.editor.set_text(value + ' ')
+    self.command_menu = false
+    return value
+}
+
+fn view_t.show_auth_overlay(&self, string provider) {
+    [string] options = ['Sign in with an account', 'Sign in with an API key']
+    string title = provider == '' ? 'Select authentication method:' : 'Select authentication method for ' + provider + ':'
+    self.overlay = new overlay_t(kind = OVERLAY_AUTH_METHOD, title = title, provider = provider, options = options)
+}
+
+fn view_t.show_model_overlay(&self, string query) {
+    [string] options = vec<string>.cap_of(8)
+    for model in models.all() {
+        string reference = model.provider + '/' + model.id
+        if !models.allowed(reference, self.model_scope_patterns) {
+            continue
+        }
+        if !model_is_authenticated(self.runner, model) {
+            continue
+        }
+        options.push(reference)
+    }
+    self.overlay = new overlay_t(kind = OVERLAY_MODEL, title = 'Select model:', options = options, query = query)
+    var active = self.overlay as ref<overlay_t>
+    for index, value in active.options {
+        if value == self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id {
+            active.selected = index
+            break
+        }
+    }
+}
+
+fn view_t.show_scoped_models_overlay(&self) {
+    [string] options = []
+    for model in models.all() {
+        string id = model.provider + '/' + model.id
+        options.push(scoped_model_option(id, self.is_model_enabled(id)))
+    }
+    self.overlay = new overlay_t(kind = OVERLAY_SCOPED_MODELS, title = 'Model Configuration', options = options)
+    var active = self.overlay as ref<overlay_t>
+    self.refresh_scoped_model_options(active)
+    string current = self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id
+    for index, option in active.options {
+        if scoped_model_id(option) == current {
+            active.selected = index
+            break
+        }
+    }
+}
+
+fn view_t.show_logout_overlay(&self) {
+    [string] options = ['deepseek', 'openai', 'anthropic']
+    self.overlay = new overlay_t(kind = OVERLAY_LOGOUT, title = 'Select provider to logout:', options = options)
+}
+
+fn view_t.show_settings_overlay(&self) {
+    [string] options = [
+        'Thinking: ' + self.chat.thinking,
+        'Auto-compaction: ' + (self.runner.compaction_settings.enabled ? 'on' : 'off'),
+        'Steering mode: ' + self.runner.agent_config.queues.steering_mode,
+        'Follow-up mode: ' + self.runner.agent_config.queues.follow_up_mode,
+        'Hide thinking: ' + (self.chat.thinking_visible ? 'off' : 'on'),
+        'Auto-retry: ' + (self.runner.retry_enabled ? 'on' : 'off'),
+    ]
+    self.overlay = new overlay_t(kind = OVERLAY_SETTINGS, title = 'Settings', options = options)
+}
+
+fn view_t.show_help_overlay(&self) {
+    [string] options = [
+        '/model        Select model',
+        '/scoped-models Select from all configured models',
+        '/login        Configure provider authentication',
+        '/logout       Remove stored provider authentication',
+        '/compact      Compact the session context',
+        '/new          Start a new session',
+        '/session      Show session info and token statistics',
+        '/resume       Resume a saved session',
+        '/import       Import a Pi v3 JSONL session',
+        '/export       Export session JSONL or HTML',
+        '/name         Set the session name',
+        '/tree         Browse session entries',
+        '/fork         Branch from a user message',
+        '/clone        Clone the current leaf',
+        '/copy         Copy the last response',
+        '/settings     Open settings',
+        '/hotkeys      Show keyboard commands',
+        '/reload       Reload project instructions at startup',
+        '/share        Create a shareable local session artifact',
+        '/trust        Save project trust decision',
+        '/quit         Exit Adou',
+    ]
+    self.overlay = new overlay_t(kind = OVERLAY_HELP, title = 'Commands', options = options)
+}
+
+fn view_t.show_hotkeys_overlay(&self) {
+    [string] options = [
+        'Escape       Cancel or abort; press twice to open tree',
+        'Ctrl+C       Clear editor; press twice to exit',
+        'Ctrl+D       Exit when editor is empty',
+        'Shift+Tab    Cycle thinking level',
+        'Ctrl+P       Cycle to next model',
+        'Ctrl+Shift+P Cycle to previous model',
+        'Ctrl+L       Open model selector',
+        'Ctrl+O       Toggle tool output',
+        'Ctrl+T       Toggle thinking blocks',
+        'Ctrl+X       Copy last assistant response',
+        'Ctrl+G       Edit prompt in external editor',
+        'Ctrl+Z       Suspend to background',
+        'Alt+Enter    Queue follow-up while streaming',
+        'Alt+Up       Restore queued messages',
+        'Enter        Submit or steer while streaming',
+        'Shift+Enter  Insert newline (Ctrl+J also works)',
+        'Ctrl+B/F      Move one character left/right',
+        'Alt+B/F       Move one word left/right',
+        'Ctrl+] char   Jump forward to character',
+        'Ctrl+Alt+]    Jump backward to character',
+    ]
+    self.overlay = new overlay_t(kind = OVERLAY_HELP, title = 'Keyboard shortcuts', options = options)
+}
+
+fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input) {
+    if input.paste {
+        overlay.query += input.data
+        overlay.selected = 0
+        self.redraw()
+        return
+    }
+    string key = keys.parse_key(input.data)
+    if overlay.kind == OVERLAY_SCOPED_MODELS {
+        if key == 'ctrl+s' {
+            self.save_preferences()
+            self.chat.status = 'Model scope saved'
+            self.redraw()
+            return
+        }
+        if key == 'ctrl+a' {
+            self.enable_all_scoped_models(overlay)
+            return
+        }
+        if key == 'ctrl+x' {
+            self.clear_scoped_models(overlay)
+            return
+        }
+        if key == 'ctrl+p' {
+            self.toggle_scoped_provider(overlay)
+            return
+        }
+        if key == 'alt+up' || key == 'alt+down' {
+            self.reorder_scoped_model(overlay, key == 'alt+up' ? -1 : 1)
+            return
+        }
+    }
+    if overlay.kind == OVERLAY_SESSION && overlay.confirming_delete {
+        if key == 'enter' {
+            self.confirm_delete_session(overlay)
+        } else if key == 'escape' || key == 'ctrl+c' {
+            overlay.confirming_delete = false
+            overlay.delete_path = ''
+            self.redraw()
+        }
+        return
+    }
+    if key == 'escape' || key == 'ctrl+c' {
+        if overlay.kind == OVERLAY_SCOPED_MODELS && key == 'ctrl+c' && overlay.query != '' {
+            overlay.query = ''
+            overlay.selected = 0
+            self.redraw()
+            return
+        }
+        if overlay.kind == OVERLAY_BRANCH_SUMMARY {
+            self.restore_tree_overlay(overlay.provider)
+            self.redraw()
+            return
+        }
+        if overlay.kind == OVERLAY_BRANCH_CUSTOM {
+            self.show_branch_summary_overlay(overlay.provider)
+            self.redraw()
+            return
+        }
+        if overlay.kind == OVERLAY_NAME && overlay.provider != '' {
+            self.show_session_overlay()
+            self.redraw()
+            return
+        }
+        if self.startup_session_picker {
+            self.startup_session_picker = false
+            self.overlay = null
+            self.quitting = true
+            return
+        }
+        self.overlay = null
+        self.redraw()
+        return
+    }
+    if overlay.kind == OVERLAY_SESSION_INFO {
+        if key == 'enter' {
+            self.overlay = null
+            self.redraw()
+        }
+        return
+    }
+    if overlay.kind == OVERLAY_SESSION {
+        if key == 'ctrl+p' {
+            overlay.show_paths = !overlay.show_paths
+            self.redraw()
+            return
+        }
+        if key == 'ctrl+s' {
+            overlay.sort_mode = (overlay.sort_mode + 1) % 2
+            overlay.options = overlay.sort_mode == 0 ? sort_session_paths(overlay.options) : sort_session_paths_alpha(overlay.options)
+            overlay.selected = 0
+            self.redraw()
+            return
+        }
+        if key == 'ctrl+n' {
+            overlay.named_only = !overlay.named_only
+            overlay.selected = 0
+            self.redraw()
+            return
+        }
+        if key == 'ctrl+d' || (key == 'ctrl+backspace' && overlay.query == '') {
+            self.begin_delete_session(overlay)
+            return
+        }
+        if key == 'ctrl+r' {
+            self.begin_rename_session(overlay)
+            return
+        }
+        if key == 'pageUp' {
+            int count = filtered_options(overlay).len()
+            overlay.selected -= OVERLAY_VISIBLE_OPTIONS
+            if overlay.selected < 0 {overlay.selected = 0}
+            if count > 0 && overlay.selected >= count {overlay.selected = count - 1}
+            self.redraw()
+            return
+        }
+        if key == 'pageDown' {
+            int count = filtered_options(overlay).len()
+            overlay.selected += OVERLAY_VISIBLE_OPTIONS
+            if count > 0 && overlay.selected >= count {overlay.selected = count - 1}
+            self.redraw()
+            return
+        }
+    }
+    if overlay.kind == OVERLAY_TREE && (key == 'L' || key == 'shift+l') {
+        var options = filtered_options(overlay)
+        if options.len() > 0 && overlay.selected >= 0 && overlay.selected < options.len() {
+            string entry_id = option_entry_id(options[overlay.selected])
+            overlay.kind = OVERLAY_LABEL
+            overlay.title = 'Label (empty to remove):'
+            overlay.provider = entry_id
+            overlay.options = []
+            overlay.query = self.runner.repository.get_label(entry_id)
+            overlay.selected = 0
+        }
+        self.redraw()
+        return
+    }
+    if overlay.kind == OVERLAY_API_KEY || overlay.kind == OVERLAY_NAME || overlay.kind == OVERLAY_LABEL || overlay.kind == OVERLAY_BRANCH_CUSTOM {
+        if key == 'enter' {
+            if overlay.kind == OVERLAY_NAME {
+                if overlay.provider != '' {
+                    self.rename_session(overlay.provider, overlay.query)
+                } else {
+                    self.set_session_name(overlay.query)
+                }
+            } else if overlay.kind == OVERLAY_LABEL {
+                self.complete_label(overlay)
+            } else if overlay.kind == OVERLAY_BRANCH_CUSTOM {
+                self.start_tree_summary(overlay.provider, overlay.query)
+            } else {
+                self.complete_api_key_login(overlay)
+            }
+            return
+        }
+        if key == 'backspace' || key == 'ctrl+h' {
+            if overlay.query.len() > 0 {
+                overlay.query = overlay.query.slice(0, overlay.query.len() - 1)
+            }
+            self.redraw()
+            return
+        }
+        string printable = keys.decode_printable(input.data)
+        if printable == '' && input.data != '' && input.data[0] >= 32 && input.data[0] != 0x1b {
+            printable = input.data
+        }
+        if printable != '' {
+            overlay.query += printable
+            self.redraw()
+        }
+        return
+    }
+    if key == 'up' {
+        int count = filtered_options(overlay).len()
+        if count == 0 {return}
+        overlay.selected = overlay.selected == 0 ? count - 1 : overlay.selected - 1
+        self.redraw()
+        return
+    }
+    if key == 'down' {
+        int count = filtered_options(overlay).len()
+        if count == 0 {return}
+        overlay.selected = overlay.selected == count - 1 ? 0 : overlay.selected + 1
+        self.redraw()
+        return
+    }
+    if key == 'backspace' || key == 'ctrl+h' {
+        if overlay.query.len() > 0 {
+            overlay.query = overlay.query.slice(0, overlay.query.len() - 1)
+            overlay.selected = 0
+        }
+        self.redraw()
+        return
+    }
+    if key == 'enter' {
+        self.select_overlay_option(overlay)
+        return
+    }
+    string printable = keys.decode_printable(input.data)
+    if printable == '' && input.data != '' && input.data[0] >= 32 && input.data[0] != 0x1b {
+        printable = input.data
+    }
+    if printable != '' {
+        overlay.query += printable
+        overlay.selected = 0
+        self.redraw()
+    }
+}
+
+#local
+fn view_t.begin_delete_session(&self, ref<overlay_t> overlay) {
+    var options = filtered_options(overlay)
+    if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
+        return
+    }
+    string target = options[overlay.selected]
+    string current = self.runner.repository.get_session_file()
+    if current != '' && path_utils.resolve_to_cwd(target, self.runner.repository.cwd) == path_utils.resolve_to_cwd(current, self.runner.repository.cwd) {
+        self.chat.status = 'Cannot delete the currently active session'
+        self.redraw()
+        return
+    }
+    overlay.confirming_delete = true
+    overlay.delete_path = target
+    self.redraw()
+}
+
+#local
+fn view_t.confirm_delete_session(&self, ref<overlay_t> overlay) {
+    string target = overlay.delete_path
+    if target == '' {
+        overlay.confirming_delete = false
+        self.redraw()
+        return
+    }
+    os.remove(target) catch error {
+        overlay.confirming_delete = false
+        overlay.delete_path = ''
+        self.chat.error_message = 'Could not delete session: ' + error.msg()
+        self.redraw()
+        return
+    }
+    [string] remaining = vec<string>.cap_of(overlay.options.len())
+    for option in overlay.options {
+        if option != target {remaining.push(option)}
+    }
+    overlay.options = remaining
+    overlay.confirming_delete = false
+    overlay.delete_path = ''
+    overlay.selected = 0
+    self.chat.status = 'Deleted session ' + path.base(target)
+    if overlay.options.len() == 0 {
+        self.overlay = null
+        if self.startup_session_picker {
+            self.startup_session_picker = false
+            self.quitting = true
+        }
+    }
+    self.redraw()
+}
+
+#local
+fn view_t.begin_rename_session(&self, ref<overlay_t> overlay) {
+    var options = filtered_options(overlay)
+    if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
+        return
+    }
+    string target = options[overlay.selected]
+    var selected = repository.open(target) catch error {
+        self.chat.error_message = 'Could not open session: ' + error.msg()
+        self.redraw()
+        return
+    }
+    string name = selected.get_session_name() catch error {''}
+    self.overlay = new overlay_t(kind = OVERLAY_NAME, title = 'Rename session:', provider = target, query = name)
+    self.redraw()
+}
+
+#local
+fn view_t.rename_session(&self, string file_path, string name) {
+    string value = name.trim([' ', '\t', '\n', '\r'])
+    if value == '' {
+        self.chat.error_message = 'Session name cannot be empty'
+        self.redraw()
+        return
+    }
+    var selected = repository.open(file_path) catch error {
+        self.chat.error_message = 'Could not open session: ' + error.msg()
+        self.redraw()
+        return
+    }
+    selected.append_session_info(value) catch error {
+        self.chat.error_message = 'Could not rename session: ' + error.msg()
+        self.redraw()
+        return
+    }
+    self.chat.status = 'Renamed session to ' + value
+    self.show_session_overlay()
+    self.redraw()
+}
+
+fn view_t.complete_label(&self, ref<overlay_t> overlay) {
+    string entry_id = overlay.provider
+    self.runner.repository.append_label_change(entry_id, overlay.query) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    string value = overlay.query.trim([' ', '\t', '\n', '\r'])
+    self.chat.status = value == '' ? 'Label removed' : 'Label saved'
+    self.show_tree_overlay()
+    if self.overlay is ref<overlay_t> tree {
+        for index, option in tree.options {
+            if option_entry_id(option) == entry_id {
+                tree.selected = index
+                break
+            }
+        }
+    }
+    self.redraw()
+}
+
+fn view_t.complete_api_key_login(&self, ref<overlay_t> overlay) {
+    string key = overlay.query
+    if key == '' {
+        key = auth.effective(overlay.provider)
+    }
+    if key == '' {
+        self.chat.error_message = 'API key is required. Set ' + env_name(overlay.provider) + ' or type it here.'
+        self.redraw()
+        return
+    }
+    auth.save(overlay.provider, key) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    self.runner.refresh_auth() catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    self.chat.error_message = ''
+    self.chat.status = 'Saved API key for ' + overlay.provider
+    self.overlay = null
+    self.redraw()
+}
+
+fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
+    var options = filtered_options(overlay)
+    if overlay.kind == OVERLAY_AUTH_METHOD {
+        string method = overlay.selected == 0 ? 'account' : 'api_key'
+        if overlay.provider == '' {
+            overlay.kind = OVERLAY_PROVIDER
+            overlay.title = 'Select provider:'
+            overlay.options = ['deepseek', 'openai', 'anthropic']
+            overlay.provider = method
+            overlay.query = ''
+            overlay.selected = 0
+            self.redraw()
+            return
+        }
+        overlay.kind = OVERLAY_API_KEY
+        overlay.title = 'Login to ' + overlay.provider
+        overlay.options = []
+        overlay.query = ''
+        overlay.selected = 0
+        self.redraw()
+        return
+    }
+    if overlay.kind == OVERLAY_PROVIDER {
+        if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
+            return
+        }
+        string provider = options[overlay.selected]
+        if overlay.provider == 'account' {
+            self.chat.status = 'Account sign-in for ' + provider + ' requires its OAuth flow; choose API key or set the provider environment variable.'
+            self.overlay = null
+            self.redraw()
+            return
+        }
+        overlay.kind = OVERLAY_API_KEY
+        overlay.title = 'Login to ' + provider
+        overlay.provider = provider
+        overlay.options = []
+        overlay.query = ''
+        overlay.selected = 0
+        self.redraw()
+        return
+    }
+    if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
+        return
+    }
+    string selected = options[overlay.selected]
+    if overlay.kind == OVERLAY_SCOPED_MODELS {
+        self.toggle_scoped_model(scoped_model_id(selected), overlay)
+        return
+    }
+    if overlay.kind == OVERLAY_SESSION {
+        self.open_session(selected)
+        return
+    }
+    if overlay.kind == OVERLAY_TREE {
+        string entry_id = selected
+        int separator = selected.find(' ')
+        if separator >= 0 {
+            entry_id = selected.slice(0, separator)
+        }
+        if entry_id == self.runner.repository.get_leaf_id() {
+            self.chat.status = 'Already at this point'
+            self.overlay = null
+            self.redraw()
+            return
+        }
+        self.show_branch_summary_overlay(entry_id)
+        self.redraw()
+        return
+    }
+    if overlay.kind == OVERLAY_BRANCH_SUMMARY {
+        string entry_id = overlay.provider
+        if selected == 'No summary' {
+            self.complete_tree_navigation(entry_id)
+        } else if selected == 'Summarize' {
+            self.start_tree_summary(entry_id, '')
+        } else {
+            self.overlay = new overlay_t(kind = OVERLAY_BRANCH_CUSTOM, title = 'Custom summarization instructions', provider = entry_id)
+            self.redraw()
+        }
+        return
+    }
+    if overlay.kind == OVERLAY_FORK {
+        string entry_id = selected
+        int separator = selected.find(' ')
+        if separator >= 0 {
+            entry_id = selected.slice(0, separator)
+        }
+        string selected_text = self.fork_message_text(entry_id)
+        self.runner.fork_session(entry_id) catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return
+        }
+        self.chat.load_messages(self.runner.active_messages)
+        self.editor.set_text(selected_text)
+        self.chat.status = 'Forked to new session'
+        self.overlay = null
+        self.redraw()
+        return
+    }
+    if overlay.kind == OVERLAY_MODEL {
+        ref<ai_types.model_t>? model = models.find(selected)
+        if model is ref<ai_types.model_t> next_model {
+            self.runner.set_model(next_model) catch error {
+                self.chat.error_message = error.msg()
+                self.redraw()
+                return
+            }
+            self.apply_scoped_thinking(next_model)
+            self.chat.model = next_model.id
+            self.chat.configure(next_model.context_window, self.chat.thinking)
+            self.save_default_model()
+            self.chat.status = 'Model: ' + selected
+            self.chat.error_message = ''
+            self.overlay = null
+            self.redraw()
+        }
+        return
+    }
+    if overlay.kind == OVERLAY_LOGOUT {
+        auth.remove(selected) catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return
+        }
+        self.runner.refresh_auth() catch error {
+            self.chat.error_message = error.msg()
+            self.redraw()
+            return
+        }
+        self.chat.status = 'Removed stored API key for ' + selected
+        self.overlay = null
+        self.redraw()
+        return
+    }
+    if overlay.kind == OVERLAY_SETTINGS {
+        if overlay.selected == 0 {
+            self.toggle_thinking()
+        } else if overlay.selected == 1 {
+            self.runner.compaction_settings.enabled = !self.runner.compaction_settings.enabled
+            self.chat.set_auto_compaction(self.runner.compaction_settings.enabled)
+            self.chat.status = 'Auto-compaction ' + (self.runner.compaction_settings.enabled ? 'enabled' : 'disabled')
+        } else if overlay.selected == 2 {
+            self.runner.agent_config.queues.steering_mode = next_queue_mode(self.runner.agent_config.queues.steering_mode)
+            self.chat.status = 'Steering mode: ' + self.runner.agent_config.queues.steering_mode
+        } else if overlay.selected == 3 {
+            self.runner.agent_config.queues.follow_up_mode = next_queue_mode(self.runner.agent_config.queues.follow_up_mode)
+            self.chat.status = 'Follow-up mode: ' + self.runner.agent_config.queues.follow_up_mode
+        } else if overlay.selected == 4 {
+            bool visible = self.chat.toggle_thinking_visibility()
+            self.chat.status = 'Thinking blocks: ' + (visible ? 'visible' : 'hidden')
+        } else if overlay.selected == 5 {
+            self.runner.retry_enabled = !self.runner.retry_enabled
+            self.chat.status = 'Auto-retry ' + (self.runner.retry_enabled ? 'enabled' : 'disabled')
+        }
+        self.save_preferences()
+        self.show_settings_overlay()
+        self.redraw()
+        return
+    }
+    if overlay.kind == OVERLAY_HELP {
+        self.overlay = null
+        self.redraw()
+    }
+}
+
+fn view_t.complete_tree_navigation(&self, string entry_id) {
+    string editor_text = self.runner.navigate_tree(entry_id) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    self.chat.load_messages(self.runner.active_messages)
+    if editor_text != '' && self.editor.get_text().trim([' ', '\t', '\n', '\r']) == '' {
+        self.editor.set_text(editor_text)
+    }
+    self.chat.status = 'Navigated to selected point'
+    self.chat.error_message = ''
+    self.overlay = null
+    self.redraw()
+}
+
+fn view_t.start_tree_summary(&self, string entry_id, string instructions) {
+    var target = self.runner.inspect_tree_target(entry_id) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    ref<session_stream.stream_t> stream = self.runner.navigate_tree_with_summary(entry_id, instructions) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    self.pending_tree_navigation = true
+    self.pending_tree_editor_text = target.editor_text
+    self.pending_tree_target_id = entry_id
+    self.overlay = null
+    self.active_stream = stream
+    self.redraw()
+}
+
+fn view_t.toggle_thinking(&self) {
+    string next = self.chat.thinking == 'off' ? 'medium' : 'off'
+    self.runner.set_thinking_level(next) catch error {
+        self.chat.error_message = error.msg()
+        return
+    }
+    self.chat.thinking = next
+    self.chat.status = next == 'off' ? 'Thinking disabled' : 'Thinking set to ' + next
+    self.save_preferences()
+}
+
+fn view_t.cycle_thinking_level(&self) {
+    if !self.runner.agent_config.model.reasoning {
+        self.chat.status = 'Current model does not support thinking'
+        self.redraw()
+        return
+    }
+    [string] levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+    int current = 0
+    for index, level in levels {
+        if level == self.chat.thinking {current = index; break}
+    }
+    string next = levels[(current + 1) % levels.len()]
+    self.runner.set_thinking_level(next) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    // set_thinking_level clamps a requested level to the active model's
+    // capabilities.  Reflect the effective value in the editor/footer rather
+    // than the requested value (important when a model has no reasoning).
+    string effective = self.runner.agent_config.stream_options.thinking_enabled ? self.runner.agent_config.stream_options.reasoning_effort : 'off'
+    self.chat.thinking = effective
+    self.chat.status = 'Thinking level: ' + effective
+    self.chat.error_message = ''
+    self.save_preferences()
+    self.redraw()
+}
+
+fn view_t.cycle_model(&self, int direction) {
+    var available = self.available_cycle_models()
+    if available.len() == 0 {
+        self.chat.status = 'No authenticated model available'
+        self.redraw()
+        return
+    }
+    if available.len() < 2 {
+        self.chat.status = 'Only one model available'
+        self.redraw()
+        return
+    }
+    int current = 0
+    for index, model in available {
+        if model.provider == self.runner.agent_config.model.provider && model.id == self.runner.agent_config.model.id {
+            current = index
+            break
+        }
+    }
+    int next_index = (current + direction + available.len()) % available.len()
+    var next = available[next_index]
+    self.runner.set_model(next) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    self.apply_scoped_thinking(next)
+    self.chat.model = next.id
+    self.chat.configure(next.context_window, self.chat.thinking)
+    self.save_default_model()
+    self.chat.status = 'Switched to ' + next.id + (next.reasoning && self.chat.thinking != 'off' ? ' (thinking: ' + self.chat.thinking + ')' : '')
+    self.chat.error_message = ''
+    self.redraw()
+}
+
+#local
+fn view_t.apply_scoped_thinking(&self, ref<ai_types.model_t> model) {
+    string level = models.thinking_for(model.provider + '/' + model.id, self.model_scope_patterns)
+    if level == '' {
+        return
+    }
+    self.runner.set_thinking_level(level) catch error {
+        self.chat.error_message = error.msg()
+        return
+    }
+    self.chat.thinking = self.runner.agent_config.stream_options.thinking_enabled ? self.runner.agent_config.stream_options.reasoning_effort : 'off'
+}
+
+fn view_t.restore_queued_messages(&self) {
+    var queued = self.runner.agent_config.queues.restore_all()
+    [string] texts = []
+    for message in queued {
+        if message is ref<ai_types.user_message_t> user {
+            texts.push(user.content)
+        } else if message is ref<ai_types.custom_message_t> custom {
+            texts.push(custom.content)
+        }
+    }
+    if texts.len() == 0 {
+        self.chat.status = 'No queued messages to restore'
+        self.redraw()
+        return
+    }
+    string restored = strings.join(texts, '\n')
+    string existing = self.editor.get_text()
+    self.editor.set_text(restored + (existing == '' ? '' : '\n' + existing))
+    self.chat.status = fmt.sprintf('Restored %d queued message%s to editor', texts.len(), texts.len() == 1 ? '' : 's')
+    self.redraw()
+}
+
+fn view_t.save_preferences(&self) {
+    var existing = config_settings.load()
+    var preferences = config_settings.settings_t {default_provider: existing.default_provider, default_model: existing.default_model, default_thinking_level: self.chat.thinking, auto_compaction: self.runner.compaction_settings.enabled, steering_mode: self.runner.agent_config.queues.steering_mode, follow_up_mode: self.runner.agent_config.queues.follow_up_mode, hide_thinking: !self.chat.thinking_visible, retry_enabled: self.runner.retry_enabled, retry_max_attempts: existing.retry_max_attempts, retry_base_delay_ms: existing.retry_base_delay_ms, enabled_model_ids: self.scoped_model_ids,}
+    config_settings.save(preferences) catch error {
+        self.chat.error_message = 'Could not save settings: ' + error.msg()
+    }
+}
+
+#local
+fn view_t.save_default_model(&self) {
+    var preferences = config_settings.load()
+    preferences.default_provider = self.runner.agent_config.model.provider
+    preferences.default_model = self.runner.agent_config.model.id
+    config_settings.save(preferences) catch error {
+        self.chat.error_message = 'Could not save model preference: ' + error.msg()
+    }
+}
+
+fn view_t.copy_last_response(&self) {
+    string text = ''
+    for int index = self.chat.messages.len() - 1; index >= 0; index -= 1 {
+        if self.chat.messages[index] is ref<ai_types.assistant_message_t> assistant {
+            for block in assistant.content {
+                if block is ref<ai_types.text_content_t> content {
+                    if text != '' {text += '\n'}
+                    text += content.text
+                }
+            }
+            break
+        }
+    }
+    if text == '' {
+        self.chat.status = 'No assistant response to copy'
+        self.redraw()
+        return
+    }
+    string encoded = base64.encode(text as [u8]) as string
+    self.terminal.write('\x1b]52;c;' + encoded + '\x07') catch error {
+        self.chat.error_message = 'Clipboard copy failed: ' + error.msg()
+        self.redraw()
+        return
+    }
+    self.chat.status = 'Copied last assistant response to clipboard'
+    self.redraw()
+}
+
+fn render_overlay(ref<overlay_t> overlay, int width): [string]! {
+    [string] result = vec<string>.cap_of(24)
+    result.push(theme.border_line(width))
+    result.push('')
+    int title_width = width - 2
+    if title_width < 1 {title_width = 1}
+    result.push(' ' + theme.bold(theme.fg(theme.ACCENT, text_utils.truncate_to_width(overlay.title, title_width, '...', false))))
+    result.push('')
+    if overlay.kind == OVERLAY_SESSION_INFO {
+        for line in overlay.options {
+            if line == '' {
+                result.push('')
+            } else if line == 'Session Info' || line == 'Messages' || line == 'Tokens' || line == 'Cost' || line == 'Context' {
+                result.append(text_utils.wrap_text_with_ansi(' ' + theme.bold(theme.fg(theme.ACCENT, line)), width))
+            } else {
+                int available = width - 2
+                if available < 1 {available = 1}
+                result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.TEXT, text_utils.truncate_to_width(line, available, '...', false)), width))
+            }
+        }
+        result.push('')
+        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.DIM_COLOR, 'enter/escape close'), width))
+        result.push(theme.border_line(width))
+        return result
+    }
+    if overlay.kind == OVERLAY_API_KEY || overlay.kind == OVERLAY_NAME || overlay.kind == OVERLAY_LABEL || overlay.kind == OVERLAY_BRANCH_CUSTOM {
+        string field = overlay.kind == OVERLAY_NAME ? 'Session name' : overlay.kind == OVERLAY_LABEL ? 'Label' : overlay.kind == OVERLAY_BRANCH_CUSTOM ? 'Instructions' : 'API key'
+        result.push(' ' + theme.fg(theme.MUTED, field))
+        result.push(' > ' + theme.fg(theme.TEXT, overlay.query))
+        result.push('')
+    } else {
+        if overlay.kind == OVERLAY_SESSION && overlay.confirming_delete {
+            result.push(' ' + theme.fg(theme.ERROR, 'Delete this session?'))
+            result.push(' ' + theme.fg(theme.TEXT, shorten_overlay_path(overlay.delete_path)))
+            result.push('')
+            result.push(' ' + theme.fg(theme.DIM_COLOR, 'enter confirm   escape cancel'))
+            result.push(theme.border_line(width))
+            return result
+        }
+        if overlay.kind == OVERLAY_MODEL {
+            result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.WARNING, 'Only showing models from configured providers. Use /login to add providers.'), width))
+            result.push('')
+            if overlay.query != '' {
+                result.push(' ' + theme.fg(theme.MUTED, 'Search: ') + theme.fg(theme.TEXT, overlay.query))
+                result.push('')
+            }
+        }
+        var options = filtered_options(overlay)
+        int first = 0
+        if overlay.selected >= OVERLAY_VISIBLE_OPTIONS {
+            first = overlay.selected - OVERLAY_VISIBLE_OPTIONS + 1
+        }
+        int last = first + OVERLAY_VISIBLE_OPTIONS
+        if last > options.len() {
+            last = options.len()
+            first = last > OVERLAY_VISIBLE_OPTIONS ? last - OVERLAY_VISIBLE_OPTIONS : 0
+        }
+        if first > 0 {
+            result.push('  ' + theme.fg(theme.DIM_COLOR, '...'))
+        }
+        for int index = first; index < last; index += 1 {
+            string option = options[index]
+            bool selected = index == overlay.selected
+            string prefix = selected ? theme.fg(theme.ACCENT, '→ ') : '  '
+            int option_width = width - 4
+            if option_width < 1 {option_width = 1}
+            string display_option = overlay.kind == OVERLAY_SESSION ? session_option_display(option, overlay.show_paths) : option
+            string fitted = text_utils.truncate_to_width(display_option, option_width, '...', false)
+            string text = selected ? theme.fg(theme.ACCENT, fitted) : theme.fg(theme.TEXT, fitted)
+            result.push(' ' + prefix + text)
+        }
+        if last < options.len() {
+            result.push('  ' + theme.fg(theme.DIM_COLOR, '...'))
+        }
+        if options.len() == 0 {
+            result.push('  ' + theme.fg(theme.MUTED, 'No matching options'))
+        }
+    }
+    result.push('')
+    string help = overlay.kind == OVERLAY_TREE ? '↑↓ navigate   enter select   shift+l label   escape/ctrl+c cancel' : overlay.kind == OVERLAY_SCOPED_MODELS ? '↑↓ navigate   enter toggle   ctrl+a all   ctrl+x clear   ctrl+p provider   alt+↑↓ reorder   ctrl+s save   escape/ctrl+c cancel' : overlay.kind == OVERLAY_SESSION ? '↑↓ navigate   pgup/pgdn page   ctrl+p path   ctrl+s sort   ctrl+n named   ctrl+r rename   ctrl+d delete   escape cancel' : '↑↓ navigate   enter select   escape/ctrl+c cancel'
+    result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.DIM_COLOR, help), width))
+    result.push(theme.border_line(width))
+    return result
+}
+
+#local
+fn filtered_options(ref<overlay_t> overlay): [string] {
+    [string] result = vec<string>.cap_of(overlay.options.len())
+    string query = overlay.query.to_lower()
+    for option in overlay.options {
+        if overlay.kind == OVERLAY_SESSION && overlay.named_only && session_name_for_path(option) == '' {
+            continue
+        }
+        string searchable = overlay.kind == OVERLAY_SESSION ? session_option_display(option, false) + ' ' + option : option
+        if query == '' || fuzzy_match(searchable.to_lower(), query) {
+            result.push(option)
+        }
+    }
+    return result
+}
+
+#local
+fn session_name_for_path(string file_path): string {
+    var selected = repository.open(file_path) catch error {return ''}
+    return selected.get_session_name() catch error {''}
+}
+
+#local
+fn session_option_display(string file_path, bool show_path): string {
+    if show_path {
+        return shorten_overlay_path(file_path)
+    }
+    string name = session_name_for_path(file_path)
+    if name != '' {
+        return name
+    }
+    var selected = repository.open(file_path) catch error {return path.base(file_path)}
+    var active = selected.active_entries()
+    for entry in active {
+        if entry.kind != session_types.ENTRY_MESSAGE {continue}
+        var object = entry.raw.as_object() catch error {continue}
+        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {continue}
+        var message = message_json.decode(object['message']) catch error {continue}
+        if message is ref<ai_types.user_message_t> user {
+            string preview = user.content.replace('\n', ' ').trim([' ', '\t'])
+            return preview == '' ? path.base(file_path) : preview
+        }
+    }
+    return path.base(file_path)
+}
+
+#local
+fn shorten_overlay_path(string value): string {
+    string home = syscall.get_env('HOME')
+    if home != '' && value.starts_with(home + '/') {
+        return '~' + value.slice(home.len(), value.len())
+    }
+    return value
+}
+
+#local
+fn fuzzy_match(string value, string query): bool {
+    int cursor = 0
+    for int index = 0; index < query.len(); index += 1 {
+        int found = -1
+        for int candidate = cursor; candidate < value.len(); candidate += 1 {
+            if value[candidate] == query[index] {
+                found = candidate
+                break
+            }
+        }
+        if found < 0 {
+            return false
+        }
+        cursor = found + 1
+    }
+    return true
+}
+
+#local
+fn option_entry_id(string option): string {
+    int separator = option.find(' ')
+    return separator < 0 ? option : option.slice(0, separator)
+}
+
+#local
+fn next_queue_mode(string value): string {
+    return value == agent_types.QUEUE_ALL ? agent_types.QUEUE_ONE : agent_types.QUEUE_ALL
+}
+
+#local
+fn view_t.is_model_enabled(&self, string model_id): bool {
+    if !self.scoped_models_active {
+        return true
+    }
+    for value in self.scoped_model_ids {
+        if value == model_id {
+            return true
+        }
+    }
+    return false
+}
+
+#local
+fn view_t.available_cycle_models(&self): [ref<ai_types.model_t>] {
+    if self.model_scope_patterns.len() > 0 {
+        [ref<ai_types.model_t>] scoped = []
+        for model in models.all() {
+            if models.allowed(model.provider + '/' + model.id, self.model_scope_patterns) && model_is_authenticated(self.runner, model) {
+                scoped.push(model)
+            }
+        }
+        return scoped
+    }
+    if !self.scoped_models_active {
+        [ref<ai_types.model_t>] available = []
+        for model in models.all() {
+            if model_is_authenticated(self.runner, model) {
+                available.push(model)
+            }
+        }
+        return available
+    }
+    [ref<ai_types.model_t>] result = []
+    for model_id in self.scoped_model_ids {
+        ref<ai_types.model_t>? selected = models.find(model_id)
+        if selected is ref<ai_types.model_t> model {
+            if model_is_authenticated(self.runner, model) {
+                result.push(model)
+            }
+        }
+    }
+    return result
+}
+
+#local
+fn model_is_authenticated(ref<session.runner_t> runner, ref<ai_types.model_t> model): bool {
+    if auth.effective(model.provider) != '' {
+        return true
+    }
+    return runner.agent_config.model.provider == model.provider && runner.agent_config.stream_options.api_key != ''
+}
+
+#local
+fn view_t.toggle_scoped_model(&self, string model_id, ref<overlay_t> overlay) {
+    if model_id == '' {
+        return
+    }
+    if !self.scoped_models_active {
+        self.scoped_models_active = true
+        self.scoped_model_ids = [model_id]
+    } else {
+        int found = -1
+        for index, value in self.scoped_model_ids {
+            if value == model_id {
+                found = index
+                break
+            }
+        }
+        if found >= 0 {
+            [string] remaining = []
+            for index, value in self.scoped_model_ids {
+                if index != found {
+                    remaining.push(value)
+                }
+            }
+            self.scoped_model_ids = remaining
+        } else {
+            self.scoped_model_ids.push(model_id)
+        }
+    }
+    self.refresh_scoped_model_options(overlay)
+    self.chat.status = 'Model scope changed (Ctrl+S to save)'
+    self.redraw()
+}
+
+#local
+fn view_t.enable_all_scoped_models(&self, ref<overlay_t> overlay) {
+    self.scoped_models_active = true
+    self.scoped_model_ids = []
+    for model in models.all() {
+        self.scoped_model_ids.push(model.provider + '/' + model.id)
+    }
+    self.refresh_scoped_model_options(overlay)
+    self.chat.status = 'All models enabled (Ctrl+S to save)'
+    self.redraw()
+}
+
+#local
+fn view_t.clear_scoped_models(&self, ref<overlay_t> overlay) {
+    self.scoped_models_active = true
+    self.scoped_model_ids = []
+    self.refresh_scoped_model_options(overlay)
+    self.chat.status = 'All models disabled (Ctrl+S to save)'
+    self.redraw()
+}
+
+#local
+fn view_t.toggle_scoped_provider(&self, ref<overlay_t> overlay) {
+    var options = filtered_options(overlay)
+    if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
+        return
+    }
+    string selected_id = scoped_model_id(options[overlay.selected])
+    int separator = selected_id.find('/')
+    if separator < 0 {
+        return
+    }
+    string provider = selected_id.slice(0, separator)
+    [string] provider_ids = []
+    for model in models.all() {
+        if model.provider == provider {
+            provider_ids.push(model.provider + '/' + model.id)
+        }
+    }
+    bool all_enabled = true
+    for id in provider_ids {
+        if !self.is_model_enabled(id) {
+            all_enabled = false
+            break
+        }
+    }
+    self.scoped_models_active = true
+    if all_enabled {
+        [string] remaining = []
+        for id in self.scoped_model_ids {
+            bool remove = false
+            for provider_id in provider_ids {
+                if id == provider_id {remove = true; break}
+            }
+            if !remove {remaining.push(id)}
+        }
+        self.scoped_model_ids = remaining
+    } else {
+        for provider_id in provider_ids {
+            bool found = false
+            for id in self.scoped_model_ids {
+                if id == provider_id {found = true; break}
+            }
+            if !found {self.scoped_model_ids.push(provider_id)}
+        }
+    }
+    self.refresh_scoped_model_options(overlay)
+    self.chat.status = 'Provider ' + provider + ' toggled (Ctrl+S to save)'
+    self.redraw()
+}
+
+#local
+fn view_t.reorder_scoped_model(&self, ref<overlay_t> overlay, int delta) {
+    if !self.scoped_models_active || self.scoped_model_ids.len() == 0 {
+        return
+    }
+    var options = filtered_options(overlay)
+    if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
+        return
+    }
+    string selected_id = scoped_model_id(options[overlay.selected])
+    int current = -1
+    for index, id in self.scoped_model_ids {
+        if id == selected_id {current = index; break}
+    }
+    if current < 0 {
+        return
+    }
+    int next = current + delta
+    if next < 0 || next >= self.scoped_model_ids.len() {
+        return
+    }
+    string swap = self.scoped_model_ids[next]
+    self.scoped_model_ids[next] = self.scoped_model_ids[current]
+    self.scoped_model_ids[current] = swap
+    self.refresh_scoped_model_options(overlay)
+    self.chat.status = 'Model order changed (Ctrl+S to save)'
+    self.redraw()
+}
+
+#local
+fn view_t.refresh_scoped_model_options(&self, ref<overlay_t> overlay) {
+    [string] refreshed = []
+    [string] ordered = []
+    for id in self.scoped_model_ids {
+        bool known = false
+        for model in models.all() {
+            string known_id = model.provider + '/' + model.id
+            if id == known_id {known = true; break}
+        }
+        if known {ordered.push(id)}
+    }
+    for model in models.all() {
+        string id = model.provider + '/' + model.id
+        bool listed = false
+        for existing in ordered {
+            if existing == id {listed = true; break}
+        }
+        if !listed {ordered.push(id)}
+    }
+    for id in ordered {
+        refreshed.push(scoped_model_option(id, self.is_model_enabled(id)))
+    }
+    overlay.options = refreshed
+    if overlay.selected >= overlay.options.len() {
+        overlay.selected = overlay.options.len() - 1
+    }
+    if overlay.selected < 0 {overlay.selected = 0}
+}
+
+#local
+fn scoped_model_option(string model_id, bool enabled): string {
+    return (enabled ? '[x] ' : '[ ] ') + model_id
+}
+
+#local
+fn scoped_model_id(string option): string {
+    return option.len() > 4 ? option.slice(4, option.len()) : option
+}
+
+#local
+fn builtin_command_names(): [string] {
+    return ['/help', '/settings', '/scoped-models', '/model', '/export', '/import', '/share', '/copy', '/name', '/session', '/changelog', '/hotkeys', '/fork', '/clone', '/tree', '/trust', '/login', '/logout', '/new', '/compact', '/reload', '/resume', '/quit']
+}
+
+#local
+fn matching_command_names(string prefix): [string] {
+    [string] result = vec<string>.cap_of(9)
+    for command in builtin_command_names() {
+        if prefix == '' || command.starts_with(prefix) {
+            result.push(command)
+        }
+    }
+    return result
+}
+
+#local
+fn render_command_menu(string prefix, int selected_index, int width): [string]! {
+    [string] result = vec<string>.cap_of(10)
+    var matches = matching_command_names(prefix)
+    for index, command in matches {
+        string description = command_description(command)
+        string line = index == selected_index ? theme.fg(theme.ACCENT, '→ ' + command) : '  ' + theme.fg(theme.TEXT, command)
+        line += '  ' + theme.fg(theme.MUTED, description)
+        result.push(text_utils.truncate_to_width(line, width, '...', false))
+    }
+    return result
+}
+
+#local
+fn command_description(string command): string {
+    if command == '/help' {return 'Show commands'}
+    if command == '/settings' {return 'Open settings'}
+    if command == '/scoped-models' {return 'Select configured models'}
+    if command == '/model' {return 'Select model'}
+    if command == '/export' {return 'Export session'}
+    if command == '/import' {return 'Import session'}
+    if command == '/share' {return 'Share session'}
+    if command == '/copy' {return 'Copy last response'}
+    if command == '/name' {return 'Name session'}
+    if command == '/session' {return 'Show session info'}
+    if command == '/changelog' {return 'Show changelog'}
+    if command == '/hotkeys' {return 'Show keyboard commands'}
+    if command == '/fork' {return 'Fork session'}
+    if command == '/clone' {return 'Clone session'}
+    if command == '/tree' {return 'Browse session tree'}
+    if command == '/trust' {return 'Manage project trust'}
+    if command == '/login' {return 'Configure authentication'}
+    if command == '/logout' {return 'Remove stored credentials'}
+    if command == '/compact' {return 'Compact context'}
+    if command == '/new' {return 'Start a new session'}
+    if command == '/reload' {return 'Reload project instructions'}
+    if command == '/resume' {return 'Resume saved session'}
+    return 'Quit Adou'
+}

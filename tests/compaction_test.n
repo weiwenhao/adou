@@ -1,0 +1,197 @@
+import adou.src.ai.types as ai_types
+import adou.src.ai.abort
+import adou.src.ai.event_stream
+import adou.src.compaction.compact
+import adou.src.compaction.cut_point
+import adou.src.compaction.prepare
+import adou.src.compaction.serialize
+import adou.src.compaction.token_estimate
+import adou.src.compaction.types
+import adou.src.session.repository
+import json
+
+type summary_fixture_t = struct {
+    [ref<ai_types.assistant_message_t>] responses = []
+    int index
+    [int] max_tokens = []
+    [string] cache_retention = []
+    [string] session_ids = []
+    [string] prompts = []
+}
+
+fn summary_response(string text, string stop_reason, string error_message, int input, int output): ref<ai_types.assistant_message_t> {
+    [ai_types.content_t] content = []
+    if text != '' {
+        ai_types.content_t block = new ai_types.text_content_t(text = text)
+        content.push(block)
+    }
+    return new ai_types.assistant_message_t(content = content, stop_reason = stop_reason, error_message = error_message, usage = ai_types.usage_t {input: input, output: output, total_tokens: input + output,})
+}
+
+fn fixture_stream(ref<summary_fixture_t> fixture): compact.stream_fn {
+    compact.stream_fn result = fn(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+        fixture.max_tokens.push(options.max_tokens)
+        fixture.cache_retention.push(options.cache_retention)
+        fixture.session_ids.push(options.session_id)
+        if context.messages[0] is ref<ai_types.user_message_t> prompt {
+            fixture.prompts.push(prompt.content)
+        }
+        var response = fixture.responses[fixture.index]
+        fixture.index += 1
+        var stream = event_stream.new()
+        if response.stop_reason == ai_types.STOP_ERROR || response.stop_reason == ai_types.STOP_ABORTED {
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_ERROR, reason: response.stop_reason, error: response,}) catch error {}
+        } else {
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_DONE, reason: response.stop_reason, message: response,}) catch error {}
+        }
+        stream.end() catch error {}
+        return stream
+    }
+    return result
+}
+
+fn repeat(string value, int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += value
+    }
+    return result
+}
+
+fn user(string text): ai_types.message_t {
+    ai_types.message_t result = new ai_types.user_message_t(content = text)
+    return result
+}
+
+fn assistant(string text, int usage_tokens): ai_types.message_t {
+    ai_types.content_t content = new ai_types.text_content_t(text = text)
+    ai_types.usage_t usage = ai_types.usage_t {total_tokens: usage_tokens,}
+    ai_types.message_t result = new ai_types.assistant_message_t(content = [content], usage = usage, stop_reason = ai_types.STOP_STOP)
+    return result
+}
+
+fn tool_result(string text): ai_types.message_t {
+    ai_types.message_t result = new ai_types.tool_result_message_t(content = [new ai_types.text_content_t(text = text)])
+    return result
+}
+
+fn tool_assistant(string name, string file_path): ai_types.message_t! {
+    ai_types.content_t call = new ai_types.tool_call_t(id = 'call', name = name, arguments = json.parse('{"path":"' + file_path + '"}'))
+    ai_types.message_t result = new ai_types.assistant_message_t(content = [call], stop_reason = ai_types.STOP_TOOL_USE)
+    return result
+}
+
+test 'Pi context token accounting uses last valid usage plus trailing estimates' {
+    assert(token_estimate.calculate_context_tokens(ai_types.usage_t {input: 10, output: 20, cache_read: 30, cache_write: 40,}) == 100)
+    var estimate = token_estimate.estimate_context_tokens([user(repeat('a', 40)), assistant('answer', 1000), user(repeat('b', 20))])
+    assert(estimate.tokens == 1005)
+    assert(estimate.usage_tokens == 1000 && estimate.trailing_tokens == 5 && estimate.last_usage_index == 1)
+    var invalid = new ai_types.assistant_message_t(content = [], usage = ai_types.usage_t {total_tokens: 9000,}, stop_reason = ai_types.STOP_ERROR)
+    ai_types.message_t invalid_message = invalid
+    var fallback = token_estimate.estimate_context_tokens([user(repeat('x', 8)), invalid_message])
+    assert(fallback.last_usage_index == -1 && fallback.tokens == 2)
+}
+
+test 'threshold is strictly greater and honors enabled' {
+    types.settings_t settings = types.settings_t {reserve_tokens: 100, keep_recent_tokens: 20,}
+    assert(!token_estimate.should_compact(900, 1000, settings))
+    assert(token_estimate.should_compact(901, 1000, settings))
+    settings.enabled = false
+    assert(!token_estimate.should_compact(9999, 1000, settings))
+}
+
+test 'cut point prefers a user boundary and never starts at a tool result' {
+    var session = repository.in_memory('/tmp')
+    session.append_message(user(repeat('a', 40)))
+    session.append_message(assistant(repeat('b', 40), 0))
+    session.append_message(user(repeat('c', 40)))
+    session.append_message(assistant(repeat('d', 40), 0))
+    var cut = cut_point.find(session.get_entries(), 0, 4, 15)
+    assert(cut.first_kept_entry_index == 2 && !cut.is_split_turn)
+    var split = repository.in_memory('/tmp')
+    split.append_message(user(repeat('u', 8)))
+    split.append_message(assistant(repeat('p', 40), 0))
+    split.append_message(tool_result(repeat('r', 40)))
+    split.append_message(assistant(repeat('s', 40), 0))
+    var split_cut = cut_point.find(split.get_entries(), 0, 4, 15)
+    assert(split_cut.first_kept_entry_index == 3)
+    assert(split_cut.turn_start_index == 0 && split_cut.is_split_turn)
+}
+
+test 'preparation separates split turn prefix and extracts cumulative file operations' {
+    var session = repository.in_memory('/tmp')
+    session.append_message(user('request'))
+    session.append_message(tool_assistant('read', 'old.n'))
+    session.append_message(tool_result(repeat('x', 80)))
+    session.append_message(tool_assistant('write', 'new.n'))
+    session.append_message(tool_result(repeat('y', 80)))
+    session.append_message(assistant(repeat('z', 80), 0))
+    var context = session.build_context()
+    types.settings_t settings = types.settings_t {keep_recent_tokens: 10,}
+    var prepared = prepare.prepare(session.get_entries(), context.messages, settings)
+    assert(prepared is ref<types.preparation_t>)
+    var value = prepared as ref<types.preparation_t>
+    assert(value.is_split_turn && value.turn_prefix_messages.len() > 0)
+    var (read_files, modified_files) = prepare.file_lists(value.file_ops)
+    assert(read_files.len() == 1 && read_files[0] == 'old.n')
+    assert(modified_files.len() == 1 && modified_files[0] == 'new.n')
+}
+
+test 'conversation serialization matches Pi labels and truncates tool output at 2000 UTF-16 units' {
+    ai_types.content_t thinking = new ai_types.thinking_content_t(thinking = 'plan')
+    ai_types.content_t text = new ai_types.text_content_t(text = 'answer')
+    ai_types.content_t call = new ai_types.tool_call_t(id = '1', name = 'read', arguments = json.parse('{"path":"foo.n"}'))
+    ai_types.message_t response = new ai_types.assistant_message_t(content = [thinking, text, call])
+    string output = serialize.conversation([user('hello'), response, tool_result(repeat('x', 3000))])
+    assert(output.contains('[User]: hello'))
+    assert(output.contains('[Assistant thinking]: plan'))
+    assert(output.contains('[Assistant]: answer'))
+    assert(output.contains('[Assistant tool calls]: read(path="foo.n")'))
+    assert(output.contains('[... 1000 more characters truncated]'))
+}
+
+test 'summary generation uses Pi prompt cache isolation token cap previous summary and file tags' {
+    var fixture = new summary_fixture_t(responses = [summary_response('## Goal\nupdated', ai_types.STOP_STOP, '', 10, 5)])
+    types.file_ops_t file_ops = types.file_ops_t {read: ['read.n'], written: ['write.n'],}
+    types.settings_t settings = types.settings_t {reserve_tokens: 100, keep_recent_tokens: 20,}
+    var preparation = new types.preparation_t(first_kept_entry_id = 'keep0001', messages_to_summarize = [user('new work')], tokens_before = 999, has_previous_summary = true, previous_summary = 'old summary', file_ops = file_ops, settings = settings)
+    var model = new ai_types.model_t(id = 'model', api = 'fixture', provider = 'fixture', context_window = 1000, max_tokens = 70)
+    var options = new ai_types.stream_options_t(max_retries = 0, cache_retention = 'long')
+    var result = compact.run(preparation, model, options, fixture_stream(fixture), abort.new(), 'focus', 'off')
+    assert(result.summary.contains('## Goal\nupdated'))
+    assert(result.summary.contains('<read-files>\nread.n\n</read-files>'))
+    assert(result.summary.contains('<modified-files>\nwrite.n\n</modified-files>'))
+    assert(fixture.max_tokens.len() == 1 && fixture.max_tokens[0] == 70)
+    assert(fixture.cache_retention[0] == 'none' && fixture.session_ids[0] != '')
+    assert(fixture.prompts[0].contains('<previous-summary>\nold summary\n</previous-summary>'))
+    assert(fixture.prompts[0].contains('Additional focus: focus'))
+    assert(result.usage.input == 10 && result.usage.output == 5)
+}
+
+test 'split turn makes separate history and prefix requests with combined usage' {
+    var fixture = new summary_fixture_t(responses = [summary_response('history', ai_types.STOP_STOP, '', 1, 2), summary_response('prefix', ai_types.STOP_STOP, '', 3, 4)])
+    types.settings_t settings = types.settings_t {reserve_tokens: 100, keep_recent_tokens: 20,}
+    var preparation = new types.preparation_t(first_kept_entry_id = 'keep0002', messages_to_summarize = [user('history input')], turn_prefix_messages = [user('large request'), assistant('early work', 0)], is_split_turn = true, tokens_before = 500, settings = settings)
+    var model = new ai_types.model_t(id = 'model', api = 'fixture', provider = 'fixture', context_window = 1000, max_tokens = 1000)
+    var result = compact.run(preparation, model, new ai_types.stream_options_t(max_retries = 0), fixture_stream(fixture), abort.new(), '', 'high')
+    assert(result.summary == 'history\n\n---\n\n**Turn Context (split turn):**\n\nprefix')
+    assert(fixture.max_tokens.len() == 2 && fixture.max_tokens[0] == 80 && fixture.max_tokens[1] == 50)
+    assert(fixture.session_ids[0] != fixture.session_ids[1])
+    assert(result.usage.input == 4 && result.usage.output == 6 && result.usage.total_tokens == 10)
+}
+
+test 'summarization retries transient errors but not deterministic errors' {
+    types.settings_t settings = types.settings_t {reserve_tokens: 100,}
+    var preparation = new types.preparation_t(first_kept_entry_id = 'keep0003', messages_to_summarize = [user('history')], settings = settings)
+    var model = new ai_types.model_t(id = 'model', api = 'fixture', provider = 'fixture', context_window = 1000, max_tokens = 1000)
+    var transient = new summary_fixture_t(responses = [summary_response('', ai_types.STOP_ERROR, '503 server error', 0, 0), summary_response('recovered', ai_types.STOP_STOP, '', 1, 1)])
+    var recovered = compact.run(preparation, model, new ai_types.stream_options_t(max_retries = 1), fixture_stream(transient), abort.new(), '', 'off')
+    assert(recovered.summary == 'recovered' && transient.index == 2)
+    var deterministic = new summary_fixture_t(responses = [summary_response('', ai_types.STOP_ERROR, 'invalid request', 0, 0), summary_response('must not run', ai_types.STOP_STOP, '', 1, 1)])
+    bool failed = false
+    compact.run(preparation, model, new ai_types.stream_options_t(max_retries = 2), fixture_stream(deterministic), abort.new(), '', 'off') catch error {
+        failed = error.msg() == 'Summarization failed: invalid request'
+        types.summary_result_t{}
+    }
+    assert(failed && deterministic.index == 1)
+}

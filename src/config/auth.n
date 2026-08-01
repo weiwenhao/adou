@@ -1,0 +1,135 @@
+import adou.src.tools.path_utils
+import fs
+import json
+import os
+import path
+import syscall
+
+type object_t = map<string, ref<json.value_t>>
+
+fn effective(string provider): string {
+    string stored = read(provider)
+    if stored != '' {
+        return stored
+    }
+    return environment(provider)
+}
+
+fn environment(string provider): string {
+    if provider == 'deepseek' {
+        return syscall.get_env('DEEPSEEK_API_KEY')
+    }
+    if provider == 'anthropic' {
+        return syscall.get_env('ANTHROPIC_API_KEY')
+    }
+    if provider == 'openai' {
+        return syscall.get_env('OPENAI_API_KEY')
+    }
+    return ''
+}
+
+fn read(string provider): string {
+    string file_path = auth_path()
+    if !path_utils.exists(file_path) {
+        return ''
+    }
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        return ''
+    }
+    string content = input.content() catch error {
+        input.close()
+        return ''
+    }
+    input.close()
+    var root = json.parse(content) catch error {
+        return ''
+    }
+    if root.kind != json.VALUE_OBJECT {
+        return ''
+    }
+    var object = root.as_object() catch error {return ''} as object_t
+    if !object.contains(provider) || object[provider].kind != json.VALUE_OBJECT {
+        return ''
+    }
+    var credential = object[provider].as_object() catch error {return ''} as object_t
+    if credential.contains('type') && credential['type'].kind == json.VALUE_STRING && credential['type'].text != 'api_key' {
+        return ''
+    }
+    if credential.contains('key') && credential['key'].kind == json.VALUE_STRING {
+        return credential['key'].text
+    }
+    if credential.contains('apiKey') && credential['apiKey'].kind == json.VALUE_STRING {
+        return credential['apiKey'].text
+    }
+    return ''
+}
+
+fn save(string provider, string key): void! {
+    if provider == '' || key == '' {
+        throw errorf('Provider and API key are required')
+    }
+    string file_path = auth_path()
+    os.mkdirs(path.dir(file_path), 0o700)
+    var root = read_root(file_path)
+    object_t object = root.kind == json.VALUE_OBJECT ? root.as_object() as object_t : {}
+    object_t credential = {}
+    credential['type'] = boxed_string('api_key')
+    credential['key'] = boxed_string(key)
+    object[provider] = json.box_value(json.object_value(credential as map<string, ref<json.value_t>>))
+    write_file(file_path, json.stringify(json.object_value(object as map<string, ref<json.value_t>>)))
+}
+
+fn remove(string provider): void! {
+    string file_path = auth_path()
+    if !path_utils.exists(file_path) {
+        return
+    }
+    var root = read_root(file_path)
+    if root.kind != json.VALUE_OBJECT {
+        return
+    }
+    object_t object = root.as_object() as object_t
+    if object.contains(provider) {
+        object.del(provider)
+        write_file(file_path, json.stringify(json.object_value(object as map<string, ref<json.value_t>>)))
+    }
+}
+
+fn auth_path(): string {
+    string home = syscall.get_env('HOME')
+    if home == '' {
+        home = '/'
+    }
+    return path.join(home, '.adou/auth.json')
+}
+
+#local
+fn read_root(string file_path): json.value_t {
+    if !path_utils.exists(file_path) {
+        return json.object_value({})
+    }
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        return json.object_value({})
+    }
+    string content = input.content() catch error {
+        input.close()
+        return json.object_value({})
+    }
+    input.close()
+    return json.parse(content) catch error {json.object_value({})}
+}
+
+#local
+fn write_file(string file_path, string content): void! {
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    int written = output.write(content as [u8])
+    output.close()
+    if written != content.len() {
+        throw errorf('Could not write auth storage')
+    }
+}
+
+#local
+fn boxed_string(string value): ref<json.value_t> {
+    return json.box_value(json.string_value(value))
+}

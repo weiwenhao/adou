@@ -1,0 +1,349 @@
+import adou.src.ai.sse
+import adou.src.ai.models
+import adou.src.ai.types
+import json
+import strings
+const SLOT_TEXT = 'text'
+const SLOT_THINKING = 'thinking'
+const SLOT_TOOL_CALL = 'toolCall'
+type slot_t = struct {
+    string kind
+    int content_index
+    ref<types.text_content_t> text = new types.text_content_t()
+    ref<types.thinking_content_t> thinking = new types.thinking_content_t()
+    ref<types.tool_call_t> tool_call = new types.tool_call_t()
+}
+type slot_map_t = map<int, slot_t>
+type processor_t = struct {
+    ref<types.model_t> model
+    ref<types.assistant_message_t> output
+    slot_map_t slots = {}
+    bool started
+    bool saw_terminal
+}
+fn processor(ref<types.model_t> model, int timestamp): ref<processor_t> {
+    var output = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, timestamp = timestamp,)
+    return new processor_t(model = model, output = output)
+}
+fn processor_t.start(&self): types.assistant_event_t! {
+    if self.started {
+        throw errorf('OpenAI Responses stream already started')
+    }
+    self.started = true
+    return types.assistant_event_t {
+        kind: types.EVENT_START, partial: self.output,
+    }
+}
+// feed converts one fully framed SSE record into Pi-compatible assistant
+// events while mutating the shared partial AssistantMessage in place.
+fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
+    if!self.started {
+        throw errorf('OpenAI Responses stream has not started')
+    }
+    if self.saw_terminal {
+        throw errorf('OpenAI Responses stream received data after terminal event')
+    }
+    if frame.data == '[DONE]' {
+        return[]
+    }
+    var root = json.box_value(json.parse(frame.data))
+    string event_type = required_string(root, 'type')
+    [types.assistant_event_t] events = []
+    if event_type == 'response.created' {
+        var response = root.get('response')
+        self.output.response_id = optional_string(response, 'id', '')
+    } else if event_type == 'response.output_item.added' {
+        int output_index = required_int(root, 'output_index')
+        events = self.create_slot(output_index, root.get('item'), events)
+    } else if event_type == 'response.reasoning_summary_text.delta' || event_type == 'response.reasoning_text.delta' {
+        int output_index = required_int(root, 'output_index')
+        if self.slots.contains(output_index) {
+            var slot = self.slots[output_index]
+            if slot.kind == SLOT_THINKING {
+                string delta = required_string(root, 'delta')
+                slot.thinking.thinking += delta
+                events.push(update_event(types.EVENT_THINKING_DELTA, slot.content_index, delta, '', self.output))
+            }
+        }
+    } else if event_type == 'response.reasoning_summary_part.done' {
+        int output_index = required_int(root, 'output_index')
+        if self.slots.contains(output_index) {
+            var slot = self.slots[output_index]
+            if slot.kind == SLOT_THINKING {
+                slot.thinking.thinking += '\n\n'
+                events.push(update_event(types.EVENT_THINKING_DELTA, slot.content_index, '\n\n', '', self.output))
+            }
+        }
+    } else if event_type == 'response.output_text.delta' || event_type == 'response.refusal.delta' {
+        int output_index = required_int(root, 'output_index')
+        if self.slots.contains(output_index) {
+            var slot = self.slots[output_index]
+            if slot.kind == SLOT_TEXT {
+                string delta = required_string(root, 'delta')
+                slot.text.text += delta
+                events.push(update_event(types.EVENT_TEXT_DELTA, slot.content_index, delta, '', self.output))
+            }
+        }
+    } else if event_type == 'response.function_call_arguments.delta' {
+        int output_index = required_int(root, 'output_index')
+        if self.slots.contains(output_index) {
+            var slot = self.slots[output_index]
+            if slot.kind == SLOT_TOOL_CALL {
+                string delta = required_string(root, 'delta')
+                slot.tool_call.partial_json += delta
+                events.push(update_event(types.EVENT_TOOLCALL_DELTA, slot.content_index, delta, '', self.output))
+            }
+        }
+    } else if event_type == 'response.function_call_arguments.done' {
+        int output_index = required_int(root, 'output_index')
+        if self.slots.contains(output_index) {
+            var slot = self.slots[output_index]
+            if slot.kind == SLOT_TOOL_CALL {
+                string complete = required_string(root, 'arguments')
+                string previous = slot.tool_call.partial_json
+                slot.tool_call.partial_json = complete
+                if complete.starts_with(previous) && complete.len() > previous.len() {
+                    string delta = complete.slice(previous.len(), complete.len())
+                    events.push(update_event(types.EVENT_TOOLCALL_DELTA, slot.content_index, delta, '', self.output))
+                }
+            }
+        }
+    } else if event_type == 'response.output_item.done' {
+        int output_index = required_int(root, 'output_index')
+        var item = root.get('item')
+        if!self.slots.contains(output_index) {
+            events = self.create_slot(output_index, item, events)
+        }
+        events = self.finish_slot(output_index, item, events)
+    } else if event_type == 'response.completed' || event_type == 'response.incomplete' {
+        events = self.finalize(root.get('response'), events)
+    } else if event_type == 'response.failed' {
+        self.saw_terminal = true
+        throw errorf('%s', failed_message(root.get('response')))
+    } else if event_type == 'error' {
+        string code = optional_string(root, 'code', 'unknown')
+        string message = optional_string(root, 'message', 'Unknown error')
+        throw errorf('Error Code %s: %s', code, message)
+    }
+    return events
+}
+fn processor_t.finish(&self): void! {
+    if!self.saw_terminal {
+        throw errorf('OpenAI Responses stream ended before a terminal response event')
+    }
+}
+#local
+fn processor_t.create_slot(&self, int output_index, ref<json.value_t> item, [types.assistant_event_t] events): [types.assistant_event_t]! {
+    if self.slots.contains(output_index) {
+        return events
+    }
+    string item_type = required_string(item, 'type')
+    if item_type == 'reasoning' {
+        var block = new types.thinking_content_t()
+        types.content_t content = block
+        self.output.content.push(content)
+        int content_index = self.output.content.len() - 1
+        self.slots[output_index] = slot_t {
+            kind: SLOT_THINKING, content_index: content_index, thinking: block,
+        }
+        events.push(update_event(types.EVENT_THINKING_START, content_index, '', '', self.output))
+    } else if item_type == 'message' {
+        var block = new types.text_content_t()
+        types.content_t content = block
+        self.output.content.push(content)
+        int content_index = self.output.content.len() - 1
+        self.slots[output_index] = slot_t {
+            kind: SLOT_TEXT, content_index: content_index, text: block,
+        }
+        events.push(update_event(types.EVENT_TEXT_START, content_index, '', '', self.output))
+    } else if item_type == 'function_call' {
+        string call_id = required_string(item, 'call_id')
+        string item_id = required_string(item, 'id')
+        var block = new types.tool_call_t(id = call_id + '|' + item_id, name = required_string(item, 'name'), partial_json = optional_string(item, 'arguments', ''),)
+        types.content_t content = block
+        self.output.content.push(content)
+        int content_index = self.output.content.len() - 1
+        self.slots[output_index] = slot_t {
+            kind: SLOT_TOOL_CALL, content_index: content_index, tool_call: block,
+        }
+        events.push(update_event(types.EVENT_TOOLCALL_START, content_index, '', '', self.output))
+    }
+    return events
+}
+#local
+fn processor_t.finish_slot(&self, int output_index, ref<json.value_t> item, [types.assistant_event_t] events): [types.assistant_event_t]! {
+    if!self.slots.contains(output_index) {
+        return events
+    }
+    var slot = self.slots[output_index]
+    string item_type = required_string(item, 'type')
+    if item_type == 'reasoning' && slot.kind == SLOT_THINKING {
+        string summary = joined_part_text(item, 'summary')
+        string content = joined_part_text(item, 'content')
+        if summary != '' {
+            slot.thinking.thinking = summary
+        } else if content != '' {
+            slot.thinking.thinking = content
+        }
+        slot.thinking.thinking_signature = item.stringify()
+        events.push(update_event(types.EVENT_THINKING_END, slot.content_index, '', slot.thinking.thinking, self.output,))
+        self.slots.del(output_index)
+    } else if item_type == 'message' && slot.kind == SLOT_TEXT {
+        slot.text.text = message_text(item)
+        string id = required_string(item, 'id')
+        string phase = optional_string(item, 'phase', '')
+        slot.text.text_signature = encode_text_signature(id, phase)
+        events.push(update_event(types.EVENT_TEXT_END, slot.content_index, '', slot.text.text, self.output))
+        self.slots.del(output_index)
+    } else if item_type == 'function_call' && slot.kind == SLOT_TOOL_CALL {
+        string arguments = optional_string(item, 'arguments', slot.tool_call.partial_json)
+        if arguments == '' {
+            arguments = '{}'
+        }
+        slot.tool_call.arguments = json.parse(arguments)
+        slot.tool_call.partial_json = ''
+        var event = update_event(types.EVENT_TOOLCALL_END, slot.content_index, '', '', self.output)
+        event.tool_call = slot.tool_call
+        events.push(event)
+        self.slots.del(output_index)
+    }
+    return events
+}
+#local
+fn processor_t.finalize(&self, ref<json.value_t> response, [types.assistant_event_t] events): [types.assistant_event_t]! {
+    self.saw_terminal = true
+    self.output.response_id = optional_string(response, 'id', self.output.response_id)
+    var object = response.as_object()
+    if object.contains('usage') && !object['usage'].is_null() {
+        var usage = object['usage']
+        int input_tokens = optional_int(usage, 'input_tokens', 0)
+        int cached_tokens = 0
+        int cache_write_tokens = 0
+        var usage_object = usage.as_object()
+        if usage_object.contains('input_tokens_details') && !usage_object['input_tokens_details'].is_null() {
+            var details = usage_object['input_tokens_details']
+            cached_tokens = optional_int(details, 'cached_tokens', 0)
+            cache_write_tokens = optional_int(details, 'cache_write_tokens', 0)
+        }
+        int uncached_input = input_tokens - cached_tokens - cache_write_tokens
+        if uncached_input < 0 {
+            uncached_input = 0
+        }
+        self.output.usage.input = uncached_input
+        self.output.usage.output = optional_int(usage, 'output_tokens', 0)
+        self.output.usage.cache_read = cached_tokens
+        self.output.usage.cache_write = cache_write_tokens
+        self.output.usage.total_tokens = optional_int(usage, 'total_tokens', 0)
+        if usage_object.contains('output_tokens_details') && !usage_object['output_tokens_details'].is_null() {
+            self.output.usage.reasoning = optional_int(usage_object['output_tokens_details'], 'reasoning_tokens', 0)
+        }
+    }
+    string status = optional_string(response, 'status', 'completed')
+    if status == 'completed' || status == 'in_progress' || status == 'queued' {
+        self.output.stop_reason = types.STOP_STOP
+    } else if status == 'incomplete' {
+        self.output.stop_reason = types.STOP_LENGTH
+    } else if status == 'failed' || status == 'cancelled' {
+        self.output.stop_reason = types.STOP_ERROR
+    } else {
+        throw errorf('Unhandled OpenAI Responses status: %s', status)
+    }
+    if self.output.stop_reason == types.STOP_STOP && has_tool_call(self.output) {
+        self.output.stop_reason = types.STOP_TOOL_USE
+    }
+    self.output.usage = models.calculate_cost(self.model, self.output.usage)
+    var done = types.assistant_event_t {
+        kind: types.EVENT_DONE, reason: self.output.stop_reason, message: self.output,
+    }
+    events.push(done)
+    return events
+}
+#local
+fn update_event(string event_type, int content_index, string delta, string content, ref<types.assistant_message_t> partial): types.assistant_event_t {
+    return types.assistant_event_t {
+        kind: event_type, content_index: content_index, delta: delta, content: content, partial: partial,
+    }
+}
+#local
+fn has_tool_call(ref<types.assistant_message_t> message): bool {
+    for block in message.content {
+        if block is ref<types.tool_call_t> {
+            return true
+        }
+    }
+    return false
+}
+#local
+fn required_string(ref<json.value_t> value, string key): string! {
+    return value.get(key).as_string()
+}
+#local
+fn optional_string(ref<json.value_t> value, string key, string fallback): string! {
+    var object = value.as_object()
+    if!object.contains(key) || object[key].is_null() {
+        return fallback
+    }
+    return object[key].as_string()
+}
+#local
+fn required_int(ref<json.value_t> value, string key): int! {
+    return value.get(key).as_number().to_int()
+}
+#local
+fn optional_int(ref<json.value_t> value, string key, int fallback): int! {
+    var object = value.as_object()
+    if!object.contains(key) || object[key].is_null() {
+        return fallback
+    }
+    return object[key].as_number().to_int()
+}
+#local
+fn joined_part_text(ref<json.value_t> item, string key): string! {
+    var object = item.as_object()
+    if!object.contains(key) || object[key].is_null() {
+        return ''
+    }
+    [string] parts = []
+    for part in object[key].as_array() {
+        parts.push(optional_string(part, 'text', ''))
+    }
+    return strings.join(parts, '\n\n')
+}
+#local
+fn message_text(ref<json.value_t> item): string! {
+    var object = item.as_object()
+    if!object.contains('content') || object['content'].is_null() {
+        return ''
+    }
+    [u8] result = []
+    for part in object['content'].as_array() {
+        string part_type = required_string(part, 'type')
+        if part_type == 'output_text' {
+            result.append(required_string(part, 'text') as[u8])
+        } else if part_type == 'refusal' {
+            result.append(required_string(part, 'refusal') as[u8])
+        }
+    }
+    return result as string
+}
+#local
+fn encode_text_signature(string id, string phase): string! {
+    string encoded_id = json.stringify(json.string_value(id))
+    if phase == 'commentary' || phase == 'final_answer' {
+        string encoded_phase = json.stringify(json.string_value(phase))
+        return '{"v":1,"id":' + encoded_id + ',"phase":' + encoded_phase + '}'
+    }
+    return '{"v":1,"id":' + encoded_id + '}'
+}
+#local
+fn failed_message(ref<json.value_t> response): string! {
+    var object = response.as_object()
+    if object.contains('error') && !object['error'].is_null() {
+        var failure = object['error']
+        return optional_string(failure, 'code', 'unknown') + ': ' + optional_string(failure, 'message', 'no message')
+    }
+    if object.contains('incomplete_details') && !object['incomplete_details'].is_null() {
+        return 'incomplete: ' + optional_string(object['incomplete_details'], 'reason', 'unknown')
+    }
+    return 'Unknown error (no error details in response)'
+}

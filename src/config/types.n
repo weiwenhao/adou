@@ -1,0 +1,96 @@
+import adou.src.ai.types as ai_types
+import adou.src.compaction.types as compaction_types
+
+type cli_args_t = struct {
+    string provider
+    string model
+    string base_url
+    string api_key
+    string thinking = 'off'
+    string session_path
+    string session_id
+    string session_dir
+    string fork_path
+    string session_name
+    string system_prompt
+    [string] append_system_prompts = []
+    int context_window
+    int max_tokens
+    int timeout_ms
+    int max_retries = -1
+    int reserve_tokens
+    int keep_recent_tokens
+    bool continue_recent
+    bool resume
+    bool print_mode
+    string mode = 'text'
+    bool mode_explicit
+    string export_path
+    bool list_models
+    string list_models_pattern
+    bool verbose
+    bool offline
+    bool trust_override
+    bool trust_override_explicit
+    bool retry_enabled = true
+    int retry_max_attempts = 3
+    int retry_base_delay_ms = 2000
+    bool no_context_files
+    bool no_tools
+    bool no_builtin_tools
+    [string] scoped_models = []
+    [string] tool_names = []
+    [string] exclude_tool_names = []
+    bool no_session
+    bool no_compaction
+    bool help
+    bool version
+    bool thinking_explicit
+    [string] messages = []
+    [string] file_args = []
+    [string] errors = []
+}
+
+type config_t = struct {
+    string cwd
+    string provider
+    ref<ai_types.model_t> model
+    ref<ai_types.stream_options_t> stream_options
+    compaction_types.settings_t compaction
+    string thinking
+    string session_path
+    string session_id
+    string session_dir
+    string fork_path
+    string session_name
+    string system_prompt
+    [string] append_system_prompts = []
+    bool continue_recent
+    bool resume
+    bool print_mode
+    string mode = 'text'
+    string export_path
+    bool list_models
+    string list_models_pattern
+    bool verbose
+    bool offline
+    bool trust_override
+    bool trust_override_explicit
+    bool retry_enabled = true
+    int retry_max_attempts = 3
+    int retry_base_delay_ms = 2000
+    bool no_context_files
+    bool no_tools
+    bool no_builtin_tools
+    [string] scoped_models = []
+    [string] tool_names = []
+    [string] exclude_tool_names = []
+    bool no_session
+    bool provider_explicit
+    bool model_explicit
+    bool api_key_explicit
+    string steering_mode = 'one-at-a-time'
+    string follow_up_mode = 'one-at-a-time'
+    bool hide_thinking
+    [string] initial_messages = []
+}

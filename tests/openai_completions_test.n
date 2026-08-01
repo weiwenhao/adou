@@ -1,0 +1,48 @@
+import adou.src.ai.providers.openai_completions
+import adou.src.ai.sse
+import adou.src.ai.types
+
+fn model(): ref<types.model_t> {
+    return new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek')
+}
+
+fn frame(string data): sse.event_t {
+    return sse.event_t {data: data,}
+}
+
+test 'processes DeepSeek text and reasoning stream' {
+    var processor = openai_completions.processor(model(), 1)
+    var start = processor.start()
+    assert(start.kind == types.EVENT_START)
+    var first = processor.feed(frame('{"id":"chat-1","choices":[{"delta":{"reasoning_content":"plan"},"finish_reason":null}]}'))
+    assert(first.len() == 2 && first[0].kind == types.EVENT_THINKING_START && first[1].kind == types.EVENT_THINKING_DELTA)
+    var second = processor.feed(frame('{"id":"chat-1","choices":[{"delta":{"content":"answer"},"finish_reason":null}]}'))
+    assert(second.len() == 2 && second[0].kind == types.EVENT_TEXT_START && second[1].kind == types.EVENT_TEXT_DELTA)
+    processor.feed(frame('{"id":"chat-1","choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":4,"prompt_tokens_details":{"cached_tokens":2},"completion_tokens_details":{"reasoning_tokens":1}}}'))
+    var done = processor.finish()
+    assert(done.len() == 3)
+    assert(done[0].kind == types.EVENT_THINKING_END && done[1].kind == types.EVENT_TEXT_END)
+    assert(done[2].kind == types.EVENT_DONE)
+    if done[2].message is ref<types.assistant_message_t> message {
+        assert(message.usage.input == 8 && message.usage.cache_read == 2)
+    } else {
+        assert(false)
+    }
+}
+
+test 'processes streamed function tool call and maps toolUse stop reason' {
+    var processor = openai_completions.processor(model(), 1)
+    processor.start()
+    processor.feed(frame('{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read","arguments":"{\\"path\\":\\""}}]},"finish_reason":null}]}'))
+    processor.feed(frame('{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"README.md\\"}"}}]},"finish_reason":null}]}'))
+    processor.feed(frame('{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}'))
+    var done = processor.finish()
+    assert(done[0].kind == types.EVENT_TOOLCALL_END)
+    if done[0].tool_call is ref<types.tool_call_t> tool_call {
+        assert(tool_call.name == 'read')
+        assert(tool_call.arguments.get('path').as_string() == 'README.md')
+    } else {
+        assert(false)
+    }
+    assert(done[1].kind == types.EVENT_DONE && done[1].reason == types.STOP_TOOL_USE)
+}

@@ -1,0 +1,33 @@
+import adou.src.ai.types
+
+fn calculate_cost(ref<types.model_t> model, types.usage_t usage): types.usage_t {
+    float input_rate = model.cost.input
+    float output_rate = model.cost.output
+    float cache_read_rate = model.cost.cache_read
+    float cache_write_rate = model.cost.cache_write
+    int input_tokens = usage.input + usage.cache_read + usage.cache_write
+    int matched_threshold = -1
+    for tier in model.cost.tiers {
+        if input_tokens > tier.input_tokens_above && tier.input_tokens_above > matched_threshold {
+            input_rate = tier.input
+            output_rate = tier.output
+            cache_read_rate = tier.cache_read
+            cache_write_rate = tier.cache_write
+            matched_threshold = tier.input_tokens_above
+        }
+    }
+    int long_write = usage.cache_write_1h
+    if long_write < 0 {
+        long_write = 0
+    }
+    if long_write > usage.cache_write {
+        long_write = usage.cache_write
+    }
+    int short_write = usage.cache_write - long_write
+    usage.cost.input = input_rate / 1000000.0 * (usage.input as float)
+    usage.cost.output = output_rate / 1000000.0 * (usage.output as float)
+    usage.cost.cache_read = cache_read_rate / 1000000.0 * (usage.cache_read as float)
+    usage.cost.cache_write = (cache_write_rate * (short_write as float) + input_rate * 2.0 * (long_write as float)) / 1000000.0
+    usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write
+    return usage
+}

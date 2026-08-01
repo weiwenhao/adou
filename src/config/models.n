@@ -1,0 +1,147 @@
+import adou.src.ai.types as ai_types
+import strings
+
+fn all(): [ref<ai_types.model_t>] {
+    return [deepseek_v4_flash(), openai_default(), anthropic_default(),]
+}
+
+fn find(string reference): ref<ai_types.model_t>? {
+    string value = reference.trim([' ', '\t'])
+    // Pi accepts `model:thinking-level` as a compact model selector spelling.
+    // The level is resolved by config/resolve.n; model lookup must ignore the
+    // suffix while still accepting ordinary provider/model references.
+    int level_separator = value.find(':')
+    if level_separator >= 0 {
+        value = value.slice(0, level_separator)
+    }
+    string provider = ''
+    string id = value
+    int separator = value.find('/')
+    if separator >= 0 {
+        provider = value.slice(0, separator)
+        id = value.slice(separator + 1, value.len())
+    }
+    for model in all() {
+        if model.id == id && (provider == '' || model.provider == provider) {
+            return model
+        }
+    }
+    return null
+}
+
+fn default_for(string provider): ref<ai_types.model_t>! {
+    if provider == 'deepseek' {
+        return deepseek_v4_flash()
+    }
+    if provider == 'anthropic' {
+        return anthropic_default()
+    }
+    if provider == 'openai' {
+        return openai_default()
+    }
+    throw errorf('Unsupported provider: %s', provider)
+}
+
+fn list(): string {
+    [string] names = []
+    for model in all() {
+        names.push(model.provider + '/' + model.id)
+    }
+    return strings.join(names, ', ')
+}
+
+fn list_filtered(string pattern): string {
+    [string] names = []
+    string needle = pattern.trim([' ', '\t'])
+    for model in all() {
+        string reference = model.provider + '/' + model.id
+        if needle == '' || matches_pattern(reference, needle) {
+            names.push(reference)
+        }
+    }
+    return strings.join(names, '\n')
+}
+
+fn allowed(string reference, [string] patterns): bool {
+    if patterns.len() == 0 {return true}
+    for pattern in patterns {
+        if matches_pattern(reference, pattern) {return true}
+    }
+    return false
+}
+
+// Resolve the first model in registry order that matches a CLI --models
+// pattern. Pi uses the first scoped model as the initial selection when no
+// existing session or explicit --model is present.
+fn first_allowed([string] patterns): ref<ai_types.model_t>? {
+    for model in all() {
+        if allowed(model.provider + '/' + model.id, patterns) {
+            return model
+        }
+    }
+    return null
+}
+
+// Return the optional `:thinking-level` suffix attached to the scoped model
+// pattern that selected a model.  Pi treats this as a per-entry initial
+// setting; an explicit --thinking value still wins in resolve.n.
+fn thinking_for(string reference, [string] patterns): string {
+    for pattern in patterns {
+        int separator = pattern.find(':')
+        if separator < 0 {
+            continue
+        }
+        string base = pattern.slice(0, separator)
+        string level = pattern.slice(separator + 1, pattern.len()).to_lower()
+        if matches_pattern(reference, base) && valid_thinking(level) {
+            return level
+        }
+    }
+    return ''
+}
+
+#local
+fn deepseek_v4_flash(): ref<ai_types.model_t> {
+    var model = new ai_types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = 'https://api.deepseek.com', reasoning = true, context_window = 1000000, max_tokens = 384000)
+    model.cost.input = 0.14
+    model.cost.output = 0.28
+    model.cost.cache_read = 0.0028
+    return model
+}
+
+#local
+fn openai_default(): ref<ai_types.model_t> {
+    return new ai_types.model_t(id = 'gpt-5.1-codex', api = 'openai-responses', provider = 'openai', base_url = 'https://api.openai.com/v1', reasoning = true, context_window = 400000, max_tokens = 128000)
+}
+
+#local
+fn anthropic_default(): ref<ai_types.model_t> {
+    return new ai_types.model_t(id = 'claude-sonnet-4-5', api = 'anthropic-messages', provider = 'anthropic', base_url = 'https://api.anthropic.com', reasoning = true, adaptive_thinking = true, context_window = 200000, max_tokens = 64000)
+}
+
+#local
+fn matches_pattern(string value, string pattern): bool {
+    string lower_value = value.to_lower()
+    string lower_pattern = pattern.to_lower()
+    // Pi accepts an optional `:thinking-level` suffix on scoped model
+    // patterns. Thinking is applied by the interactive model switcher; the
+    // Nature MVP keeps the level in the normal --thinking setting but must not
+    // let the suffix make an otherwise matching model disappear.
+    int level_separator = lower_pattern.find(':')
+    if level_separator >= 0 {
+        lower_pattern = lower_pattern.slice(0, level_separator)
+    }
+    if lower_pattern == '*' {return true}
+    int star = lower_pattern.find('*')
+    if star < 0 {return lower_value.contains(lower_pattern)}
+    string before = lower_pattern.slice(0, star)
+    string after = lower_pattern.slice(star + 1, lower_pattern.len())
+    if before != '' && !lower_value.starts_with(before) {return false}
+    if after != '' && !lower_value.ends_with(after) {return false}
+    return lower_value.len() >= before.len() + after.len()
+}
+
+#local
+fn valid_thinking(string value): bool {
+    return value == 'off' || value == 'minimal' || value == 'low' || value == 'medium' || value == 'high' || value == 'xhigh' || value == 'max'
+}

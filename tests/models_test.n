@@ -1,0 +1,28 @@
+import adou.src.ai.models
+import adou.src.ai.types
+
+test 'calculates Pi-compatible tiered and long-cache costs' {
+    var model = new types.model_t()
+    model.cost.input = 1000000.0
+    model.cost.output = 2000000.0
+    model.cost.cache_read = 500000.0
+    model.cost.cache_write = 1500000.0
+    var tier = types.cost_tier_t {input_tokens_above: 10, input: 3000000.0, output: 4000000.0, cache_read: 1000000.0, cache_write: 2500000.0,}
+    model.cost.tiers.push(tier)
+    var usage = types.usage_t {input: 5, output: 2, cache_read: 5, cache_write: 3, cache_write_1h: 2,}
+    usage = models.calculate_cost(model, usage)
+    assert(usage.cost.input == 15.0)
+    assert(usage.cost.output == 8.0)
+    assert(usage.cost.cache_read == 5.0)
+    assert(usage.cost.cache_write == 14.5)
+    assert(usage.cost.total == 42.5)
+}
+
+test 'clamps invalid one-hour cache counts to the total cache write count' {
+    var model = new types.model_t()
+    model.cost.input = 1000000.0
+    model.cost.cache_write = 1500000.0
+    var usage = types.usage_t {cache_write: 3, cache_write_1h: 10,}
+    usage = models.calculate_cost(model, usage)
+    assert(usage.cost.cache_write == 6.0)
+}

@@ -1,0 +1,137 @@
+import adou.src.ai.abort
+import co
+import libc
+import time
+const DEFAULT_MAX_DELAY_MS = 60000
+type header_t = struct {
+    string name
+    string value
+}
+
+// Nature's TLS reader reports a peer half-close as `TLS read failed: end of
+// file` while the HTTP client reports ordinary body completion as `EOF`.
+// Both mean that no more response bytes are available.  Streaming providers
+// must normalize this transport spelling before handing the body to the SSE
+// decoder; otherwise a perfectly valid final `[DONE]` frame is surfaced as a
+// failed assistant turn.
+fn is_clean_eof(string message): bool {
+    string normalized = message.to_lower()
+    return normalized == 'eof' || normalized == 'end of file' || normalized.find('end of file') >= 0
+}
+// Mirrors the retryability rules used by the OpenAI and Anthropic SDKs.
+// An explicit x-should-retry response header overrides the status code.
+fn should_retry(int status, [header_t] headers): bool {
+    string explicit = header(headers, 'x-should-retry').to_lower()
+    if explicit == 'true' {
+        return true
+    }
+    if explicit == 'false' {
+        return false
+    }
+    return status == 408 || status == 409 || status == 429 || status >= 500
+}
+// Return the provider-requested delay, or the SDK-compatible exponential
+// fallback. retry_index is zero for the first retry.
+fn delay_ms([header_t] headers, int retry_index, int max_delay_ms, string provider_error): int! {
+    string retry_after_ms = header(headers, 'retry-after-ms')
+    if retry_after_ms != '' {
+        int delay = parse_milliseconds(retry_after_ms)
+        return validate_delay(delay, max_delay_ms, provider_error)
+    }
+    string retry_after = header(headers, 'retry-after')
+    if retry_after != '' {
+        int delay = parse_retry_after(retry_after)
+        return validate_delay(delay, max_delay_ms, provider_error)
+    }
+    return exponential_delay_ms(retry_index)
+}
+fn exponential_delay_ms(int retry_index): int {
+    int delay = 500
+    for int i = 0; i < retry_index && delay < 8000; i += 1 {
+        delay *= 2
+    }
+    if delay > 8000 {
+        delay = 8000
+    }
+    // Pi's pinned SDK applies up to 25% downward jitter. Avoid shared libc RNG
+    // state so concurrent provider coroutines do not race each other.
+    int jitter = (time.now().ns_timestamp() % 26) as int
+    if jitter < 0 {
+        jitter = -jitter
+    }
+    return delay * (100 - jitter) / 100
+}
+fn sleep(ref<abort.abort_t> cancellation, int milliseconds): void! {
+    if milliseconds < 0 {
+        milliseconds = 0
+    }
+    int remaining = milliseconds
+    for remaining > 0 {
+        if cancellation.is_aborted() {
+            throw errorf('Request aborted')
+        }
+        int slice = remaining
+        if slice > 25 {
+            slice = 25
+        }
+        co.sleep(slice)
+        remaining -= slice
+    }
+    if cancellation.is_aborted() {
+        throw errorf('Request aborted')
+    }
+}
+#local
+fn header([header_t] headers, string name): string {
+    string target = name.to_lower()
+    for item in headers {
+        if item.name.to_lower() == target {
+            return item.value
+        }
+    }
+    return ''
+}
+#local
+fn parse_milliseconds(string value): int! {
+    float parsed = value.to_float()
+    if parsed < 0 {
+        return 0
+    }
+    return parsed as int
+}
+#local
+fn parse_retry_after(string value): int {
+    float seconds = value.to_float() catch e {
+        return parse_http_date(value)
+    }
+    if seconds < 0 {
+        return 0
+    }
+    return (seconds * 1000.0) as int
+}
+#local
+fn parse_http_date(string value): int {
+    var parsed = libc.tm {}
+    var rest = libc.strptime(value.to_cstr(), '%a, %d %b %Y %H:%M:%S GMT'.to_cstr(), &parsed)
+    if rest == null {
+        return 0
+    }
+    i64 delay = (libc.timegm(&parsed) as i64) * 1000 - time.now().ms_timestamp()
+    if delay <= 0 {
+        return 0
+    }
+    return delay as int
+}
+#local
+fn validate_delay(int delay, int configured_max_delay_ms, string provider_error): int! {
+    int maximum = configured_max_delay_ms
+    if maximum < 0 {
+        maximum = DEFAULT_MAX_DELAY_MS
+    }
+    if maximum > 0 && delay > maximum {
+        int delay_seconds = (delay + 999) / 1000
+        int max_seconds = (maximum + 999) / 1000
+        throw errorf('Server requested %ds retry delay (max: %ds). %s', delay_seconds, max_seconds, provider_error)
+    }
+    return delay
+}

@@ -1,0 +1,11 @@
+import adou.src.platform.cwd
+import libc
+
+test 'platform cwd preserves the complete POSIX path' {
+    string actual = cwd.current()
+    var buffer = vec<u8>.new(0, 32768)
+    libc.cstr raw = libc.getcwd(buffer.ref() as libc.cstr, buffer.len() as uint)
+    assert(raw != 0)
+    assert(actual == raw.to_string())
+    assert(actual.ends_with('/adou'))
+}

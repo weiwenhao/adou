@@ -1,0 +1,229 @@
+import strings
+const DEFAULT_MAX_LINE_BYTES = 256 * 1024
+const DEFAULT_MAX_EVENT_BYTES = 1024 * 1024
+// event_t is one fully framed Server-Sent Event. id and retry contain the
+// latest values defined by the stream, as required by the SSE processing model.
+type event_t = struct {
+    string event
+    string data
+    string id
+    int retry = -1
+}
+// parser_t keeps only an incomplete line and the event currently being built.
+// It is therefore independent of HTTP chunk boundaries and does not buffer the
+// complete response body.
+type parser_t = struct {
+    [u8] line = []
+    [string] data_lines = []
+    string event_name
+    string last_event_id
+    int retry = -1
+    int event_bytes
+    int max_line_bytes
+    int max_event_bytes
+    bool first_line = true
+    bool saw_cr
+    bool finished
+}
+fn parser(): ref<parser_t> {
+    return new parser_t(max_line_bytes = DEFAULT_MAX_LINE_BYTES, max_event_bytes = DEFAULT_MAX_EVENT_BYTES,)
+}
+fn parser_with_limits(int max_line_bytes, int max_event_bytes): ref < parser_t > ! {
+    if max_line_bytes <= 0 || max_event_bytes <= 0 {
+        throw errorf('SSE parser limits must be positive')
+    }
+    return new parser_t(max_line_bytes = max_line_bytes, max_event_bytes = max_event_bytes,)
+}
+// feed accepts arbitrary byte chunks and returns every event completed by this
+// chunk. CRLF, bare CR, bare LF and CRLF split across chunks are supported.
+fn parser_t.feed(&self, [u8] chunk): [event_t]! {
+    if self.finished {
+        throw errorf('SSE parser is finished')
+    }
+    [event_t] events = []
+    for byte in chunk {
+        if self.saw_cr {
+            self.saw_cr = false
+            if byte == '\n'.char() {
+                continue
+            }
+        }
+        if byte == '\r'.char() {
+            events = self.process_line(events)
+            self.saw_cr = true
+            continue
+        }
+        if byte == '\n'.char() {
+            events = self.process_line(events)
+            continue
+        }
+        if self.line.len() >= self.max_line_bytes {
+            throw errorf('SSE line exceeds %d bytes', self.max_line_bytes)
+        }
+        self.line.push(byte)
+    }
+    return events
+}
+// finish marks EOF. SSE requires a blank line to dispatch an event, so a
+// partially framed event is validated and discarded instead of being emitted.
+fn parser_t.finish(&self): void! {
+    self.finish_inner(false)
+}
+// Anthropic's SDK-compatible decoder dispatches a final data-bearing event at
+// EOF even when the server omits the terminating blank line.
+fn parser_t.finish_pending(&self): [event_t]! {
+    return self.finish_inner(true)
+}
+#local
+fn parser_t.finish_inner(&self, bool dispatch_pending): [event_t]! {
+    if self.finished {
+        throw errorf('SSE parser is already finished')
+    }
+    self.finished = true
+    [event_t] events = []
+    if self.line.len() > 0 {
+        events = self.process_line(events)
+    }
+    if dispatch_pending {
+        events = self.dispatch(events)
+    }
+    self.line = []
+    self.data_lines = []
+    self.event_name = ''
+    self.event_bytes = 0
+    return events
+}
+#local
+fn parser_t.process_line(&self, [event_t] events): [event_t]! {
+    var bytes = self.line
+    self.line = []
+    if self.first_line {
+        self.first_line = false
+        if bytes.len() >= 3 && bytes[0] == 0xef && bytes[1] == 0xbb && bytes[2] == 0xbf {
+            bytes = bytes.slice(3, bytes.len())
+        }
+    }
+    valid_utf8(bytes)
+    if bytes.len() == 0 {
+        return self.dispatch(events)
+    }
+    self.event_bytes += bytes.len() + 1
+    if self.event_bytes > self.max_event_bytes {
+        throw errorf('SSE event exceeds %d bytes', self.max_event_bytes)
+    }
+    // A leading colon denotes a comment/heartbeat line.
+    if bytes[0] == ':'.char() {
+        return events
+    }
+    int colon = -1
+    for int i = 0; i < bytes.len(); i += 1 {
+        if bytes[i] == ':'.char() {
+            colon = i
+            break
+        }
+    }
+    [u8] field_bytes = bytes
+    [u8] value_bytes = []
+    if colon >= 0 {
+        field_bytes = bytes.slice(0, colon)
+        int value_start = colon + 1
+        if value_start < bytes.len() && bytes[value_start] == ' '.char() {
+            value_start += 1
+        }
+        value_bytes = bytes.slice(value_start, bytes.len())
+    }
+    string field = field_bytes as string
+    string value = value_bytes as string
+    if field == 'event' {
+        self.event_name = value
+    } else if field == 'data' {
+        self.data_lines.push(value)
+    } else if field == 'id' {
+        if!contains_nul(value_bytes) {
+            self.last_event_id = value
+        }
+    } else if field == 'retry' {
+        self.update_retry(value)
+    }
+    return events
+}
+#local
+fn parser_t.dispatch(&self, [event_t] events): [event_t]{
+    if self.data_lines.len() > 0 {
+        string name = self.event_name
+        if name == '' {
+            name = 'message'
+        }
+        var framed = event_t {
+            event: name, data: strings.join(self.data_lines, '\n'), id: self.last_event_id, retry: self.retry,
+        }
+        events.push(framed)
+    }
+    self.data_lines = []
+    self.event_name = ''
+    self.event_bytes = 0
+    return events
+}
+#local
+fn parser_t.update_retry(&self, string value) {
+    if value == '' {
+        return
+    }
+    for byte in value as[u8]{
+        if byte < '0'.char() || byte > '9'.char() {
+            return
+        }
+    }
+    int parsed = value.to_int() catch e {
+        -1
+    }
+    if parsed >= 0 {
+        self.retry = parsed
+    }
+}
+#local
+fn contains_nul([u8] bytes): bool {
+    for byte in bytes {
+        if byte == 0 {
+            return true
+        }
+    }
+    return false
+}
+// Strings are created only after a full line has arrived. This validator makes
+// malformed UTF-8 a transport error while allowing code points to span chunks.
+#local
+fn valid_utf8([u8] bytes): void! {
+    int i = 0
+    for i < bytes.len() {
+        u8 first = bytes[i]
+        if first <= 0x7f {
+            i += 1
+            continue
+        }
+        int width = 0
+        if first >= 0xc2 && first <= 0xdf {
+            width = 2
+        } else if first >= 0xe0 && first <= 0xef {
+            width = 3
+        } else if first >= 0xf0 && first <= 0xf4 {
+            width = 4
+        } else {
+            throw errorf('invalid UTF-8 at SSE byte %d', i)
+        }
+        if i + width > bytes.len() {
+            throw errorf('incomplete UTF-8 at SSE byte %d', i)
+        }
+        for int j = 1; j < width; j += 1 {
+            u8 continuation = bytes[i + j]
+            if continuation < 0x80 || continuation > 0xbf {
+                throw errorf('invalid UTF-8 continuation at SSE byte %d', i + j)
+            }
+        }
+        u8 second = bytes[i + 1]
+        if (first == 0xe0 && second < 0xa0) || (first == 0xed && second > 0x9f) || (first == 0xf0 && second < 0x90) || (first == 0xf4 && second > 0x8f) {
+            throw errorf('invalid UTF-8 scalar at SSE byte %d', i)
+        }
+        i += width
+    }
+}

@@ -1,0 +1,169 @@
+import adou.src.tui.text_utils
+import strings
+
+const STRATEGY_NONE = 'none'
+const STRATEGY_FIRST = 'first'
+const STRATEGY_FULL = 'full'
+const STRATEGY_DIFF = 'diff'
+const SYNC_START = '\x1b[?2026h'
+const SYNC_END = '\x1b[?2026l'
+const LINE_RESET = '\x1b[0m\x1b]8;;\x07'
+
+type result_t = struct {
+    string output
+    string strategy
+    int first_changed = -1
+    int last_changed = -1
+}
+
+type renderer_t = struct {
+    [string] previous_lines = []
+    int previous_width
+    int previous_height
+    int previous_viewport_top
+    int hardware_cursor_row
+}
+
+fn new(): ref<renderer_t> {
+    return new renderer_t(previous_lines = vec<string>.cap_of(16))
+}
+
+fn renderer_t.render(&self, [string] input_lines, int width, int height): result_t! {
+    if width <= 0 || height <= 0 {
+        throw errorf('terminal dimensions must be positive')
+    }
+    [string] lines = vec<string>.cap_of(input_lines.len())
+    for input in input_lines {
+        string normalized = text_utils.normalize_terminal_output(input)
+        int visible = text_utils.visible_width(normalized)
+        if visible > width {
+            throw errorf('rendered line exceeds terminal width: %d > %d', visible, width)
+        }
+        lines.push(normalized + LINE_RESET)
+    }
+    bool width_changed = self.previous_width != 0 && self.previous_width != width
+    bool height_changed = self.previous_height != 0 && self.previous_height != height
+    if self.previous_lines.len() == 0 && !width_changed && !height_changed {
+        string output = full_output(lines, false)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0)
+        return result_t {output: output, strategy: STRATEGY_FIRST,}
+    }
+    if width_changed || height_changed {
+        string output = full_output(lines, true)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0)
+        return result_t {output: output, strategy: STRATEGY_FULL,}
+    }
+    int first_changed = -1
+    int last_changed = -1
+    int maximum = lines.len() > self.previous_lines.len() ? lines.len() : self.previous_lines.len()
+    for int index = 0; index < maximum; index += 1 {
+        string old_line = index < self.previous_lines.len() ? self.previous_lines[index] : ''
+        string new_line = index < lines.len() ? lines[index] : ''
+        if old_line != new_line {
+            if first_changed < 0 {
+                first_changed = index
+            }
+            last_changed = index
+        }
+    }
+    if first_changed < 0 {
+        self.previous_width = width
+        self.previous_height = height
+        return result_t {strategy: STRATEGY_NONE,}
+    }
+    if first_changed < self.previous_viewport_top {
+        string output = full_output(lines, true)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0)
+        return result_t {output: output, strategy: STRATEGY_FULL, first_changed: first_changed, last_changed: last_changed,}
+    }
+    string output = differential_output(self.previous_lines, lines, self.hardware_cursor_row, first_changed, last_changed)
+    int final_cursor = lines.len() > 0 ? (last_changed < lines.len() ? last_changed : lines.len() - 1) : 0
+    self.commit(lines, width, height, final_cursor)
+    return result_t {output: output, strategy: STRATEGY_DIFF, first_changed: first_changed, last_changed: last_changed,}
+}
+
+#local
+fn renderer_t.commit(&self, [string] lines, int width, int height, int hardware_cursor_row) {
+    self.previous_lines = copy_strings(lines)
+    self.previous_width = width
+    self.previous_height = height
+    self.previous_viewport_top = lines.len() > height ? lines.len() - height : 0
+    self.hardware_cursor_row = hardware_cursor_row
+}
+
+#local
+fn full_output([string] lines, bool clear): string {
+    string output = SYNC_START
+    if clear {
+        output += '\x1b[2J\x1b[H\x1b[3J'
+    }
+    output += strings.join(lines, '\r\n')
+    return output + SYNC_END
+}
+
+#local
+fn differential_output([string] previous, [string] lines, int hardware_cursor_row, int first_changed, int last_changed): string {
+    string output = SYNC_START
+    bool append_at_end = first_changed == previous.len() && lines.len() > previous.len() && first_changed > 0
+    int target = append_at_end ? first_changed - 1 : first_changed
+    int difference = target - hardware_cursor_row
+    if difference > 0 {output += csi_move(difference, 'B')} else if difference < 0 {output += csi_move(-difference, 'A')}
+    output += append_at_end ? '\r\n' : '\r'
+    int render_end = last_changed < lines.len() ? last_changed : lines.len() - 1
+    for int index = first_changed; index <= render_end && index >= 0; index += 1 {
+        if index > first_changed {
+            output += '\r\n'
+        }
+        output += '\x1b[2K' + lines[index]
+    }
+    if previous.len() > lines.len() {
+        if render_end < lines.len() - 1 {
+            output += csi_move(lines.len() - 1 - render_end, 'B')
+        }
+        int extra = previous.len() - lines.len()
+        if extra > 0 {
+            output += '\x1b[2K'
+        }
+        for int index = 1; index < extra; index += 1 {
+            output += '\r\n\x1b[2K'
+        }
+        if extra > 0 {
+            output += csi_move(extra, 'A')
+        }
+    }
+    return output + SYNC_END
+}
+
+#local
+fn csi_move(int count, string direction): string {
+    return count > 0 ? '\x1b[' + int_string(count) + direction : ''
+}
+
+#local
+fn int_string(int value): string {
+    if value == 0 {
+        return '0'
+    }
+    [u8] bytes = vec<u8>.cap_of(20)
+    int remaining = value
+    for remaining > 0 {
+        int digit = remaining % 10
+        int ascii = '0'.char() as int
+        bytes.push((ascii + digit) as u8)
+        remaining /= 10
+    }
+    [u8] ordered = vec<u8>.cap_of(bytes.len())
+    for int index = bytes.len() - 1; index >= 0; index -= 1 {
+        ordered.push(bytes[index])
+    }
+    return ordered as string
+}
+
+#local
+fn copy_strings([string] values): [string] {
+    [string] result = vec<string>.cap_of(values.len())
+    for value in values {
+        result.push(value)
+    }
+    return result
+}

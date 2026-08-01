@@ -1,0 +1,43 @@
+import fmt
+import libc
+import time
+
+fn uuid_v7(): string! {
+    [u8] bytes = vec<u8>.new(0, 16)
+    if libc.getentropy(bytes.ref(), bytes.len() as u64) != 0 {
+        throw errorf('getentropy failed: %s', libc.error_string())
+    }
+    i64 timestamp = time.now().ms_timestamp()
+    bytes[0] = ((timestamp >> 40) & 0xff) as u8
+    bytes[1] = ((timestamp >> 32) & 0xff) as u8
+    bytes[2] = ((timestamp >> 24) & 0xff) as u8
+    bytes[3] = ((timestamp >> 16) & 0xff) as u8
+    bytes[4] = ((timestamp >> 8) & 0xff) as u8
+    bytes[5] = (timestamp & 0xff) as u8
+    bytes[6] = 0x70 | (bytes[6] & 0x0f)
+    bytes[8] = 0x80 | (bytes[8] & 0x3f)
+    return fmt.sprintf('%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x', bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15])
+}
+
+fn short_id(): string! {
+    [u8] bytes = vec<u8>.new(0, 4)
+    if libc.getentropy(bytes.ref(), bytes.len() as u64) != 0 {
+        throw errorf('getentropy failed: %s', libc.error_string())
+    }
+    return fmt.sprintf('%02x%02x%02x%02x', bytes[0], bytes[1], bytes[2], bytes[3])
+}
+
+fn iso_now(): string! {
+    var current = time.now()
+    libc.time_t seconds = current.sec as libc.time_t
+    libc.tm broken = libc.tm{}
+    if libc.gmtime_r(&seconds, &broken) == null {
+        throw errorf('gmtime_r failed')
+    }
+    [u8] buffer = vec<u8>.new(0, 32)
+    u64 length = libc.strftime(buffer.ref() as libc.cstr, buffer.len() as u64, '%Y-%m-%dT%H:%M:%S'.to_cstr(), &broken)
+    if length == 0 {
+        throw errorf('strftime failed')
+    }
+    return fmt.sprintf('%s.%03dZ', buffer.slice(0, length as int) as string, current.nsec / 1000000)
+}

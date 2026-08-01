@@ -1,0 +1,2 @@
+import adou.src.app
+fn main() { app.run() }

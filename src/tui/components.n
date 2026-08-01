@@ -1,0 +1,210 @@
+import adou.src.tui.text_utils
+
+const KIND_CONTAINER = 1
+const KIND_TEXT = 2
+const KIND_TRUNCATED_TEXT = 3
+const KIND_SPACER = 4
+const KIND_BOX = 5
+const KIND_LOADER = 6
+const KIND_CANCELLABLE_LOADER = 7
+
+type node_t = struct {
+    int kind
+    string text
+    int padding_x
+    int padding_y
+    int spacer_lines
+    [string] frames = []
+    int frame_index
+    bool cancelled
+    [ref<node_t>] children = []
+}
+
+fn container(): ref<node_t> {
+    return new node_t(kind = KIND_CONTAINER, frames = vec<string>.cap_of(0), children = vec<ref<node_t>>.cap_of(8))
+}
+
+fn text(string value, int padding_x, int padding_y): ref<node_t> {
+    return new node_t(kind = KIND_TEXT, text = value, padding_x = padding_x, padding_y = padding_y, frames = vec<string>.cap_of(0), children = vec<ref<node_t>>.cap_of(0))
+}
+
+fn truncated_text(string value, int padding_x, int padding_y): ref<node_t> {
+    return new node_t(kind = KIND_TRUNCATED_TEXT, text = value, padding_x = padding_x, padding_y = padding_y, frames = vec<string>.cap_of(0), children = vec<ref<node_t>>.cap_of(0))
+}
+
+fn spacer(int lines): ref<node_t> {
+    return new node_t(kind = KIND_SPACER, spacer_lines = lines, frames = vec<string>.cap_of(0), children = vec<ref<node_t>>.cap_of(0))
+}
+
+fn box(int padding_x, int padding_y): ref<node_t> {
+    return new node_t(kind = KIND_BOX, padding_x = padding_x, padding_y = padding_y, frames = vec<string>.cap_of(0), children = vec<ref<node_t>>.cap_of(8))
+}
+
+fn loader(string message): ref<node_t> {
+    return new node_t(kind = KIND_LOADER, text = message, padding_x = 1, frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'], children = vec<ref<node_t>>.cap_of(0))
+}
+
+fn cancellable_loader(string message): ref<node_t> {
+    return new node_t(kind = KIND_CANCELLABLE_LOADER, text = message, padding_x = 1, frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'], children = vec<ref<node_t>>.cap_of(0))
+}
+
+fn node_t.add(&self, ref<node_t> child) {
+    self.children.push(child)
+}
+
+fn node_t.clear(&self) {
+    self.children = vec<ref<node_t>>.cap_of(8)
+}
+
+fn node_t.set_text(&self, string value) {
+    self.text = value
+}
+
+fn node_t.tick(&self) {
+    if self.frames.len() > 1 {
+        self.frame_index = (self.frame_index + 1) % self.frames.len()
+    }
+}
+
+fn node_t.cancel(&self) {
+    if self.kind == KIND_CANCELLABLE_LOADER {
+        self.cancelled = true
+    }
+}
+
+fn node_t.render(&self, int width): [string]! {
+    if width <= 0 {
+        return ['']
+    }
+    if self.kind == KIND_CONTAINER {
+        return render_children(self.children, width)
+    }
+    if self.kind == KIND_TEXT {
+        return render_text(self.text, width, self.padding_x, self.padding_y)
+    }
+    if self.kind == KIND_TRUNCATED_TEXT {
+        return render_truncated(self.text, width, self.padding_x, self.padding_y)
+    }
+    if self.kind == KIND_SPACER {
+        [string] lines = vec<string>.cap_of(self.spacer_lines)
+        for int index = 0; index < self.spacer_lines; index += 1 {
+            lines.push('')
+        }
+        return lines
+    }
+    if self.kind == KIND_BOX {
+        return render_box(self.children, width, self.padding_x, self.padding_y)
+    }
+    if self.kind == KIND_LOADER || self.kind == KIND_CANCELLABLE_LOADER {
+        string indicator = self.frames.len() > 0 ? self.frames[self.frame_index % self.frames.len()] + ' ' : ''
+        string message = self.cancelled ? self.text + ' (cancelled)' : self.text
+        var body = render_text(indicator + message, width, self.padding_x, 0)
+        [string] result = vec<string>.cap_of(body.len() + 1)
+        result.push('')
+        for line in body {
+            result.push(line)
+        }
+        return result
+    }
+    return []
+}
+
+#local
+fn render_children([ref<node_t>] children, int width): [string]! {
+    [string] result = vec<string>.cap_of(16)
+    for child in children {
+        var lines = child.render(width)
+        for line in lines {
+            result.push(line)
+        }
+    }
+    return result
+}
+
+#local
+fn render_text(string value, int width, int padding_x, int padding_y): [string]! {
+    if value.trim([' ', '\t', '\n', '\r']) == '' {
+        return []
+    }
+    int content_width = width - padding_x * 2
+    if content_width < 1 {
+        content_width = 1
+    }
+    var wrapped = text_utils.wrap_text_with_ansi(value.replace('\t', '   '), content_width)
+    [string] result = vec<string>.cap_of(wrapped.len() + padding_y * 2)
+    string empty = spaces(width)
+    for int index = 0; index < padding_y; index += 1 {
+        result.push(empty)
+    }
+    string margin = spaces(padding_x)
+    for line in wrapped {
+        string padded = margin + line + margin
+        int remaining = width - text_utils.visible_width(padded)
+        result.push(padded + spaces(remaining > 0 ? remaining : 0))
+    }
+    for int index = 0; index < padding_y; index += 1 {
+        result.push(empty)
+    }
+    return result.len() > 0 ? result : ['']
+}
+
+#local
+fn render_truncated(string value, int width, int padding_x, int padding_y): [string]! {
+    [string] result = vec<string>.cap_of(1 + padding_y * 2)
+    string empty = spaces(width)
+    for int index = 0; index < padding_y; index += 1 {
+        result.push(empty)
+    }
+    int available = width - padding_x * 2
+    if available < 1 {
+        available = 1
+    }
+    int newline = value.find('\n')
+    string first = newline >= 0 ? value.slice(0, newline) : value
+    string display = text_utils.truncate_to_width(first, available, '...', false)
+    string line = spaces(padding_x) + display + spaces(padding_x)
+    int remaining = width - text_utils.visible_width(line)
+    result.push(line + spaces(remaining > 0 ? remaining : 0))
+    for int index = 0; index < padding_y; index += 1 {
+        result.push(empty)
+    }
+    return result
+}
+
+#local
+fn render_box([ref<node_t>] children, int width, int padding_x, int padding_y): [string]! {
+    if children.len() == 0 {
+        return []
+    }
+    int content_width = width - padding_x * 2
+    if content_width < 1 {
+        content_width = 1
+    }
+    var child_lines = render_children(children, content_width)
+    if child_lines.len() == 0 {
+        return []
+    }
+    [string] result = vec<string>.cap_of(child_lines.len() + padding_y * 2)
+    for int index = 0; index < padding_y; index += 1 {
+        result.push(spaces(width))
+    }
+    string margin = spaces(padding_x)
+    for child_line in child_lines {
+        string line = margin + child_line
+        int remaining = width - text_utils.visible_width(line)
+        result.push(line + spaces(remaining > 0 ? remaining : 0))
+    }
+    for int index = 0; index < padding_y; index += 1 {
+        result.push(spaces(width))
+    }
+    return result
+}
+
+#local
+fn spaces(int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += ' '
+    }
+    return result
+}

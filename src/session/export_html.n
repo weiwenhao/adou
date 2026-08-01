@@ -1,0 +1,78 @@
+import adou.src.ai.types as ai_types
+import adou.src.session.message_json
+import adou.src.session.repository
+import adou.src.session.types as session_types
+import fmt
+import strings
+
+// A dependency-free HTML export that keeps the important Pi affordances:
+// readable role-separated messages, thinking/tool details, session metadata,
+// and escaped source text.  Markdown remains plain text so an export never
+// turns model output into executable HTML.
+fn render(ref<repository.manager_t> repository): string! {
+    string body = ''
+    for entry in repository.get_entries() {
+        if entry.kind == session_types.ENTRY_MESSAGE {
+            var object = entry.raw.as_object() catch error {continue}
+            if !object.contains('message') {continue}
+            var message = message_json.decode(object['message']) catch error {continue}
+            body += render_message(message)
+        } else if entry.kind == session_types.ENTRY_COMPACTION {
+            var object = entry.raw.as_object() catch error {continue}
+            string summary = object.contains('summary') ? object['summary'].as_string() : ''
+            body += '<article class="event compaction"><header>Compaction</header><pre>' + escape(summary) + '</pre></article>'
+        } else if entry.kind == session_types.ENTRY_BRANCH_SUMMARY {
+            var object = entry.raw.as_object() catch error {continue}
+            string summary = object.contains('summary') ? object['summary'].as_string() : ''
+            body += '<article class="event branch"><header>Branch summary</header><pre>' + escape(summary) + '</pre></article>'
+        }
+    }
+    string title = repository.get_session_name() catch error {''}
+    if title == '' {title = 'Adou session'}
+    return '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>' + escape(title) + '</title><style>' + styles() + '</style></head><body><main><h1>' + escape(title) + '</h1><p class="meta">' + escape(repository.get_session_id()) + ' · ' + escape(repository.cwd) + '</p>' + body + '</main></body></html>'
+}
+
+#local
+fn render_message(ai_types.message_t message): string {
+    if message is ref<ai_types.user_message_t> user {
+        return '<article class="message user"><header>You</header><pre>' + escape(user.content) + '</pre></article>'
+    }
+    if message is ref<ai_types.assistant_message_t> assistant {
+        string content = ''
+        for block in assistant.content {
+            if block is ref<ai_types.text_content_t> text {
+                content += '<pre>' + escape(text.text) + '</pre>'
+            } else if block is ref<ai_types.thinking_content_t> thinking {
+                content += '<details class="thinking"><summary>Thinking</summary><pre>' + escape(thinking.thinking) + '</pre></details>'
+            } else if block is ref<ai_types.tool_call_t> call {
+                string arguments = call.arguments.stringify() catch error {''}
+                content += '<details class="tool"><summary>Tool: ' + escape(call.name) + '</summary><pre>' + escape(arguments) + '</pre></details>'
+            }
+        }
+        return '<article class="message assistant"><header>Assistant <span>' + escape(assistant.model) + '</span></header>' + content + '<footer>' + escape(assistant.stop_reason) + '</footer></article>'
+    }
+    if message is ref<ai_types.tool_result_message_t> tool {
+        string content = ''
+        for block in tool.content {
+            content += block.text + '\n'
+        }
+        return '<article class="message tool-result"><header>Tool result: ' + escape(tool.tool_name) + '</header><pre>' + escape(content) + '</pre></article>'
+    }
+    if message is ref<ai_types.bash_execution_message_t> bash {
+        return '<article class="message bash"><header>Shell</header><pre>$ ' + escape(bash.command) + '\n' + escape(bash.output) + '</pre></article>'
+    }
+    if message is ref<ai_types.custom_message_t> custom {
+        return '<article class="message custom"><header>' + escape(custom.custom_type) + '</header><pre>' + escape(custom.content) + '</pre></article>'
+    }
+    return ''
+}
+
+#local
+fn escape(string value): string {
+    return value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&#39;')
+}
+
+#local
+fn styles(): string {
+    return 'body{margin:0;background:#111;color:#e8e8e8;font:15px ui-monospace,SFMono-Regular,Menlo,monospace}main{max-width:960px;margin:0 auto;padding:32px 20px}h1{font-size:20px;color:#9adbd2}.meta{color:#777;font-size:12px;margin-bottom:24px}.message,.event{border:1px solid #292929;border-radius:8px;padding:14px 16px;margin:12px 0;background:#171717}.message.user{border-left:3px solid #7aa2f7}.message.assistant{border-left:3px solid #9ece6a}.message.tool-result{border-left:3px solid #e0af68}.message.bash{border-left:3px solid #bb9af7}.event{border-left:3px solid #565f89}.message header,.event header{color:#aaa;margin-bottom:10px}.message header span{color:#666;font-size:12px}.message footer{color:#666;font-size:11px;margin-top:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0;line-height:1.5}details{margin:8px 0;border:1px solid #303030;border-radius:5px;padding:8px}summary{cursor:pointer;color:#c0caf5}.thinking{background:#13131a}.tool{background:#151a14}'
+}

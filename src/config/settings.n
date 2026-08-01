@@ -1,0 +1,147 @@
+import adou.src.tools.path_utils
+import fs
+import fmt
+import json
+import libc
+import os
+import path
+import syscall
+
+type object_t = map<string, ref<json.value_t>>
+
+type settings_t = struct {
+    string default_provider
+    string default_model
+    // Pi's default thinking level is medium. Keep an explicit `off` only
+    // when the user selected it, rather than treating an absent setting as
+    // disabled reasoning.
+    string default_thinking_level = 'medium'
+    bool auto_compaction = true
+    string steering_mode = 'one-at-a-time'
+    string follow_up_mode = 'one-at-a-time'
+    bool hide_thinking
+    bool retry_enabled = true
+    int retry_max_attempts = 3
+    int retry_base_delay_ms = 2000
+    [string] enabled_model_ids = []
+}
+
+fn load(): settings_t {
+    var result = settings_t{}
+    string file_path = settings_path()
+    if !path_utils.exists(file_path) {return result}
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return result}
+    string content = input.content() catch error {
+        input.close()
+        return result
+    }
+    input.close()
+    var root = json.parse(content) catch error {return result}
+    if root.kind != json.VALUE_OBJECT {return result}
+    var object = root.as_object() catch error {return result} as object_t
+    result.default_provider = string_value(object, 'defaultProvider', result.default_provider)
+    result.default_model = string_value(object, 'defaultModel', result.default_model)
+    result.default_thinking_level = thinking_level(string_value(object, 'defaultThinkingLevel', result.default_thinking_level))
+    result.auto_compaction = bool_value(object, 'autoCompaction', result.auto_compaction)
+    result.steering_mode = queue_mode(string_value(object, 'steeringMode', result.steering_mode))
+    result.follow_up_mode = queue_mode(string_value(object, 'followUpMode', result.follow_up_mode))
+    result.hide_thinking = bool_value(object, 'hideThinkingBlock', result.hide_thinking)
+    result.retry_enabled = bool_value(object, 'retryEnabled', result.retry_enabled)
+    result.retry_max_attempts = positive_int(object, 'retryMaxAttempts', result.retry_max_attempts)
+    result.retry_base_delay_ms = positive_int(object, 'retryBaseDelayMs', result.retry_base_delay_ms)
+    if object.contains('enabledModels') && object['enabledModels'].kind == json.VALUE_ARRAY {
+        var enabled_values = object['enabledModels'].as_array() catch error {[]}
+        for item in enabled_values {
+            if item.kind == json.VALUE_STRING {
+                string model_id = item.as_string() catch error {''}
+                if model_id != '' {result.enabled_model_ids.push(model_id)}
+            }
+        }
+    }
+    return result
+}
+
+fn save(settings_t settings): void! {
+    object_t object = {}
+    object['defaultProvider'] = boxed_string(settings.default_provider)
+    object['defaultModel'] = boxed_string(settings.default_model)
+    object['defaultThinkingLevel'] = boxed_string(settings.default_thinking_level)
+    object['autoCompaction'] = json.box_value(json.bool_value(settings.auto_compaction))
+    object['steeringMode'] = boxed_string(queue_mode(settings.steering_mode))
+    object['followUpMode'] = boxed_string(queue_mode(settings.follow_up_mode))
+    object['hideThinkingBlock'] = json.box_value(json.bool_value(settings.hide_thinking))
+    object['retryEnabled'] = json.box_value(json.bool_value(settings.retry_enabled))
+    object['retryMaxAttempts'] = json.box_value(json.number_value(fmt.sprintf('%d', settings.retry_max_attempts)))
+    object['retryBaseDelayMs'] = json.box_value(json.number_value(fmt.sprintf('%d', settings.retry_base_delay_ms)))
+    if settings.enabled_model_ids.len() > 0 {
+        [ref<json.value_t>] enabled = []
+        for model_id in settings.enabled_model_ids {
+            enabled.push(boxed_string(model_id))
+        }
+        object['enabledModels'] = json.box_value(json.array_value(enabled))
+    }
+    string file_path = settings_path()
+    os.mkdirs(path.dir(file_path), 0o700)
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    string content = json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+    int written = output.write(content as [u8])
+    output.close()
+    if written != content.len() {throw errorf('Could not write settings')}
+}
+
+// Pi persists the selected model immediately.  Keep this operation shared by
+// the TUI, RPC, and headless callers instead of making it a UI-only side
+// effect.
+fn set_default_model(string provider, string model): void! {
+    var settings = load()
+    settings.default_provider = provider
+    settings.default_model = model
+    save(settings)
+}
+
+fn set_default_thinking(string level): void! {
+    var settings = load()
+    settings.default_thinking_level = thinking_level(level)
+    save(settings)
+}
+
+fn settings_path(): string {
+    string home = syscall.get_env('HOME')
+    if home == '' {home = '/'}
+    return path.join(home, '.adou/settings.json')
+}
+
+#local
+fn queue_mode(string value): string {
+    return value == 'all' ? value : 'one-at-a-time'
+}
+
+#local
+fn thinking_level(string value): string {
+    if value == 'minimal' || value == 'low' || value == 'medium' || value == 'high' || value == 'xhigh' || value == 'max' {return value}
+    return 'off'
+}
+
+#local
+fn string_value(object_t object, string key, string fallback): string {
+    if object.contains(key) && object[key].kind == json.VALUE_STRING {return object[key].text}
+    return fallback
+}
+
+#local
+fn bool_value(object_t object, string key, bool fallback): bool {
+    if object.contains(key) && object[key].kind == json.VALUE_BOOL {return object[key].boolean}
+    return fallback
+}
+
+#local
+fn positive_int(object_t object, string key, int fallback): int {
+    if !object.contains(key) || object[key].kind != json.VALUE_NUMBER {return fallback}
+    int value = libc.atol(object[key].number.to_cstr()) as int
+    return value >= 0 ? value : fallback
+}
+
+#local
+fn boxed_string(string value): ref<json.value_t> {
+    return json.box_value(json.string_value(value))
+}

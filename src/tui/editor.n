@@ -1,0 +1,1054 @@
+import adou.src.tui.unicode
+import adou.src.tui.keys
+import adou.src.tui.word_navigation
+import adou.src.unicode.utf8
+import fmt
+import strings
+
+const ACTION_NONE = 0
+const ACTION_KILL = 1
+const ACTION_YANK = 2
+const ACTION_TYPE_WORD = 3
+const ACTION_SUBMIT = 'submit'
+const ACTION_NEWLINE = 'newline'
+const ACTION_CANCEL = 'cancel'
+const ACTION_SCROLL_UP = 'scroll_up'
+const ACTION_SCROLL_DOWN = 'scroll_down'
+const ACTION_IGNORED = 'ignored'
+
+type key_result_t = struct {
+    string action = ACTION_IGNORED
+    bool submitted
+    string text
+}
+
+type paste_t = struct {
+    int id
+    string content
+}
+
+type snapshot_t = struct {
+    [string] lines
+    int cursor_line
+    int cursor_col
+    [paste_t] pastes
+    int paste_counter
+}
+
+type cursor_t = struct {
+    int line
+    int column
+}
+
+type submit_t = struct {
+    bool submitted
+    string text
+}
+
+type editor_t = struct {
+    [string] lines
+    int cursor_line
+    int cursor_col
+    [paste_t] pastes
+    int paste_counter
+    [snapshot_t] undo_stack
+    [string] kill_ring
+    [string] history
+    int history_index = -1
+    string history_draft
+    int last_action
+    int preferred_visual_column = -1
+    // Pi's Ctrl+] / Ctrl+Alt+] character-jump mode.  1 searches forward,
+    // -1 searches backward, and 0 means normal editing.
+    int jump_mode
+}
+
+fn new(): ref<editor_t> {
+    return new editor_t(lines = [''], pastes = vec<paste_t>.cap_of(4), undo_stack = vec<snapshot_t>.cap_of(32), kill_ring = vec<string>.cap_of(8), history = vec<string>.cap_of(32))
+}
+
+fn editor_t.get_text(&self): string {
+    return strings.join(self.lines, '\n')
+}
+
+fn editor_t.get_expanded_text(&self): string {
+    string result = self.get_text()
+    for paste in self.pastes {
+        result = result.replace(marker_for(paste), paste.content)
+    }
+    return result
+}
+
+fn editor_t.get_lines(&self): [string] {
+    return copy_strings(self.lines)
+}
+
+fn editor_t.get_cursor(&self): cursor_t {
+    return cursor_t {line: self.cursor_line, column: self.cursor_col,}
+}
+
+fn editor_t.set_text(&self, string text) {
+    string normalized = normalize_text(text)
+    if self.get_text() != normalized {
+        self.push_undo_snapshot()
+    }
+    self.pastes = vec<paste_t>.cap_of(4)
+    self.paste_counter = 0
+    var lines = split_lines(normalized)
+    self.lines = lines.len() == 0 ? [''] : lines
+    self.cursor_line = self.lines.len() - 1
+    self.cursor_col = self.lines[self.cursor_line].len()
+    self.last_action = ACTION_NONE
+    self.preferred_visual_column = -1
+    self.history_index = -1
+    self.history_draft = ''
+}
+
+fn editor_t.add_history(&self, string text) {
+    string value = text.trim([' ', '\t', '\n', '\r'])
+    if value == '' {
+        return
+    }
+    if self.history.len() > 0 && self.history[0] == value {
+        self.history_index = -1
+        return
+    }
+    [string] updated = vec<string>.cap_of(self.history.len() + 1)
+    updated.push(value)
+    for entry in self.history {
+        if updated.len() >= 100 {
+            break
+        }
+        updated.push(entry)
+    }
+    self.history = updated
+    self.history_index = -1
+    self.history_draft = ''
+}
+
+fn editor_t.insert_text(&self, string text) {
+    if text == '' {
+        return
+    }
+    self.history_index = -1
+    self.history_draft = ''
+    self.push_undo_snapshot()
+    self.last_action = ACTION_NONE
+    self.insert_text_internal(text)
+}
+
+fn editor_t.insert_character(&self, string value) {
+    if value == '' {
+        return
+    }
+    self.history_index = -1
+    self.history_draft = ''
+    if is_whitespace(value) || self.last_action != ACTION_TYPE_WORD {
+        self.push_undo_snapshot()
+    }
+    self.last_action = ACTION_TYPE_WORD
+    string line = self.lines[self.cursor_line]
+    self.lines[self.cursor_line] = line.slice(0, self.cursor_col) + value + line.slice(self.cursor_col, line.len())
+    self.cursor_col += value.len()
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.handle_paste(&self, string pasted_text) {
+    self.history_index = -1
+    self.history_draft = ''
+    self.push_undo_snapshot()
+    self.last_action = ACTION_NONE
+    string filtered = filter_paste(normalize_text(decode_csi_u_controls(pasted_text)))
+    if filtered == '' {
+        return
+    }
+    if starts_like_path(filtered) && self.cursor_col > 0 {
+        string line = self.lines[self.cursor_line]
+        if is_ascii_word_byte(line[self.cursor_col - 1]) {
+            filtered = ' ' + filtered
+        }
+    }
+    var pasted_lines = split_lines(filtered)
+    int characters = utf8.utf16_length(filtered)
+    if pasted_lines.len() > 10 || characters > 1000 {
+        self.paste_counter += 1
+        var paste = paste_t {id: self.paste_counter, content: filtered,}
+        self.pastes.push(paste)
+        self.insert_text_internal(marker_for(paste))
+        return
+    }
+    self.insert_text_internal(filtered)
+}
+
+fn editor_t.add_newline(&self) {
+    self.history_index = -1
+    self.history_draft = ''
+    self.push_undo_snapshot()
+    self.last_action = ACTION_NONE
+    string line = self.lines[self.cursor_line]
+    string before = line.slice(0, self.cursor_col)
+    string after = line.slice(self.cursor_col, line.len())
+    [string] updated = vec<string>.cap_of(self.lines.len() + 1)
+    for int index = 0; index < self.lines.len(); index += 1 {
+        if index == self.cursor_line {
+            updated.push(before)
+            updated.push(after)
+        } else {
+            updated.push(self.lines[index])
+        }
+    }
+    self.lines = updated
+    self.cursor_line += 1
+    self.cursor_col = 0
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.submit(&self): submit_t {
+    string result = self.get_expanded_text().trim([' ', '\t', '\n', '\r'])
+    self.lines = ['']
+    self.cursor_line = 0
+    self.cursor_col = 0
+    self.pastes = vec<paste_t>.cap_of(4)
+    self.paste_counter = 0
+    self.undo_stack = vec<snapshot_t>.cap_of(32)
+    self.last_action = ACTION_NONE
+    self.preferred_visual_column = -1
+    self.history_index = -1
+    self.history_draft = ''
+    return submit_t {submitted: true, text: result,}
+}
+
+// Search the current buffer for the first exact occurrence of a character in
+// the requested direction.  The current cursor position is skipped, matching
+// Pi's jumpToChar behavior.  Search is byte-indexed only for the candidate
+// offset; the target itself is a decoded printable string, so multi-byte
+// UTF-8 characters remain intact when the cursor is moved.
+fn editor_t.jump_to_character(&self, string target, int direction) {
+    self.last_action = ACTION_NONE
+    if target == '' || direction == 0 {
+        return
+    }
+    if direction > 0 {
+        for int line_index = self.cursor_line; line_index < self.lines.len(); line_index += 1 {
+            string line = self.lines[line_index]
+            int start = line_index == self.cursor_line ? self.cursor_col + 1 : 0
+            int found = start == 0 ? line.find(target) : line.find_after(target, start)
+            // find_after searches from the supplied byte offset.  Also guard
+            // the result so it can never land before the cursor.
+            if found >= start {
+                self.cursor_line = line_index
+                self.cursor_col = found
+                self.preferred_visual_column = -1
+                return
+            }
+        }
+        return
+    }
+    for int line_index = self.cursor_line; line_index >= 0; line_index -= 1 {
+        string line = self.lines[line_index]
+        int limit = line_index == self.cursor_line ? self.cursor_col - 1 : line.len() - 1
+        if limit < 0 {
+            continue
+        }
+        int found = -1
+        // String.rfind() has no upper-bound argument, so scan candidate byte
+        // starts backwards and compare the complete target at each offset.
+        for int candidate = limit; candidate >= 0; candidate -= 1 {
+            if candidate + target.len() <= line.len() && line.slice(candidate, candidate + target.len()) == target {
+                found = candidate
+                break
+            }
+        }
+        if found >= 0 {
+            self.cursor_line = line_index
+            self.cursor_col = found
+            self.preferred_visual_column = -1
+            return
+        }
+    }
+}
+
+// Dispatch a complete input frame.  Paste frames are handled separately by
+// input_buffer and should call handle_paste instead of this method.
+fn editor_t.handle_key(&self, string data, bool kitty_protocol): key_result_t! {
+    keys.set_kitty_protocol(kitty_protocol)
+    string key = keys.parse_key(data)
+
+    // Character jump is a two-key operation in Pi: the first key arms the
+    // direction, and the next printable grapheme is the search target.  A
+    // second jump key cancels the pending operation; other control input is
+    // allowed to fall through to its normal editor action.
+    if self.jump_mode != 0 {
+        if key == 'ctrl+]' || key == 'ctrl+alt+]' {
+            self.jump_mode = 0
+            return key_result_t {action: 'handled',}
+        }
+        string target = keys.decode_printable(data)
+        if target == '' && data != '' && data[0] >= 32 && data[0] != 0x1b {
+            target = data
+        }
+        if target != '' {
+            self.jump_to_character(target, self.jump_mode)
+            self.jump_mode = 0
+            return key_result_t {action: 'handled',}
+        }
+        self.jump_mode = 0
+    }
+
+    if key == 'ctrl+]' {
+        self.jump_mode = 1
+        return key_result_t {action: 'handled',}
+    }
+    if key == 'ctrl+alt+]' {
+        self.jump_mode = -1
+        return key_result_t {action: 'handled',}
+    }
+
+    if key == 'enter' {
+        // Pi's fallback for terminals which cannot distinguish Shift+Enter:
+        // a backslash immediately before Enter inserts a newline and removes
+        // the escape character instead of submitting the message.
+        if self.cursor_col > 0 && self.lines[self.cursor_line][self.cursor_col - 1] == '\\'.char() {
+            self.backspace()
+            self.add_newline()
+            return key_result_t {action: ACTION_NEWLINE,}
+        }
+        var submitted = self.submit()
+        return key_result_t {action: ACTION_SUBMIT, submitted: true, text: submitted.text,}
+    }
+    if key == 'shift+enter' || key == 'ctrl+j' {
+        self.add_newline()
+        return key_result_t {action: ACTION_NEWLINE,}
+    }
+    if key == 'ctrl+c' {
+        return key_result_t {action: ACTION_CANCEL,}
+    }
+    if key == 'left' || key == 'ctrl+b' {self.move_left(); return key_result_t {action: 'handled',}}
+    if key == 'right' || key == 'ctrl+f' {self.move_right(); return key_result_t {action: 'handled',}}
+    if key == 'up' {
+        if self.get_text() == '' || (self.cursor_line == 0 && self.cursor_col == 0) {
+            self.navigate_history(-1)
+        } else {
+            self.move_vertical(-1)
+        }
+        return key_result_t {action: 'handled',}
+    }
+    if key == 'down' {
+        if self.history_index >= 0 && self.cursor_line == self.lines.len() - 1 && self.cursor_col == self.lines[self.cursor_line].len() {
+            self.navigate_history(1)
+        } else {
+            self.move_vertical(1)
+        }
+        return key_result_t {action: 'handled',}
+    }
+    if key == 'ctrl+left' || key == 'alt+left' || key == 'alt+b' {self.move_word_left(); return key_result_t {action: 'handled',}}
+    if key == 'ctrl+right' || key == 'alt+right' || key == 'alt+f' {self.move_word_right(); return key_result_t {action: 'handled',}}
+    if key == 'home' || key == 'ctrl+a' {self.move_line_start(); return key_result_t {action: 'handled',}}
+    if key == 'end' || key == 'ctrl+e' {self.move_line_end(); return key_result_t {action: 'handled',}}
+    if key == 'backspace' || key == 'ctrl+h' {self.backspace(); return key_result_t {action: 'handled',}}
+    if key == 'alt+backspace' || key == 'ctrl+backspace' || key == 'ctrl+w' {self.delete_word_backward(); return key_result_t {action: 'handled',}}
+    if key == 'delete' || key == 'ctrl+d' || key == 'shift+delete' {self.delete_forward(); return key_result_t {action: 'handled',}}
+    if key == 'alt+d' || key == 'alt+delete' {self.delete_word_forward(); return key_result_t {action: 'handled',}}
+    if key == 'ctrl+u' {self.delete_to_line_start(); return key_result_t {action: 'handled',}}
+    if key == 'ctrl+k' {self.delete_to_line_end(); return key_result_t {action: 'handled',}}
+    if key == 'ctrl+y' {self.yank(); return key_result_t {action: 'handled',}}
+    if key == 'alt+y' {self.yank_pop(); return key_result_t {action: 'handled',}}
+    // Pi binds undo to Ctrl+- (ASCII 0x1f), while Ctrl+Z belongs to the
+    // application-level suspend action and must not mutate the editor.
+    if key == 'ctrl+-' {self.undo(); return key_result_t {action: 'handled',}}
+    if key == 'tab' {self.insert_text('    '); return key_result_t {action: 'handled',}}
+    if key == 'pageUp' {return key_result_t {action: ACTION_SCROLL_UP,}}
+    if key == 'pageDown' {return key_result_t {action: ACTION_SCROLL_DOWN,}}
+    string printable = keys.decode_printable(data)
+    if printable != '' {
+        self.insert_character(printable)
+        return key_result_t {action: 'handled',}
+    }
+    if data != '' && data[0] != 0x1b && data[0] >= 32 {
+        self.insert_character(data)
+        return key_result_t {action: 'handled',}
+    }
+    return key_result_t {}
+}
+
+fn editor_t.clear(&self) {
+    if self.get_text() != '' {
+        self.push_undo_snapshot()
+    }
+    self.lines = ['']
+    self.cursor_line = 0
+    self.cursor_col = 0
+    self.pastes = vec<paste_t>.cap_of(4)
+    self.paste_counter = 0
+    self.last_action = ACTION_NONE
+    self.preferred_visual_column = -1
+    self.history_index = -1
+    self.history_draft = ''
+}
+
+#local
+fn editor_t.navigate_history(&self, int direction) {
+    if self.history.len() == 0 {
+        return
+    }
+    if direction < 0 {
+        if self.history_index < 0 {
+            self.history_draft = self.get_text()
+            self.history_index = 0
+        } else {
+            if self.history_index + 1 >= self.history.len() {
+                return
+            }
+            self.history_index += 1
+        }
+        self.set_text_internal(self.history[self.history_index])
+        return
+    }
+    if self.history_index < 0 {
+        return
+    }
+    if self.history_index == 0 {
+        self.history_index = -1
+        self.set_text_internal(self.history_draft)
+        self.history_draft = ''
+        return
+    }
+    self.history_index -= 1
+    self.set_text_internal(self.history[self.history_index])
+}
+
+#local
+fn editor_t.set_text_internal(&self, string text) {
+    string normalized = normalize_text(text)
+    var updated = split_lines(normalized)
+    self.lines = updated.len() == 0 ? [''] : updated
+    self.cursor_line = self.lines.len() - 1
+    self.cursor_col = self.lines[self.cursor_line].len()
+    self.pastes = vec<paste_t>.cap_of(4)
+    self.paste_counter = 0
+    self.last_action = ACTION_NONE
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.move_left(&self): void! {
+    self.last_action = ACTION_NONE
+    if self.cursor_col > 0 {
+        string line = self.lines[self.cursor_line]
+        int marker_start = marker_ending_at(self.pastes, line, self.cursor_col)
+        if marker_start >= 0 {
+            self.cursor_col = marker_start
+        } else {
+            string before = line.slice(0, self.cursor_col)
+            var graphemes = unicode.graphemes(before)
+            self.cursor_col = graphemes.len() > 0 ? graphemes[graphemes.len() - 1].start : self.cursor_col - 1
+        }
+    } else if self.cursor_line > 0 {
+        self.cursor_line -= 1
+        self.cursor_col = self.lines[self.cursor_line].len()
+    }
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.move_right(&self): void! {
+    self.last_action = ACTION_NONE
+    string line = self.lines[self.cursor_line]
+    if self.cursor_col < line.len() {
+        int marker_end = marker_starting_at(self.pastes, line, self.cursor_col)
+        if marker_end >= 0 {
+            self.cursor_col = marker_end
+        } else {
+            string after = line.slice(self.cursor_col, line.len())
+            var graphemes = unicode.graphemes(after)
+            self.cursor_col += graphemes.len() > 0 ? graphemes[0].end : 1
+        }
+    } else if self.cursor_line < self.lines.len() - 1 {
+        self.cursor_line += 1
+        self.cursor_col = 0
+    }
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.move_word_left(&self): void! {
+    self.last_action = ACTION_NONE
+    if self.cursor_col == 0 {
+        if self.cursor_line > 0 {
+            self.cursor_line -= 1
+            self.cursor_col = self.lines[self.cursor_line].len()
+        }
+        return
+    }
+    var options = word_navigation.option_t {atomic_segments: markers(self.pastes),}
+    self.cursor_col = word_navigation.backward(self.lines[self.cursor_line], self.cursor_col, options)
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.move_word_right(&self): void! {
+    self.last_action = ACTION_NONE
+    string line = self.lines[self.cursor_line]
+    if self.cursor_col >= line.len() {
+        if self.cursor_line < self.lines.len() - 1 {
+            self.cursor_line += 1
+            self.cursor_col = 0
+        }
+        return
+    }
+    var options = word_navigation.option_t {atomic_segments: markers(self.pastes),}
+    self.cursor_col = word_navigation.forward(line, self.cursor_col, options)
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.move_line_start(&self) {
+    self.last_action = ACTION_NONE
+    self.cursor_col = 0
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.move_line_end(&self) {
+    self.last_action = ACTION_NONE
+    self.cursor_col = self.lines[self.cursor_line].len()
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.move_vertical(&self, int direction): void! {
+    if direction == 0 {
+        return
+    }
+    int target_line = self.cursor_line + direction
+    if target_line < 0 || target_line >= self.lines.len() {
+        return
+    }
+    string source = self.lines[self.cursor_line]
+    int visual_column = visible_prefix_width(source, self.cursor_col)
+    if self.preferred_visual_column >= 0 {
+        visual_column = self.preferred_visual_column
+    }
+    int target_column = byte_column_at_width(self.lines[target_line], visual_column)
+    int actual_width = visible_prefix_width(self.lines[target_line], target_column)
+    if actual_width < visual_column {
+        self.preferred_visual_column = visual_column
+    } else {
+        self.preferred_visual_column = -1
+    }
+    self.cursor_line = target_line
+    self.cursor_col = snap_out_of_marker(self.pastes, self.lines[target_line], target_column)
+    self.last_action = ACTION_NONE
+}
+
+// Move the cursor by one terminal page. Pi's editor uses the visible page
+// size (at least five rows) and keeps the cursor on the same visual column.
+// Nature's editor does not wrap physical lines yet, so a page is measured in
+// physical input lines; this preserves the cursor/viewport behavior for
+// multiline prompts.
+fn editor_t.move_page(&self, int direction, int page_size): void! {
+    if direction == 0 || page_size <= 0 {
+        return
+    }
+    for int index = 0; index < page_size; index += 1 {
+        int before = self.cursor_line
+        self.move_vertical(direction)
+        if self.cursor_line == before {
+            break
+        }
+    }
+}
+
+fn editor_t.backspace(&self): void! {
+    self.last_action = ACTION_NONE
+    if self.cursor_col > 0 {
+        self.push_undo_snapshot()
+        string line = self.lines[self.cursor_line]
+        int delete_from = marker_ending_at(self.pastes, line, self.cursor_col)
+        if delete_from >= 0 {
+            int removed_id = paste_id_for_marker(self.pastes, line.slice(delete_from, self.cursor_col))
+            self.lines[self.cursor_line] = line.slice(0, delete_from) + line.slice(self.cursor_col, line.len())
+            self.cursor_col = delete_from
+            if removed_id > 0 {
+                self.remove_paste_and_renumber(removed_id)
+            }
+        } else {
+            string before = line.slice(0, self.cursor_col)
+            var graphemes = unicode.graphemes(before)
+            delete_from = graphemes.len() > 0 ? graphemes[graphemes.len() - 1].start : self.cursor_col - 1
+            self.lines[self.cursor_line] = line.slice(0, delete_from) + line.slice(self.cursor_col, line.len())
+            self.cursor_col = delete_from
+        }
+    } else if self.cursor_line > 0 {
+        self.push_undo_snapshot()
+        string current = self.lines[self.cursor_line]
+        string previous = self.lines[self.cursor_line - 1]
+        [string] updated = vec<string>.cap_of(self.lines.len() - 1)
+        for int index = 0; index < self.lines.len(); index += 1 {
+            if index == self.cursor_line - 1 {updated.push(previous + current)} else if index != self.cursor_line {updated.push(self.lines[index])}
+        }
+        self.lines = updated
+        self.cursor_line -= 1
+        self.cursor_col = previous.len()
+    }
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.delete_forward(&self): void! {
+    self.last_action = ACTION_NONE
+    string line = self.lines[self.cursor_line]
+    if self.cursor_col < line.len() {
+        self.push_undo_snapshot()
+        int delete_to = marker_starting_at(self.pastes, line, self.cursor_col)
+        if delete_to < 0 {
+            string after = line.slice(self.cursor_col, line.len())
+            var graphemes = unicode.graphemes(after)
+            delete_to = self.cursor_col + (graphemes.len() > 0 ? graphemes[0].end : 1)
+        }
+        self.lines[self.cursor_line] = line.slice(0, self.cursor_col) + line.slice(delete_to, line.len())
+    } else if self.cursor_line < self.lines.len() - 1 {
+        self.push_undo_snapshot()
+        string next = self.lines[self.cursor_line + 1]
+        [string] updated = vec<string>.cap_of(self.lines.len() - 1)
+        for int index = 0; index < self.lines.len(); index += 1 {
+            if index == self.cursor_line {updated.push(line + next)} else if index != self.cursor_line + 1 {updated.push(self.lines[index])}
+        }
+        self.lines = updated
+    }
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.delete_word_backward(&self): void! {
+    if self.cursor_col == 0 {
+        if self.cursor_line > 0 {
+            bool accumulate = self.last_action == ACTION_KILL
+            self.push_undo_snapshot()
+            self.kill_push('\n', true, accumulate)
+            string current = self.lines[self.cursor_line]
+            string previous = self.lines[self.cursor_line - 1]
+            [string] updated = vec<string>.cap_of(self.lines.len() - 1)
+            for int index = 0; index < self.lines.len(); index += 1 {
+                if index == self.cursor_line - 1 {updated.push(previous + current)} else if index != self.cursor_line {updated.push(self.lines[index])}
+            }
+            self.lines = updated
+            self.cursor_line -= 1
+            self.cursor_col = previous.len()
+            self.last_action = ACTION_KILL
+        }
+        return
+    }
+    bool accumulate = self.last_action == ACTION_KILL
+    self.push_undo_snapshot()
+    string line = self.lines[self.cursor_line]
+    var options = word_navigation.option_t {atomic_segments: markers(self.pastes),}
+    int delete_from = word_navigation.backward(line, self.cursor_col, options)
+    self.kill_push(line.slice(delete_from, self.cursor_col), true, accumulate)
+    self.lines[self.cursor_line] = line.slice(0, delete_from) + line.slice(self.cursor_col, line.len())
+    self.cursor_col = delete_from
+    self.last_action = ACTION_KILL
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.delete_word_forward(&self): void! {
+    string line = self.lines[self.cursor_line]
+    if self.cursor_col >= line.len() {
+        if self.cursor_line < self.lines.len() - 1 {
+            bool accumulate = self.last_action == ACTION_KILL
+            self.push_undo_snapshot()
+            self.kill_push('\n', false, accumulate)
+            string next = self.lines[self.cursor_line + 1]
+            [string] updated = vec<string>.cap_of(self.lines.len() - 1)
+            for int index = 0; index < self.lines.len(); index += 1 {
+                if index == self.cursor_line {updated.push(line + next)} else if index != self.cursor_line + 1 {updated.push(self.lines[index])}
+            }
+            self.lines = updated
+            self.last_action = ACTION_KILL
+        }
+        return
+    }
+    bool accumulate = self.last_action == ACTION_KILL
+    self.push_undo_snapshot()
+    var options = word_navigation.option_t {atomic_segments: markers(self.pastes),}
+    int delete_to = word_navigation.forward(line, self.cursor_col, options)
+    self.kill_push(line.slice(self.cursor_col, delete_to), false, accumulate)
+    self.lines[self.cursor_line] = line.slice(0, self.cursor_col) + line.slice(delete_to, line.len())
+    self.last_action = ACTION_KILL
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.delete_to_line_start(&self) {
+    string line = self.lines[self.cursor_line]
+    if self.cursor_col > 0 {
+        bool accumulate = self.last_action == ACTION_KILL
+        self.push_undo_snapshot()
+        self.kill_push(line.slice(0, self.cursor_col), true, accumulate)
+        self.lines[self.cursor_line] = line.slice(self.cursor_col, line.len())
+        self.cursor_col = 0
+        self.last_action = ACTION_KILL
+    } else if self.cursor_line > 0 {
+        bool accumulate = self.last_action == ACTION_KILL
+        self.push_undo_snapshot()
+        self.kill_push('\n', true, accumulate)
+        string previous = self.lines[self.cursor_line - 1]
+        [string] updated = vec<string>.cap_of(self.lines.len() - 1)
+        for int index = 0; index < self.lines.len(); index += 1 {
+            if index == self.cursor_line - 1 {updated.push(previous + line)} else if index != self.cursor_line {updated.push(self.lines[index])}
+        }
+        self.lines = updated
+        self.cursor_line -= 1
+        self.cursor_col = previous.len()
+        self.last_action = ACTION_KILL
+    }
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.delete_to_line_end(&self) {
+    string line = self.lines[self.cursor_line]
+    if self.cursor_col < line.len() {
+        bool accumulate = self.last_action == ACTION_KILL
+        self.push_undo_snapshot()
+        self.kill_push(line.slice(self.cursor_col, line.len()), false, accumulate)
+        self.lines[self.cursor_line] = line.slice(0, self.cursor_col)
+        self.last_action = ACTION_KILL
+    } else if self.cursor_line < self.lines.len() - 1 {
+        bool accumulate = self.last_action == ACTION_KILL
+        self.push_undo_snapshot()
+        self.kill_push('\n', false, accumulate)
+        string next = self.lines[self.cursor_line + 1]
+        [string] updated = vec<string>.cap_of(self.lines.len() - 1)
+        for int index = 0; index < self.lines.len(); index += 1 {
+            if index == self.cursor_line {updated.push(line + next)} else if index != self.cursor_line + 1 {updated.push(self.lines[index])}
+        }
+        self.lines = updated
+        self.last_action = ACTION_KILL
+    }
+    self.preferred_visual_column = -1
+}
+
+fn editor_t.yank(&self) {
+    if self.kill_ring.len() == 0 {
+        return
+    }
+    self.push_undo_snapshot()
+    self.insert_yanked_text(self.kill_ring[self.kill_ring.len() - 1])
+    self.last_action = ACTION_YANK
+}
+
+fn editor_t.yank_pop(&self) {
+    if self.last_action != ACTION_YANK || self.kill_ring.len() <= 1 {
+        return
+    }
+    self.push_undo_snapshot()
+    string previous = self.kill_ring[self.kill_ring.len() - 1]
+    self.delete_yanked_text(previous)
+    [string] rotated = vec<string>.cap_of(self.kill_ring.len())
+    rotated.push(previous)
+    for int index = 0; index < self.kill_ring.len() - 1; index += 1 {
+        rotated.push(self.kill_ring[index])
+    }
+    self.kill_ring = rotated
+    self.insert_yanked_text(self.kill_ring[self.kill_ring.len() - 1])
+    self.last_action = ACTION_YANK
+}
+
+fn editor_t.undo(&self): bool {
+    if self.undo_stack.len() == 0 {
+        return false
+    }
+    int index = self.undo_stack.len() - 1
+    var snapshot = self.undo_stack[index]
+    [string] lines = copy_strings(snapshot.lines)
+    [paste_t] pastes = copy_pastes(snapshot.pastes)
+    self.undo_stack = self.undo_stack.slice(0, index)
+    self.lines = lines
+    self.cursor_line = snapshot.cursor_line
+    self.cursor_col = snapshot.cursor_col
+    self.pastes = pastes
+    self.paste_counter = snapshot.paste_counter
+    self.last_action = ACTION_NONE
+    self.preferred_visual_column = -1
+    return true
+}
+
+#local
+fn editor_t.insert_text_internal(&self, string text) {
+    string normalized = normalize_text(text)
+    var inserted = split_lines(normalized)
+    string current = self.lines[self.cursor_line]
+    string before = current.slice(0, self.cursor_col)
+    string after = current.slice(self.cursor_col, current.len())
+    if inserted.len() == 1 {
+        self.lines[self.cursor_line] = before + normalized + after
+        self.cursor_col += normalized.len()
+        self.preferred_visual_column = -1
+        return
+    }
+    [string] updated = vec<string>.cap_of(self.lines.len() + inserted.len() - 1)
+    for int index = 0; index < self.cursor_line; index += 1 {
+        updated.push(self.lines[index])
+    }
+    updated.push(before + inserted[0])
+    for int index = 1; index < inserted.len() - 1; index += 1 {
+        updated.push(inserted[index])
+    }
+    updated.push(inserted[inserted.len() - 1] + after)
+    for int index = self.cursor_line + 1; index < self.lines.len(); index += 1 {
+        updated.push(self.lines[index])
+    }
+    self.lines = updated
+    self.cursor_line += inserted.len() - 1
+    self.cursor_col = inserted[inserted.len() - 1].len()
+    self.preferred_visual_column = -1
+}
+
+#local
+fn editor_t.push_undo_snapshot(&self) {
+    var snapshot = snapshot_t {lines: copy_strings(self.lines), cursor_line: self.cursor_line, cursor_col: self.cursor_col, pastes: copy_pastes(self.pastes), paste_counter: self.paste_counter,}
+    self.undo_stack.push(snapshot)
+}
+
+#local
+fn editor_t.kill_push(&self, string text, bool prepend, bool accumulate) {
+    if text == '' {
+        return
+    }
+    if accumulate && self.kill_ring.len() > 0 {
+        int last = self.kill_ring.len() - 1
+        self.kill_ring[last] = prepend ? text + self.kill_ring[last] : self.kill_ring[last] + text
+    } else {
+        self.kill_ring.push(text)
+    }
+}
+
+#local
+fn editor_t.insert_yanked_text(&self, string text) {
+    self.insert_text_internal(text)
+}
+
+#local
+fn editor_t.delete_yanked_text(&self, string text) {
+    var yank_lines = split_lines(text)
+    if yank_lines.len() == 1 {
+        string line = self.lines[self.cursor_line]
+        int start = self.cursor_col - text.len()
+        self.lines[self.cursor_line] = line.slice(0, start) + line.slice(self.cursor_col, line.len())
+        self.cursor_col = start
+        return
+    }
+    int start_line = self.cursor_line - yank_lines.len() + 1
+    int start_column = self.lines[start_line].len() - yank_lines[0].len()
+    string before = self.lines[start_line].slice(0, start_column)
+    string after = self.lines[self.cursor_line].slice(self.cursor_col, self.lines[self.cursor_line].len())
+    [string] updated = vec<string>.cap_of(self.lines.len() - yank_lines.len() + 1)
+    for int index = 0; index < start_line; index += 1 {
+        updated.push(self.lines[index])
+    }
+    updated.push(before + after)
+    for int index = self.cursor_line + 1; index < self.lines.len(); index += 1 {
+        updated.push(self.lines[index])
+    }
+    self.lines = updated
+    self.cursor_line = start_line
+    self.cursor_col = start_column
+}
+
+#local
+fn editor_t.remove_paste_and_renumber(&self, int removed_id) {
+    [paste_t] updated_pastes = vec<paste_t>.cap_of(self.pastes.len() - 1)
+    for paste in self.pastes {
+        if paste.id == removed_id {
+            continue
+        }
+        if paste.id > removed_id {
+            string old_marker = marker_for(paste)
+            var shifted = paste_t {id: paste.id - 1, content: paste.content,}
+            string new_marker = marker_for(shifted)
+            for int line_index = 0; line_index < self.lines.len(); line_index += 1 {
+                self.lines[line_index] = self.lines[line_index].replace(old_marker, new_marker)
+            }
+            updated_pastes.push(shifted)
+        } else {
+            updated_pastes.push(paste)
+        }
+    }
+    self.pastes = updated_pastes
+    self.paste_counter -= 1
+}
+
+#local
+fn marker_for(paste_t paste): string {
+    int line_count = split_lines(paste.content).len()
+    if line_count > 10 {
+        return fmt.sprintf('[paste #%d +%d lines]', paste.id, line_count)
+    }
+    return fmt.sprintf('[paste #%d %d chars]', paste.id, utf8.utf16_length(paste.content))
+}
+
+#local
+fn markers([paste_t] pastes): [string] {
+    [string] result = vec<string>.cap_of(pastes.len())
+    for paste in pastes {
+        result.push(marker_for(paste))
+    }
+    return result
+}
+
+#local
+fn marker_ending_at([paste_t] pastes, string text, int cursor): int {
+    for paste in pastes {
+        string marker = marker_for(paste)
+        if marker.len() <= cursor && text.slice(cursor - marker.len(), cursor) == marker {
+            return cursor - marker.len()
+        }
+    }
+    return -1
+}
+
+#local
+fn marker_starting_at([paste_t] pastes, string text, int cursor): int {
+    for paste in pastes {
+        string marker = marker_for(paste)
+        if cursor + marker.len() <= text.len() && text.slice(cursor, cursor + marker.len()) == marker {
+            return cursor + marker.len()
+        }
+    }
+    return -1
+}
+
+#local
+fn paste_id_for_marker([paste_t] pastes, string marker): int {
+    for paste in pastes {
+        if marker_for(paste) == marker {
+            return paste.id
+        }
+    }
+    return -1
+}
+
+#local
+fn snap_out_of_marker([paste_t] pastes, string text, int cursor): int {
+    for paste in pastes {
+        string marker = marker_for(paste)
+        int start = text.find(marker)
+        for start >= 0 {
+            int end = start + marker.len()
+            if cursor > start && cursor < end {
+                return start
+            }
+            start = text.find_after(marker, end)
+        }
+    }
+    return cursor
+}
+
+#local
+fn visible_prefix_width(string line, int byte_column): int! {
+    return unicode.visible_width(line.slice(0, byte_column))
+}
+
+#local
+fn byte_column_at_width(string line, int target_width): int! {
+    if target_width <= 0 || line == '' {
+        return 0
+    }
+    var graphemes = unicode.graphemes(line)
+    int width = 0
+    int column = 0
+    for grapheme in graphemes {
+        string value = line.slice(grapheme.start, grapheme.end)
+        int next_width = width + unicode.grapheme_width(value)
+        if next_width > target_width {
+            break
+        }
+        width = next_width
+        column = grapheme.end
+    }
+    return column
+}
+
+#local
+fn normalize_text(string text): string {
+    return text.replace('\r\n', '\n').replace('\r', '\n').replace('\t', '    ')
+}
+
+#local
+fn decode_csi_u_controls(string text): string {
+    string result = ''
+    int cursor = 0
+    for cursor < text.len() {
+        if cursor + 4 < text.len() && text[cursor] == 0x1b && text[cursor + 1] == '['.char() {
+            int digits_start = cursor + 2
+            int digits_end = digits_start
+            for digits_end < text.len() && text[digits_end] >= '0'.char() && text[digits_end] <= '9'.char() {
+                digits_end += 1
+            }
+            if digits_end > digits_start && digits_end + 2 < text.len() && text.slice(digits_end, digits_end + 3) == ';5u' {
+                int codepoint = text.slice(digits_start, digits_end).to_int() catch e {0}
+                if codepoint >= 97 && codepoint <= 122 {result += [(codepoint - 96) as u8] as string} else if codepoint >= 65 && codepoint <= 90 {result += [(codepoint - 64) as u8] as string} else {result += text.slice(cursor, digits_end + 3)}
+                cursor = digits_end + 3
+                continue
+            }
+        }
+        result += text.slice(cursor, cursor + 1)
+        cursor += 1
+    }
+    return result
+}
+
+#local
+fn filter_paste(string text): string {
+    [u8] result = vec<u8>.cap_of(text.len())
+    for byte in text as [u8] {
+        if byte == '\n'.char() || byte >= 32 {
+            result.push(byte)
+        }
+    }
+    return result as string
+}
+
+#local
+fn starts_like_path(string text): bool {
+    return text != '' && (text[0] == '/'.char() || text[0] == '~'.char() || text[0] == '.'.char())
+}
+
+#local
+fn is_ascii_word_byte(u8 value): bool {
+    return value >= 'a'.char() && value <= 'z'.char() || value >= 'A'.char() && value <= 'Z'.char() || value >= '0'.char() && value <= '9'.char() || value == '_'.char()
+}
+
+#local
+fn is_whitespace(string value): bool {
+    if value == '' {
+        return false
+    }
+    for byte in value as [u8] {
+        if byte != ' '.char() && byte != '\t'.char() && byte != '\n'.char() && byte != '\r'.char() && byte != 0x0b && byte != 0x0c {
+            return false
+        }
+    }
+    return true
+}
+
+#local
+fn copy_strings([string] values): [string] {
+    [string] result = vec<string>.cap_of(values.len())
+    for value in values {
+        result.push(value)
+    }
+    return result
+}
+
+#local
+fn copy_pastes([paste_t] values): [paste_t] {
+    [paste_t] result = vec<paste_t>.cap_of(values.len())
+    for value in values {
+        result.push(value)
+    }
+    return result
+}
+
+#local
+fn split_lines(string text): [string] {
+    [string] result = vec<string>.cap_of(8)
+    int start = 0
+    for int cursor = 0; cursor <= text.len(); cursor += 1 {
+        if cursor == text.len() || text[cursor] == '\n'.char() {
+            result.push(text.slice(start, cursor))
+            start = cursor + 1
+        }
+    }
+    return result
+}
