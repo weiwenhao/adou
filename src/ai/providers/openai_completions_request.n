@@ -19,6 +19,11 @@ fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.strea
     }
     if context.tools.len() > 0 {
         body['tools'] = json.box_value(json.array_value(convert_tools(context.tools)))
+    } else if has_tool_history(context) {
+        // Pi keeps an explicit empty tools array when replaying tool history.
+        // Some OpenAI-compatible gateways reject tool-call messages unless
+        // the tools field is present, even when no tools are currently active.
+        body['tools'] = json.box_value(json.array_value([]))
     }
     if model.reasoning {
         json_object_t thinking = {}
@@ -165,6 +170,23 @@ fn convert_tools([ref<types.tool_t>] tools): [ref<json.value_t>]! {
         result.push(json.box_value(object_value(item)))
     }
     return result
+}
+
+#local
+fn has_tool_history(ref<types.context_t> context): bool {
+    for message in context.messages {
+        if message is ref<types.tool_result_message_t> {
+            return true
+        }
+        if message is ref<types.assistant_message_t> assistant {
+            for block in assistant.content {
+                if block is ref<types.tool_call_t> {
+                    return true
+                }
+            }
+        }
+    }
+    return false
 }
 
 #local

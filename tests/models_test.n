@@ -1,5 +1,6 @@
 import adou.src.ai.models
 import adou.src.ai.types
+import adou.src.config.models as config_models
 
 test 'calculates Pi-compatible tiered and long-cache costs' {
     var model = new types.model_t()
@@ -25,4 +26,12 @@ test 'clamps invalid one-hour cache counts to the total cache write count' {
     var usage = types.usage_t {cache_write: 3, cache_write_1h: 10,}
     usage = models.calculate_cost(model, usage)
     assert(usage.cost.cache_write == 6.0)
+}
+
+test 'clamps DeepSeek V4 thinking levels like Pi' {
+    var model = new types.model_t(id = 'deepseek-v4-flash', reasoning = true)
+    assert(config_models.clamp_thinking_level(model, 'off') == 'off')
+    assert(config_models.clamp_thinking_level(model, 'medium') == 'high')
+    assert(config_models.clamp_thinking_level(model, 'xhigh') == 'max')
+    assert(config_models.clamp_thinking_level(model, 'max') == 'max')
 }

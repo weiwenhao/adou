@@ -49,3 +49,13 @@ test 'maps branch summaries into Pi user context' {
     var body = json.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
     assert(body.get('messages').at(0).get('content').as_string() == 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\nabandoned work</summary>')
 }
+
+test 'preserves an empty tools field when replaying tool history' {
+    var context = new types.context_t()
+    var call = new types.tool_call_t(id = 'call-1', name = 'read', arguments = json.parse('{}'))
+    types.content_t call_content = call
+    context.messages.push(new types.assistant_message_t(content = [call_content,]))
+    context.messages.push(new types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'read', content = [new types.text_content_t(text = 'done'),]))
+    var body = json.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
+    assert(body.get('tools').as_array().len() == 0)
+}

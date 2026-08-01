@@ -89,6 +89,43 @@ fn default_for(string provider): ref<ai_types.model_t>! {
     throw errorf('Unsupported provider: %s', provider)
 }
 
+// Pi keeps the user-facing thinking levels stable while allowing individual
+// model catalogs to remove levels that the provider cannot honor. DeepSeek V4
+// exposes only off/high/max; unsupported levels are clamped to the nearest
+// supported level (preferring a stronger level when walking upward).
+fn clamp_thinking_level(ref<ai_types.model_t> model, string requested): string {
+    [string] levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+    string value = requested.to_lower()
+    int requested_index = 0
+    for index, level in levels {
+        if level == value {
+            requested_index = index
+            break
+        }
+    }
+    if !model.reasoning {
+        return 'off'
+    }
+    // The DeepSeek V4 catalog entry in Pi maps minimal/low/medium/xhigh to
+    // null and keeps high/max. Keep this explicit until model metadata grows
+    // a first-class thinkingLevelMap in Nature.
+    bool deepseek_v4 = model.id == 'deepseek-v4-flash' || model.id == 'deepseek-v4-pro'
+    if !deepseek_v4 {
+        return value == '' ? 'off' : value
+    }
+    for int index = requested_index; index < levels.len(); index += 1 {
+        if thinking_level_supported(levels[index], true) {
+            return levels[index]
+        }
+    }
+    for int index = requested_index - 1; index >= 0; index -= 1 {
+        if thinking_level_supported(levels[index], true) {
+            return levels[index]
+        }
+    }
+    return 'off'
+}
+
 fn list(): string {
     [string] names = []
     for model in all() {
@@ -169,6 +206,14 @@ fn anthropic_default(): ref<ai_types.model_t> {
 #local
 fn valid_thinking(string value): bool {
     return value == 'off' || value == 'minimal' || value == 'low' || value == 'medium' || value == 'high' || value == 'xhigh' || value == 'max'
+}
+
+#local
+fn thinking_level_supported(string value, bool deepseek_v4): bool {
+    if !deepseek_v4 {
+        return true
+    }
+    return value == 'off' || value == 'high' || value == 'max'
 }
 
 #local

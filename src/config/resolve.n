@@ -128,6 +128,7 @@ fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
     int timeout_ms = positive(arguments.timeout_ms, 120000)
     int max_retries = arguments.max_retries >= 0 ? arguments.max_retries : 2
     string thinking = arguments.thinking_explicit ? arguments.thinking : model_suffix_thinking != '' ? model_suffix_thinking : scoped_thinking != '' ? scoped_thinking : preferences.default_thinking_level
+    thinking = models.clamp_thinking_level(model, thinking)
     var options = new ai_types.stream_options_t(api_key = api_key, timeout_ms = timeout_ms, max_tokens = max_tokens, max_retries = max_retries, reasoning_effort = thinking, thinking_enabled = thinking != 'off')
     int reserve_tokens = positive(arguments.reserve_tokens, 16384)
     int keep_recent_tokens = positive(arguments.keep_recent_tokens, 20000)

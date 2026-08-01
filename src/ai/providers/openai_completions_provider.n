@@ -119,7 +119,7 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
     string status_message = current.message
     var headers = response_headers(current)
     string error_body = read_error_body(current)
-    string provider_error = fmt.sprintf('DeepSeek API error: HTTP %d %s: %s', status, status_message, error_body)
+    string provider_error = fmt.sprintf('%s API error: HTTP %d %s: %s', state.model.provider, status, status_message, error_body)
     if retry_index >= state.options.max_retries || !provider_retry.should_retry(status, headers) {
         throw errorf('%s', provider_error)
     }

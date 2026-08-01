@@ -160,9 +160,9 @@ fn run(): void! {
     // default even though its thinking_level_change entry is present in JSONL.
     var stored_context = repository.build_context()
     if !arguments.thinking_explicit && stored_context.has_thinking_level {
-        config.thinking = stored_context.thinking_level
-        config.stream_options.reasoning_effort = stored_context.thinking_level
-        config.stream_options.thinking_enabled = stored_context.thinking_level != 'off'
+        config.thinking = models.clamp_thinking_level(config.model, stored_context.thinking_level)
+        config.stream_options.reasoning_effort = config.thinking
+        config.stream_options.thinking_enabled = config.thinking != 'off'
     }
     command.configure_agent_environment(repository.get_session_id(), repository.get_session_file(), config.provider, config.model.id, config.thinking)
     config.stream_options.session_id = repository.get_session_id()

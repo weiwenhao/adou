@@ -134,8 +134,9 @@ fn runner_t.replace_repository(&self, ref<repository.manager_t> next): void! {
         }
     }
     if loaded.has_thinking_level {
-        self.agent_config.stream_options.reasoning_effort = loaded.thinking_level
-        self.agent_config.stream_options.thinking_enabled = loaded.thinking_level != 'off'
+        string effective = models.clamp_thinking_level(self.agent_config.model, loaded.thinking_level)
+        self.agent_config.stream_options.reasoning_effort = effective
+        self.agent_config.stream_options.thinking_enabled = effective != 'off'
     }
     self.lock.unlock()
     self.sync_agent_environment()
@@ -168,8 +169,9 @@ fn runner_t.select_leaf(&self, string entry_id): void! {
         }
     }
     if loaded.has_thinking_level {
-        self.agent_config.stream_options.reasoning_effort = loaded.thinking_level
-        self.agent_config.stream_options.thinking_enabled = loaded.thinking_level != 'off'
+        string effective = models.clamp_thinking_level(self.agent_config.model, loaded.thinking_level)
+        self.agent_config.stream_options.reasoning_effort = effective
+        self.agent_config.stream_options.thinking_enabled = effective != 'off'
     }
     self.lock.unlock()
     self.sync_agent_environment()
@@ -300,7 +302,7 @@ fn runner_t.set_thinking_level(&self, string level): void! {
         self.lock.unlock()
         throw errorf('Agent session is already running')
     }
-    string effective = self.agent_config.model.reasoning ? level : 'off'
+    string effective = models.clamp_thinking_level(self.agent_config.model, level)
     string previous = self.agent_config.stream_options.reasoning_effort
     if !self.agent_config.stream_options.thinking_enabled {previous = 'off'}
     if previous == effective {
@@ -417,8 +419,9 @@ fn runner_t.restore_repository_context(&self): void! {
         }
     }
     if loaded.has_thinking_level {
-        self.agent_config.stream_options.reasoning_effort = loaded.thinking_level
-        self.agent_config.stream_options.thinking_enabled = loaded.thinking_level != 'off'
+        string effective = models.clamp_thinking_level(self.agent_config.model, loaded.thinking_level)
+        self.agent_config.stream_options.reasoning_effort = effective
+        self.agent_config.stream_options.thinking_enabled = effective != 'off'
     }
     self.sync_agent_environment()
 }
