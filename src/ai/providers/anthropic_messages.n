@@ -186,7 +186,9 @@ fn processor_t.stop_block(&self, int provider_index, [types.assistant_event_t] e
         if arguments == '' {
             arguments = '{}'
         }
-        slot.tool_call.arguments = json.parse(arguments)
+        // The final input_json payload can still be incomplete. Pi repairs it
+        // with the same incremental parser used for each input delta.
+        slot.tool_call.arguments = streaming_json.parse(arguments)
         slot.tool_call.partial_json = ''
         var event = update_event(types.EVENT_TOOLCALL_END, slot.content_index, '', '', self.output)
         event.tool_call = slot.tool_call

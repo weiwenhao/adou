@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.10
+文档版本：0.11
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -313,8 +313,9 @@ Provider 流事件必须保持以下协议：
 - system/developer、user、assistant、tool result 消息转换；
 - `stream=true`、`store=false`、`max_output_tokens` 最小值；
 - text、reasoning、function call 的增量组装；
-- tool arguments 跨事件拼接并在结束时严格解析；
+- tool arguments 跨事件拼接，并在结束时用 Pi 的修复解析器完成最终解析；
 - 每个 tool-call delta 都更新可用的部分 `arguments` 对象；不完整对象、数组、字符串、字面量和 provider 发送的非法转义按 Pi 的修复语义处理，scratch `partialJson` 只存在于流式阶段；
+- tool-call 收尾继续使用同一套 streaming JSON 修复器，不能因为最后一个 delta 不完整而退化为严格解析错误；
 - response id、content index、usage 和 cache usage；
 - stop/toolUse/length/error/aborted 映射；
 - Responses `message.phase=final_answer` 到达 `output_item.added` 或 `output_item.done` 时，立即把 partial 的 stop reason 更新为 `stop`；终端 `incomplete` 仍覆盖为 `length`；
@@ -333,8 +334,9 @@ MVP 不实现 OpenRouter、GitHub Copilot、xAI 等 URL/provider compat 分支�
 - system、user、assistant、tool result 消息转换，以及 `reasoning_content` assistant replay；
 - `stream=true`、`stream_options.include_usage`、`max_tokens`；
 - `thinking.type` 和 `reasoning_effort`；
-- text、reasoning、function call 的增量组装和严格 tool argument 解析；
+- text、reasoning、function call 的增量组装和 Pi 修复语义的最终 tool argument 解析；
 - 每个 tool-call delta 都保留可用的部分 `arguments` 对象，并在工具结束时清除流式 scratch 字段；
+- tool-call 收尾继续使用 streaming JSON 修复器，保留 Pi 对不完整最终参数的容错；
 - response id、usage、cache usage、stop/toolUse/length/error/aborted 映射；
 - DeepSeek API key 认证、HTTP 状态、重试、超时和取消。
 
@@ -346,6 +348,7 @@ MVP 不实现 OpenRouter、GitHub Copilot、xAI 等 URL/provider compat 分支�
 
 - text、thinking、redacted thinking、tool use 的流式内容块；
 - tool input JSON 的增量解析、非法转义修复和结束时 scratch 清理；
+- tool input JSON 收尾继续使用增量修复器，不能因不完整最终 payload 丢弃可执行工具调用；
 - tool result 转换；
 - cache read/write usage 和 reasoning usage；
 - stop reason 映射；

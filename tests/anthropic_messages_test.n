@@ -1,6 +1,7 @@
 import adou.src.ai.providers.anthropic_messages
 import adou.src.ai.sse
 import adou.src.ai.types
+import json
 
 fn anthropic_model(): ref<types.model_t> {
     var model = new types.model_t(id = 'claude-sonnet-4-5', api = 'anthropic-messages', provider = 'anthropic')
@@ -134,4 +135,20 @@ test 'rejects EOF after message_start without message_stop' {
         types.assistant_event_t {}
     }
     assert(failed)
+}
+
+test 'repairs incomplete final tool input like Pi' {
+    var processor = anthropic_messages.processor(anthropic_model(), 1)
+    processor.start()
+    var start = processor.feed(sse.event_t {event: 'content_block_start', data: '{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_partial","name":"read"}}',})
+    assert(start.len() == 1 && start[0].kind == types.EVENT_TOOLCALL_START)
+    processor.feed(sse.event_t {event: 'content_block_delta', data: '{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"README"}}',})
+    var done = processor.feed(sse.event_t {event: 'content_block_stop', data: '{"type":"content_block_stop","index":0}',})
+    assert(done.len() == 1 && done[0].kind == types.EVENT_TOOLCALL_END)
+    if done[0].tool_call is ref<types.tool_call_t> tool_call {
+        assert(tool_call.arguments.kind == json.VALUE_OBJECT)
+        assert(tool_call.arguments.get('path').as_string() == 'README')
+    } else {
+        assert(false)
+    }
 }

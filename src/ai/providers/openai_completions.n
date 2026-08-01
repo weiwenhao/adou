@@ -214,7 +214,9 @@ fn processor_t.finish_slot(&self, int index, [types.assistant_event_t] events): 
         if arguments == '' {
             arguments = '{}'
         }
-        slot.tool_call.arguments = json.parse(arguments)
+        // Pi finalizes with the same streaming repair parser used for each
+        // delta. Providers can close a stream with a still-partial object.
+        slot.tool_call.arguments = streaming_json.parse(arguments)
         slot.tool_call.partial_json = ''
         var event = update_event(types.EVENT_TOOLCALL_END, slot.content_index, '', '', self.output)
         event.tool_call = slot.tool_call

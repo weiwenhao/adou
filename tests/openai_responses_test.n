@@ -1,6 +1,7 @@
 import adou.src.ai.providers.openai_responses
 import adou.src.ai.sse
 import adou.src.ai.types
+import json
 fn frame(string data): string {
     return 'data: ' + data + '\n\n'
 }
@@ -184,4 +185,19 @@ test 'surfaces response.failed details' {
         []
     }
     assert(failed)
+}
+
+test 'repairs incomplete final function arguments like Pi' {
+    var processor = openai_responses.processor(test_model(), 1)
+    processor.start()
+    var added = processor.feed(sse.event_t {event: 'message', data: '{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_partial","call_id":"call_partial","name":"read","arguments":"{\\"path\\":\\"README"}}',})
+    assert(added.len() == 1 && added[0].kind == types.EVENT_TOOLCALL_START)
+    var done = processor.feed(sse.event_t {event: 'message', data: '{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_partial","call_id":"call_partial","name":"read","arguments":"{\\"path\\":\\"README"}}',})
+    assert(done.len() == 1 && done[0].kind == types.EVENT_TOOLCALL_END)
+    if done[0].tool_call is ref<types.tool_call_t> tool_call {
+        assert(tool_call.arguments.kind == json.VALUE_OBJECT)
+        assert(tool_call.arguments.get('path').as_string() == 'README')
+    } else {
+        assert(false)
+    }
 }

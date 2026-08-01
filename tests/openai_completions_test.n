@@ -52,3 +52,17 @@ test 'processes streamed function tool call and maps toolUse stop reason' {
     }
     assert(done[1].kind == types.EVENT_DONE && done[1].reason == types.STOP_TOOL_USE)
 }
+
+test 'repairs incomplete final function arguments like Pi' {
+    var processor = openai_completions.processor(model(), 1)
+    processor.start()
+    processor.feed(frame('{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_partial","function":{"name":"read","arguments":"{\\"path\\":\\"README"}}]},"finish_reason":null}]}'))
+    processor.feed(frame('{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}'))
+    var done = processor.finish()
+    if done[0].tool_call is ref<types.tool_call_t> tool_call {
+        assert(tool_call.arguments.kind == json.VALUE_OBJECT)
+        assert(tool_call.arguments.get('path').as_string() == 'README')
+    } else {
+        assert(false)
+    }
+}

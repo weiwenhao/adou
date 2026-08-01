@@ -212,7 +212,9 @@ fn processor_t.finish_slot(&self, int output_index, ref<json.value_t> item, [typ
         if arguments == '' {
             arguments = '{}'
         }
-        slot.tool_call.arguments = json.parse(arguments)
+        // Keep Pi's parseStreamingJson behavior at stream finalization too;
+        // a provider may report a truncated final argument payload.
+        slot.tool_call.arguments = streaming_json.parse(arguments)
         slot.tool_call.partial_json = ''
         var event = update_event(types.EVENT_TOOLCALL_END, slot.content_index, '', '', self.output)
         event.tool_call = slot.tool_call
