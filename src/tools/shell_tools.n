@@ -863,6 +863,22 @@ fn run_grep(string cwd, string pattern, string path, string glob, bool ignore_ca
 fn run_find(string cwd, string search_path, string pattern): command.result_t! {
     var available = command.shell(cwd, 'command -v rg >/dev/null 2>&1')
     if available.exit_code == 0 {
+        string effective_pattern = pattern
+        if pattern.contains('/') && !pattern.starts_with('/') && !pattern.starts_with('**/') && pattern != '**' {
+            effective_pattern = '**/' + pattern
+        }
+        if pattern != '' {
+            // Validate the glob without changing ignore precedence.  Passing a
+            // user glob directly to rg always overrides .gitignore rules, so
+            // the real file listing only receives it when no ignore file is
+            // present; Nature still applies the final Pi-compatible matcher.
+            var validation = command.argv(cwd, 'rg', ['--files', '--color=never', '--glob', effective_pattern, '--', '/dev/null'])
+            if validation.exit_code != 0 && validation.stderr.trim([' ', '\t', '\n', '\r']) != '' {
+                return validation
+            }
+        }
+        var ignore_probe = command.argv(cwd, 'rg', ['--files', '--color=never', '--hidden', '--no-ignore', '--glob', '**/.gitignore', '--', search_path])
+        bool has_ignore_files = ignore_probe.stdout.trim([' ', '\t', '\n', '\r']) != ''
         [string] args = ['--files', '--color=never', '--hidden']
         if !inside_git_repo(search_path) {
             args.push('--no-require-git')
@@ -871,6 +887,13 @@ fn run_find(string cwd, string search_path, string pattern): command.result_t! {
         args.push('!**/.git/**')
         args.push('--glob')
         args.push('!**/node_modules/**')
+        if pattern != '' && !has_ignore_files {
+            if pattern.contains('/') && !pattern.starts_with('/') && !pattern.starts_with('**/') && pattern != '**' {
+                effective_pattern = '**/' + pattern
+            }
+            args.push('--glob')
+            args.push(effective_pattern)
+        }
         args.push('--')
         args.push(search_path)
         return command.argv(cwd, 'rg', args)

@@ -126,6 +126,12 @@ test 'Pi core shell tools execute in the session directory' {
     assert(!ignored_find.content[0].text.contains('a/ignored.txt'))
     assert(ignored_find.content[0].text.contains('a/kept.txt'))
     assert(ignored_find.content[0].text.contains('b/ignored.txt'))
+    bool invalid_find_rejected = false
+    find_tool.executor.execute('find-invalid-glob', value_ref(json.parse('{"pattern":"["}')), cancellation, no_update) catch error {
+        invalid_find_rejected = error.msg().contains('error parsing glob')
+        tool_types.tool_result_t{}
+    }
+    assert(invalid_find_rejected)
 
     var ls_tool = builtins.all(root)[6]
     var ls_args = value_ref(json.parse('{"path":"."}'))
