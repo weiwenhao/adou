@@ -93,3 +93,42 @@ test 'rejects a missing API key' {
     }
     assert(failed)
 }
+
+test 'normalizes foreign Responses tool ids for replay' {
+    var model = fixture_model(true)
+    var context = new types.context_t()
+    context.messages.push(new types.user_message_t(content = 'use the tool', timestamp = 1))
+    var assistant = new types.assistant_message_t(api = 'openai-responses', provider = 'github-copilot', model = 'gpt-5.5',)
+    var foreign_id = 'call_foreign|abcdefghijklmnop+/=abcdefghijklmnop+/=abcdefghijklmnop+/=abcdefghijklmnop+/='
+    var call = new types.tool_call_t(id = foreign_id, name = 'read', arguments = json.parse('{"path":"README.md"}'),)
+    types.content_t call_content = call
+    assistant.content.push(call_content)
+    types.message_t assistant_message = assistant
+    context.messages.push(assistant_message)
+    context.messages.push(new types.tool_result_message_t(tool_call_id = foreign_id, tool_name = 'read', content = [new types.text_content_t(text = 'ok'),]))
+    var payload = json.parse(openai_request.build(model, context, new types.stream_options_t(api_key = 'secret')))
+    var input = payload.get('input').as_array()
+    var function_call = input[1]
+    assert(function_call.get('call_id').as_string() == 'call_foreign')
+    assert(function_call.get('id').as_string() == 'fc_wahzbi1nji4hg')
+    assert(input[2].get('call_id').as_string() == 'call_foreign')
+}
+
+test 'omits a different-model Responses item id and hashes long message ids' {
+    var model = fixture_model(true)
+    var context = new types.context_t()
+    var assistant = new types.assistant_message_t(api = 'openai-responses', provider = 'openai', model = 'gpt-4.1',)
+    var text = new types.text_content_t(text = 'answer', text_signature = '{"v":1,"id":"this-message-id-is-deliberately-long-and-will-be-replaced-by-a-short-hash-value-because-openai-limits-it-to-sixty-four-bytes"}',)
+    types.content_t text_content = text
+    assistant.content.push(text_content)
+    var call = new types.tool_call_t(id = 'call_old|fc_old', name = 'read', arguments = json.parse('{"path":"README.md"}'),)
+    types.content_t call_content = call
+    assistant.content.push(call_content)
+    types.message_t assistant_message = assistant
+    context.messages.push(assistant_message)
+    var payload = json.parse(openai_request.build(model, context, new types.stream_options_t(api_key = 'secret')))
+    var input = payload.get('input').as_array()
+    assert(input[0].get('id').as_string().starts_with('msg_'))
+    assert(input[0].get('id').as_string().len() <= 64)
+    assert(!input[1].as_object().contains('id'))
+}

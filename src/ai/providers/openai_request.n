@@ -1,4 +1,5 @@
 import adou.src.ai.types
+import adou.src.ai.ids
 import fmt
 import json
 import strings
@@ -70,7 +71,7 @@ fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [re
         if message is ref<types.user_message_t> user {
             result.push(user_item(user))
         } else if message is ref<types.assistant_message_t> assistant {
-            result.append(assistant_items(assistant, index))
+            result.append(assistant_items(model, assistant, index))
         } else if message is ref<types.tool_result_message_t> tool_result {
             result.push(tool_result_item(tool_result))
         } else if message is ref<types.compaction_summary_message_t> summary {
@@ -106,7 +107,7 @@ fn user_item(ref<types.user_message_t> message): ref<json.value_t> {
     return json.box_value(object_value(item))
 }
 #local
-fn assistant_items(ref<types.assistant_message_t> message, int message_index): [ref<json.value_t>]! {
+fn assistant_items(ref<types.model_t> model, ref<types.assistant_message_t> message, int message_index): [ref<json.value_t>]! {
     [ref<json.value_t>] result = []
     int text_index = 0
     for block in message.content {
@@ -118,7 +119,7 @@ fn assistant_items(ref<types.assistant_message_t> message, int message_index): [
             result.push(assistant_text_item(text, message_index, text_index))
             text_index += 1
         } else if block is ref<types.tool_call_t> tool_call {
-            result.push(assistant_tool_item(tool_call))
+            result.push(assistant_tool_item(model, message, tool_call))
         }
     }
     return result
@@ -130,6 +131,9 @@ fn assistant_text_item(ref<types.text_content_t> text, int message_index, int te
         fallback_id += fmt.sprintf('_%d', text_index)
     }
     var (message_id, phase) = parse_text_signature(text.text_signature, fallback_id)
+    if message_id.len() > 64 {
+        message_id = 'msg_' + ids.short_hash(message_id)
+    }
     json_object_t content = {}
     content['type'] = boxed_string('output_text')
     content['text'] = boxed_string(text.text)
@@ -146,9 +150,10 @@ fn assistant_text_item(ref<types.text_content_t> text, int message_index, int te
     return json.box_value(object_value(item))
 }
 #local
-fn assistant_tool_item(ref<types.tool_call_t> tool_call): ref < json.value_t > ! {
-    var parts = tool_call.id.split('|')
-    string call_id = tool_call.id
+fn assistant_tool_item(ref<types.model_t> model, ref<types.assistant_message_t> assistant, ref<types.tool_call_t> tool_call): ref < json.value_t > ! {
+    string normalized_id = normalize_tool_call_id(model, assistant, tool_call.id)
+    var parts = normalized_id.split('|')
+    string call_id = normalized_id
     string item_id = ''
     if parts.len() > 0 {
         call_id = parts[0]
@@ -159,7 +164,8 @@ fn assistant_tool_item(ref<types.tool_call_t> tool_call): ref < json.value_t > !
     json_object_t item = {}
     item['type'] = boxed_string('function_call')
     item['call_id'] = boxed_string(call_id)
-    if item_id != '' {
+    bool different_model = assistant.model != '' && assistant.model != model.id && assistant.provider == model.provider && assistant.api == model.api
+    if item_id != '' && !different_model {
         item['id'] = boxed_string(item_id)
     }
     item['name'] = boxed_string(tool_call.name)
@@ -168,10 +174,10 @@ fn assistant_tool_item(ref<types.tool_call_t> tool_call): ref < json.value_t > !
 }
 #local
 fn tool_result_item(ref<types.tool_result_message_t> message): ref<json.value_t> {
-    string call_id = message.tool_call_id
-    var parts = call_id.split('|')
+    string call_id = ids.normalize_id_part(message.tool_call_id)
+    var parts = message.tool_call_id.split('|')
     if parts.len() > 0 {
-        call_id = parts[0]
+        call_id = ids.normalize_id_part(parts[0])
     }
     [string] text = []
     for block in message.content {
@@ -186,6 +192,23 @@ fn tool_result_item(ref<types.tool_result_message_t> message): ref<json.value_t>
     item['call_id'] = boxed_string(call_id)
     item['output'] = boxed_string(output)
     return json.box_value(object_value(item))
+}
+#local
+fn normalize_tool_call_id(ref<types.model_t> model, ref<types.assistant_message_t> assistant, string id): string {
+    var parts = id.split('|')
+    if parts.len() == 0 {
+        return ids.normalize_id_part(id)
+    }
+    string call_id = ids.normalize_id_part(parts[0])
+    if parts.len() < 2 {
+        return call_id
+    }
+    bool foreign = assistant.provider != model.provider || assistant.api != model.api
+    string item_id = foreign ? ids.foreign_responses_item_id(parts[1]) : ids.normalize_id_part(parts[1])
+    if !item_id.starts_with('fc_') {
+        item_id = ids.normalize_id_part('fc_' + item_id)
+    }
+    return call_id + '|' + item_id
 }
 #local
 fn convert_tools([ref<types.tool_t>] tools): [ref<json.value_t>]! {

@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.6
+文档版本：0.7
 日期：2026-08-01
 
 ## 1. 文档目的
@@ -313,6 +313,7 @@ Provider 流事件必须保持以下协议：
 - stop/toolUse/length/error/aborted 映射；
 - HTTP 状态、provider error body、超时、Retry-After 和取消；
 - session id/cache key 语义中适用于官方 OpenAI endpoint 的部分；
+- 重放历史 tool call 时遵循 Pi 的 Responses ID 规则：`call_id` 和 item id 只保留合法字符并限制为 64 字节；跨 provider 的 item id 使用稳定的 `fc_<shortHash>`；同 provider/API 但不同 model 的旧 `fc_*` item id 不回放；长 assistant message id 使用 `msg_<shortHash>`；tool result 只回放归一化后的 `call_id`。
 - 请求和响应日志脱敏。
 
 MVP 不实现 OpenRouter、GitHub Copilot、xAI 等 URL/provider compat 分支；这些分支不得混入官方 OpenAI adapter。
