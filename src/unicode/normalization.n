@@ -1,5 +1,7 @@
 #linkid adou_icu_nfkc
 fn nfkc_raw(anyptr text, int length, anyptr output, int capacity): int
+#linkid adou_icu_nfd
+fn nfd_raw(anyptr text, int length, anyptr output, int capacity): int
 
 fn nfkc(string text): string! {
     if text == '' {
@@ -13,6 +15,22 @@ fn nfkc(string text): string! {
     int length = nfkc_raw(text.ref(), text.len(), output.ref(), output.len())
     if length < 0 {
         throw errorf('ICU NFKC normalization failed')
+    }
+    return output.slice(0, length) as string
+}
+
+fn nfd(string text): string! {
+    if text == '' {
+        return ''
+    }
+    int required = nfd_raw(text.ref(), text.len(), 0, 0)
+    if required < 0 {
+        throw errorf('ICU NFD normalization failed')
+    }
+    [u8] output = vec<u8>.new(0, required + 1)
+    int length = nfd_raw(text.ref(), text.len(), output.ref(), output.len())
+    if length < 0 {
+        throw errorf('ICU NFD normalization failed')
     }
     return output.slice(0, length) as string
 }

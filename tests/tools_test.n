@@ -7,6 +7,7 @@ import adou.src.tools.shell_tools
 import adou.src.tools.truncate
 import adou.src.tools.types as tool_types
 import adou.src.tools.write
+import adou.src.unicode.normalization as normalization
 import adou.src.unicode.utf8
 import fs
 import json
@@ -38,6 +39,13 @@ test 'path resolution expands tilde strips at and cleans dot segments' {
     assert(path_utils.resolve_to_cwd('@a/../b.txt', '/tmp/project') == '/tmp/project/b.txt')
     assert(path_utils.resolve_to_cwd('~/file.txt', '/tmp/project') == home + '/file.txt')
     assert(path_utils.resolve_to_cwd('/tmp/a/../../b', '/ignored') == '/b')
+}
+
+test 'path resolution exposes Pi-compatible NFD variants' {
+    string nfc = 'file\xc3\xa9.txt'
+    string nfd = 'filee\xcc\x81.txt'
+    assert(normalization.nfd(nfc) == nfd)
+    assert(path_utils.nfd_variant(nfc) == nfd)
 }
 
 test 'truncate head preserves complete lines and identifies first oversized line' {

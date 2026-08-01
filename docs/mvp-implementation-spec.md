@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.13
+文档版本：0.14
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -441,6 +441,7 @@ limit: number, optional
 
 - 相对路径基于 session cwd；支持绝对路径、`~` 和输入前导 `@`；
 - macOS 路径兼容 NFD、curly quote 和截图文件名中的 narrow no-break space；
+- NFD 变体使用 ICU4C 的 `unorm2_getNFDInstance`，解析顺序与 Pi 一致：精确路径、截图时间空格变体、NFD、curly quote、NFD+curly quote；ICU 不可用时保留原始路径并继续返回标准的不可读错误；
 - 检查存在性和可读性；
 - UTF-8 解码规则必须固定并测试非法字节；
 - `offset` 超过文件末尾时返回 Pi 等价错误；

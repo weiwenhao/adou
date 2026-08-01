@@ -47,6 +47,7 @@ typedef struct {
     binary_property_fn binary_property;
     int_property_fn int_property;
     normalizer_instance_fn get_nfkc;
+    normalizer_instance_fn get_nfd;
     normalize_fn normalize;
     str_from_utf8_fn str_from_utf8;
     str_to_utf8_fn str_to_utf8;
@@ -82,10 +83,11 @@ static bool load_icu(void) {
     api.binary_property = (binary_property_fn) dlsym(api.common, STRINGIFY(u_hasBinaryProperty));
     api.int_property = (int_property_fn) dlsym(api.common, STRINGIFY(u_getIntPropertyValue));
     api.get_nfkc = (normalizer_instance_fn) dlsym(api.common, STRINGIFY(unorm2_getNFKCInstance));
+    api.get_nfd = (normalizer_instance_fn) dlsym(api.common, STRINGIFY(unorm2_getNFDInstance));
     api.normalize = (normalize_fn) dlsym(api.common, STRINGIFY(unorm2_normalize));
     api.str_from_utf8 = (str_from_utf8_fn) dlsym(api.common, STRINGIFY(u_strFromUTF8));
     api.str_to_utf8 = (str_to_utf8_fn) dlsym(api.common, STRINGIFY(u_strToUTF8));
-    api.available = api.break_open != NULL && api.break_close != NULL && api.break_set_text != NULL && api.break_first != NULL && api.break_next != NULL && api.break_status != NULL && api.text_open_utf8 != NULL && api.text_close != NULL && api.char_type != NULL && api.binary_property != NULL && api.int_property != NULL && api.get_nfkc != NULL && api.normalize != NULL && api.str_from_utf8 != NULL && api.str_to_utf8 != NULL;
+    api.available = api.break_open != NULL && api.break_close != NULL && api.break_set_text != NULL && api.break_first != NULL && api.break_next != NULL && api.break_status != NULL && api.text_open_utf8 != NULL && api.text_close != NULL && api.char_type != NULL && api.binary_property != NULL && api.int_property != NULL && api.get_nfkc != NULL && api.get_nfd != NULL && api.normalize != NULL && api.str_from_utf8 != NULL && api.str_to_utf8 != NULL;
     return api.available;
 }
 
@@ -93,8 +95,8 @@ bool adou_icu_available(void) {
     return load_icu();
 }
 
-int64_t adou_icu_nfkc(const char *text, int64_t length, char *output, int64_t capacity) {
-    if (!load_icu() || text == NULL || length < 0 || length > INT32_MAX || capacity > INT32_MAX) return -1;
+static int64_t normalize_utf8(normalizer_instance_fn get_normalizer, const char *text, int64_t length, char *output, int64_t capacity) {
+    if (!load_icu() || get_normalizer == NULL || text == NULL || length < 0 || length > INT32_MAX || capacity < 0 || capacity > INT32_MAX) return -1;
     UErrorCode status = U_ZERO_ERROR;
     int32_t source_length = 0;
     api.str_from_utf8(NULL, 0, &source_length, text, (int32_t) length, &status);
@@ -107,7 +109,7 @@ int64_t adou_icu_nfkc(const char *text, int64_t length, char *output, int64_t ca
         free(source);
         return -1;
     }
-    const UNormalizer2 *normalizer = api.get_nfkc(&status);
+    const UNormalizer2 *normalizer = get_normalizer(&status);
     if (normalizer == NULL || U_FAILURE(status)) {
         free(source);
         return -1;
@@ -149,6 +151,16 @@ int64_t adou_icu_nfkc(const char *text, int64_t length, char *output, int64_t ca
     api.str_to_utf8(output, (int32_t) capacity, &required, normalized, normalized_length, &status);
     free(normalized);
     return U_FAILURE(status) ? -1 : required;
+}
+
+int64_t adou_icu_nfkc(const char *text, int64_t length, char *output, int64_t capacity) {
+    if (!load_icu()) return -1;
+    return normalize_utf8(api.get_nfkc, text, length, output, capacity);
+}
+
+int64_t adou_icu_nfd(const char *text, int64_t length, char *output, int64_t capacity) {
+    if (!load_icu()) return -1;
+    return normalize_utf8(api.get_nfd, text, length, output, capacity);
 }
 
 static UBreakIterator *open_break_iterator(const char *text, int64_t length, UBreakIteratorType type, UText *utext) {

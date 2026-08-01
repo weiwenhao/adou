@@ -2,6 +2,7 @@ import libc
 import path
 import strings
 import syscall
+import adou.src.unicode.normalization as normalization
 
 const NARROW_NO_BREAK_SPACE = '\xe2\x80\xaf'
 const RIGHT_SINGLE_QUOTE = '\xe2\x80\x99'
@@ -37,11 +38,25 @@ fn resolve_read_path(string input, string cwd): string {
     if am_pm != resolved && exists(am_pm) {
         return am_pm
     }
+    string nfd = nfd_variant(resolved)
+    if nfd != resolved && exists(nfd) {
+        return nfd
+    }
     string curly = resolved.replace("'", RIGHT_SINGLE_QUOTE)
     if curly != resolved && exists(curly) {
         return curly
     }
+    string nfd_curly = nfd.replace("'", RIGHT_SINGLE_QUOTE)
+    if nfd_curly != resolved && nfd_curly != nfd && exists(nfd_curly) {
+        return nfd_curly
+    }
     return resolved
+}
+
+fn nfd_variant(string input): string {
+    return normalization.nfd(input) catch e {
+        return input
+    }
 }
 
 fn exists(string input): bool {
