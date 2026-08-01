@@ -91,6 +91,43 @@ test 'converts reasoning and incomplete terminal status' {
     assert(thinking.thinking == 'final reasoning')
     assert(thinking.thinking_signature != '')
 }
+test 'tracks final answer message phases in partial events' {
+    string fixture = ''
+    fixture += frame('{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_phase","phase":"final_answer","content":[]}}')
+    fixture += frame('{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_phase","phase":"final_answer","content":[{"type":"output_text","text":"answer"}]}}')
+    fixture += frame('{"type":"response.completed","response":{"id":"resp_phase","status":"completed"}}')
+    var (processor, events) = run_fixture(fixture)
+    var started = events[1].partial as ref<types.assistant_message_t>
+    var ended = events[2].partial as ref<types.assistant_message_t>
+    assert(events[1].kind == types.EVENT_TEXT_START && started.stop_reason == types.STOP_STOP)
+    assert(events[2].kind == types.EVENT_TEXT_END && ended.stop_reason == types.STOP_STOP)
+    assert(processor.output.stop_reason == types.STOP_STOP)
+}
+test 'terminal incomplete status replaces a provisional final answer stop' {
+    var processor = openai_responses.processor(test_model(), 123)
+    processor.start()
+    var added_frame = sse.event_t {
+        event: 'message', data: '{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_phase","phase":"final_answer","content":[]}}', id: '', retry: -1,
+    }
+    var added = processor.feed(added_frame)
+    assert(added.len() == 1 && added[0].kind == types.EVENT_TEXT_START)
+    var started = added[0].partial as ref<types.assistant_message_t>
+    assert(started.stop_reason == types.STOP_STOP)
+    var done_frame = sse.event_t {
+        event: 'message', data: '{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_phase","phase":"final_answer","content":[{"type":"output_text","text":"partial"}]}}', id: '', retry: -1,
+    }
+    var done = processor.feed(done_frame)
+    assert(done.len() == 1 && done[0].kind == types.EVENT_TEXT_END)
+    var ended = done[0].partial as ref<types.assistant_message_t>
+    assert(ended.stop_reason == types.STOP_STOP)
+    var terminal_frame = sse.event_t {
+        event: 'message', data: '{"type":"response.incomplete","response":{"id":"resp_phase","status":"incomplete"}}', id: '', retry: -1,
+    }
+    var terminal = processor.feed(terminal_frame)
+    assert(terminal.len() == 1 && terminal[0].kind == types.EVENT_DONE && terminal[0].reason == types.STOP_LENGTH)
+    processor.finish()
+    assert(processor.output.stop_reason == types.STOP_LENGTH)
+}
 test 'rejects an early EOF before a terminal response event' {
     var processor = openai_responses.processor(test_model(), 123)
     processor.start()

@@ -50,9 +50,9 @@ class Handler(BaseHTTPRequestHandler):
             output.write(body)
         stream = b"".join([
             b'data: {"type":"response.created","response":{"id":"resp_e2e"}}\n\n',
-            b'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_e2e","content":[]}}\n\n',
+            b'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_e2e","phase":"final_answer","content":[]}}\n\n',
             b'data: {"type":"response.output_text.delta","output_index":0,"delta":"ok"}\n\n',
-            b'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_e2e","content":[{"type":"output_text","text":"ok"}]}}\n\n',
+            b'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_e2e","phase":"final_answer","content":[{"type":"output_text","text":"ok"}]}}\n\n',
             b'data: {"type":"response.completed","response":{"id":"resp_e2e","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n',
         ])
         self.send_response(200)
@@ -120,6 +120,33 @@ if rg -F '"include"' "$request_file" >/dev/null; then
 fi
 if ! rg -F '"delta":"ok"' "$output_file" >/dev/null; then
     echo 'e2e: Responses output did not reach the JSON event stream' >&2
+    cat "$output_file" >&2
+    exit 1
+fi
+if ! python3 - "$output_file" <<'PY'
+import json
+import sys
+
+for line in open(sys.argv[1], encoding="utf-8"):
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        continue
+    assistant_event = event.get("assistantEvent")
+    if not isinstance(assistant_event, dict):
+        continue
+    partial = assistant_event.get("partial")
+    if (
+        assistant_event.get("type") in ("text_start", "text_end")
+        and isinstance(partial, dict)
+        and partial.get("stopReason") == "stop"
+    ):
+        raise SystemExit(0)
+
+raise SystemExit(1)
+PY
+then
+    echo 'e2e: Responses final_answer phase did not update the partial stop reason' >&2
     cat "$output_file" >&2
     exit 1
 fi

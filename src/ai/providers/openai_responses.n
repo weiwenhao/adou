@@ -54,7 +54,9 @@ fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
         self.output.response_id = optional_string(response, 'id', '')
     } else if event_type == 'response.output_item.added' {
         int output_index = required_int(root, 'output_index')
-        events = self.create_slot(output_index, root.get('item'), events)
+        var item = root.get('item')
+        self.apply_message_phase(item)
+        events = self.create_slot(output_index, item, events)
     } else if event_type == 'response.reasoning_summary_text.delta' || event_type == 'response.reasoning_text.delta' {
         int output_index = required_int(root, 'output_index')
         if self.slots.contains(output_index) {
@@ -111,6 +113,7 @@ fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
     } else if event_type == 'response.output_item.done' {
         int output_index = required_int(root, 'output_index')
         var item = root.get('item')
+        self.apply_message_phase(item)
         if!self.slots.contains(output_index) {
             events = self.create_slot(output_index, item, events)
         }
@@ -130,6 +133,12 @@ fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
 fn processor_t.finish(&self): void! {
     if!self.saw_terminal {
         throw errorf('OpenAI Responses stream ended before a terminal response event')
+    }
+}
+#local
+fn processor_t.apply_message_phase(&self, ref<json.value_t> item): void! {
+    if required_string(item, 'type') == 'message' && optional_string(item, 'phase', '') == 'final_answer' {
+        self.output.stop_reason = types.STOP_STOP
     }
 }
 #local

@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.7
+文档版本：0.8
 日期：2026-08-01
 
 ## 1. 文档目的
@@ -311,6 +311,7 @@ Provider 流事件必须保持以下协议：
 - tool arguments 跨事件拼接并在结束时严格解析；
 - response id、content index、usage 和 cache usage；
 - stop/toolUse/length/error/aborted 映射；
+- Responses `message.phase=final_answer` 到达 `output_item.added` 或 `output_item.done` 时，立即把 partial 的 stop reason 更新为 `stop`；终端 `incomplete` 仍覆盖为 `length`；
 - HTTP 状态、provider error body、超时、Retry-After 和取消；
 - session id/cache key 语义中适用于官方 OpenAI endpoint 的部分；
 - 重放历史 tool call 时遵循 Pi 的 Responses ID 规则：`call_id` 和 item id 只保留合法字符并限制为 64 字节；跨 provider 的 item id 使用稳定的 `fc_<shortHash>`；同 provider/API 但不同 model 的旧 `fc_*` item id 不回放；长 assistant message id 使用 `msg_<shortHash>`；tool result 只回放归一化后的 `call_id`。
