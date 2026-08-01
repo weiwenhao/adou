@@ -3,6 +3,9 @@ import adou.src.ai.abort
 import fs
 import fmt
 import io
+import libc
+import os
+import path
 import process
 import syscall
 
@@ -144,8 +147,12 @@ fn shell_timeout(string cwd, string command, int timeout_ms): result_t! {
     string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
     var stdout_buffer = io.buffer.new()
     var stderr_buffer = io.buffer.new()
-    var process_command = new process.command_t(name = '/bin/bash', args = ['-lc', script], cwd = '', env = [], stdin = fs.discard(), stdout = stdout_buffer, stderr = stderr_buffer)
+    string helper = process_group_helper()
+    string executable = helper == '' ? '/bin/bash' : helper
+    [string] process_args = helper == '' ? ['-lc', script] : ['/bin/bash', '-lc', script]
+    var process_command = new process.command_t(name = executable, args = process_args, cwd = '', env = [], stdin = fs.discard(), stdout = stdout_buffer, stderr = stderr_buffer)
     var child = process_command.spawn()
+    bool grouped = helper != '' ? true : isolate_process_group(child)
     var finished = chan<u8>.new(1)
     var timed = chan<u8>.new(1)
     go wait_for_process(child, finished)
@@ -156,7 +163,7 @@ fn shell_timeout(string cwd, string command, int timeout_ms): result_t! {
         }
         timed.on_recv() -> ignored {
             did_timeout = true
-            syscall.kill(child.pid, syscall.SIGTERM) catch error {}
+            terminate_process(child, grouped)
             finished.recv() catch error {}
         }
     }
@@ -172,10 +179,14 @@ fn shell_abortable(string cwd, string command, int timeout_ms, ref<abort.abort_t
     string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
     var stdout_buffer = io.buffer.new()
     var stderr_buffer = io.buffer.new()
-    var process_command = new process.command_t(name = '/bin/bash', args = ['-lc', script], cwd = '', env = [], stdin = fs.discard(), stdout = stdout_buffer, stderr = stderr_buffer)
+    string helper = process_group_helper()
+    string executable = helper == '' ? '/bin/bash' : helper
+    [string] process_args = helper == '' ? ['-lc', script] : ['/bin/bash', '-lc', script]
+    var process_command = new process.command_t(name = executable, args = process_args, cwd = '', env = [], stdin = fs.discard(), stdout = stdout_buffer, stderr = stderr_buffer)
     var child = process_command.spawn()
+    bool grouped = helper != '' ? true : isolate_process_group(child)
     abort.abort_callback_t cancel_child = fn () {
-        syscall.kill(child.pid, syscall.SIGTERM) catch error {}
+        terminate_process(child, grouped)
     }
     cancellation.on_abort(cancel_child)
     if cancellation.is_aborted() {
@@ -192,7 +203,7 @@ fn shell_abortable(string cwd, string command, int timeout_ms, ref<abort.abort_t
             }
             timed.on_recv() -> ignored {
                 timed_out = true
-                syscall.kill(child.pid, syscall.SIGTERM) catch error {}
+                terminate_process(child, grouped)
                 finished.recv() catch error {}
             }
         }
@@ -216,10 +227,14 @@ fn shell_abortable_stream(string cwd, string command, int timeout_ms, ref<abort.
     var stderr_buffer = io.buffer.new()
     var stdout_writer = new streaming_writer_t(buffer = stdout_buffer, on_chunk = on_chunk, sanitizer = new sanitizer_t())
     var stderr_writer = new streaming_writer_t(buffer = stderr_buffer, on_chunk = on_chunk, sanitizer = new sanitizer_t())
-    var process_command = new process.command_t(name = '/bin/bash', args = ['-lc', script], cwd = '', env = [], stdin = fs.discard(), stdout = stdout_writer, stderr = stderr_writer)
+    string helper = process_group_helper()
+    string executable = helper == '' ? '/bin/bash' : helper
+    [string] process_args = helper == '' ? ['-lc', script] : ['/bin/bash', '-lc', script]
+    var process_command = new process.command_t(name = executable, args = process_args, cwd = '', env = [], stdin = fs.discard(), stdout = stdout_writer, stderr = stderr_writer)
     var child = process_command.spawn()
+    bool grouped = helper != '' ? true : isolate_process_group(child)
     abort.abort_callback_t cancel_child = fn() {
-        syscall.kill(child.pid, syscall.SIGTERM) catch error {}
+        terminate_process(child, grouped)
     }
     cancellation.on_abort(cancel_child)
     if cancellation.is_aborted() {
@@ -236,7 +251,7 @@ fn shell_abortable_stream(string cwd, string command, int timeout_ms, ref<abort.
             }
             timed.on_recv() -> ignored {
                 timed_out = true
-                syscall.kill(child.pid, syscall.SIGTERM) catch error {}
+                terminate_process(child, grouped)
                 finished.recv() catch error {}
             }
         }
@@ -289,6 +304,51 @@ fn environment_prefix(): string {
 fn wait_for_process(ref<process.process_t> child, chan<u8> finished): void! {
     child.wait()
     finished.send(1)
+}
+
+#local
+fn process_group_helper(): string {
+    string configured = syscall.get_env('ADOU_PROCESS_GROUP_HELPER')
+    if configured != '' && libc.access(configured.to_cstr(), libc.F_OK) == 0 {
+        return configured
+    }
+    [string] argv = os.args()
+    if argv.len() > 0 && argv[0].contains('/') {
+        string adjacent = path.join(path.dir(argv[0]), 'adou-process-group')
+        if libc.access(adjacent.to_cstr(), libc.F_OK) == 0 {
+            return adjacent
+        }
+    }
+    for directory in syscall.get_env('PATH').split(':') {
+        if directory == '' {
+            continue
+        }
+        string candidate = path.join(directory, 'adou-process-group')
+        if libc.access(candidate.to_cstr(), libc.F_OK) == 0 {
+            return candidate
+        }
+    }
+    return ''
+}
+
+#local
+fn isolate_process_group(ref<process.process_t> child): bool {
+    // Nature's process wrapper does not expose libuv's detached flag.  The
+    // parent can still move the freshly spawned child into a new process
+    // group before the shell has a chance to launch most descendants.
+    return libc.setpgid(child.pid as i32, child.pid as i32) == 0
+}
+
+#local
+fn terminate_process(ref<process.process_t> child, bool grouped): void {
+    int pid = child.pid
+    if grouped {
+        syscall.kill(-pid, syscall.SIGKILL) catch error {
+            syscall.kill(pid, syscall.SIGKILL) catch ignored {}
+        }
+        return
+    }
+    syscall.kill(pid, syscall.SIGKILL) catch error {}
 }
 
 #local

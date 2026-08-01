@@ -10,6 +10,7 @@ CC ?= cc
 BUILD_DIR ?= build
 BIN_DIR := $(BUILD_DIR)/bin
 ADOU_BIN := $(BIN_DIR)/adou
+PROCESS_GROUP_HELPER := $(BIN_DIR)/adou-process-group
 SAFE_NATURE := $(CURDIR)/scripts/nature-build-safe.sh
 NATIVE_OBJ := native/unicode_icu.o
 
@@ -24,7 +25,11 @@ E2E_SOURCES := $(sort $(wildcard tests/e2e/*.sh))
 
 all: build
 
-build: $(ADOU_BIN)
+build: $(ADOU_BIN) $(PROCESS_GROUP_HELPER)
+
+$(PROCESS_GROUP_HELPER): native/process_group_helper.c
+	@mkdir -p "$(dir $@)"
+	@$(CC) -std=c11 -O2 "$<" -o "$@"
 
 $(NATIVE_OBJ): native/unicode_icu.c
 	@mkdir -p "$(dir $@)"
@@ -35,21 +40,21 @@ $(ADOU_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(SAFE_NATURE)
 	@NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" build -o "$(ADOU_BIN)" "$(CURDIR)/main.n"
 
 run: build
-	@"$(ADOU_BIN)"
+	@ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(ADOU_BIN)"
 
 # Nature's own test runner is the test framework.  Run tests one at a time so
 # each invocation gets the same stale-compiler cleanup and no two Nature
 # processes can overlap.
-test: $(SAFE_NATURE) $(NATIVE_OBJ)
+test: $(SAFE_NATURE) $(NATIVE_OBJ) $(PROCESS_GROUP_HELPER)
 	@set -e; for test_file in $(TEST_SOURCES); do \
 		echo "==> $$test_file"; \
-		NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" test "$(CURDIR)/$$test_file"; \
+		ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" test "$(CURDIR)/$$test_file"; \
 	done
 
 e2e: build
 	@set -e; for test_file in $(E2E_SOURCES); do \
 		echo "==> $$test_file"; \
-		ADOU_BIN="$(ADOU_BIN)" "$(CURDIR)/$$test_file"; \
+		ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/$$test_file"; \
 	done
 
 check: test e2e
@@ -60,6 +65,7 @@ DESTDIR ?=
 install: build
 	@mkdir -p "$(DESTDIR)$(PREFIX)/bin"
 	@cp "$(ADOU_BIN)" "$(DESTDIR)$(PREFIX)/bin/adou"
+	@cp "$(PROCESS_GROUP_HELPER)" "$(DESTDIR)$(PREFIX)/bin/adou-process-group"
 	@mkdir -p "$(DESTDIR)$(PREFIX)/share/adou/docs"
 	@cp docs/mvp-implementation-spec.md docs/nature-issues.md "$(DESTDIR)$(PREFIX)/share/adou/docs/"
 

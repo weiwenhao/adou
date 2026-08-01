@@ -65,17 +65,17 @@ def tool_response(response_number, name, call_id, arguments):
 
 def final_response():
     return b"".join([
-        event({"type": "response.created", "response": {"id": "resp_edge_4"}}),
+        event({"type": "response.created", "response": {"id": "resp_edge_5"}}),
         event({"type": "response.output_item.added", "output_index": 0, "item": {
-            "type": "message", "id": "msg_edge_4", "phase": "final_answer", "content": []
+            "type": "message", "id": "msg_edge_5", "phase": "final_answer", "content": []
         }}),
         event({"type": "response.output_text.delta", "output_index": 0, "delta": "edge-ok"}),
         event({"type": "response.output_item.done", "output_index": 0, "item": {
-            "type": "message", "id": "msg_edge_4", "phase": "final_answer",
+            "type": "message", "id": "msg_edge_5", "phase": "final_answer",
             "content": [{"type": "output_text", "text": "edge-ok"}]
         }}),
         event({"type": "response.completed", "response": {
-            "id": "resp_edge_4", "status": "completed",
+            "id": "resp_edge_5", "status": "completed",
             "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2}
         }}),
     ])
@@ -94,11 +94,13 @@ class Handler(BaseHTTPRequestHandler):
         with open(count_path, "w", encoding="ascii") as output:
             output.write(str(Handler.requests))
         if Handler.requests == 1:
-            stream = tool_response(1, "grep", "call_edge_grep", '{"pattern":"match","path":"fixtures","limit":0}')
+            stream = tool_response(1, "bash", "call_edge_bash", '{"command":"(sleep 0.2; printf leaked > tree-marker) & wait","timeout":0.05}')
         elif Handler.requests == 2:
-            stream = tool_response(2, "find", "call_edge_find", '{"pattern":"fixtures/**/*.txt"}')
+            stream = tool_response(2, "grep", "call_edge_grep", '{"pattern":"match","path":"fixtures","limit":0}')
         elif Handler.requests == 3:
-            stream = tool_response(3, "ls", "call_edge_ls", '{"path":"value.txt"}')
+            stream = tool_response(3, "find", "call_edge_find", '{"pattern":"fixtures/**/*.txt"}')
+        elif Handler.requests == 4:
+            stream = tool_response(4, "ls", "call_edge_ls", '{"path":"value.txt"}')
         else:
             stream = final_response()
         self.send_response(200)
@@ -112,7 +114,7 @@ class Handler(BaseHTTPRequestHandler):
 server = HTTPServer(("127.0.0.1", 0), Handler)
 with open(port_path, "w", encoding="ascii") as output:
     output.write(str(server.server_port))
-for _ in range(4):
+for _ in range(5):
     server.handle_request()
 PY
 server_pid=$!
@@ -133,7 +135,7 @@ if ! (
     PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions" \
     "$binary" --provider openai --model gpt-5.1-codex --thinking off \
     --base-url "http://127.0.0.1:$port/v1" --api-key e2e-key \
-    --mode json --no-context-files --no-session --tools grep,find,ls 'check tool edge behavior'
+    --mode json --no-context-files --no-session --tools bash,grep,find,ls 'check tool edge behavior'
 ) > "$output_file" 2>&1; then
     echo 'e2e: tool-edge command failed' >&2
     cat "$output_file" >&2
@@ -143,8 +145,14 @@ fi
 wait "$server_pid"
 server_pid=''
 
-if [ "$(cat "$request_count_file")" != 4 ]; then
-    echo 'e2e: tool edge cases did not produce three tool turns and a final answer' >&2
+if [ "$(cat "$request_count_file")" != 5 ]; then
+    echo 'e2e: tool edge cases did not produce four tool turns and a final answer' >&2
+    cat "$output_file" >&2
+    exit 1
+fi
+sleep 0.3
+if [ -e "$tmp_dir/tree-marker" ]; then
+    echo 'e2e: bash timeout left a descendant process running' >&2
     cat "$output_file" >&2
     exit 1
 fi
@@ -173,4 +181,4 @@ if ! rg -F '"delta":"edge-ok"' "$output_file" >/dev/null; then
     exit 1
 fi
 
-echo 'e2e: grep, find, and ls Pi edge behavior OK'
+echo 'e2e: bash, grep, find, and ls Pi edge behavior OK'

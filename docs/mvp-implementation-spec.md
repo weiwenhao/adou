@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.16
+文档版本：0.17
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -480,7 +480,7 @@ content: string, required
 
 ### 11.4 `bash`
 
-参数为 `command` 和可选 `timeout`（秒）。stdout/stderr 合并后按 Pi 的 2000 行/50 KiB 上限截断；非零退出码、信号终止和超时都进入标准工具错误。交互式 `!command` 复用同一执行器，结果写入 Pi `bashExecution` session 消息并进入下一轮模型上下文；`!!command` 保留在 session 和 TUI 中，但按 Pi 语义排除出模型上下文。
+参数为 `command` 和可选 `timeout`（秒）。stdout/stderr 合并后按 Pi 的 2000 行/50 KiB 上限截断；非零退出码、信号终止和超时都进入标准工具错误。取消/超时必须终止整个命令进程树，不能只杀直接 shell；Adou 通过随二进制安装的 `adou-process-group` 小型 C 启动器建立独立进程组，再按组发送终止信号。交互式 `!command` 复用同一执行器，结果写入 Pi `bashExecution` session 消息并进入下一轮模型上下文；`!!command` 保留在 session 和 TUI 中，但按 Pi 语义排除出模型上下文。
 
 ### 11.5 `grep`、`find`、`ls`
 
