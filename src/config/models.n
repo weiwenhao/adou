@@ -6,24 +6,71 @@ fn all(): [ref<ai_types.model_t>] {
 }
 
 fn find(string reference): ref<ai_types.model_t>? {
-    string value = reference.trim([' ', '\t'])
-    // Pi accepts `model:thinking-level` as a compact model selector spelling.
-    // The level is resolved by config/resolve.n; model lookup must ignore the
-    // suffix while still accepting ordinary provider/model references.
-    int level_separator = value.find(':')
-    if level_separator >= 0 {
-        value = value.slice(0, level_separator)
+    string value = strip_thinking_suffix(reference.trim([' ', '\t']))
+    if value == '' {
+        return null
     }
+    string lower_value = value.to_lower()
+    [ref<ai_types.model_t>] available = all()
+
+    // Pi resolves canonical provider/model references case-insensitively. Do
+    // this before splitting on '/', because a model id may itself contain a
+    // slash (for example an OpenRouter-style id).
+    for model in available {
+        string canonical = (model.provider + '/' + model.id).to_lower()
+        if canonical == lower_value {
+            return model
+        }
+    }
+
     string provider = ''
     string id = value
     int separator = value.find('/')
-    if separator >= 0 {
-        provider = value.slice(0, separator)
+    if separator >= 0 && known_provider(value.slice(0, separator)) {
+        provider = value.slice(0, separator).to_lower()
         id = value.slice(separator + 1, value.len())
     }
-    for model in all() {
-        if model.id == id && (provider == '' || model.provider == provider) {
-            return model
+    string lower_id = id.to_lower()
+
+    // Bare ids are accepted when they identify exactly one model. This is
+    // also what lets `--model sonnet` resolve to the configured Anthropic
+    // model instead of silently creating a custom DeepSeek id.
+    ref<ai_types.model_t>? exact = null
+    int exact_count = 0
+    for model in available {
+        if provider != '' && model.provider.to_lower() != provider {
+            continue
+        }
+        if model.id.to_lower() == lower_id {
+            exact = model
+            exact_count += 1
+        }
+    }
+    if exact_count == 1 {
+        if exact is ref<ai_types.model_t> selected {
+            return selected
+        }
+    }
+
+    // Pi's CLI resolver falls back to a case-insensitive partial id match.
+    // Keep the result deterministic and reject ambiguous matches; the
+    // registry can later add dated aliases without changing this contract.
+    if !has_glob(value) {
+        ref<ai_types.model_t>? partial = null
+        int partial_count = 0
+        for model in available {
+            if provider != '' && model.provider.to_lower() != provider {
+                continue
+            }
+            if model.id.to_lower().contains(lower_id) {
+                partial = model
+                partial_count += 1
+            }
+        }
+        if partial_count == 1 {
+            if partial is ref<ai_types.model_t> selected {
+                return selected
+            }
         }
     }
     return null
@@ -55,7 +102,7 @@ fn list_filtered(string pattern): string {
     string needle = pattern.trim([' ', '\t'])
     for model in all() {
         string reference = model.provider + '/' + model.id
-        if needle == '' || matches_pattern(reference, needle) {
+        if needle == '' || matches_model_pattern(model, needle) {
             names.push(reference)
         }
     }
@@ -65,7 +112,7 @@ fn list_filtered(string pattern): string {
 fn allowed(string reference, [string] patterns): bool {
     if patterns.len() == 0 {return true}
     for pattern in patterns {
-        if matches_pattern(reference, pattern) {return true}
+        if matches_reference_pattern(reference, pattern) {return true}
     }
     return false
 }
@@ -87,13 +134,13 @@ fn first_allowed([string] patterns): ref<ai_types.model_t>? {
 // setting; an explicit --thinking value still wins in resolve.n.
 fn thinking_for(string reference, [string] patterns): string {
     for pattern in patterns {
-        int separator = pattern.find(':')
+        int separator = pattern.rfind(':')
         if separator < 0 {
             continue
         }
         string base = pattern.slice(0, separator)
         string level = pattern.slice(separator + 1, pattern.len()).to_lower()
-        if matches_pattern(reference, base) && valid_thinking(level) {
+        if matches_reference_pattern(reference, base) && valid_thinking(level) {
             return level
         }
     }
@@ -120,28 +167,156 @@ fn anthropic_default(): ref<ai_types.model_t> {
 }
 
 #local
-fn matches_pattern(string value, string pattern): bool {
-    string lower_value = value.to_lower()
-    string lower_pattern = pattern.to_lower()
-    // Pi accepts an optional `:thinking-level` suffix on scoped model
-    // patterns. Thinking is applied by the interactive model switcher; the
-    // Nature MVP keeps the level in the normal --thinking setting but must not
-    // let the suffix make an otherwise matching model disappear.
-    int level_separator = lower_pattern.find(':')
-    if level_separator >= 0 {
-        lower_pattern = lower_pattern.slice(0, level_separator)
-    }
-    if lower_pattern == '*' {return true}
-    int star = lower_pattern.find('*')
-    if star < 0 {return lower_value.contains(lower_pattern)}
-    string before = lower_pattern.slice(0, star)
-    string after = lower_pattern.slice(star + 1, lower_pattern.len())
-    if before != '' && !lower_value.starts_with(before) {return false}
-    if after != '' && !lower_value.ends_with(after) {return false}
-    return lower_value.len() >= before.len() + after.len()
+fn valid_thinking(string value): bool {
+    return value == 'off' || value == 'minimal' || value == 'low' || value == 'medium' || value == 'high' || value == 'xhigh' || value == 'max'
 }
 
 #local
-fn valid_thinking(string value): bool {
-    return value == 'off' || value == 'minimal' || value == 'low' || value == 'medium' || value == 'high' || value == 'xhigh' || value == 'max'
+fn known_provider(string value): bool {
+    string lower = value.to_lower()
+    return lower == 'deepseek' || lower == 'openai' || lower == 'anthropic'
+}
+
+#local
+fn strip_thinking_suffix(string value): string {
+    int separator = value.rfind(':')
+    if separator < 0 {
+        return value
+    }
+    string level = value.slice(separator + 1, value.len()).to_lower()
+    if valid_thinking(level) {
+        return value.slice(0, separator)
+    }
+    return value
+}
+
+#local
+fn has_glob(string value): bool {
+    return value.contains('*') || value.contains('?') || value.contains('[')
+}
+
+#local
+fn matches_model_pattern(ref<ai_types.model_t> model, string pattern): bool {
+    string reference = model.provider + '/' + model.id
+    if matches_value_pattern(reference, pattern) {
+        return true
+    }
+    // Pi lets a pattern without a provider match the bare model id too.
+    string base = strip_thinking_suffix(pattern.trim([' ', '\t']))
+    if !base.contains('/') && matches_value_pattern(model.id, base) {
+        return true
+    }
+    return false
+}
+
+#local
+fn matches_reference_pattern(string reference, string pattern): bool {
+    if matches_value_pattern(reference, pattern) {
+        return true
+    }
+    string base = strip_thinking_suffix(pattern.trim([' ', '\t']))
+    int separator = reference.find('/')
+    if separator >= 0 && !base.contains('/') {
+        return matches_value_pattern(reference.slice(separator + 1, reference.len()), base)
+    }
+    return false
+}
+
+#local
+fn matches_value_pattern(string value, string pattern): bool {
+    string lower_value = value.to_lower()
+    string lower_pattern = strip_thinking_suffix(pattern.trim([' ', '\t'])).to_lower()
+    if lower_pattern == '' {
+        return false
+    }
+    // Pi's non-glob model patterns are case-insensitive partial matches;
+    // minimatch-style glob patterns are anchored to the whole reference.
+    if !has_glob(lower_pattern) {
+        return lower_value.contains(lower_pattern)
+    }
+    return glob_matches(lower_pattern, lower_value)
+}
+
+#local
+fn glob_matches(string pattern, string value): bool {
+    int width = value.len() + 1
+    [i8] memo = []
+    for int index = 0; index < (pattern.len() + 1) * width; index += 1 {
+        memo.push(-1)
+    }
+    return glob_match_at(pattern, value, 0, 0, memo, width)
+}
+
+#local
+fn glob_match_at(string pattern, string value, int pattern_index, int value_index, [i8] memo, int width): bool {
+    int memo_index = pattern_index * width + value_index
+    if memo[memo_index] >= 0 {
+        return memo[memo_index] == 1
+    }
+    bool matched = false
+    if pattern_index == pattern.len() {
+        matched = value_index == value.len()
+    } else if pattern[pattern_index] == '*'.char() {
+        int next = pattern_index
+        for next < pattern.len() && pattern[next] == '*'.char() {
+            next += 1
+        }
+        // A double-star crosses '/' boundaries; a single star does not.
+        bool crosses_directories = next - pattern_index >= 2
+        if crosses_directories && next < pattern.len() && pattern[next] == '/'.char() && glob_match_at(pattern, value, next + 1, value_index, memo, width) {
+            matched = true
+        }
+        int cursor = value_index
+        for !matched {
+            if glob_match_at(pattern, value, next, cursor, memo, width) {
+                matched = true
+                break
+            }
+            if cursor >= value.len() || (!crosses_directories && value[cursor] == '/'.char()) {
+                break
+            }
+            cursor += 1
+        }
+    } else if pattern[pattern_index] == '?'.char() {
+        matched = value_index < value.len() && value[value_index] != '/'.char() && glob_match_at(pattern, value, pattern_index + 1, value_index + 1, memo, width)
+    } else if pattern[pattern_index] == '['.char() {
+        int close = pattern_index + 1
+        bool negated = false
+        if close < pattern.len() && (pattern[close] == '!'.char() || pattern[close] == '^'.char()) {
+            negated = true
+            close += 1
+        }
+        for close < pattern.len() && pattern[close] != ']'.char() {
+            close += 1
+        }
+        if close >= pattern.len() || value_index >= value.len() {
+            matched = value_index < value.len() && pattern[pattern_index] == value[value_index] && glob_match_at(pattern, value, pattern_index + 1, value_index + 1, memo, width)
+        } else {
+            bool member = false
+            int cursor = pattern_index + 1 + (negated ? 1 : 0)
+            for cursor < close {
+                if cursor + 2 < close && pattern[cursor + 1] == '-'.char() {
+                    if value[value_index] >= pattern[cursor] && value[value_index] <= pattern[cursor + 2] {
+                        member = true
+                    }
+                    cursor += 3
+                } else {
+                    if pattern[cursor] == value[value_index] {
+                        member = true
+                    }
+                    cursor += 1
+                }
+            }
+            if negated {
+                member = !member
+            }
+            matched = member && glob_match_at(pattern, value, close + 1, value_index + 1, memo, width)
+        }
+    } else if pattern[pattern_index] == '\\'.char() && pattern_index + 1 < pattern.len() {
+        matched = value_index < value.len() && pattern[pattern_index + 1] == value[value_index] && glob_match_at(pattern, value, pattern_index + 2, value_index + 1, memo, width)
+    } else {
+        matched = value_index < value.len() && pattern[pattern_index] == value[value_index] && glob_match_at(pattern, value, pattern_index + 1, value_index + 1, memo, width)
+    }
+    memo[memo_index] = matched ? 1 : 0
+    return matched
 }

@@ -13,6 +13,7 @@ fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
     var preferences = settings.load()
     string requested_model = first(arguments.model, syscall.get_env('ADOU_MODEL'))
     string provider = first(arguments.provider, syscall.get_env('ADOU_PROVIDER'))
+    bool model_explicit = arguments.model != '' || syscall.get_env('ADOU_MODEL') != ''
     string scoped_thinking = ''
     // A stale settings file may contain a model/provider from a local mock or
     // an extension that is outside the Nature MVP.  Pi still starts so the
@@ -58,17 +59,24 @@ fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
         }
         requested_model = requested_model.slice(0, model_level_separator)
     }
-    if provider == '' && preferences.default_provider != '' && stored_provider_supported {
-        provider = preferences.default_provider
-    }
-    if provider == '' && requested_model.find('/') >= 0 {
-        provider = requested_model.slice(0, requested_model.find('/'))
-    }
+    // An explicit --model is resolved before the saved provider preference.
+    // Pi treats `--model sonnet` as a model selection, not as a custom model
+    // under whatever provider happened to be saved last time.
     if provider == '' && requested_model != '' {
         ref<ai_types.model_t>? inferred_model = models.find(requested_model)
         if inferred_model is ref<ai_types.model_t> known_model {
             provider = known_model.provider
+            // Keep the canonical id selected by Pi's resolver. Without this
+            // assignment a partial selector such as `--model sonnet` would
+            // infer Anthropic but still send the literal custom id `sonnet`.
+            requested_model = known_model.id
         }
+    }
+    if provider == '' && requested_model.find('/') >= 0 {
+        provider = requested_model.slice(0, requested_model.find('/'))
+    }
+    if provider == '' && !model_explicit && preferences.default_provider != '' && stored_provider_supported {
+        provider = preferences.default_provider
     }
     if provider == '' {
         provider = infer_provider()

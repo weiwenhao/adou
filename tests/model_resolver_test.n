@@ -1,0 +1,27 @@
+import adou.src.config.models as models
+import adou.src.ai.types as ai_types
+
+test 'model lookup is case insensitive for canonical and bare ids' {
+    ref<ai_types.model_t>? canonical = models.find('OPENAI/GPT-5.1-CODEX')
+    assert(canonical is ref<ai_types.model_t>)
+    ref<ai_types.model_t>? bare = models.find('sonnet')
+    assert(bare is ref<ai_types.model_t>)
+    if bare is ref<ai_types.model_t> selected {
+        assert(selected.provider == 'anthropic')
+    }
+}
+
+test 'model scopes support Pi-style glob and thinking suffix matching' {
+    assert(models.allowed('deepseek/deepseek-v4-flash', ['deepseek/*']))
+    assert(models.allowed('openai/gpt-5.1-codex', ['*/gpt-5.?-codex']))
+    assert(models.allowed('anthropic/claude-sonnet-4-5', ['**/*sonnet-*']))
+    assert(!models.allowed('openai/gpt-5.1-codex', ['deepseek/*']))
+    assert(models.thinking_for('deepseek/deepseek-v4-flash', ['deepseek/*:HIGH']) == 'high')
+}
+
+test 'model listing accepts bare partial and glob patterns' {
+    string sonnet = models.list_filtered('SONNET')
+    assert(sonnet == 'anthropic/claude-sonnet-4-5')
+    string providers = models.list_filtered('*/gpt-*')
+    assert(providers == 'openai/gpt-5.1-codex')
+}
