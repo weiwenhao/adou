@@ -214,7 +214,9 @@ test 'starting a new session clears active context and keeps in-memory mode' {
     runner.agent_config.stream_options.session_id = 'stale-session-id'
     runner.start_new_session()
     assert(runner.active_messages.len() == 0)
-    assert(runner.repository.get_entries().len() == 0 && !runner.repository.persisted)
+    assert(runner.repository.get_entries().len() == 2 && !runner.repository.persisted)
+    assert(runner.repository.get_entries()[0].kind == session_types.ENTRY_MODEL_CHANGE)
+    assert(runner.repository.get_entries()[1].kind == session_types.ENTRY_THINKING_CHANGE)
     assert(runner.repository.get_session_id() != previous_id)
     assert(runner.agent_config.stream_options.session_id == runner.repository.get_session_id())
 }

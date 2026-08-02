@@ -74,6 +74,11 @@ if new.get('type') != 'response' or new.get('success') is not True:
 
 old_state = state0.get('data', {})
 new_state = state1.get('data', {})
+with open(parent, encoding='utf-8') as stream:
+    parent_header = json.loads(stream.readline())
+    parent_entries = [json.loads(line) for line in stream if line.strip()]
+if [entry.get('type') for entry in parent_entries[:2]] != ['model_change', 'thinking_level_change']:
+    raise SystemExit(f'initial session did not persist model/thinking metadata: {parent_entries!r}')
 new_file = new_state.get('sessionFile')
 if not new_file or new_file == parent:
     raise SystemExit(f'new_session did not create a new persisted file: {new_state!r}')
@@ -82,10 +87,13 @@ if new_state.get('sessionId') == old_state.get('sessionId'):
 
 with open(new_file, encoding='utf-8') as stream:
     header = json.loads(stream.readline())
+    entries = [json.loads(line) for line in stream if line.strip()]
 if header.get('type') != 'session' or header.get('parentSession') != parent:
     raise SystemExit(f'new session header lost parentSession: {header!r}')
 if header.get('id') != new_state.get('sessionId'):
     raise SystemExit(f'new session state/header ids differ: {new_state!r} vs {header!r}')
+if [entry.get('type') for entry in entries[:2]] != ['model_change', 'thinking_level_change']:
+    raise SystemExit(f'new session did not persist initial model/thinking metadata: {entries!r}')
 PY
 
 echo 'e2e: RPC new_session preserves parentSession and rebinds session state OK'

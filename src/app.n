@@ -165,6 +165,29 @@ fn run(): void! {
         config.stream_options.reasoning_effort = config.thinking
         config.stream_options.thinking_enabled = config.thinking != 'off'
     }
+    // Pi records the initial model and thinking level in every newly created
+    // session. Existing sessions only receive a missing thinking entry; their
+    // model is restored from the active branch or assistant messages. These
+    // metadata entries are required for a later resume to reconstruct the same
+    // runtime configuration, including an empty session that has no messages.
+    if stored_context.messages.len() == 0 {
+        repository.append_model_change(config.provider, config.model.id) catch error {
+            println('Could not persist initial model')
+            syscall.exit(1) catch exit_error {}
+            return
+        }
+        repository.append_thinking_change(config.thinking) catch error {
+            println('Could not persist initial thinking level')
+            syscall.exit(1) catch exit_error {}
+            return
+        }
+    } else if !stored_context.has_thinking_level {
+        repository.append_thinking_change(config.thinking) catch error {
+            println('Could not persist session thinking level')
+            syscall.exit(1) catch exit_error {}
+            return
+        }
+    }
     command.configure_agent_environment(repository.get_session_id(), repository.get_session_file(), config.provider, config.model.id, config.thinking)
     config.stream_options.session_id = repository.get_session_id()
     [ref<project.file_t>] context_files = []

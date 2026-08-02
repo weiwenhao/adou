@@ -92,10 +92,25 @@ fn runner_t.start_new_session_with_parent(&self, string parent_session): void! {
     bool persisted = self.repository.persisted
     string session_dir = self.repository.session_dir
     string cwd = self.repository.cwd
+    string provider = self.agent_config.model.provider
+    string model_id = self.agent_config.model.id
+    string thinking = self.agent_config.stream_options.thinking_enabled ? self.agent_config.stream_options.reasoning_effort : 'off'
     string steering_mode = self.agent_config.queues.steering_mode
     string follow_up_mode = self.agent_config.queues.follow_up_mode
     self.lock.unlock()
     ref<repository.manager_t> next = persisted ? repository.create_with_parent(cwd, session_dir, parent_session) : repository.in_memory_with_parent(cwd, parent_session) catch error {
+        self.lock.lock()
+        self.busy = false
+        self.lock.unlock()
+        throw error
+    }
+    next.append_model_change(provider, model_id) catch error {
+        self.lock.lock()
+        self.busy = false
+        self.lock.unlock()
+        throw error
+    }
+    next.append_thinking_change(thinking) catch error {
         self.lock.lock()
         self.busy = false
         self.lock.unlock()
