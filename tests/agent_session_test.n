@@ -256,6 +256,18 @@ test 'starting a new session clears active context and keeps in-memory mode' {
     assert(runner.agent_config.stream_options.session_id == runner.repository.get_session_id())
 }
 
+test 'clone rejects a session without a current leaf' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t()
+    var runner = make_runner(manager, fixture, 100, 0, 2)
+    string message = ''
+    runner.clone_session() catch error {
+        message = error.msg()
+    }
+    assert(message == 'Cannot clone session: no current entry selected')
+    assert(runner.repository == manager && runner.active_messages.len() == 0)
+}
+
 test 'switching to a legacy session repairs missing thinking metadata' {
     var manager = repository.in_memory('/tmp')
     var fixture = new provider_fixture_t()

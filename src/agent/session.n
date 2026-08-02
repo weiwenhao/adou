@@ -278,6 +278,14 @@ fn runner_t.navigate_tree_with_summary(&self, string entry_id, string instructio
 }
 
 fn runner_t.clone_session(&self): void! {
+    self.lock.lock()
+    bool has_leaf = self.repository.has_leaf
+    self.lock.unlock()
+    if !has_leaf {
+        // Pi refuses to clone an empty session because there is no current
+        // entry/leaf to use as the fork position.
+        throw errorf('Cannot clone session: no current entry selected')
+    }
     var next = self.repository.clone_active()
     self.replace_repository(next)
 }
