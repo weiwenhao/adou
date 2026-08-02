@@ -48,6 +48,9 @@ type runner_t = struct {
     // operation; keep it separate from the prompt/compaction cancellation
     // slot used by abort and abort_retry.
     ref<session_stream.stream_t>? active_bash_stream = null
+    // Pi's abort_retry targets only the current session-level retry backoff;
+    // it must not abort the provider stream or compaction operation itself.
+    ref<abort.abort_t>? active_retry_abort = null
     // RPC prompt output is consumed by a separate worker. Keep the stream
     // reachable until that worker has serialized its terminal event.
     ref<session_stream.stream_t>? rpc_delivery_stream = null
@@ -507,6 +510,7 @@ fn runner_t.end_operation(&self) {
     self.compacting = false
     self.active_stream = null
     self.active_bash_stream = null
+    self.active_retry_abort = null
     self.lock.unlock()
 }
 
@@ -528,6 +532,33 @@ fn runner_t.abort_bash(&self) {
     }
 }
 
+fn runner_t.begin_retry(&self): ref<abort.abort_t> {
+    var cancellation = abort.new()
+    self.lock.lock()
+    self.active_retry_abort = cancellation
+    self.lock.unlock()
+    return cancellation
+}
+
+fn runner_t.end_retry(&self, ref<abort.abort_t> cancellation) {
+    self.lock.lock()
+    if self.active_retry_abort is ref<abort.abort_t> current {
+        if current == cancellation {
+            self.active_retry_abort = null
+        }
+    }
+    self.lock.unlock()
+}
+
+fn runner_t.abort_retry(&self) {
+    self.lock.lock()
+    ref<abort.abort_t>? active = self.active_retry_abort
+    self.lock.unlock()
+    if active is ref<abort.abort_t> cancellation {
+        cancellation.abort()
+    }
+}
+
 // Pi's RPC `abort` resolves only after the session becomes idle.  Keep the
 // signal-only primitive above for abort_retry/abort_bash and TUI signal paths,
 // but make the user-visible RPC abort wait for the worker to close its stream
@@ -536,6 +567,7 @@ fn runner_t.abort_and_wait(&self) {
     self.lock.lock()
     ref<session_stream.stream_t>? pending_delivery = self.rpc_delivery_stream
     self.lock.unlock()
+    self.abort_retry()
     self.abort_active()
     for true {
         self.lock.lock()
@@ -777,8 +809,10 @@ fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, s
                 // log, but remove it from the active LLM context before the
                 // continuation. This is the same invariant Pi uses for retry.
                 runner.remove_last_active_error(assistant)
-                wait_retry(output, delay_ms)
-                if output.cancellation.is_aborted() {
+                var retry_cancellation = runner.begin_retry()
+                bool retry_completed = wait_retry(output, retry_cancellation, delay_ms)
+                runner.end_retry(retry_cancellation)
+                if !retry_completed {
                     output.push(session_stream.event_t {kind: session_stream.EVENT_RETRY_END, retry_attempt: retry_attempt, retry_max_attempts: runner.retry_max_attempts, retry_success: false, retry_final_error: 'Retry cancelled',})
                     break
                 }
@@ -815,14 +849,15 @@ fn retry_delay_ms(int base_delay_ms, int attempt): int {
 }
 
 #local
-fn wait_retry(ref<session_stream.stream_t> output, int milliseconds): void! {
+fn wait_retry(ref<session_stream.stream_t> output, ref<abort.abort_t> retry_cancellation, int milliseconds): bool! {
     int remaining = milliseconds
     for remaining > 0 {
-        if output.cancellation.is_aborted() {return}
+        if output.cancellation.is_aborted() || retry_cancellation.is_aborted() {return false}
         int slice = remaining > 25 ? 25 : remaining
         co.sleep(slice)
         remaining -= slice
     }
+    return !output.cancellation.is_aborted() && !retry_cancellation.is_aborted()
 }
 
 #local

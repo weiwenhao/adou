@@ -529,10 +529,9 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
             runner.abort_and_wait()
             rpc_write(output_lock, rpc_ok(id, 'abort'))
         } else if command == 'abort_retry' {
-            // Retry waits are owned by the session stream.  Aborting that
-            // stream interrupts both the provider request and the bounded
-            // retry sleep, matching Pi's abortRetry command.
-            runner.abort_active()
+            // Pi's abortRetry only interrupts the session-level backoff;
+            // the active provider/compaction stream remains untouched.
+            runner.abort_retry()
             rpc_write(output_lock, rpc_ok(id, 'abort_retry'))
         } else if command == 'get_state' {
             rpc_write(output_lock, rpc_ok_data(id, 'get_state', rpc_state(runner)))

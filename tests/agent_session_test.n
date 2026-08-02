@@ -1,6 +1,7 @@
 import adou.src.agent.session
 import adou.src.agent.session_stream
 import adou.src.agent.types as agent_types
+import adou.src.ai.abort
 import adou.src.ai.event_stream
 import adou.src.ai.types as ai_types
 import adou.src.compaction.serialize
@@ -420,6 +421,33 @@ test 'transient provider errors retry with the failed message removed from activ
     } else {
         assert(false)
     }
+}
+
+test 'abort_retry cancels only the retry backoff' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant('', ai_types.STOP_ERROR, '503 service unavailable', 0, 0)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    runner.retry_base_delay_ms = 1000
+    var stream = runner.prompt('cancel the retry')
+    bool saw_retry_start = false
+    for true {
+        var event = stream.recv() catch error {break}
+        if event.kind == session_stream.EVENT_RETRY_START {
+            saw_retry_start = true
+            for !(runner.active_retry_abort is ref<abort.abort_t>) {
+                co.sleep(1)
+            }
+            runner.abort_retry()
+            break
+        }
+    }
+    assert(saw_retry_start)
+    assert(!stream.cancellation.is_aborted())
+    var result = consume(stream)
+    assert(count_kind(result[0], session_stream.EVENT_RETRY_END) == 1)
+    assert(count_kind(result[0], session_stream.EVENT_AGENT_SETTLED) == 1)
+    assert(fixture.agent_calls == 1)
+    assert(!runner.busy)
 }
 
 test 'rpc prompt keeps terminal delivery alive until the worker acknowledges it' {
