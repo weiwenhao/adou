@@ -984,7 +984,7 @@ fn view_t.rebind_project_context(&self, string cwd): void! {
 }
 
 fn view_t.set_session_name(&self, string name): ref<session_stream.stream_t>? {
-    self.runner.repository.append_session_info(name) catch error {
+    self.runner.set_session_name(name) catch error {
         self.chat.error_message = error.msg()
         self.redraw()
         return null

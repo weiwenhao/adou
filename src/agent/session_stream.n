@@ -17,6 +17,8 @@ const EVENT_BASH_END = 'bash_end'
 // name.  The start/update/end events above remain internal to the interactive
 // TUI, while this event carries one sanitized output delta at a time.
 const EVENT_BASH_EXECUTION_UPDATE = 'bash_execution_update'
+const EVENT_SESSION_INFO_CHANGED = 'session_info_changed'
+const EVENT_THINKING_LEVEL_CHANGED = 'thinking_level_changed'
 const EVENT_RETRY_START = 'auto_retry_start'
 const EVENT_RETRY_END = 'auto_retry_end'
 const EVENT_AGENT_SETTLED = 'agent_settled'
@@ -40,6 +42,8 @@ type event_t = struct {
     string bash_output
     string bash_id
     string bash_delta
+    string session_name
+    string thinking_level
     int bash_exit_code = -1
     bool bash_cancelled
     bool bash_timed_out
@@ -61,6 +65,12 @@ type event_t = struct {
     [string] queue_steering = []
     [string] queue_follow_up = []
 }
+
+// Settings and session metadata can change while no operation stream exists.
+// RPC installs this sink so those Pi AgentSession events remain observable in
+// the same JSONL channel as prompt events.
+type event_sink_fn = fn(event_t)
+type optional_event_sink_fn = event_sink_fn|null
 
 type stream_t = struct {
     chan<event_t> events
@@ -109,27 +119,18 @@ fn stream_t.finish(&self, [ai_types.message_t] context): void! {
     bool wait_for_delivery = self.delivery_required
     self.lock.unlock()
     // RPC workers must serialize the terminal event before the channel is
-    // closed.  Closing immediately after send races Nature's buffered channel
-    // delivery; hand that send to a separate coroutine so the session runner
-    // cannot get stuck behind a slow or temporarily unscheduled RPC reader.
+    // closed.  The worker is already blocked in recv() while the operation
+    // finishes, so use the channel's blocking send here.  A non-blocking
+    // try_send can report false at Nature's coroutine handoff boundary even
+    // when the buffered channel has room, leaving RPC clients at agent_settled
+    // without session_end.
     if wait_for_delivery {
-        go deliver_terminal(self)
+        self.events.send(event_t {kind: EVENT_SESSION_END,})
         return
     }
     self.events.send(event_t {kind: EVENT_SESSION_END,})
     self.done.close()
     self.end()
-}
-
-#local
-fn deliver_terminal(ref<stream_t> stream) {
-    var terminal = event_t {kind: EVENT_SESSION_END,}
-    for true {
-        bool delivered = stream.events.try_send(terminal) catch error {return}
-        if delivered {break}
-        co.sleep(1)
-    }
-    stream.done.close() catch error {}
 }
 
 fn stream_t.recv(&self): event_t! {

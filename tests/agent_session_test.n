@@ -372,8 +372,16 @@ test 'thinking level changes persist once and update provider options' {
     assert(runner.agent_config.stream_options.reasoning_effort == 'high')
     assert(manager.get_entries().len() == 1)
     assert(manager.get_entries()[0].kind == session_types.ENTRY_THINKING_CHANGE)
+    var stream = session_stream.new()
+    runner.attach_stream(stream)
+    runner.set_thinking_level('medium')
+    var thinking_event = stream.recv()
+    assert(thinking_event.kind == session_stream.EVENT_THINKING_LEVEL_CHANGED && thinking_event.thinking_level == 'medium')
+    runner.set_session_name('Demo')
+    var name_event = stream.recv()
+    assert(name_event.kind == session_stream.EVENT_SESSION_INFO_CHANGED && name_event.session_name == 'Demo')
     runner.set_thinking_level('high')
-    assert(manager.get_entries().len() == 1)
+    assert(manager.get_entries().len() == 4)
 }
 
 test 'model selection preserves an explicit in-memory API key' {

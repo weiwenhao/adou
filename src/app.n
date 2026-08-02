@@ -496,6 +496,10 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
     var input = fs.stdin()
     var reader = new buf.reader<ref<fs.file_t>>(rd = input)
     var output_lock = mutex.mutex_t.new()
+    runner.set_event_sink(fn(session_stream.event_t event) {
+        string line = event_json.encode(event) catch error {return}
+        rpc_write(output_lock, line)
+    })
     for true {
         string line = reader.read_line() catch error {break}
         line = line.trim([' ', '\t', '\r', '\n'])
@@ -591,7 +595,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
                 rpc_write(output_lock, rpc_error(id, command, 'Session name cannot be empty'))
                 continue
             }
-            runner.repository.append_session_info(name) catch error {
+            runner.set_session_name(name) catch error {
                 rpc_write(output_lock, rpc_error(id, command, error.msg()))
                 continue
             }

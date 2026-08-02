@@ -20,7 +20,7 @@ run_rpc() {
     PI_CODING_AGENT_DIR="$agent_dir" \
     PI_CODING_AGENT_SESSION_DIR="$session_dir" \
     "$binary" --mode rpc --no-session --no-context-files \
-        --provider deepseek --model deepseek-v4-flash --api-key rpc-e2e-key \
+        --provider deepseek --model deepseek-v4-flash --thinking off --api-key rpc-e2e-key \
         "$@" > "$output"
 }
 
@@ -32,6 +32,8 @@ cat <<'EOF' | run_rpc "$first_output"
 {"id":"steer","type":"set_steering_mode","mode":"all"}
 {"id":"follow","type":"set_follow_up_mode","mode":"all"}
 {"id":"thinking","type":"get_available_thinking_levels"}
+{"id":"set-thinking","type":"set_thinking_level","level":"high"}
+{"id":"set-name","type":"set_session_name","name":"Demo session"}
 {"id":"state1","type":"get_state"}
 {"id":"commands","type":"get_commands"}
 {"id":"unknown","type":"not_a_pi_command"}
@@ -64,6 +66,18 @@ if state1.get("autoCompactionEnabled") is not False:
     raise SystemExit(f"RPC state did not update auto compaction: {state1!r}")
 if state1.get("steeringMode") != "all" or state1.get("followUpMode") != "all":
     raise SystemExit(f"RPC state did not update queue modes: {state1!r}")
+
+thinking_events = [item for item in first if item.get("type") == "thinking_level_changed"]
+if len(thinking_events) != 1 or thinking_events[0].get("level") != "high":
+    raise SystemExit(f"Pi thinking_level_changed event missing: {thinking_events!r}")
+name_events = [item for item in first if item.get("type") == "session_info_changed"]
+if len(name_events) != 1 or name_events[0].get("name") != "Demo session":
+    raise SystemExit(f"Pi session_info_changed event missing: {name_events!r}")
+for event_type, response_id in (("thinking_level_changed", "set-thinking"), ("session_info_changed", "set-name")):
+    event_index = next(index for index, item in enumerate(first) if item.get("type") == event_type)
+    response_index = next(index for index, item in enumerate(first) if item.get("id") == response_id)
+    if event_index >= response_index:
+        raise SystemExit(f"{event_type} was emitted after its RPC response: {first!r}")
 
 levels = by_id.get("thinking", {}).get("data", {}).get("levels")
 if levels != ["off", "high", "max"]:

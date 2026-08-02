@@ -49,6 +49,12 @@ fn encode(session_stream.event_t event): string! {
         if event.bash_full_output_path != '' {object['fullOutputPath'] = boxed_string(event.bash_full_output_path)}
         if event.bash_exclude_from_context {object['excludeFromContext'] = boxed_bool(true)}
     }
+    if event.kind == session_stream.EVENT_SESSION_INFO_CHANGED && event.session_name != '' {
+        object['name'] = boxed_string(event.session_name)
+    }
+    if event.kind == session_stream.EVENT_THINKING_LEVEL_CHANGED {
+        object['level'] = boxed_string(event.thinking_level)
+    }
     if event.kind == session_stream.EVENT_RETRY_START || event.kind == session_stream.EVENT_RETRY_END {
         if event.retry_attempt != 0 {object['attempt'] = number_int(event.retry_attempt)}
         if event.retry_max_attempts != 0 {object['maxAttempts'] = number_int(event.retry_max_attempts)}

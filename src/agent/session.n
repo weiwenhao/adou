@@ -47,6 +47,7 @@ type runner_t = struct {
     // RPC prompt output is consumed by a separate worker. Keep the stream
     // reachable until that worker has serialized its terminal event.
     ref<session_stream.stream_t>? rpc_delivery_stream = null
+    session_stream.optional_event_sink_fn event_sink = null
 }
 
 type tree_target_t = struct {
@@ -349,6 +350,34 @@ fn runner_t.set_model(&self, ref<ai_types.model_t> model): void! {
     self.sync_agent_environment()
 }
 
+fn runner_t.set_session_name(&self, string name): void! {
+    self.repository.append_session_info(name)
+    string effective = self.repository.get_session_name()
+    self.emit_session_event(session_stream.event_t {kind: session_stream.EVENT_SESSION_INFO_CHANGED, session_name: effective,})
+}
+
+fn runner_t.set_event_sink(&self, session_stream.event_sink_fn sink) {
+    self.lock.lock()
+    self.event_sink = sink
+    self.lock.unlock()
+}
+
+#local
+fn runner_t.emit_session_event(&self, session_stream.event_t event) {
+    self.lock.lock()
+    session_stream.optional_event_sink_fn sink = self.event_sink
+    ref<session_stream.stream_t>? active = self.active_stream
+    self.lock.unlock()
+    bool delivered_to_sink = false
+    if sink is session_stream.event_sink_fn callback {
+        callback(event)
+        delivered_to_sink = true
+    }
+    if !delivered_to_sink && active is ref<session_stream.stream_t> stream {
+        stream.push(event) catch error {}
+    }
+}
+
 #local
 fn runner_t.sync_agent_environment(&self) {
     string thinking = self.agent_config.stream_options.thinking_enabled ? self.agent_config.stream_options.reasoning_effort : 'off'
@@ -380,6 +409,7 @@ fn runner_t.set_thinking_level(&self, string level): void! {
     self.lock.unlock()
     settings.set_default_thinking(effective)
     self.sync_agent_environment()
+    self.emit_session_event(session_stream.event_t {kind: session_stream.EVENT_THINKING_LEVEL_CHANGED, thinking_level: effective,})
 }
 
 // These settings are mutable while the agent is idle or streaming. Pi's

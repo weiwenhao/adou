@@ -102,6 +102,18 @@ test 'json mode encodes Pi bash execution updates as deltas' {
     assert(!object.contains('command') && !object.contains('output'))
 }
 
+test 'json mode encodes Pi session setting events' {
+    var named = session_stream.event_t {kind: session_stream.EVENT_SESSION_INFO_CHANGED, session_name: 'Demo'}
+    var named_object = json.parse(event_json.encode(named)).as_object()
+    assert(named_object['type'].as_string() == session_stream.EVENT_SESSION_INFO_CHANGED)
+    assert(named_object['name'].as_string() == 'Demo')
+
+    var thinking = session_stream.event_t {kind: session_stream.EVENT_THINKING_LEVEL_CHANGED, thinking_level: 'high'}
+    var thinking_object = json.parse(event_json.encode(thinking)).as_object()
+    assert(thinking_object['type'].as_string() == session_stream.EVENT_THINKING_LEVEL_CHANGED)
+    assert(thinking_object['level'].as_string() == 'high')
+}
+
 test 'json mode nests the Pi compaction result and preserves terminal flags' {
     var details = json.object_value({})
     var usage = ai_types.usage_t {input: 10, output: 4, total_tokens: 14}
