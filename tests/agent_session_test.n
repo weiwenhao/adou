@@ -80,9 +80,16 @@ fn provider_fn(ref<provider_fixture_t> fixture): agent_types.stream_fn {
 
 fn make_runner(ref<repository.manager_t> manager, ref<provider_fixture_t> fixture, int context_window, int reserve_tokens, int keep_recent_tokens): ref<session.runner_t>! {
     var context = new agent_types.context_t(system_prompt = 'coding agent')
-    var config = new agent_types.config_t(model = model(context_window), stream_options = new ai_types.stream_options_t(max_retries = 0))
+    var config = new agent_types.config_t(model = model(context_window), stream_options = new ai_types.stream_options_t(api_key = 'fixture-key', max_retries = 0))
     var settings = compaction_types.settings_t {reserve_tokens: reserve_tokens, keep_recent_tokens: keep_recent_tokens,}
     return session.new(manager, context, config, provider_fn(fixture), settings)
+}
+
+fn prompt_error(ref<session.runner_t> runner, string text): string {
+    runner.prompt(text) catch error {
+        return error.msg()
+    }
+    return ''
 }
 
 fn consume(ref<session_stream.stream_t> stream): ([session_stream.event_t], [ai_types.message_t])! {
@@ -137,6 +144,16 @@ test 'session forwards lifecycle and persists each completed message' {
     assert(count_kind(result[0], agent_types.EVENT_MESSAGE_END) == 2)
     assert(count_kind(result[0], session_stream.EVENT_AGENT_SETTLED) == 1)
     assert(count_kind(result[0], session_stream.EVENT_SESSION_END) == 1)
+}
+
+test 'prompt rejects missing authentication before starting an operation' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant('should not run', ai_types.STOP_STOP, '', 1, 1)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    runner.agent_config.stream_options.api_key = ''
+    string message = prompt_error(runner, 'missing credentials')
+    assert(message == 'No API key for mock/mock. Run /login mock first.')
+    assert(!runner.busy && fixture.agent_calls == 0 && runner.active_messages.len() == 0)
 }
 
 test 'threshold compaction runs after a successful turn without retrying' {

@@ -119,16 +119,18 @@ fn stream_t.finish(&self, [ai_types.message_t] context): void! {
     bool wait_for_delivery = self.delivery_required
     self.lock.unlock()
     // RPC workers must serialize the terminal event before the channel is
-    // closed.  The worker is already blocked in recv() while the operation
-    // finishes, so use the channel's blocking send here.  A non-blocking
-    // try_send can report false at Nature's coroutine handoff boundary even
-    // when the buffered channel has room, leaving RPC clients at agent_settled
-    // without session_end.
+    // closed.  Nature's blocking channel send can remain parked at a
+    // coroutine handoff boundary even when the buffered channel has room;
+    // retry the non-blocking operation just like push() so RPC clients never
+    // stop at agent_settled without the required session_end.
+    for true {
+        bool delivered = self.events.try_send(event_t {kind: EVENT_SESSION_END,}) catch error {break}
+        if delivered {break}
+        co.sleep(1)
+    }
     if wait_for_delivery {
-        self.events.send(event_t {kind: EVENT_SESSION_END,})
         return
     }
-    self.events.send(event_t {kind: EVENT_SESSION_END,})
     self.done.close()
     self.end()
 }

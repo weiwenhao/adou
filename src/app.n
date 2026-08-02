@@ -377,7 +377,10 @@ fn run_headless(ref<session.runner_t> runner, [string] prompts, bool plain, bool
     if plain {
         [ai_types.message_t] messages = []
         for prompt in prompts {
-            var stream = runner.prompt(prompt)
+            var stream = runner.prompt(prompt) catch error {
+                println('Error: ' + error.msg())
+                return
+            }
             for true {
                 var event = stream.recv() catch error {
                     break
@@ -407,7 +410,10 @@ fn run_headless(ref<session.runner_t> runner, [string] prompts, bool plain, bool
     }
     view.configure(runner.agent_config.model.context_window, thinking)
     for prompt in prompts {
-        var stream = runner.prompt(prompt)
+        var stream = runner.prompt(prompt) catch error {
+            view.error_message = error.msg()
+            break
+        }
         for true {
             var event = stream.recv() catch error {
                 break
@@ -431,7 +437,10 @@ fn run_json(ref<session.runner_t> runner, [string] prompts): void! {
         println(runner.repository.header_json())
     }
     for prompt in prompts {
-        var stream = runner.prompt(prompt)
+        var stream = runner.prompt(prompt) catch error {
+            println(json_error(error.msg()))
+            return
+        }
         for true {
             var event = stream.recv() catch error {break}
             println(event_json.encode(event))

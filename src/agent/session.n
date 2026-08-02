@@ -82,7 +82,7 @@ fn runner_t.prompt_rpc(&self, string text): ref<session_stream.stream_t>! {
 
 #local
 fn runner_t.start_prompt(&self, string text, bool require_delivery): ref<session_stream.stream_t>! {
-    self.begin_operation()
+    self.begin_prompt_operation()
     var stream = session_stream.new()
     if require_delivery {
         stream.require_delivery()
@@ -92,6 +92,42 @@ fn runner_t.start_prompt(&self, string text, bool require_delivery): ref<session
     self.lock.unlock()
     go run_prompt(self, stream, text)
     return stream
+}
+
+// Pi validates authentication before acknowledging a prompt. Reserve the
+// operation slot before consulting storage so two concurrent prompt callers
+// cannot both pass the check, and release it again when no credential exists.
+#local
+fn runner_t.begin_prompt_operation(&self): void! {
+    self.lock.lock()
+    if self.busy {
+        self.lock.unlock()
+        throw errorf('Agent session is already running')
+    }
+    string provider = self.agent_config.model.provider
+    string model_id = self.agent_config.model.id
+    string configured_key = self.agent_config.stream_options.api_key
+    self.busy = true
+    self.lock.unlock()
+
+    string api_key = configured_key
+    if api_key == '' {
+        api_key = auth.effective(provider)
+    }
+    if api_key == '' {
+        self.lock.lock()
+        self.busy = false
+        self.lock.unlock()
+        throw errorf('No API key for %s/%s. Run /login %s first.', provider, model_id, provider)
+    }
+
+    // Keep an environment/file credential in the same in-memory stream
+    // options used by the provider and by a subsequent model switch.
+    self.lock.lock()
+    if self.agent_config.model.provider == provider && self.agent_config.stream_options.api_key == '' {
+        self.agent_config.stream_options.api_key = api_key
+    }
+    self.lock.unlock()
 }
 
 fn runner_t.compact_now(&self, string instructions): ref<session_stream.stream_t>! {
