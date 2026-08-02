@@ -42,6 +42,10 @@ import time
 const VERSION = '0.1.0-dev'
 
 type rpc_object_t = map<string, ref<json.value_t>>
+type rpc_bash_update_state_t = struct {
+    string id
+    ref<mutex.mutex_t> output_lock
+}
 
 fn run(): void! {
     var argv = os.args()
@@ -818,7 +822,21 @@ fn rpc_run_bash(ref<session.runner_t> runner, string id, string command_text, bo
 
 #local
 fn rpc_bash_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string command_text, bool excluded, string id, ref<mutex.mutex_t> output_lock): void! {
-    var result = shell_tools.execute_bash_capture(runner.repository.cwd, command_text, 0, stream.cancellation) catch error {
+    // Keep callback state in a heap object.  Nature's process output reader
+    // invokes the callback from a separate coroutine after the worker has
+    // yielded; capturing a function parameter directly would lose the RPC id
+    // on that boundary even though the final response still has it.
+    var update_state = new rpc_bash_update_state_t(id = id, output_lock = output_lock)
+    command.output_chunk_fn on_chunk = fn(string chunk) {
+        // Pi emits bash_execution_update from AgentSession.executeBash before
+        // returning the final RPC response.  Write each sanitized chunk under
+        // the same output lock so a response can never split an event line or
+        // overtake a chunk emitted by the child process.
+        var event = session_stream.event_t {kind: session_stream.EVENT_BASH_EXECUTION_UPDATE, bash_id: update_state.id, bash_delta: chunk,}
+        string line = event_json.encode(event) catch error {return}
+        rpc_write(update_state.output_lock, line)
+    }
+    var result = shell_tools.execute_bash_stream(runner.repository.cwd, command_text, 0, stream.cancellation, on_chunk) catch error {
         rpc_write(output_lock, rpc_error(id, 'bash', error.msg()))
         runner.end_operation()
         return

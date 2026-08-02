@@ -36,14 +36,19 @@ fn encode(session_stream.event_t event): string! {
         if event.tokens_before != 0 {object['tokensBefore'] = number_int(event.tokens_before)}
         if event.estimated_tokens_after != 0 {object['estimatedTokensAfter'] = number_int(event.estimated_tokens_after)}
     }
-    if event.bash_command != '' {object['command'] = boxed_string(event.bash_command)}
-    if event.bash_output != '' {object['output'] = boxed_string(event.bash_output)}
-    if event.bash_exit_code >= 0 {object['exitCode'] = number_int(event.bash_exit_code)}
-    if event.bash_cancelled {object['cancelled'] = boxed_bool(true)}
-    if event.bash_timed_out {object['timedOut'] = boxed_bool(true)}
-    if event.bash_truncated {object['truncated'] = boxed_bool(true)}
-    if event.bash_full_output_path != '' {object['fullOutputPath'] = boxed_string(event.bash_full_output_path)}
-    if event.bash_exclude_from_context {object['excludeFromContext'] = boxed_bool(true)}
+    if event.kind == session_stream.EVENT_BASH_EXECUTION_UPDATE {
+        if event.bash_id != '' {object['id'] = boxed_string(event.bash_id)}
+        object['delta'] = boxed_string(event.bash_delta)
+    } else {
+        if event.bash_command != '' {object['command'] = boxed_string(event.bash_command)}
+        if event.bash_output != '' {object['output'] = boxed_string(event.bash_output)}
+        if event.bash_exit_code >= 0 {object['exitCode'] = number_int(event.bash_exit_code)}
+        if event.bash_cancelled {object['cancelled'] = boxed_bool(true)}
+        if event.bash_timed_out {object['timedOut'] = boxed_bool(true)}
+        if event.bash_truncated {object['truncated'] = boxed_bool(true)}
+        if event.bash_full_output_path != '' {object['fullOutputPath'] = boxed_string(event.bash_full_output_path)}
+        if event.bash_exclude_from_context {object['excludeFromContext'] = boxed_bool(true)}
+    }
     if event.kind == session_stream.EVENT_RETRY_START || event.kind == session_stream.EVENT_RETRY_END {
         if event.retry_attempt != 0 {object['attempt'] = number_int(event.retry_attempt)}
         if event.retry_max_attempts != 0 {object['maxAttempts'] = number_int(event.retry_max_attempts)}

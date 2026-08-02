@@ -13,6 +13,10 @@ const EVENT_SESSION_END = 'session_end'
 const EVENT_BASH_START = 'bash_start'
 const EVENT_BASH_UPDATE = 'bash_update'
 const EVENT_BASH_END = 'bash_end'
+// Pi exposes streamed RPC/AgentSession bash output under this public event
+// name.  The start/update/end events above remain internal to the interactive
+// TUI, while this event carries one sanitized output delta at a time.
+const EVENT_BASH_EXECUTION_UPDATE = 'bash_execution_update'
 const EVENT_RETRY_START = 'auto_retry_start'
 const EVENT_RETRY_END = 'auto_retry_end'
 const EVENT_AGENT_SETTLED = 'agent_settled'
@@ -34,6 +38,8 @@ type event_t = struct {
     int estimated_tokens_after
     string bash_command
     string bash_output
+    string bash_id
+    string bash_delta
     int bash_exit_code = -1
     bool bash_cancelled
     bool bash_timed_out

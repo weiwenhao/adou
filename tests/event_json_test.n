@@ -92,6 +92,16 @@ test 'json mode encodes Pi queue_update snapshots' {
     assert(object['steering'].as_array()[0].as_string() == 'stop and inspect')
 }
 
+test 'json mode encodes Pi bash execution updates as deltas' {
+    var event = session_stream.event_t {kind: session_stream.EVENT_BASH_EXECUTION_UPDATE, bash_id: 'bash-1', bash_delta: 'first\n'}
+    var object = json.parse(event_json.encode(event)).as_object()
+    assert(object['type'].as_string() == session_stream.EVENT_BASH_EXECUTION_UPDATE)
+    assert(object['id'].as_string() == 'bash-1')
+    assert(object['delta'].as_string() == 'first\n')
+    assert(object.len() == 3)
+    assert(!object.contains('command') && !object.contains('output'))
+}
+
 test 'json mode nests the Pi compaction result and preserves terminal flags' {
     var details = json.object_value({})
     var usage = ai_types.usage_t {input: 10, output: 4, total_tokens: 14}
