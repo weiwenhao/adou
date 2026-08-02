@@ -42,3 +42,21 @@ test 'json mode emits assistant message payloads on message end' {
     assert(object['type'].as_string() == agent_types.EVENT_MESSAGE_END)
     assert(object['assistantMessage'].kind == json.VALUE_OBJECT)
 }
+
+test 'json mode preserves Pi agent lifecycle payloads and settled event' {
+    var user = new ai_types.user_message_t(content = 'hello')
+    var assistant = new ai_types.assistant_message_t(provider = 'deepseek', model = 'deepseek-v4-flash', stop_reason = ai_types.STOP_STOP)
+    var user_message = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, user_message: user,}
+    var turn = agent_types.agent_event_t {kind: agent_types.EVENT_TURN_END, assistant_message: assistant, tool_results: [new ai_types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'read')],}
+    var ended = agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_END, messages: [user, assistant],}
+
+    var user_object = json.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: user_message,})).as_object()
+    assert(user_object['message'].kind == json.VALUE_OBJECT)
+    var turn_object = json.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_TURN_END, has_agent_event: true, agent_event: turn,})).as_object()
+    assert(turn_object['message'].kind == json.VALUE_OBJECT && turn_object['toolResults'].kind == json.VALUE_ARRAY)
+    assert(turn_object['toolResults'].as_array().len() == 1)
+    var ended_object = json.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_AGENT_END, has_agent_event: true, agent_event: ended,})).as_object()
+    assert(ended_object['messages'].kind == json.VALUE_ARRAY && ended_object['messages'].as_array().len() == 2)
+    var settled = json.parse(event_json.encode(session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,})).as_object()
+    assert(settled.len() == 1 && settled['type'].as_string() == session_stream.EVENT_AGENT_SETTLED)
+}

@@ -119,6 +119,9 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-abort-") as root:
         abort_response = next((i for i, item in enumerate(seen) if item.get("type") == "response" and item.get("id") == "abort"), None)
         if session_end is None:
             raise SystemExit(f"abort did not terminate the prompt stream: {seen!r}")
+        settled = next((i for i, item in enumerate(seen) if item.get("type") == "agent_settled"), None)
+        if settled is None or settled >= session_end:
+            raise SystemExit(f"agent_settled was not emitted before session_end: {seen!r}")
         if abort_response is None or abort_response <= session_end:
             raise SystemExit(f"abort response was emitted before session_end: {seen!r}")
     finally:

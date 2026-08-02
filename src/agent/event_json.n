@@ -56,6 +56,15 @@ fn encode(session_stream.event_t event): string! {
 
 #local
 fn add_agent_fields(object_t object, agent_types.agent_event_t event): object_t! {
+    if event.kind == agent_types.EVENT_AGENT_END {
+        object['messages'] = encode_messages(event.messages)
+    }
+    if event.kind == agent_types.EVENT_TURN_END {
+        if event.assistant_message is ref<ai_types.assistant_message_t> assistant {
+            object['message'] = json.box_value(message_json.encode(assistant))
+        }
+        object['toolResults'] = encode_tool_messages(event.tool_results)
+    }
     if event.user_message is ref<ai_types.user_message_t> user {
         object['message'] = json.box_value(message_json.encode(user))
     }
@@ -76,6 +85,24 @@ fn add_agent_fields(object_t object, agent_types.agent_event_t event): object_t!
         object['toolOutput'] = boxed_string(tool_output(event.tool_result))
     }
     return object
+}
+
+#local
+fn encode_messages([ai_types.message_t] messages): ref<json.value_t>! {
+    [ref<json.value_t>] values = []
+    for message in messages {
+        values.push(json.box_value(message_json.encode(message)))
+    }
+    return json.box_value(json.array_value(values))
+}
+
+#local
+fn encode_tool_messages([ref<ai_types.tool_result_message_t>] messages): ref<json.value_t>! {
+    [ref<json.value_t>] values = []
+    for message in messages {
+        values.push(json.box_value(message_json.encode(message)))
+    }
+    return json.box_value(json.array_value(values))
 }
 
 #local

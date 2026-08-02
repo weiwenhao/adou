@@ -134,6 +134,7 @@ test 'session forwards lifecycle and persists each completed message' {
     assert(fixture.agent_calls == 1 && fixture.summary_calls == 0)
     assert(manager.get_entries().len() == 2 && result[1].len() == 2)
     assert(count_kind(result[0], agent_types.EVENT_MESSAGE_END) == 2)
+    assert(count_kind(result[0], session_stream.EVENT_AGENT_SETTLED) == 1)
     assert(count_kind(result[0], session_stream.EVENT_SESSION_END) == 1)
 }
 

@@ -597,6 +597,7 @@ fn run_tree_navigation_inner(ref<runner_t> runner, ref<session_stream.stream_t> 
 #local
 fn run_prompt(ref<runner_t> runner, ref<session_stream.stream_t> output, string text): void! {
     run_prompt_inner(runner, output, text) catch error {
+        output.push(session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,}) catch settled_error {}
         output.fail(error.msg()) catch stream_error {}
     }
     runner.end_operation()
@@ -673,6 +674,7 @@ fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, s
         }
         break
     }
+    output.push(session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,})
     output.finish(runner.copy_active_messages())
 }
 
