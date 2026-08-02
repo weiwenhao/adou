@@ -14,6 +14,7 @@ const EVENT_BASH_END = 'bash_end'
 const EVENT_RETRY_START = 'retry_start'
 const EVENT_RETRY_END = 'retry_end'
 const EVENT_AGENT_SETTLED = 'agent_settled'
+const EVENT_QUEUE_UPDATE = 'queue_update'
 const EVENT_SUMMARIZATION_RETRY_SCHEDULED = 'summarization_retry_scheduled'
 const EVENT_SUMMARIZATION_RETRY_ATTEMPT_START = 'summarization_retry_attempt_start'
 const EVENT_SUMMARIZATION_RETRY_FINISHED = 'summarization_retry_finished'
@@ -45,6 +46,8 @@ type event_t = struct {
     string retry_final_error
     string retry_source
     string retry_reason
+    [string] queue_steering = []
+    [string] queue_follow_up = []
 }
 
 type stream_t = struct {

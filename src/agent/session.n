@@ -517,6 +517,54 @@ fn runner_t.attach_stream(&self, ref<session_stream.stream_t> stream) {
     self.lock.unlock()
 }
 
+// Queue mutations are session-visible operations in Pi.  Keep the internal
+// agent queue and the public queue_update event coupled so RPC and TUI callers
+// cannot enqueue a message without updating observers.
+fn runner_t.queue_steering(&self, ai_types.message_t message) {
+    self.lock.lock()
+    ref<agent_types.queue_t> queues = self.agent_config.queues
+    self.lock.unlock()
+    queues.enqueue_steering(message)
+    self.emit_queue_update_for(queues)
+}
+
+fn runner_t.queue_follow_up(&self, ai_types.message_t message) {
+    self.lock.lock()
+    ref<agent_types.queue_t> queues = self.agent_config.queues
+    self.lock.unlock()
+    queues.enqueue_follow_up(message)
+    self.emit_queue_update_for(queues)
+}
+
+fn runner_t.restore_queued_messages(&self): [ai_types.message_t] {
+    self.lock.lock()
+    ref<agent_types.queue_t> queues = self.agent_config.queues
+    self.lock.unlock()
+    var result = queues.restore_all()
+    self.emit_queue_update_for(queues)
+    return result
+}
+
+fn runner_t.mark_queue_delivered(&self, string text) {
+    self.lock.lock()
+    ref<agent_types.queue_t> queues = self.agent_config.queues
+    self.lock.unlock()
+    if queues.mark_delivered(text) {
+        self.emit_queue_update_for(queues)
+    }
+}
+
+#local
+fn runner_t.emit_queue_update_for(&self, ref<agent_types.queue_t> queues) {
+    self.lock.lock()
+    ref<session_stream.stream_t>? active = self.active_stream
+    self.lock.unlock()
+    if active is ref<session_stream.stream_t> stream {
+        var snapshot = queues.visible_snapshot()
+        stream.push(session_stream.event_t {kind: session_stream.EVENT_QUEUE_UPDATE, queue_steering: snapshot.steering, queue_follow_up: snapshot.follow_up,}) catch error {}
+    }
+}
+
 #local
 fn runner_t.apply_tree_target(&self, tree_target_t target): void! {
     self.repository.set_leaf(target.new_leaf_id)
@@ -732,6 +780,11 @@ fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output, ref
             self.append_active_message(message)
             if message is ref<ai_types.assistant_message_t> assistant {
                 last_assistant = assistant
+            }
+        }
+        if event.kind == agent_types.EVENT_MESSAGE_START {
+            if event.user_message is ref<ai_types.user_message_t> user {
+                self.mark_queue_delivered(user.content)
             }
         }
         output.push(session_stream.event_t {kind: event.kind, has_agent_event: true, agent_event: event,})

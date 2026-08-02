@@ -436,6 +436,24 @@ test 'queued steering and follow-up messages can be restored in insertion groups
     assert(first.content == 'steer' && second.content == 'follow')
 }
 
+test 'queue visible snapshots remain until matching message_start delivery' {
+    var queues = new agent_types.queue_t()
+    types.message_t steering = new types.user_message_t(content = 'steer')
+    types.message_t follow = new types.user_message_t(content = 'follow')
+    queues.enqueue_steering(steering)
+    queues.enqueue_follow_up(follow)
+    var before = queues.visible_snapshot()
+    assert(before.steering.len() == 1 && before.steering[0] == 'steer')
+    assert(before.follow_up.len() == 1 && before.follow_up[0] == 'follow')
+    assert(queues.mark_delivered('steer'))
+    var after_steer = queues.visible_snapshot()
+    assert(after_steer.steering.len() == 0 && after_steer.follow_up.len() == 1)
+    assert(!queues.mark_delivered('missing'))
+    assert(queues.mark_delivered('follow'))
+    var after_all = queues.visible_snapshot()
+    assert(after_all.steering.len() == 0 && after_all.follow_up.len() == 0)
+}
+
 test 'continue rejects empty and assistant tails and returns only new messages' {
     var fixture = new provider_fixture_t(responses = [assistant_text('continued')])
     var configured = config_with(fixture)

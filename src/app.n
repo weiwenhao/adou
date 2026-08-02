@@ -697,9 +697,9 @@ fn rpc_queue_message(ref<session.runner_t> runner, string id, string text, bool 
     }
     var message = new ai_types.user_message_t(content = text, timestamp = time.now().ms_timestamp())
     if steering {
-        runner.agent_config.queues.enqueue_steering(message)
+        runner.queue_steering(message)
     } else {
-        runner.agent_config.queues.enqueue_follow_up(message)
+        runner.queue_follow_up(message)
     }
     rpc_write(output_lock, rpc_ok(id, steering ? 'steer' : 'follow_up'))
 }

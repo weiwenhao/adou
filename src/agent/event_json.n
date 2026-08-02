@@ -51,6 +51,10 @@ fn encode(session_stream.event_t event): string! {
         if event.retry_source != '' {object['source'] = boxed_string(event.retry_source)}
         if event.retry_reason != '' {object['reason'] = boxed_string(event.retry_reason)}
     }
+    if event.kind == session_stream.EVENT_QUEUE_UPDATE {
+        object['steering'] = encode_string_array(event.queue_steering)
+        object['followUp'] = encode_string_array(event.queue_follow_up)
+    }
     return json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
 }
 
@@ -103,6 +107,15 @@ fn encode_tool_messages([ref<ai_types.tool_result_message_t>] messages): ref<jso
         values.push(json.box_value(message_json.encode(message)))
     }
     return json.box_value(json.array_value(values))
+}
+
+#local
+fn encode_string_array([string] values): ref<json.value_t>! {
+    [ref<json.value_t>] encoded = []
+    for value in values {
+        encoded.push(boxed_string(value))
+    }
+    return json.box_value(json.array_value(encoded))
 }
 
 #local

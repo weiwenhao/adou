@@ -443,7 +443,7 @@ fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, input_
         var submitted = self.editor.submit()
         if submitted.text != '' {
             var message = new ai_types.user_message_t(content = submitted.text, timestamp = time.now().ms_timestamp())
-            self.runner.agent_config.queues.enqueue_follow_up(message)
+            self.runner.queue_follow_up(message)
         }
         self.redraw()
         return
@@ -456,7 +456,7 @@ fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, input_
     self.apply_editor_action(result)
     if result.submitted && result.text != '' {
         var message = new ai_types.user_message_t(content = result.text, timestamp = time.now().ms_timestamp())
-        self.runner.agent_config.queues.enqueue_steering(message)
+        self.runner.queue_steering(message)
     }
     self.redraw()
 }
@@ -2365,7 +2365,7 @@ fn view_t.apply_scoped_thinking(&self, ref<ai_types.model_t> model) {
 }
 
 fn view_t.restore_queued_messages(&self) {
-    var queued = self.runner.agent_config.queues.restore_all()
+    var queued = self.runner.restore_queued_messages()
     [string] texts = []
     for message in queued {
         if message is ref<ai_types.user_message_t> user {

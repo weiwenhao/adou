@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.26
+文档版本：0.27
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -425,6 +425,13 @@ next assistant...
 - `one-at-a-time` 与 `all` 两种队列模式都要支持；
 - `agent_end` 是最后一个 loop event；持久化订阅完成后 run 才算 settled。
 
+Session 层在 loop 事件之外必须保持 Pi 的可观察生命周期：
+
+- `steering`/`follow_up` 入队后立即发出 `queue_update`，内容是两个队列的完整文本快照；
+- 队列消息在对应的 `message_start` 转发前，先从可见快照中移除并再次发出 `queue_update`，因此消费者不会看到已经开始交付的消息仍停留在 pending 列表；
+- `agent_end` 之后、`session_end` 之前发出唯一的 `agent_settled`；异常和取消路径也必须发出该事件；
+- `queue_update` 的 JSON 字段固定为 `steering` 与 `followUp`，`agent_settled` 不携带额外字段。
+
 ## 11. `read` 与 `write` 工具规范
 
 ### 11.1 `read`
@@ -701,7 +708,7 @@ MVP 内置 TUI 命令：
 
 `/share` 在没有远程凭据时生成与当前 Pi v3 记录对应的本地 `.share.jsonl` artifact，并明确提示远程 GitHub gist 尚未配置；`/trust` 写入 `$HOME/.pi/agent/trust.json`（或 `PI_CODING_AGENT_DIR` 指定的位置），不把 trust 误当成已完成的完整策略执行。其余 session 管理命令直接操作 Pi v3 JSONL：`/resume`、`/import` 打开已有记录，`/export` 输出 JSONL/HTML，`/name` 写入 session info，`/tree` 选择 active leaf，`/fork` 从历史 user message 分支，`/clone` 创建带 `parentSession` 的新记录。
 
-无扩展 RPC 的响应结构遵循 Pi `rpc-types.ts`：模型和统计使用嵌套对象，`get_entries` 支持 `since` 游标，`get_tree` 返回递归节点，`get_fork_messages` 返回可分叉的 user message；stdin 为管道时必须保留 JSONL 命令，不得先被普通 prompt 读取。`get_commands` 只报告 Pi 的扩展、prompt template、skill 注册；由于 MVP 不加载这些动态资源，返回空 `commands`，内置 slash command 仍由 TUI completion/help 提供。prompt、compact 和 bash 在后台协程中运行，主循环可继续接收 `steer`、`follow_up`、`abort`、`abort_retry`、`abort_bash` 与状态查询；`new_session` 接受可选 `parentSession`，并把它写入新 session header，同时刷新 session id、文件路径和运行时环境；新建 session 还必须追加当前 model 和 thinking level 元数据，供后续 resume 恢复。`set_auto_compaction`、`set_auto_retry`、`set_steering_mode` 和 `set_follow_up_mode` 必须立即写入 settings，并在新进程的 `get_state` 中恢复；`get_available_thinking_levels` 按当前 model 能力返回（DeepSeek V4 为 `off/high/max`）。响应和事件通过单一输出锁保持 JSONL 行完整。`--models` 必须先按用户 pattern 顺序解析为去重的 scoped model 列表；RPC `cycle_model` 和 TUI Ctrl+P 按该列表循环，条目上的 `:thinking-level` 只覆盖该条目，未命中或无有效 scope 时回退到全部可用模型。由于 Nature 运行时没有 Pi 的扩展事件总线，文档只承诺无扩展核心命令，不承诺扩展 UI 请求或 SDK 回调。
+无扩展 RPC 的响应结构遵循 Pi `rpc-types.ts`：模型和统计使用嵌套对象，`get_entries` 支持 `since` 游标，`get_tree` 返回递归节点，`get_fork_messages` 返回可分叉的 user message；stdin 为管道时必须保留 JSONL 命令，不得先被普通 prompt 读取。`get_commands` 只报告 Pi 的扩展、prompt template、skill 注册；由于 MVP 不加载这些动态资源，返回空 `commands`，内置 slash command 仍由 TUI completion/help 提供。prompt、compact 和 bash 在后台协程中运行，主循环可继续接收 `steer`、`follow_up`、`abort`、`abort_retry`、`abort_bash` 与状态查询；队列入队和交付通过 `queue_update` 事件暴露完整 `steering`/`followUp` 快照，prompt 生命周期在 `agent_end` 后以 `agent_settled` 收束，再发出 `session_end`。`new_session` 接受可选 `parentSession`，并把它写入新 session header，同时刷新 session id、文件路径和运行时环境；新建 session 还必须追加当前 model 和 thinking level 元数据，供后续 resume 恢复。`set_auto_compaction`、`set_auto_retry`、`set_steering_mode` 和 `set_follow_up_mode` 必须立即写入 settings，并在新进程的 `get_state` 中恢复；`get_available_thinking_levels` 按当前 model 能力返回（DeepSeek V4 为 `off/high/max`）。响应和事件通过单一输出锁保持 JSONL 行完整。`--models` 必须先按用户 pattern 顺序解析为去重的 scoped model 列表；RPC `cycle_model` 和 TUI Ctrl+P 按该列表循环，条目上的 `:thinking-level` 只覆盖该条目，未命中或无有效 scope 时回退到全部可用模型。由于 Nature 运行时没有 Pi 的扩展事件总线，文档只承诺无扩展核心命令，不承诺扩展 UI 请求或 SDK 回调。
 
 ## 16. Nature 标准库扩展边界
 

@@ -60,3 +60,12 @@ test 'json mode preserves Pi agent lifecycle payloads and settled event' {
     var settled = json.parse(event_json.encode(session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,})).as_object()
     assert(settled.len() == 1 && settled['type'].as_string() == session_stream.EVENT_AGENT_SETTLED)
 }
+
+test 'json mode encodes Pi queue_update snapshots' {
+    var event = session_stream.event_t {kind: session_stream.EVENT_QUEUE_UPDATE, queue_steering: ['stop and inspect'], queue_follow_up: ['summarize after'],}
+    var object = json.parse(event_json.encode(event)).as_object()
+    assert(object['type'].as_string() == session_stream.EVENT_QUEUE_UPDATE)
+    assert(object['steering'].kind == json.VALUE_ARRAY && object['followUp'].kind == json.VALUE_ARRAY)
+    assert(object['steering'].as_array().len() == 1 && object['followUp'].as_array().len() == 1)
+    assert(object['steering'].as_array()[0].as_string() == 'stop and inspect')
+}
