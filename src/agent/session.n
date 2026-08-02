@@ -72,6 +72,10 @@ fn runner_t.prompt(&self, string text): ref<session_stream.stream_t>! {
 }
 
 fn runner_t.compact_now(&self, string instructions): ref<session_stream.stream_t>! {
+    // Pi's manual compact first disconnects/aborts any active agent turn and
+    // waits for the session to become idle.  A user can therefore invoke
+    // /compact while a provider stream is still running.
+    self.abort_and_wait()
     self.begin_operation()
     var stream = session_stream.new()
     self.lock.lock()

@@ -7,6 +7,7 @@ import adou.src.compaction.serialize
 import adou.src.compaction.types as compaction_types
 import adou.src.session.repository
 import adou.src.session.types as session_types
+import co
 import co.mutex
 import json
 import time
@@ -112,6 +113,13 @@ fn seed_history(ref<repository.manager_t> manager): void! {
     manager.append_message(old_assistant)
 }
 
+fn release_after_abort(ref<session.runner_t> runner, ref<session_stream.stream_t> stream): void! {
+    for !stream.cancellation.is_aborted() {
+        co.sleep(1)
+    }
+    runner.end_operation()
+}
+
 test 'session forwards lifecycle and persists each completed message' {
     var manager = repository.in_memory('/tmp')
     var fixture = new provider_fixture_t(agent_responses = [assistant('hello', ai_types.STOP_STOP, '', 2, 3)])
@@ -213,6 +221,22 @@ test 'manual compaction reports when the session has no eligible history' {
     var result = consume(runner.compact_now(''))
     assert(fixture.summary_calls == 0)
     assert(last_compaction_error(result[0]) == 'Nothing to compact')
+}
+
+test 'manual compaction aborts an active turn before summarizing' {
+    var manager = repository.in_memory('/tmp')
+    seed_history(manager)
+    var fixture = new provider_fixture_t()
+    var runner = make_runner(manager, fixture, 100, 0, 2)
+    var active = session_stream.new()
+    runner.begin_operation()
+    runner.attach_stream(active)
+    go release_after_abort(runner, active)
+    var result = consume(runner.compact_now('compact after cancelling the turn'))
+    assert(active.cancellation.is_aborted())
+    assert(fixture.summary_calls == 1)
+    assert(count_kind(result[0], session_stream.EVENT_COMPACTION_START) == 1)
+    assert(manager.latest_compaction() is ref<session_types.entry_t>)
 }
 
 test 'starting a new session clears active context and keeps in-memory mode' {
