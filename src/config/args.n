@@ -108,7 +108,12 @@ fn parse([string] argv): types.cli_args_t {
         } else if argument == '--name' || argument == '-n' {
             var consumed = consume_string(argv, index, argument)
             index = consumed.index
-            if consumed.ok {result.session_name = consumed.value} else {errors.push(consumed.error_message)}
+            if consumed.ok {
+                result.session_name = consumed.value
+                if result.session_name.trim([' ', '\t', '\n', '\r']) == '' {
+                    errors.push('--name requires a non-empty value')
+                }
+            } else {errors.push(consumed.error_message)}
         } else if argument == '--system-prompt' {
             var consumed = consume_string(argv, index, argument)
             index = consumed.index

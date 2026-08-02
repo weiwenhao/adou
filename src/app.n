@@ -245,23 +245,26 @@ fn report_startup_config_error(config_types.cli_args_t arguments): bool {
             }
             message += item
         }
-    } else {
-        // resolve() accepts a provider from the CLI or environment.  Check
-        // those explicit sources before entering the value-typed resolver so
-        // malformed command-line input cannot become an uncaught coroutine
-        // error.  A stale persisted provider is deliberately not rejected:
-        // Pi starts interactively without credentials and lets /login repair
-        // the configuration.
-        string provider = arguments.provider
-        if provider == '' {
-            provider = syscall.get_env('ADOU_PROVIDER')
-        }
-        // An invalid persisted default is recoverable: resolve() ignores it
-        // and falls back to the built-in model so `/login` remains available.
-        // Only an explicit CLI/environment provider is a startup error.
-        if provider != '' && provider != 'deepseek' && provider != 'openai' && provider != 'anthropic' {
-            message = 'Unsupported provider: ' + provider + '. MVP supports deepseek, openai and anthropic.'
-        }
+    }
+    if arguments.api_key != '' && arguments.model == '' && arguments.scoped_models.len() == 0 {
+        if message != '' {message += '\n'}
+        message += '--api-key requires a model to be specified via --model, --provider/--model, or --models'
+    }
+    // resolve() accepts a provider from the CLI or environment.  Check those
+    // explicit sources before entering the value-typed resolver so malformed
+    // command-line input cannot become an uncaught coroutine error.  A stale
+    // persisted provider is deliberately not rejected: Pi starts
+    // interactively without credentials and lets /login repair it.
+    string provider = arguments.provider
+    if provider == '' {
+        provider = syscall.get_env('ADOU_PROVIDER')
+    }
+    // An invalid persisted default is recoverable: resolve() ignores it and
+    // falls back to the built-in model so `/login` remains available. Only an
+    // explicit CLI/environment provider is a startup error.
+    if provider != '' && provider != 'deepseek' && provider != 'openai' && provider != 'anthropic' {
+        if message != '' {message += '\n'}
+        message += 'Unsupported provider: ' + provider + '. MVP supports deepseek, openai and anthropic.'
     }
     if message == '' {
         return true

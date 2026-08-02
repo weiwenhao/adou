@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.19
+文档版本：0.20
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -673,6 +673,8 @@ adou [--provider deepseek|openai|anthropic]
 配置必须包含模型 `contextWindow` 和 `maxTokens`。未知 context window 时不得凭空触发 threshold compaction；overflow error recovery 仍可依据 provider error pattern 执行。
 
 初始消息必须保持 Pi 的顺序语义：非 RPC 模式下，stdin 内容先拼接到 `@file` 文本，再拼接到第一条 CLI 消息；剩余 CLI 消息逐条发送为独立的 agent turn，不能用空格合并。纯文本输出只打印最后一轮 assistant 响应，JSON 模式则按每一轮顺序输出完整事件流；RPC 模式拒绝 `@file` 参数并以非零状态退出。
+
+启动参数校验也必须保持 Pi 语义：`--name` 的值去除空白后不得为空；显式 `--api-key` 必须同时给出 `--model`、`--provider`/`--model` 或 `--models`，不能静默绑定当前默认模型。
 
 MVP 内置 TUI 命令：
 

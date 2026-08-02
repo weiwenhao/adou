@@ -82,6 +82,14 @@ test 'Pi initial message composition prefixes stdin and files only onto the firs
     assert(file_only.len() == 1 && file_only[0] == '<file>')
 }
 
+test 'Pi startup rejects empty names and api keys without an explicit model' {
+    var empty_name = args.parse(['adou', '--name', '   '])
+    assert(empty_name.errors.len() == 1 && empty_name.errors[0] == '--name requires a non-empty value')
+
+    var key_without_model = args.parse(['adou', '--api-key', 'test-key'])
+    assert(key_without_model.errors.len() == 0 && key_without_model.api_key == 'test-key')
+}
+
 test 'print mode is set even when it reads the prompt from stdin' {
     var parsed = args.parse(['adou', '--print'])
     assert(parsed.errors.len() == 0 && parsed.print_mode && parsed.messages.len() == 0)
