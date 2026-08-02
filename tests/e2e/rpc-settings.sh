@@ -70,9 +70,8 @@ if levels != ["off", "high", "max"]:
     raise SystemExit(f"DeepSeek supported thinking levels differ from Pi: {levels!r}")
 
 commands = by_id.get("commands", {}).get("data", {}).get("commands", [])
-names = {item.get("name") for item in commands}
-if not {"model", "login", "compact", "quit"}.issubset(names):
-    raise SystemExit(f"RPC command registry is incomplete: {names!r}")
+if commands:
+    raise SystemExit(f"MVP get_commands must exclude Pi built-ins without extensions: {commands!r}")
 
 unknown = by_id.get("unknown")
 if not unknown or unknown.get("success") is not False or "Unknown command" not in unknown.get("error", ""):

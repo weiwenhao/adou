@@ -1132,14 +1132,11 @@ fn rpc_cancelled_data(bool cancelled): ref<json.value_t>! {
 
 #local
 fn rpc_commands(): ref<json.value_t>! {
-    [string] names = ['/settings', '/model', '/scoped-models', '/export', '/import', '/share', '/copy', '/name', '/session', '/changelog', '/hotkeys', '/fork', '/clone', '/tree', '/trust', '/login', '/logout', '/new', '/compact', '/resume', '/reload', '/quit']
+    // Pi's get_commands is the extension/prompt/skill registry, not the
+    // built-in slash-command help list.  Adou has no dynamic extensions in
+    // the MVP, so the protocol-compatible result is an empty array. Built-in
+    // commands remain available through the TUI completion menu and /help.
     [ref<json.value_t>] values = []
-    for name in names {
-        rpc_object_t command = {}
-        command['name'] = boxed_string(name.slice(1, name.len()))
-        command['source'] = boxed_string('builtin')
-        values.push(json.box_value(json.object_value(command as map<string, ref<json.value_t>>)))
-    }
     rpc_object_t result = {}
     result['commands'] = json.box_value(json.array_value(values))
     return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
