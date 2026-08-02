@@ -62,8 +62,23 @@ fn new(ref<repository.manager_t> session_repository, ref<agent_types.context_t> 
 }
 
 fn runner_t.prompt(&self, string text): ref<session_stream.stream_t>! {
+    return self.start_prompt(text, false)
+}
+
+// RPC marks delivery before starting the coroutine.  A fast provider can
+// finish between prompt() returning and the RPC worker being registered; the
+// early mark makes terminal-event delivery deterministic.
+fn runner_t.prompt_rpc(&self, string text): ref<session_stream.stream_t>! {
+    return self.start_prompt(text, true)
+}
+
+#local
+fn runner_t.start_prompt(&self, string text, bool require_delivery): ref<session_stream.stream_t>! {
     self.begin_operation()
     var stream = session_stream.new()
+    if require_delivery {
+        stream.require_delivery()
+    }
     self.lock.lock()
     self.active_stream = stream
     self.lock.unlock()
@@ -508,6 +523,15 @@ fn runner_t.finish_rpc_delivery(&self, ref<session_stream.stream_t> stream) {
     self.lock.unlock()
 }
 
+fn runner_t.wait_rpc_delivery(&self) {
+    self.lock.lock()
+    ref<session_stream.stream_t>? pending = self.rpc_delivery_stream
+    self.lock.unlock()
+    if pending is ref<session_stream.stream_t> stream {
+        stream.wait_delivery()
+    }
+}
+
 // Attach non-model operations (for example interactive `!bash`) to the same
 // cancellation slot as prompts.  This keeps RPC/TUI abort and busy-state
 // checks consistent across every user-visible operation.
@@ -659,7 +683,7 @@ fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, s
     bool overflow_recovery_attempted = false
     int retry_attempt = 0
     for true {
-        ref<ai_types.assistant_message_t>? last_assistant = runner.forward_agent_stream(output, current)
+        ref<ai_types.assistant_message_t>? last_assistant = runner.forward_agent_stream(output, current, retry_attempt)
         current.result()
         if output.cancellation.is_aborted() {
             break
@@ -722,8 +746,10 @@ fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, s
         }
         break
     }
-    output.push(session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,})
-    output.finish(runner.copy_active_messages())
+    var settled_event = session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,}
+    output.push(settled_event)
+    var final_context = runner.copy_active_messages()
+    output.finish(final_context)
 }
 
 #local
@@ -764,7 +790,7 @@ fn run_manual_compaction(ref<runner_t> runner, ref<session_stream.stream_t> outp
 }
 
 #local
-fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output, ref<agent_stream.stream_t> input): ref<ai_types.assistant_message_t>?! {
+fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output, ref<agent_stream.stream_t> input, int retry_attempt): ref<ai_types.assistant_message_t>?! {
     abort.abort_callback_t forward_abort = fn () {
         input.abort()
     }
@@ -787,9 +813,35 @@ fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output, ref
                 self.mark_queue_delivered(user.content)
             }
         }
-        output.push(session_stream.event_t {kind: event.kind, has_agent_event: true, agent_event: event,})
+        bool will_retry = event.kind == agent_types.EVENT_AGENT_END && will_retry_after_agent_end(self, event, retry_attempt)
+        output.push(session_stream.event_t {kind: event.kind, has_agent_event: true, agent_event: event, will_retry: will_retry,})
+        // agent_end is the terminal event of the inner agent stream.  Do not
+        // wait for a second recv merely to observe the channel close: Nature
+        // can race a buffered terminal send with close, leaving a consumer
+        // parked even though the terminal event was already delivered.
+        if event.kind == agent_types.EVENT_AGENT_END {
+            break
+        }
     }
     return last_assistant
+}
+
+#local
+fn will_retry_after_agent_end(ref<runner_t> runner, agent_types.agent_event_t agent_event, int retry_attempt): bool {
+    if !runner.retry_enabled || retry_attempt >= runner.retry_max_attempts {
+        return false
+    }
+    int index = agent_event.messages.len() - 1
+    for index >= 0 {
+        if agent_event.messages[index] is ref<ai_types.assistant_message_t> assistant {
+            if errors.is_context_overflow(assistant, runner.agent_config.model.context_window) {
+                return false
+            }
+            return errors.is_retryable_assistant_error(assistant)
+        }
+        index -= 1
+    }
+    return false
 }
 
 #local

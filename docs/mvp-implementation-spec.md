@@ -431,6 +431,7 @@ Session 层在 loop 事件之外必须保持 Pi 的可观察生命周期：
 - 队列消息在对应的 `message_start` 转发前，先从可见快照中移除并再次发出 `queue_update`，因此消费者不会看到已经开始交付的消息仍停留在 pending 列表；
 - `agent_end` 之后、`session_end` 之前发出唯一的 `agent_settled`；异常和取消路径也必须发出该事件；
 - `queue_update` 的 JSON 字段固定为 `steering` 与 `followUp`，`agent_settled` 不携带额外字段。
+- 自动重试事件名称固定为 Pi 的 `auto_retry_start` 与 `auto_retry_end`；开始事件使用 `errorMessage`，不能改成内部字段名。
 
 ## 11. `read` 与 `write` 工具规范
 

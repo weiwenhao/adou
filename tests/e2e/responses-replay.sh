@@ -145,7 +145,7 @@ for line in open(sys.argv[1], encoding="utf-8"):
         event = json.loads(line)
     except json.JSONDecodeError:
         continue
-    assistant_event = event.get("assistantEvent")
+    assistant_event = event.get("assistantMessageEvent")
     if not isinstance(assistant_event, dict):
         continue
     partial = assistant_event.get("partial")

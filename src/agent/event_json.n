@@ -19,7 +19,9 @@ fn encode(session_stream.event_t event): string! {
     }
     if event.reason != '' {object['reason'] = boxed_string(event.reason)}
     if event.aborted {object['aborted'] = boxed_bool(true)}
-    if event.will_retry {object['willRetry'] = boxed_bool(true)}
+    if event.kind == agent_types.EVENT_AGENT_END || event.will_retry {
+        object['willRetry'] = boxed_bool(event.will_retry)
+    }
     if event.error_message != '' {object['errorMessage'] = boxed_string(event.error_message)}
     if event.summary != '' {object['summary'] = boxed_string(event.summary)}
     if event.tokens_before != 0 {object['tokensBefore'] = number_int(event.tokens_before)}
@@ -36,7 +38,7 @@ fn encode(session_stream.event_t event): string! {
         if event.retry_attempt != 0 {object['attempt'] = number_int(event.retry_attempt)}
         if event.retry_max_attempts != 0 {object['maxAttempts'] = number_int(event.retry_max_attempts)}
         if event.retry_delay_ms != 0 {object['delayMs'] = number_int(event.retry_delay_ms)}
-        if event.retry_error_message != '' {object['retryError'] = boxed_string(event.retry_error_message)}
+        if event.retry_error_message != '' {object['errorMessage'] = boxed_string(event.retry_error_message)}
         if event.kind == session_stream.EVENT_RETRY_END {
             object['success'] = boxed_bool(event.retry_success)
             if event.retry_final_error != '' {object['finalError'] = boxed_string(event.retry_final_error)}
@@ -69,24 +71,29 @@ fn add_agent_fields(object_t object, agent_types.agent_event_t event): object_t!
         }
         object['toolResults'] = encode_tool_messages(event.tool_results)
     }
-    if event.user_message is ref<ai_types.user_message_t> user {
-        object['message'] = json.box_value(message_json.encode(user))
-    }
-    if event.assistant_message is ref<ai_types.assistant_message_t> assistant {
-        object['assistantMessage'] = json.box_value(message_json.encode(assistant))
-    }
-    if event.tool_message is ref<ai_types.tool_result_message_t> tool {
-        object['toolResult'] = json.box_value(message_json.encode(tool))
+    if event.kind == agent_types.EVENT_MESSAGE_START || event.kind == agent_types.EVENT_MESSAGE_UPDATE || event.kind == agent_types.EVENT_MESSAGE_END {
+        if event.user_message is ref<ai_types.user_message_t> user {
+            object['message'] = json.box_value(message_json.encode(user))
+        }
+        if event.assistant_message is ref<ai_types.assistant_message_t> assistant {
+            object['message'] = json.box_value(message_json.encode(assistant))
+        }
+        if event.tool_message is ref<ai_types.tool_result_message_t> tool {
+            object['message'] = json.box_value(message_json.encode(tool))
+        }
     }
     if event.tool_call_id != '' {object['toolCallId'] = boxed_string(event.tool_call_id)}
     if event.tool_name != '' {object['toolName'] = boxed_string(event.tool_name)}
     if event.args.kind != json.VALUE_NULL {object['args'] = json.box_value(event.args)}
-    if event.is_error {object['isError'] = boxed_bool(true)}
-    if event.assistant_event.kind != '' {
-        object['assistantEvent'] = encode_assistant_event(event.assistant_event)
+    if event.kind == agent_types.EVENT_MESSAGE_UPDATE && event.assistant_event.kind != '' {
+        object['assistantMessageEvent'] = encode_assistant_event(event.assistant_event)
     }
-    if event.tool_result.content.len() > 0 {
-        object['toolOutput'] = boxed_string(tool_output(event.tool_result))
+    if event.kind == agent_types.EVENT_TOOL_UPDATE {
+        object['partialResult'] = encode_tool_result(event.tool_result)
+    }
+    if event.kind == agent_types.EVENT_TOOL_END {
+        object['result'] = encode_tool_result(event.tool_result)
+        object['isError'] = boxed_bool(event.is_error)
     }
     return object
 }
@@ -116,6 +123,39 @@ fn encode_string_array([string] values): ref<json.value_t>! {
         encoded.push(boxed_string(value))
     }
     return json.box_value(json.array_value(encoded))
+}
+
+#local
+fn encode_tool_result(tool_types.tool_result_t result): ref<json.value_t>! {
+    object_t object = {}
+    object['content'] = encode_text_blocks(result.content)
+    if result.details.kind != json.VALUE_NULL {
+        object['details'] = json.box_value(result.details)
+    }
+    if has_usage(result.usage) {
+        object['usage'] = message_json.encode_usage(result.usage)
+    }
+    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn encode_text_blocks([ref<ai_types.text_content_t>] content): ref<json.value_t>! {
+    [ref<json.value_t>] values = []
+    for text in content {
+        map<string, ref<json.value_t>> item = {}
+        item['type'] = boxed_string('text')
+        item['text'] = boxed_string(text.text)
+        if text.text_signature != '' {
+            item['textSignature'] = boxed_string(text.text_signature)
+        }
+        values.push(json.box_value(json.object_value(item)))
+    }
+    return json.box_value(json.array_value(values))
+}
+
+#local
+fn has_usage(ai_types.usage_t usage): bool {
+    return usage.input != 0 || usage.output != 0 || usage.cache_read != 0 || usage.cache_write != 0 || usage.cache_write_1h != 0 || usage.reasoning != 0 || usage.total_tokens != 0
 }
 
 #local

@@ -645,6 +645,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
     for runner.busy {
         co.sleep(5)
     }
+    runner.wait_rpc_delivery()
 }
 
 #local
@@ -665,7 +666,7 @@ fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string
             return
         }
     }
-    var stream = runner.prompt(prompt) catch error {
+    var stream = runner.prompt_rpc(prompt) catch error {
         rpc_write(output_lock, rpc_error(id, 'prompt', error.msg()))
         return
     }
@@ -1227,7 +1228,11 @@ fn rpc_error(string id, string command, string message): string! {
 #local
 fn rpc_write(ref<mutex.mutex_t> output_lock, string line) {
     output_lock.lock()
-    println(line)
+    var output = fs.stdout() catch error {
+        output_lock.unlock()
+        return
+    }
+    output.write((line + '\n') as [u8]) catch error {}
     output_lock.unlock()
 }
 

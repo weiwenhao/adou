@@ -1,6 +1,7 @@
 import adou.src.agent.types as agent_types
 import adou.src.ai.abort
 import adou.src.ai.types as ai_types
+import co
 import co.mutex
 
 const EVENT_COMPACTION_START = 'compaction_start'
@@ -11,8 +12,8 @@ const EVENT_SESSION_END = 'session_end'
 const EVENT_BASH_START = 'bash_start'
 const EVENT_BASH_UPDATE = 'bash_update'
 const EVENT_BASH_END = 'bash_end'
-const EVENT_RETRY_START = 'retry_start'
-const EVENT_RETRY_END = 'retry_end'
+const EVENT_RETRY_START = 'auto_retry_start'
+const EVENT_RETRY_END = 'auto_retry_end'
 const EVENT_AGENT_SETTLED = 'agent_settled'
 const EVENT_QUEUE_UPDATE = 'queue_update'
 const EVENT_SUMMARIZATION_RETRY_SCHEDULED = 'summarization_retry_scheduled'
@@ -75,7 +76,15 @@ fn stream_t.push(&self, event_t event): void! {
         return
     }
     self.lock.unlock()
-    self.events.send(event)
+    // Nature's blocking channel send can remain parked when a receiver is
+    // being rescheduled at the same time as a buffered stream transition.
+    // Retry the non-blocking operation instead so lifecycle events cannot
+    // strand the session coroutine between auto_retry_end and agent_settled.
+    for true {
+        bool delivered = self.events.try_send(event) catch error {return}
+        if delivered {break}
+        co.sleep(1)
+    }
 }
 
 fn stream_t.finish(&self, [ai_types.message_t] context): void! {
@@ -86,10 +95,30 @@ fn stream_t.finish(&self, [ai_types.message_t] context): void! {
     }
     self.final_context = context
     self.terminal = true
+    bool wait_for_delivery = self.delivery_required
     self.lock.unlock()
+    // RPC workers must serialize the terminal event before the channel is
+    // closed.  Closing immediately after send races Nature's buffered channel
+    // delivery; hand that send to a separate coroutine so the session runner
+    // cannot get stuck behind a slow or temporarily unscheduled RPC reader.
+    if wait_for_delivery {
+        go deliver_terminal(self)
+        return
+    }
     self.events.send(event_t {kind: EVENT_SESSION_END,})
     self.done.close()
     self.end()
+}
+
+#local
+fn deliver_terminal(ref<stream_t> stream) {
+    var terminal = event_t {kind: EVENT_SESSION_END,}
+    for true {
+        bool delivered = stream.events.try_send(terminal) catch error {return}
+        if delivered {break}
+        co.sleep(1)
+    }
+    stream.done.close() catch error {}
 }
 
 fn stream_t.recv(&self): event_t! {
@@ -143,6 +172,7 @@ fn stream_t.mark_delivery_done(&self) {
     self.lock.unlock()
     if required {
         self.delivery_done.close() catch error {}
+        self.end() catch error {}
     }
 }
 

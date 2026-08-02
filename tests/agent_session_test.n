@@ -396,6 +396,14 @@ test 'transient provider errors retry with the failed message removed from activ
     assert(fixture.agent_calls == 2)
     assert(count_kind(result[0], session_stream.EVENT_RETRY_START) == 1)
     assert(count_kind(result[0], session_stream.EVENT_RETRY_END) == 1)
+    bool saw_retrying_end = false
+    bool saw_final_end = false
+    for event in result[0] {
+        if event.kind == agent_types.EVENT_AGENT_END {
+            if event.will_retry {saw_retrying_end = true} else {saw_final_end = true}
+        }
+    }
+    assert(saw_retrying_end && saw_final_end)
     assert(result[1].len() == 2)
     assert(manager.get_entries().len() == 3)
     assert(manager.build_context().messages.len() == 3)
@@ -404,4 +412,23 @@ test 'transient provider errors retry with the failed message removed from activ
     } else {
         assert(false)
     }
+}
+
+test 'rpc prompt keeps terminal delivery alive until the worker acknowledges it' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant('rpc result', ai_types.STOP_STOP, '', 2, 3)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    var stream = runner.prompt_rpc('rpc prompt')
+    runner.require_rpc_delivery(stream)
+    [session_stream.event_t] events = []
+    for true {
+        var event = stream.recv() catch error {break}
+        events.push(event)
+        if event.kind == session_stream.EVENT_SESSION_END {break}
+    }
+    var ignored = stream.result()
+    runner.finish_rpc_delivery(stream)
+    assert(count_kind(events, session_stream.EVENT_AGENT_SETTLED) == 1)
+    assert(count_kind(events, session_stream.EVENT_SESSION_END) == 1)
+    assert(!runner.busy)
 }
