@@ -570,7 +570,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
             }
             rpc_write(output_lock, rpc_ok(id, command))
         } else if command == 'new_session' {
-            runner.start_new_session() catch error {
+            runner.start_new_session_with_parent(rpc_string(object, 'parentSession')) catch error {
                 rpc_write(output_lock, rpc_error(id, command, error.msg()))
                 continue
             }

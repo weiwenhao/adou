@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.20
+文档版本：0.21
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -698,7 +698,7 @@ MVP 内置 TUI 命令：
 
 `/share` 在没有远程凭据时生成与当前 Pi v3 记录对应的本地 `.share.jsonl` artifact，并明确提示远程 GitHub gist 尚未配置；`/trust` 写入 `$HOME/.pi/agent/trust.json`（或 `PI_CODING_AGENT_DIR` 指定的位置），不把 trust 误当成已完成的完整策略执行。其余 session 管理命令直接操作 Pi v3 JSONL：`/resume`、`/import` 打开已有记录，`/export` 输出 JSONL/HTML，`/name` 写入 session info，`/tree` 选择 active leaf，`/fork` 从历史 user message 分支，`/clone` 创建带 `parentSession` 的新记录。
 
-无扩展 RPC 的响应结构遵循 Pi `rpc-types.ts`：模型和统计使用嵌套对象，`get_entries` 支持 `since` 游标，`get_tree` 返回递归节点，`get_fork_messages` 返回可分叉的 user message；stdin 为管道时必须保留 JSONL 命令，不得先被普通 prompt 读取。prompt、compact 和 bash 在后台协程中运行，主循环可继续接收 `steer`、`follow_up`、`abort`、`abort_retry`、`abort_bash` 与状态查询；`set_auto_compaction`、`set_auto_retry`、`set_steering_mode` 和 `set_follow_up_mode` 必须立即写入 settings，并在新进程的 `get_state` 中恢复；`get_available_thinking_levels` 按当前 model 能力返回（DeepSeek V4 为 `off/high/max`）。响应和事件通过单一输出锁保持 JSONL 行完整。由于 Nature 运行时没有 Pi 的扩展事件总线，文档只承诺无扩展核心命令，不承诺扩展 UI 请求或 SDK 回调。
+无扩展 RPC 的响应结构遵循 Pi `rpc-types.ts`：模型和统计使用嵌套对象，`get_entries` 支持 `since` 游标，`get_tree` 返回递归节点，`get_fork_messages` 返回可分叉的 user message；stdin 为管道时必须保留 JSONL 命令，不得先被普通 prompt 读取。prompt、compact 和 bash 在后台协程中运行，主循环可继续接收 `steer`、`follow_up`、`abort`、`abort_retry`、`abort_bash` 与状态查询；`new_session` 接受可选 `parentSession`，并把它写入新 session header，同时刷新 session id、文件路径和运行时环境。`set_auto_compaction`、`set_auto_retry`、`set_steering_mode` 和 `set_follow_up_mode` 必须立即写入 settings，并在新进程的 `get_state` 中恢复；`get_available_thinking_levels` 按当前 model 能力返回（DeepSeek V4 为 `off/high/max`）。响应和事件通过单一输出锁保持 JSONL 行完整。由于 Nature 运行时没有 Pi 的扩展事件总线，文档只承诺无扩展核心命令，不承诺扩展 UI 请求或 SDK 回调。
 
 ## 16. Nature 标准库扩展边界
 

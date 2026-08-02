@@ -79,6 +79,10 @@ fn runner_t.compact_now(&self, string instructions): ref<session_stream.stream_t
 }
 
 fn runner_t.start_new_session(&self): void! {
+    self.start_new_session_with_parent('')
+}
+
+fn runner_t.start_new_session_with_parent(&self, string parent_session): void! {
     self.lock.lock()
     if self.busy {
         self.lock.unlock()
@@ -91,7 +95,7 @@ fn runner_t.start_new_session(&self): void! {
     string steering_mode = self.agent_config.queues.steering_mode
     string follow_up_mode = self.agent_config.queues.follow_up_mode
     self.lock.unlock()
-    ref<repository.manager_t> next = persisted ? repository.create(cwd, session_dir) : repository.in_memory(cwd) catch error {
+    ref<repository.manager_t> next = persisted ? repository.create_with_parent(cwd, session_dir, parent_session) : repository.in_memory_with_parent(cwd, parent_session) catch error {
         self.lock.lock()
         self.busy = false
         self.lock.unlock()
@@ -100,6 +104,7 @@ fn runner_t.start_new_session(&self): void! {
     self.lock.lock()
     self.repository = next
     self.active_messages = []
+    self.agent_config.stream_options.session_id = next.get_session_id()
     self.agent_config.queues = new agent_types.queue_t(steering_mode = steering_mode, follow_up_mode = follow_up_mode)
     self.busy = false
     self.lock.unlock()

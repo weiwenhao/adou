@@ -57,6 +57,21 @@ fn write_bytes(string file_path, string content): void! {
     output.close()
 }
 
+test 'new sessions preserve an explicit Pi parentSession in persisted and in-memory headers' {
+    string root = '/tmp/adou-session-test-parent-session'
+    os.rmdir(root, true) catch error {}
+    string parent = root + '/previous.jsonl'
+    var persisted = repository.create_with_parent(root, root + '/sessions', parent)
+    assert(persisted.header.parent_session == parent)
+    var reopened = repository.open(persisted.get_session_file())
+    assert(reopened.header.parent_session == parent)
+    string encoded = jsonl.encode_header(reopened.header)
+    assert(encoded.contains('"parentSession":"' + parent + '"'))
+    var memory = repository.in_memory_with_parent(root, parent)
+    assert(memory.header.parent_session == parent)
+    os.rmdir(root, true)
+}
+
 test 'v1 sessions migrate tree ids and compaction references to v3' {
     string root = '/tmp/adou-session-test-migrate-v1'
     os.rmdir(root, true) catch error {}

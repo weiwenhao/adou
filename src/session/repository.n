@@ -83,19 +83,34 @@ fn is_session_id_char(u8 value): bool {
 }
 
 fn in_memory(string cwd): ref<manager_t>! {
+    return in_memory_with_parent(cwd, '')
+}
+
+// Pi's in-memory session manager still accepts a parentSession option.  It
+// does not write a file, but retaining the lineage in the header keeps the
+// session state identical until a caller chooses to persist it.
+fn in_memory_with_parent(string cwd, string parent_session): ref<manager_t>! {
     string resolved = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
     string timestamp = identity.iso_now()
-    var header = new types.header_t(version = types.CURRENT_VERSION, id = identity.uuid_v7(), timestamp = timestamp, cwd = resolved, raw = json.null_value())
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = identity.uuid_v7(), timestamp = timestamp, cwd = resolved, parent_session = parent_session, raw = json.null_value())
     return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = '', persisted = false, header = header)
 }
 
 fn create(string cwd, string session_dir): ref<manager_t>! {
-    return create_with_id(cwd, session_dir, identity.uuid_v7())
+    return create_with_parent(cwd, session_dir, '')
+}
+
+fn create_with_parent(string cwd, string session_dir, string parent_session): ref<manager_t>! {
+    return create_with_id_and_parent(cwd, session_dir, identity.uuid_v7(), parent_session)
 }
 
 // Create a new Pi v3 session while preserving a caller-supplied id.  Pi's
 // --session-id uses this path when the requested project id does not exist.
 fn create_with_id(string cwd, string session_dir, string session_id): ref<manager_t>! {
+    return create_with_id_and_parent(cwd, session_dir, session_id, '')
+}
+
+fn create_with_id_and_parent(string cwd, string session_dir, string session_id, string parent_session): ref<manager_t>! {
     if !valid_session_id(session_id) {
         throw errorf('Invalid session id: %s', session_id)
     }
@@ -110,7 +125,7 @@ fn create_with_id(string cwd, string session_dir, string session_id): ref<manage
     string timestamp = identity.iso_now()
     string file_timestamp = timestamp.replace(':', '-').replace('.', '-')
     string file_path = path.join(directory, file_timestamp + '_' + session_id + '.jsonl')
-    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved, raw = json.null_value())
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved, parent_session = parent_session, raw = json.null_value())
     write_new_file(file_path, jsonl.encode_header(header) + '\n')
     return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = directory, session_file = file_path, persisted = true, header = header)
 }
