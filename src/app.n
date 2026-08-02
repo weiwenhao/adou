@@ -851,11 +851,11 @@ fn rpc_bash_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> st
     }
     rpc_object_t data = {}
     data['output'] = boxed_string(result.output)
-    data['exitCode'] = number_json(result.exit_code)
+    if !result.cancelled {data['exitCode'] = number_json(result.exit_code)}
     data['cancelled'] = boxed_bool(result.cancelled)
     data['timedOut'] = boxed_bool(result.timed_out)
     data['truncated'] = boxed_bool(result.truncated)
-    data['fullOutputPath'] = boxed_string(result.full_output_path)
+    if result.full_output_path != '' {data['fullOutputPath'] = boxed_string(result.full_output_path)}
     rpc_write(output_lock, rpc_ok_data(id, 'bash', json.box_value(json.object_value(data as map<string, ref<json.value_t>>))))
     runner.end_operation()
 }
@@ -1000,9 +1000,11 @@ fn rpc_state(ref<session.runner_t> runner): ref<json.value_t>! {
     object['isCompacting'] = boxed_bool(runner.compacting)
     object['steeringMode'] = boxed_string(runner.agent_config.queues.steering_mode)
     object['followUpMode'] = boxed_string(runner.agent_config.queues.follow_up_mode)
-    object['sessionFile'] = rpc_nullable_string(runner.repository.get_session_file())
+    string session_file = runner.repository.get_session_file()
+    if session_file != '' {object['sessionFile'] = boxed_string(session_file)}
     object['sessionId'] = boxed_string(runner.repository.get_session_id())
-    object['sessionName'] = rpc_nullable_string(runner.repository.get_session_name())
+    string session_name = runner.repository.get_session_name()
+    if session_name != '' {object['sessionName'] = boxed_string(session_name)}
     object['autoCompactionEnabled'] = boxed_bool(runner.compaction_settings.enabled)
     object['messageCount'] = number_json(runner.active_messages.len())
     object['pendingMessageCount'] = number_json(runner.agent_config.queues.pending_count())
@@ -1182,7 +1184,8 @@ fn rpc_commands(): ref<json.value_t>! {
 #local
 fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): ref<json.value_t>! {
     rpc_object_t object = {}
-    object['sessionFile'] = rpc_nullable_string(repository.get_session_file())
+    string session_file = repository.get_session_file()
+    if session_file != '' {object['sessionFile'] = boxed_string(session_file)}
     object['sessionId'] = boxed_string(repository.get_session_id())
     object['userMessages'] = number_json(stats.user_messages)
     object['assistantMessages'] = number_json(stats.assistant_messages)
@@ -1197,7 +1200,7 @@ fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): re
     tokens['total'] = number_json(stats.usage.total_tokens)
     object['tokens'] = json.box_value(json.object_value(tokens as map<string, ref<json.value_t>>))
     object['cost'] = float_json(stats.usage.cost.total)
-    if stats.context_window > 0 {
+    if stats.context_window > 0 && repository.context_usage_known() {
         rpc_object_t context_usage = {}
         context_usage['tokens'] = number_json(stats.context_tokens)
         context_usage['contextWindow'] = number_json(stats.context_window)
@@ -1210,7 +1213,7 @@ fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): re
 #local
 fn rpc_text_data(string key, string value): ref<json.value_t>! {
     rpc_object_t object = {}
-    object[key] = boxed_string(value)
+    object[key] = value == '' ? json.box_value(json.null_value()) : boxed_string(value)
     return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
 }
 
@@ -1290,13 +1293,16 @@ fn number_json(int value): ref<json.value_t>! {return json.box_value(json.number
 fn last_assistant_text([ai_types.message_t] messages): string {
     for int index = messages.len() - 1; index >= 0; index -= 1 {
         if messages[index] is ref<ai_types.assistant_message_t> assistant {
+            if assistant.stop_reason == ai_types.STOP_ABORTED && assistant.content.len() == 0 {
+                continue
+            }
             string text = ''
             for block in assistant.content {
                 if block is ref<ai_types.text_content_t> content {
                     text += content.text
                 }
             }
-            return text
+            return text.trim([' ', '\t', '\n', '\r'])
         }
     }
     return ''

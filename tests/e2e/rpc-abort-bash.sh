@@ -95,6 +95,8 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-abort-bash-") as root:
         data = bash_response.get("data")
         if not isinstance(data, dict) or data.get("cancelled") is not True:
             raise SystemExit(f"bash result was not marked cancelled: {bash_response!r}")
+        if "exitCode" in data or "fullOutputPath" in data:
+            raise SystemExit(f"cancelled Bash result contains Pi-undefined fields: {bash_response!r}")
         if "should-not-run" in data.get("output", ""):
             raise SystemExit(f"cancelled bash produced post-abort output: {bash_response!r}")
     finally:
