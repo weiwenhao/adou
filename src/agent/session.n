@@ -44,6 +44,9 @@ type runner_t = struct {
     // able to tell that it is not waiting on a normal assistant turn.
     bool compacting
     ref<session_stream.stream_t>? active_stream = null
+    // RPC prompt output is consumed by a separate worker. Keep the stream
+    // reachable until that worker has serialized its terminal event.
+    ref<session_stream.stream_t>? rpc_delivery_stream = null
 }
 
 type tree_target_t = struct {
@@ -452,6 +455,45 @@ fn runner_t.abort_active(&self) {
     if active is ref<session_stream.stream_t> stream {
         stream.abort()
     }
+}
+
+// Pi's RPC `abort` resolves only after the session becomes idle.  Keep the
+// signal-only primitive above for abort_retry/abort_bash and TUI signal paths,
+// but make the user-visible RPC abort wait for the worker to close its stream
+// and release the busy slot before emitting the response.
+fn runner_t.abort_and_wait(&self) {
+    self.lock.lock()
+    ref<session_stream.stream_t>? pending_delivery = self.rpc_delivery_stream
+    self.lock.unlock()
+    self.abort_active()
+    for true {
+        self.lock.lock()
+        bool active = self.busy
+        self.lock.unlock()
+        if !active {break}
+        co.sleep(1)
+    }
+    if pending_delivery is ref<session_stream.stream_t> stream {
+        stream.wait_delivery()
+    }
+}
+
+fn runner_t.require_rpc_delivery(&self, ref<session_stream.stream_t> stream) {
+    stream.require_delivery()
+    self.lock.lock()
+    self.rpc_delivery_stream = stream
+    self.lock.unlock()
+}
+
+fn runner_t.finish_rpc_delivery(&self, ref<session_stream.stream_t> stream) {
+    stream.mark_delivery_done()
+    self.lock.lock()
+    if self.rpc_delivery_stream is ref<session_stream.stream_t> current {
+        if current == stream {
+            self.rpc_delivery_stream = null
+        }
+    }
+    self.lock.unlock()
 }
 
 // Attach non-model operations (for example interactive `!bash`) to the same

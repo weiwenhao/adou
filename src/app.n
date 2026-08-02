@@ -518,7 +518,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
         } else if command == 'follow_up' {
             rpc_queue_message(runner, id, rpc_string(object, 'message'), false, output_lock)
         } else if command == 'abort' {
-            runner.abort_active()
+            runner.abort_and_wait()
             rpc_write(output_lock, rpc_ok(id, 'abort'))
         } else if command == 'abort_retry' {
             // Retry waits are owned by the session stream.  Aborting that
@@ -669,6 +669,7 @@ fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string
         rpc_write(output_lock, rpc_error(id, 'prompt', error.msg()))
         return
     }
+    runner.require_rpc_delivery(stream)
     go rpc_prompt_worker(runner, stream, id, output_lock)
 }
 
@@ -682,8 +683,10 @@ fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> 
     }
     stream.result() catch error {
         rpc_write(output_lock, rpc_error(id, 'prompt', error.msg()))
+        runner.finish_rpc_delivery(stream)
         return
     }
+    runner.finish_rpc_delivery(stream)
 }
 
 #local

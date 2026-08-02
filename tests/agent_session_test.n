@@ -182,6 +182,17 @@ test 'aborted response never triggers compaction' {
     assert(count_kind(result[0], session_stream.EVENT_COMPACTION_START) == 0)
 }
 
+test 'abort and wait returns only after the session operation is idle' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant('', ai_types.STOP_ABORTED, 'cancelled', 0, 0)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    var stream = runner.prompt('cancel from rpc')
+    runner.abort_and_wait()
+    assert(!runner.busy)
+    var result = consume(stream)
+    assert(count_kind(result[0], session_stream.EVENT_SESSION_END) == 1)
+}
+
 test 'manual compaction uses the shared path and forwards custom instructions' {
     var manager = repository.in_memory('/tmp')
     seed_history(manager)

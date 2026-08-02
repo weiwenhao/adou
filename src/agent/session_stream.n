@@ -44,16 +44,19 @@ type event_t = struct {
 type stream_t = struct {
     chan<event_t> events
     chan<u8> done
+    chan<u8> delivery_done
     ref<mutex.mutex_t> lock = mutex.mutex_t.new()
     ref<abort.abort_t> cancellation = abort.new()
     [ai_types.message_t] final_context = []
     bool terminal
     bool ended
     string failure
+    bool delivery_required
+    bool delivery_marked
 }
 
 fn new(): ref<stream_t> {
-    return new stream_t(events = chan<event_t>.new(128), done = chan<u8>.new())
+    return new stream_t(events = chan<event_t>.new(128), done = chan<u8>.new(), delivery_done = chan<u8>.new())
 }
 
 fn stream_t.push(&self, event_t event): void! {
@@ -107,6 +110,41 @@ fn stream_t.result(&self): [ai_types.message_t]! {
 
 fn stream_t.abort(&self) {
     self.cancellation.abort()
+}
+
+// RPC prompt workers consume a session stream on a separate coroutine.  The
+// runner may become idle just before that worker serializes the terminal event;
+// this small acknowledgement lets RPC `abort` wait for the public event line,
+// not merely the internal operation flag.
+fn stream_t.require_delivery(&self) {
+    self.lock.lock()
+    self.delivery_required = true
+    self.delivery_marked = false
+    self.lock.unlock()
+}
+
+fn stream_t.mark_delivery_done(&self) {
+    self.lock.lock()
+    if self.delivery_marked {
+        self.lock.unlock()
+        return
+    }
+    self.delivery_marked = true
+    bool required = self.delivery_required
+    self.lock.unlock()
+    if required {
+        self.delivery_done.close() catch error {}
+    }
+}
+
+fn stream_t.wait_delivery(&self) {
+    self.lock.lock()
+    bool required = self.delivery_required
+    bool marked = self.delivery_marked
+    self.lock.unlock()
+    if required && !marked {
+        self.delivery_done.recv() catch error {0}
+    }
 }
 
 fn stream_t.fail(&self, string message): void! {
