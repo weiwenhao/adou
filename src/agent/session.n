@@ -44,6 +44,10 @@ type runner_t = struct {
     // able to tell that it is not waiting on a normal assistant turn.
     bool compacting
     ref<session_stream.stream_t>? active_stream = null
+    // Pi's abort_bash command targets only the currently running Bash
+    // operation; keep it separate from the prompt/compaction cancellation
+    // slot used by abort and abort_retry.
+    ref<session_stream.stream_t>? active_bash_stream = null
     // RPC prompt output is consumed by a separate worker. Keep the stream
     // reachable until that worker has serialized its terminal event.
     ref<session_stream.stream_t>? rpc_delivery_stream = null
@@ -502,12 +506,22 @@ fn runner_t.end_operation(&self) {
     self.busy = false
     self.compacting = false
     self.active_stream = null
+    self.active_bash_stream = null
     self.lock.unlock()
 }
 
 fn runner_t.abort_active(&self) {
     self.lock.lock()
     ref<session_stream.stream_t>? active = self.active_stream
+    self.lock.unlock()
+    if active is ref<session_stream.stream_t> stream {
+        stream.abort()
+    }
+}
+
+fn runner_t.abort_bash(&self) {
+    self.lock.lock()
+    ref<session_stream.stream_t>? active = self.active_bash_stream
     self.lock.unlock()
     if active is ref<session_stream.stream_t> stream {
         stream.abort()
@@ -568,6 +582,13 @@ fn runner_t.wait_rpc_delivery(&self) {
 fn runner_t.attach_stream(&self, ref<session_stream.stream_t> stream) {
     self.lock.lock()
     self.active_stream = stream
+    self.lock.unlock()
+}
+
+fn runner_t.attach_bash_stream(&self, ref<session_stream.stream_t> stream) {
+    self.lock.lock()
+    self.active_stream = stream
+    self.active_bash_stream = stream
     self.lock.unlock()
 }
 

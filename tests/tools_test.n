@@ -192,6 +192,14 @@ test 'interactive bash stream forwards chunks and preserves the final result' {
     assert(streamed.contains('alpha') && streamed.contains('beta'))
 }
 
+test 'cancelled bash stream returns a Pi cancellation result' {
+    var cancellation = abort.new()
+    cancellation.abort()
+    var result = shell_tools.execute_bash_stream('/tmp', 'sleep 1; printf should-not-run', 0, cancellation, fn(string chunk) {})
+    assert(result.cancelled)
+    assert(!result.output.contains('should-not-run'))
+}
+
 test 'bash output strips ANSI and terminal control sequences before storage' {
     string value = command.sanitize_output('\x1b[31mred\x1b[0m\x1b]0;title\x07\x01\n')
     assert(value == 'red\n')

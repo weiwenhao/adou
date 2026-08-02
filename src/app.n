@@ -573,7 +573,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
         } else if command == 'bash' {
             rpc_run_bash(runner, id, rpc_string(object, 'command'), rpc_bool(object, 'excludeFromContext', false), output_lock)
         } else if command == 'abort_bash' {
-            runner.abort_active()
+            runner.abort_bash()
             rpc_write(output_lock, rpc_ok(id, 'abort_bash'))
         } else if command == 'get_session_stats' {
             var stats = runner.repository.stats(runner.agent_config.model.context_window) catch error {
@@ -820,7 +820,7 @@ fn rpc_run_bash(ref<session.runner_t> runner, string id, string command_text, bo
         return
     }
     var stream = session_stream.new()
-    runner.attach_stream(stream)
+    runner.attach_bash_stream(stream)
     go rpc_bash_worker(runner, stream, command_text, excluded, id, output_lock)
 }
 

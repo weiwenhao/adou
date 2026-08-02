@@ -157,7 +157,6 @@ fn stream_for_interactive(string cwd, string script, int timeout_ms, ref<abort.a
 }
 
 fn execute_bash_stream(string cwd, string script, int timeout_ms, ref<abort.abort_t> cancellation, command.output_chunk_fn on_chunk): bash_result_t! {
-    throw_if_aborted(cancellation)
     var process_output = stream_for_interactive(cwd, script, timeout_ms, cancellation, on_chunk)
     bool cancelled = process_output.aborted || cancellation.is_aborted()
     string text = combine_output(process_output.stdout, process_output.stderr)
