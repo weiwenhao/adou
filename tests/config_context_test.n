@@ -64,6 +64,13 @@ test 'Pi-compatible one-shot and prompt/session options are preserved' {
     assert(config.print_mode && config.no_context_files && config.system_prompt == 'Answer tersely')
 }
 
+test 'short print mode keeps the appended prompt and later turns separate' {
+    var parsed = args.parse(['adou', '-p', 'first prompt', 'second prompt'])
+    assert(parsed.errors.len() == 0 && parsed.print_mode)
+    assert(parsed.messages.len() == 2)
+    assert(parsed.messages[0] == 'first prompt' && parsed.messages[1] == 'second prompt')
+}
+
 test 'CLI keeps @file arguments separate from the prompt' {
     var parsed = args.parse(['adou', '@src/main.n', 'summarize'])
     assert(parsed.errors.len() == 0)

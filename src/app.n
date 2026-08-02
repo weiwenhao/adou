@@ -126,10 +126,6 @@ fn run(): void! {
             config.print_mode = true
         }
     }
-    if config.print_mode && config.initial_messages.len() == 0 {
-        println('--print requires a prompt argument')
-        return
-    }
     if config.initial_messages.len() == 0 && !interactive && !config.print_mode && config.mode != 'rpc' {
         println('adou requires a TTY for interactive mode; pass a prompt argument for one-shot mode')
         return
@@ -220,8 +216,21 @@ fn run(): void! {
         return
     }
 
-    if config.initial_messages.len() > 0 && (config.print_mode || !interactive) {
-        run_headless(runner, config.initial_messages, config.print_mode, config.mode == 'json')
+    // Pi's JSON mode is always headless, even when stdin/stdout are TTYs and
+    // even when no prompt was supplied.  Explicit print mode is likewise a
+    // one-shot runner with no TUI; a missing prompt simply produces no final
+    // text, matching Pi's runPrintMode() behavior.  A positional prompt in a
+    // non-TTY is also plain text (Pi resolves that app mode to "print").
+    if config.mode == 'json' {
+        run_headless(runner, config.initial_messages, true, true)
+        return
+    }
+    if config.print_mode {
+        run_headless(runner, config.initial_messages, true, false)
+        return
+    }
+    if config.initial_messages.len() > 0 && !interactive {
+        run_headless(runner, config.initial_messages, true, false)
         return
     }
     if !interactive {

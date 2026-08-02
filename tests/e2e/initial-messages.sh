@@ -72,7 +72,7 @@ class Handler(BaseHTTPRequestHandler):
 server = HTTPServer(("127.0.0.1", 0), Handler)
 with open(port_path, "w", encoding="utf-8") as output:
     output.write(str(server.server_port))
-for _ in range(4):
+for _ in range(5):
     server.handle_request()
 PY
 server_pid=$!
@@ -91,7 +91,7 @@ if ! PI_CODING_AGENT_DIR="$tmp_dir/agent-file" \
     PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions-file" \
     "$binary" --provider deepseek --model deepseek-v4-flash --thinking off \
     --base-url "http://127.0.0.1:$port/v1" --api-key e2e-key \
-    --print --no-context-files --no-session "@$file_path" first second > "$output_file" 2>&1; then
+    -p --no-context-files --no-session "@$file_path" first second > "$output_file" 2>&1; then
     echo 'e2e: @file initial-message command failed' >&2
     cat "$output_file" >&2
     exit 1
@@ -119,6 +119,25 @@ if [ "$(cat "$stdin_output")" != 'answer-4' ]; then
     exit 1
 fi
 
+# Pi resolves a non-TTY invocation with a positional prompt to print mode,
+# even without an explicit -p.  The output must be the final assistant text,
+# not Adou's static TUI transcript.
+direct_output="$tmp_dir/direct-output"
+if ! PI_CODING_AGENT_DIR="$tmp_dir/agent-direct" \
+    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions-direct" \
+    "$binary" --provider deepseek --model deepseek-v4-flash --thinking off \
+    --base-url "http://127.0.0.1:$port/v1" --api-key e2e-key \
+    --no-context-files --no-session direct-prompt > "$direct_output" 2>&1; then
+    echo 'e2e: direct positional prompt one-shot command failed' >&2
+    cat "$direct_output" >&2
+    exit 1
+fi
+if [ "$(cat "$direct_output")" != 'answer-5' ]; then
+    echo 'e2e: non-TTY positional prompt did not use Pi print-mode output' >&2
+    cat "$direct_output" >&2
+    exit 1
+fi
+
 wait "$server_pid"
 server_pid=''
 
@@ -127,8 +146,8 @@ import json
 import sys
 
 count_path, request_dir = sys.argv[1:3]
-if open(count_path, encoding="ascii").read().strip() != "4":
-    raise SystemExit("expected four model requests for two two-message invocations")
+if open(count_path, encoding="ascii").read().strip() != "5":
+    raise SystemExit("expected five model requests for two two-message invocations and one direct prompt")
 
 def user_contents(number):
     body = json.load(open(f"{request_dir}/request-{number}.json", encoding="utf-8"))
@@ -138,6 +157,7 @@ file_first = user_contents(1)
 file_second = user_contents(2)
 stdin_first = user_contents(3)
 stdin_second = user_contents(4)
+direct = user_contents(5)
 
 if not file_first or "FILE_CONTENT" not in str(file_first[-1]) or "first" not in str(file_first[-1]):
     raise SystemExit(f"@file content was not prefixed to the first prompt: {file_first!r}")
@@ -147,6 +167,8 @@ if not stdin_first or "STDIN_CONTENT" not in str(stdin_first[-1]) or "first" not
     raise SystemExit(f"stdin content was not prefixed to the first prompt: {stdin_first!r}")
 if stdin_second[-1] != "second" or any("first second" in str(value) for value in stdin_second):
     raise SystemExit(f"piped CLI messages were merged instead of sent sequentially: {stdin_second!r}")
+if not direct or direct[-1] != "direct-prompt":
+    raise SystemExit(f"direct positional prompt was not sent as one request: {direct!r}")
 PY
 
 rpc_error="$tmp_dir/rpc-error"
