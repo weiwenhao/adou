@@ -692,10 +692,6 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
 
 #local
 fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string streaming_behavior, ref<mutex.mutex_t> output_lock): void! {
-    if prompt == '' {
-        rpc_write(output_lock, rpc_error(id, 'prompt', 'prompt message is required'))
-        return
-    }
     // Pi lets clients use `prompt` as a convenience queue operation while an
     // assistant turn is already running.  Keep explicit steer/follow_up
     // commands equivalent, but accept the streamingBehavior spelling too.
@@ -734,10 +730,6 @@ fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> 
 
 #local
 fn rpc_queue_message(ref<session.runner_t> runner, string id, string text, bool steering, ref<mutex.mutex_t> output_lock): void! {
-    if text == '' {
-        rpc_write(output_lock, rpc_error(id, steering ? 'steer' : 'follow_up', 'message is required'))
-        return
-    }
     var message = new ai_types.user_message_t(content = text, timestamp = time.now().ms_timestamp())
     if steering {
         runner.queue_steering(message)

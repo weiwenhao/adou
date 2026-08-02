@@ -102,7 +102,7 @@ fn runner_t.begin_prompt_operation(&self): void! {
     self.lock.lock()
     if self.busy {
         self.lock.unlock()
-        throw errorf('Agent session is already running')
+        throw errorf("Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.")
     }
     string provider = self.agent_config.model.provider
     string model_id = self.agent_config.model.id

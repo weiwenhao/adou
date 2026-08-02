@@ -147,9 +147,6 @@ fn queue_t.visible_snapshot(&self): queue_snapshot_t {
 // before its message_start event is forwarded.  Pi uses first-match removal
 // so duplicate queued text remains represented correctly.
 fn queue_t.mark_delivered(&self, string text): bool {
-    if text == '' {
-        return false
-    }
     self.lock.lock()
     bool removed = remove_visible(&self.visible_steering, text)
     if !removed {
