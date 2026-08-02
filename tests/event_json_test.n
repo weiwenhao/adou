@@ -17,6 +17,22 @@ test 'json mode serializes session lifecycle and retry fields' {
     assert(object['retryError'].as_string() == '503 service unavailable')
 }
 
+test 'json mode matches Pi summarization retry event payloads' {
+    var scheduled = session_stream.event_t {kind: session_stream.EVENT_SUMMARIZATION_RETRY_SCHEDULED, retry_attempt: 1, retry_max_attempts: 3, retry_delay_ms: 2000, retry_error_message: '503 service unavailable', retry_source: 'compaction', retry_reason: 'manual',}
+    var scheduled_object = json.parse(event_json.encode(scheduled)).as_object()
+    assert(scheduled_object['type'].as_string() == session_stream.EVENT_SUMMARIZATION_RETRY_SCHEDULED)
+    assert(scheduled_object['errorMessage'].as_string() == '503 service unavailable')
+    assert(!scheduled_object.contains('source') && !scheduled_object.contains('reason'))
+
+    var attempt = session_stream.event_t {kind: session_stream.EVENT_SUMMARIZATION_RETRY_ATTEMPT_START, retry_source: 'compaction', retry_reason: 'manual',}
+    var attempt_object = json.parse(event_json.encode(attempt)).as_object()
+    assert(attempt_object['source'].as_string() == 'compaction' && attempt_object['reason'].as_string() == 'manual')
+
+    var finished = session_stream.event_t {kind: session_stream.EVENT_SUMMARIZATION_RETRY_FINISHED, retry_attempt: 1, retry_success: true, retry_source: 'compaction', retry_reason: 'manual',}
+    var finished_object = json.parse(event_json.encode(finished)).as_object()
+    assert(finished_object.len() == 1 && finished_object['type'].as_string() == session_stream.EVENT_SUMMARIZATION_RETRY_FINISHED)
+}
+
 test 'json mode emits assistant message payloads on message end' {
     var assistant = new ai_types.assistant_message_t(provider = 'deepseek', model = 'deepseek-v4-flash', stop_reason = ai_types.STOP_STOP)
     var event = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, assistant_message: assistant,}

@@ -238,6 +238,16 @@
 - 当前绕过：Adou provider 在收到 `[DONE]` 后立即结束读取，不再访问连接尾部；成功流和已发生读取错误的失败路径均不重复调用 `response.close()`。底层连接交由 Nature 的响应生命周期回收。此绕过已用源码构建和安装后的二进制分别通过本地 SSE TUI、headless 流测试以及真实 DeepSeek key 测试。
 - 修复方向：将 `response_t` 的 body 状态、底层 `connable` 引用和 close/read waiter 的所有权拆开审计；确保 EOF/`[DONE]`、跨协程 abort、close callback 只执行一次，且 interface receiver 在 response 生命周期内保持有效。增加纯 Nature 最小 HTTP SSE feature 回归，覆盖 headless、TTY 协程和 read-error 后 close 三条路径。
 
+## NAT-028：跨 package 传递函数类型值触发编译器内部断言
+
+- 分类：compiler / package boundary / function value lowering
+- 状态：已最小化（2026-08-02）
+- 现象：Adou 将一个 package 中声明的函数类型 alias（`fn(string, int, int, int, string, bool)`）作为参数传给另一个 package 的普通函数，并在调用方用闭包实现该 alias。Nature 编译器在语义 lowering 阶段直接 abort：`Assertion failed: (target == NULL), function linear_ident, file linear.c, line 871`，没有生成可诊断的编译错误。
+- 最小复现方向：定义 `type callback_t = fn(string)`，在 package A 定义 `fn consume(callback_t callback)`，在 package B 用局部闭包赋给 `callback_t` 后调用 `A.consume(callback)`；将 callback 参数改为同 package、普通数据结构或由被调用 package 内部构造后即可通过。
+- 预期：跨 package 的函数类型 alias 与普通函数值应完成一致的类型检查和 lowering；不支持时应报告类型错误，不能触发编译器进程级断言。
+- 当前绕过：`src/compaction/compact.n` 的跨 package API 只接收 retry policy、stream 引用和 source/reason 字符串；retry callback 在 compaction package 内部构造，避免把函数值跨 package 传递。Adou `make build` 和全量测试已通过。
+- 修复方向：检查 `linear_ident` 对 package-qualified function alias、闭包环境和函数指针参数的符号解析；增加跨 package callback、捕获字符串和 errable 返回值的编译回归。
+
 ## 回归要求
 
 修复任何条目时至少执行：

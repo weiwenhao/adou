@@ -32,12 +32,25 @@ fn encode(session_stream.event_t event): string! {
     if event.bash_truncated {object['truncated'] = boxed_bool(true)}
     if event.bash_full_output_path != '' {object['fullOutputPath'] = boxed_string(event.bash_full_output_path)}
     if event.bash_exclude_from_context {object['excludeFromContext'] = boxed_bool(true)}
-    if event.retry_attempt != 0 {object['attempt'] = number_int(event.retry_attempt)}
-    if event.retry_max_attempts != 0 {object['maxAttempts'] = number_int(event.retry_max_attempts)}
-    if event.retry_delay_ms != 0 {object['delayMs'] = number_int(event.retry_delay_ms)}
-    if event.retry_error_message != '' {object['retryError'] = boxed_string(event.retry_error_message)}
-    if event.kind == session_stream.EVENT_RETRY_END {object['success'] = boxed_bool(event.retry_success)}
-    if event.retry_final_error != '' {object['finalError'] = boxed_string(event.retry_final_error)}
+    if event.kind == session_stream.EVENT_RETRY_START || event.kind == session_stream.EVENT_RETRY_END {
+        if event.retry_attempt != 0 {object['attempt'] = number_int(event.retry_attempt)}
+        if event.retry_max_attempts != 0 {object['maxAttempts'] = number_int(event.retry_max_attempts)}
+        if event.retry_delay_ms != 0 {object['delayMs'] = number_int(event.retry_delay_ms)}
+        if event.retry_error_message != '' {object['retryError'] = boxed_string(event.retry_error_message)}
+        if event.kind == session_stream.EVENT_RETRY_END {
+            object['success'] = boxed_bool(event.retry_success)
+            if event.retry_final_error != '' {object['finalError'] = boxed_string(event.retry_final_error)}
+        }
+    } else if event.kind == session_stream.EVENT_SUMMARIZATION_RETRY_SCHEDULED {
+        if event.retry_attempt != 0 {object['attempt'] = number_int(event.retry_attempt)}
+        if event.retry_max_attempts != 0 {object['maxAttempts'] = number_int(event.retry_max_attempts)}
+        if event.retry_delay_ms != 0 {object['delayMs'] = number_int(event.retry_delay_ms)}
+        if event.retry_error_message != '' {object['errorMessage'] = boxed_string(event.retry_error_message)}
+    }
+    if event.kind == session_stream.EVENT_SUMMARIZATION_RETRY_ATTEMPT_START {
+        if event.retry_source != '' {object['source'] = boxed_string(event.retry_source)}
+        if event.retry_reason != '' {object['reason'] = boxed_string(event.retry_reason)}
+    }
     return json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
 }
 

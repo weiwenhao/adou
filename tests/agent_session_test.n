@@ -18,6 +18,7 @@ type provider_fixture_t = struct {
     int agent_index
     int agent_calls
     int summary_calls
+    int summary_failures
     [[ai_types.message_t]] agent_contexts = []
     [string] summary_prompts = []
 }
@@ -51,7 +52,12 @@ fn provider_fn(ref<provider_fixture_t> fixture): agent_types.stream_fn {
                     fixture.summary_prompts.push(prompt.content)
                 }
             }
-            response = assistant('## Goal\ncontinue', ai_types.STOP_STOP, '', 8, 10)
+            if fixture.summary_failures > 0 {
+                fixture.summary_failures -= 1
+                response = assistant('', ai_types.STOP_ERROR, '503 service unavailable', 0, 0)
+            } else {
+                response = assistant('## Goal\ncontinue', ai_types.STOP_STOP, '', 8, 10)
+            }
         } else {
             fixture.agent_calls += 1
             fixture.agent_contexts.push(context.messages.slice(0, context.messages.len()))
@@ -236,6 +242,28 @@ test 'manual compaction aborts an active turn before summarizing' {
     assert(active.cancellation.is_aborted())
     assert(fixture.summary_calls == 1)
     assert(count_kind(result[0], session_stream.EVENT_COMPACTION_START) == 1)
+    assert(manager.latest_compaction() is ref<session_types.entry_t>)
+}
+
+test 'manual compaction retries transient summaries and emits Pi retry lifecycle' {
+    var manager = repository.in_memory('/tmp')
+    seed_history(manager)
+    var fixture = new provider_fixture_t(summary_failures = 1)
+    var runner = make_runner(manager, fixture, 100, 0, 2)
+    runner.retry_base_delay_ms = 1
+    var result = consume(runner.compact_now('retry the summary'))
+    assert(fixture.summary_calls == 2)
+    assert(count_kind(result[0], session_stream.EVENT_SUMMARIZATION_RETRY_SCHEDULED) == 1)
+    assert(count_kind(result[0], session_stream.EVENT_SUMMARIZATION_RETRY_ATTEMPT_START) == 1)
+    assert(count_kind(result[0], session_stream.EVENT_SUMMARIZATION_RETRY_FINISHED) == 1)
+    bool attempt_matches = false
+    for event in result[0] {
+        if event.kind == session_stream.EVENT_SUMMARIZATION_RETRY_ATTEMPT_START {
+            attempt_matches = event.retry_source == 'compaction' && event.retry_reason == 'manual'
+        }
+    }
+    assert(attempt_matches)
+    assert(count_kind(result[0], session_stream.EVENT_COMPACTION_END) == 1)
     assert(manager.latest_compaction() is ref<session_types.entry_t>)
 }
 

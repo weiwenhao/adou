@@ -1,6 +1,7 @@
 import adou.src.ai.abort
 import adou.src.ai.event_stream
 import adou.src.ai.types as ai_types
+import adou.src.agent.session_stream
 import adou.src.compaction.compact
 import adou.src.compaction.prepare
 import adou.src.compaction.serialize
@@ -79,6 +80,43 @@ fn run([ref<session_types.entry_t>] entries, ref<ai_types.model_t> model, ref<ai
         options.thinking_enabled = true
     }
     var response = compact.complete_with_retry(model, context, options, stream_function, cancellation)
+    if response.stop_reason == ai_types.STOP_ABORTED {
+        throw errorf('Branch summarization aborted')
+    }
+    if response.stop_reason == ai_types.STOP_ERROR {
+        throw errorf('Branch summarization failed: %s', response.error_message == '' ? 'Unknown error' : response.error_message)
+    }
+    var (read_files, modified_files) = prepare.file_lists(preparation.file_ops)
+    string summary = BRANCH_SUMMARY_PREAMBLE + compact.content_text(response)
+    summary += compact.format_file_operations(read_files, modified_files)
+    return types.summary_result_t {summary: summary == '' ? 'No summary generated' : summary, usage: response.usage, read_files: read_files, modified_files: modified_files,}
+}
+
+fn run_with_events([ref<session_types.entry_t>] entries, ref<ai_types.model_t> model, ref<ai_types.stream_options_t> base_options, compact.stream_fn stream_function, ref<abort.abort_t> cancellation, string custom_instructions, string thinking_level, int reserve_tokens, compact.retry_policy_t policy, ref<session_stream.stream_t> output, string reason): types.summary_result_t! {
+    int context_window = model.context_window > 0 ? model.context_window : 128000
+    int token_budget = context_window - reserve_tokens
+    if token_budget < 0 {token_budget = 0}
+    var preparation = prepare_entries(entries, token_budget)
+    if preparation.messages.len() == 0 {
+        return types.summary_result_t {summary: 'No content to summarize',}
+    }
+    string instructions = BRANCH_SUMMARY_PROMPT
+    if custom_instructions != '' {
+        instructions += '\n\nAdditional focus: ' + custom_instructions
+    }
+    string prompt_text = '<conversation>\n' + serialize.conversation(preparation.messages) + '\n</conversation>\n\n' + instructions
+    ai_types.message_t prompt = new ai_types.user_message_t(content = prompt_text, timestamp = time.now().ms_timestamp())
+    var context = new ai_types.context_t(system_prompt = serialize.SUMMARIZATION_SYSTEM_PROMPT, messages = [prompt])
+    var options = compact.copy_options(base_options)
+    options.max_tokens = 2048
+    if model.max_tokens > 0 && options.max_tokens > model.max_tokens {options.max_tokens = model.max_tokens}
+    options.cache_retention = 'none'
+    options.session_id = identity.uuid_v7()
+    if model.reasoning && thinking_level != '' && thinking_level != 'off' {
+        options.reasoning_effort = thinking_level
+        options.thinking_enabled = true
+    }
+    var response = compact.complete_with_events(model, context, options, stream_function, cancellation, policy, output, 'branchSummary', reason)
     if response.stop_reason == ai_types.STOP_ABORTED {
         throw errorf('Branch summarization aborted')
     }

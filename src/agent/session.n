@@ -579,7 +579,8 @@ fn run_tree_navigation_inner(ref<runner_t> runner, ref<session_stream.stream_t> 
     compact.stream_fn summarization_stream = fn(ref<ai_types.model_t> model, ref<ai_types.context_t> summary_context, ref<ai_types.stream_options_t> options): ref<ai_event_stream.assistant_stream_t> {
         return runner.stream_function(model, summary_context, options)
     }
-    var result = branch.run(collection.entries, runner.agent_config.model, runner.agent_config.stream_options, summarization_stream, cancellation, instructions, runner.agent_config.stream_options.reasoning_effort, 16384) catch error {
+    var retry_policy = compact.retry_policy_t {enabled: runner.retry_enabled, max_retries: runner.retry_max_attempts, base_delay_ms: runner.retry_base_delay_ms,}
+    var result = branch.run_with_events(collection.entries, runner.agent_config.model, runner.agent_config.stream_options, summarization_stream, cancellation, instructions, runner.agent_config.stream_options.reasoning_effort, 16384, retry_policy, output, '') catch error {
         bool aborted = cancellation.is_aborted()
         output.push(session_stream.event_t {kind: session_stream.EVENT_BRANCH_SUMMARY_END, aborted: aborted, error_message: aborted ? '' : error.msg(),})
         output.finish(runner.copy_active_messages())
@@ -827,7 +828,8 @@ fn runner_t.run_compaction(&self, ref<session_stream.stream_t> output, string re
     compact.stream_fn summarization_stream = fn(ref<ai_types.model_t> model, ref<ai_types.context_t> summary_context, ref<ai_types.stream_options_t> options): ref<ai_event_stream.assistant_stream_t> {
         return self.stream_function(model, summary_context, options)
     }
-    var result = compact.run(preparation, self.agent_config.model, self.agent_config.stream_options, summarization_stream, cancellation, instructions, self.agent_config.stream_options.reasoning_effort) catch error {
+    var retry_policy = compact.retry_policy_t {enabled: self.retry_enabled, max_retries: self.retry_max_attempts, base_delay_ms: self.retry_base_delay_ms,}
+    var result = compact.run_with_events(preparation, self.agent_config.model, self.agent_config.stream_options, summarization_stream, cancellation, instructions, self.agent_config.stream_options.reasoning_effort, retry_policy, output, 'compaction', reason) catch error {
         bool aborted = cancellation.is_aborted()
         output.push(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, reason: reason, aborted: aborted, will_retry: false, error_message: error.msg(),})
         self.lock.lock()

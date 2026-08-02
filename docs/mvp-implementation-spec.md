@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.25
+文档版本：0.26
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -562,6 +562,9 @@ contextTokens > contextWindow - reserveTokens
 - 重复压缩把 previous summary 放入 `<previous-summary>` 并执行 update prompt；
 - 累计 readFiles/modifiedFiles，并写入 summary 和 details；
 - 摘要调用的 usage 计入 session totals。
+- compaction 和 branch summary 复用 session 的 retry enabled/maxAttempts/baseDelayMs 策略；provider request 自身的重试预算保持独立；
+- 可重试的摘要失败必须按 Pi 顺序发出 `summarization_retry_scheduled`、`summarization_retry_attempt_start`、`summarization_retry_finished`，其中 JSON 字段形状与 Pi 完全一致；
+- `attempt_start` 对 compaction 携带 `source=compaction` 与 `reason=manual|threshold|overflow`，对 branch summary 只携带 `source=branchSummary`；deterministic error、abort 和关闭 retry 时不得发出 retry 事件。
 
 ### 13.4 触发与恢复
 
@@ -571,7 +574,7 @@ contextTokens > contextWindow - reserveTokens
 - 同一个用户 prompt 最多执行一次 compact-and-retry；再次 overflow 必须停止并显示 Pi 等价错误；
 - aborted assistant 默认不触发自动压缩；
 - compaction 自身可取消，取消后不写 compaction entry；
-- 摘要请求遵循 provider retry policy，但 deterministic error 和 abort 不重试。
+- 摘要请求遵循 session retry policy，但 deterministic error 和 abort 不重试；provider request retry policy 只负责单次 HTTP 请求。
 
 MVP 同时提供 `/compact [instructions]`，复用同一套 preparation 和 summary 逻辑，不能维护第二套手动压缩实现。手动压缩开始前必须先中断当前活动 turn 并等待 session 回到 idle；RPC `compact` 的响应只能在被中断 turn 发出 `session_end`、摘要完成并写入 compaction entry 后返回，不能因 provider 流尚未收尾而提前响应。
 
@@ -774,7 +777,7 @@ Nature 标准库扩展必须有独立的 Nature `test` 回归；Adou 不得依�
 - threshold/overflow/manual 流程；
 - compaction entry 与 context reload。
 
-退出条件：重复压缩、split turn 和一次 overflow retry 全部通过差分测试，旧历史仍在 JSONL。
+退出条件：重复压缩、split turn、摘要 transient retry 和一次 overflow retry 全部通过差分测试，旧历史仍在 JSONL。
 
 ### M4：终端与 TUI
 

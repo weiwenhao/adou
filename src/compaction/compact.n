@@ -3,6 +3,7 @@ import adou.src.ai.errors
 import adou.src.ai.event_stream
 import adou.src.ai.provider_retry
 import adou.src.ai.types as ai_types
+import adou.src.agent.session_stream
 import adou.src.compaction.prepare
 import adou.src.compaction.serialize
 import adou.src.compaction.types
@@ -11,12 +12,34 @@ import strings
 import time
 
 type stream_fn = fn(ref<ai_types.model_t>, ref<ai_types.context_t>, ref<ai_types.stream_options_t>): ref<event_stream.assistant_stream_t>
+// Compaction retries use the session retry policy, not the provider request
+// retry budget.  The callback mirrors Pi's public summarization retry events.
+type retry_policy_t = struct {
+    bool enabled = true
+    int max_retries
+    int base_delay_ms = 500
+}
+type retry_callback_t = fn(string, int, int, int, string, bool, string, string)
+
+fn noop_retry_callback(): retry_callback_t {
+    retry_callback_t result = fn(string phase, int attempt, int max_attempts, int delay_ms, string error_message, bool success, string source, string reason) {}
+    return result
+}
 
 const SUMMARIZATION_PROMPT = 'The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\nUse this EXACT format:\n\n## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or "(none)" if none were mentioned]\n\n## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale]\n\n## Next Steps\n1. [Ordered list of what should happen next]\n\n## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or "(none)" if not applicable]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.'
 const UPDATE_SUMMARIZATION_PROMPT = 'The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\nUpdate the existing structured summary with new information. RULES:\n- PRESERVE all existing information from the previous summary\n- ADD new progress, decisions, and context from the new messages\n- UPDATE the Progress section: move items from "In Progress" to "Done" when completed\n- UPDATE "Next Steps" based on what was accomplished\n- PRESERVE exact file paths, function names, and error messages\n- If something is no longer relevant, you may remove it\n\nUse this EXACT format:\n\n## Goal\n[Preserve existing goals, add new ones if the task expanded]\n\n## Constraints & Preferences\n- [Preserve existing, add new ones discovered]\n\n## Progress\n### Done\n- [x] [Include previously done items AND newly completed items]\n\n### In Progress\n- [ ] [Current work - update based on progress]\n\n### Blocked\n- [Current blockers - remove if resolved]\n\n## Key Decisions\n- **[Decision]**: [Brief rationale] (preserve all previous, add new)\n\n## Next Steps\n1. [Update based on current state]\n\n## Critical Context\n- [Preserve important context, add new if needed]\n\nKeep each section concise. Preserve exact file paths, function names, and error messages.'
 const TURN_PREFIX_SUMMARIZATION_PROMPT = 'This is the PREFIX of a turn that was too large to keep. The SUFFIX (recent work) is retained.\n\nSummarize the prefix to provide context for the retained suffix:\n\n## Original Request\n[What did the user ask for in this turn?]\n\n## Early Progress\n- [Key decisions and work done in the prefix]\n\n## Context for Suffix\n- [Information needed to understand the retained recent work]\n\nBe concise. Focus on what\'s needed to understand the kept suffix.'
 
 fn run(ref<types.preparation_t> preparation, ref<ai_types.model_t> model, ref<ai_types.stream_options_t> base_options, stream_fn stream_function, ref<abort.abort_t> cancellation, string custom_instructions, string thinking_level): types.summary_result_t! {
+    return run_with_policy(preparation, model, base_options, stream_function, cancellation, custom_instructions, thinking_level, policy_from_options(base_options), noop_retry_callback(), '', '')
+}
+
+fn run_with_events(ref<types.preparation_t> preparation, ref<ai_types.model_t> model, ref<ai_types.stream_options_t> base_options, stream_fn stream_function, ref<abort.abort_t> cancellation, string custom_instructions, string thinking_level, retry_policy_t policy, ref<session_stream.stream_t> output, string source, string reason): types.summary_result_t! {
+    var callback = retry_callback_for(output)
+    return run_with_policy(preparation, model, base_options, stream_function, cancellation, custom_instructions, thinking_level, policy, callback, source, reason)
+}
+
+fn run_with_policy(ref<types.preparation_t> preparation, ref<ai_types.model_t> model, ref<ai_types.stream_options_t> base_options, stream_fn stream_function, ref<abort.abort_t> cancellation, string custom_instructions, string thinking_level, retry_policy_t policy, retry_callback_t callback, string source, string reason): types.summary_result_t! {
     string summary = ''
     ai_types.usage_t usage = ai_types.usage_t{}
     if preparation.is_split_turn && preparation.turn_prefix_messages.len() > 0 {
@@ -24,19 +47,19 @@ fn run(ref<types.preparation_t> preparation, ref<ai_types.model_t> model, ref<ai
         bool has_history_usage = false
         ai_types.usage_t history_usage = ai_types.usage_t{}
         if preparation.messages_to_summarize.len() > 0 {
-            var history_result = generate(preparation.messages_to_summarize, model, base_options, stream_function, cancellation, custom_instructions, preparation.has_previous_summary, preparation.previous_summary, thinking_level, preparation.settings.reserve_tokens, false)
+            var history_result = generate_with_policy(preparation.messages_to_summarize, model, base_options, stream_function, cancellation, custom_instructions, preparation.has_previous_summary, preparation.previous_summary, thinking_level, preparation.settings.reserve_tokens, false, policy, callback, source, reason)
             history = history_result[0]
             history_usage = history_result[1]
             has_history_usage = true
         }
-        var prefix_result = generate(preparation.turn_prefix_messages, model, base_options, stream_function, cancellation, '', false, '', thinking_level, preparation.settings.reserve_tokens, true)
+        var prefix_result = generate_with_policy(preparation.turn_prefix_messages, model, base_options, stream_function, cancellation, '', false, '', thinking_level, preparation.settings.reserve_tokens, true, policy, callback, source, reason)
         summary = history + '\n\n---\n\n**Turn Context (split turn):**\n\n' + prefix_result[0]
         usage = prefix_result[1]
         if has_history_usage {
             usage = combine_usage(history_usage, usage)
         }
     } else {
-        var result = generate(preparation.messages_to_summarize, model, base_options, stream_function, cancellation, custom_instructions, preparation.has_previous_summary, preparation.previous_summary, thinking_level, preparation.settings.reserve_tokens, false)
+        var result = generate_with_policy(preparation.messages_to_summarize, model, base_options, stream_function, cancellation, custom_instructions, preparation.has_previous_summary, preparation.previous_summary, thinking_level, preparation.settings.reserve_tokens, false, policy, callback, source, reason)
         summary = result[0]
         usage = result[1]
     }
@@ -46,7 +69,7 @@ fn run(ref<types.preparation_t> preparation, ref<ai_types.model_t> model, ref<ai
 }
 
 #local
-fn generate([ai_types.message_t] messages, ref<ai_types.model_t> model, ref<ai_types.stream_options_t> base_options, stream_fn stream_function, ref<abort.abort_t> cancellation, string custom_instructions, bool has_previous_summary, string previous_summary, string thinking_level, int reserve_tokens, bool turn_prefix): (string, ai_types.usage_t)! {
+fn generate_with_policy([ai_types.message_t] messages, ref<ai_types.model_t> model, ref<ai_types.stream_options_t> base_options, stream_fn stream_function, ref<abort.abort_t> cancellation, string custom_instructions, bool has_previous_summary, string previous_summary, string thinking_level, int reserve_tokens, bool turn_prefix, retry_policy_t policy, retry_callback_t callback, string source, string reason): (string, ai_types.usage_t)! {
     string conversation_text = serialize.conversation(messages)
     string base_prompt = SUMMARIZATION_PROMPT
     if has_previous_summary {
@@ -79,7 +102,7 @@ fn generate([ai_types.message_t] messages, ref<ai_types.model_t> model, ref<ai_t
         options.reasoning_effort = thinking_level
         options.thinking_enabled = true
     }
-    var response = complete_with_retry(model, context, options, stream_function, cancellation)
+    var response = complete_with_retry_with_policy(model, context, options, stream_function, cancellation, policy, callback, source, reason)
     if response.stop_reason == ai_types.STOP_ABORTED {
         throw errorf('Summarization aborted: %s', response.error_message)
     }
@@ -97,9 +120,22 @@ fn generate([ai_types.message_t] messages, ref<ai_types.model_t> model, ref<ai_t
 }
 
 fn complete_with_retry(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> options, stream_fn stream_function, ref<abort.abort_t> cancellation): ref<ai_types.assistant_message_t>! {
+    return complete_with_retry_with_policy(model, context, options, stream_function, cancellation, policy_from_options(options), noop_retry_callback(), '', '')
+}
+
+fn complete_with_events(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> options, stream_fn stream_function, ref<abort.abort_t> cancellation, retry_policy_t policy, ref<session_stream.stream_t> output, string source, string reason): ref<ai_types.assistant_message_t>! {
+    var callback = retry_callback_for(output)
+    return complete_with_retry_with_policy(model, context, options, stream_function, cancellation, policy, callback, source, reason)
+}
+
+fn complete_with_retry_with_policy(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> options, stream_fn stream_function, ref<abort.abort_t> cancellation, retry_policy_t policy, retry_callback_t callback, string source, string reason): ref<ai_types.assistant_message_t>! {
     int attempt = 0
+    bool retrying = false
     for true {
         if cancellation.is_aborted() {
+            if retrying {
+                callback('finished', attempt, policy.max_retries, 0, '', false, source, reason)
+            }
             return new ai_types.assistant_message_t(stop_reason = ai_types.STOP_ABORTED)
         }
         var stream = stream_function(model, context, options)
@@ -113,13 +149,53 @@ fn complete_with_retry(ref<ai_types.model_t> model, ref<ai_types.context_t> cont
             }
         }
         var response = stream.result()
-        if response.stop_reason != ai_types.STOP_ERROR || attempt >= options.max_retries || !errors.is_retryable_assistant_error(response) {
+        if response.stop_reason != ai_types.STOP_ERROR || !policy.enabled || attempt >= policy.max_retries || !errors.is_retryable_assistant_error(response) {
+            if retrying {
+                bool success = response.stop_reason != ai_types.STOP_ERROR && response.stop_reason != ai_types.STOP_ABORTED
+                callback('finished', attempt, policy.max_retries, 0, response.error_message, success, source, reason)
+            }
             return response
         }
-        provider_retry.sleep(cancellation, provider_retry.exponential_delay_ms(attempt))
         attempt += 1
+        retrying = true
+        int delay_ms = retry_delay_ms(policy.base_delay_ms, attempt)
+        string error_message = response.error_message == '' ? 'Unknown error' : response.error_message
+        callback('scheduled', attempt, policy.max_retries, delay_ms, error_message, false, source, reason)
+        provider_retry.sleep(cancellation, delay_ms) catch error {
+            callback('finished', attempt, policy.max_retries, 0, error_message, false, source, reason)
+            return new ai_types.assistant_message_t(stop_reason = ai_types.STOP_ABORTED)
+        }
+        callback('attempt_start', attempt, policy.max_retries, 0, '', false, source, reason)
     }
     throw errorf('unreachable')
+}
+
+fn policy_from_options(ref<ai_types.stream_options_t> options): retry_policy_t {
+    return retry_policy_t {enabled: options.max_retries > 0, max_retries: options.max_retries, base_delay_ms: 500,}
+}
+
+fn retry_callback_for(ref<session_stream.stream_t> output): retry_callback_t {
+    retry_callback_t result = fn(string phase, int attempt, int max_attempts, int delay_ms, string error_message, bool success, string source, string reason) {
+        if phase == 'scheduled' {
+            output.push(session_stream.event_t {kind: session_stream.EVENT_SUMMARIZATION_RETRY_SCHEDULED, retry_attempt: attempt, retry_max_attempts: max_attempts, retry_delay_ms: delay_ms, retry_error_message: error_message,}) catch error {}
+        } else if phase == 'attempt_start' {
+            output.push(session_stream.event_t {kind: session_stream.EVENT_SUMMARIZATION_RETRY_ATTEMPT_START, retry_source: source, retry_reason: reason,}) catch error {}
+        } else if phase == 'finished' {
+            output.push(session_stream.event_t {kind: session_stream.EVENT_SUMMARIZATION_RETRY_FINISHED,}) catch error {}
+        }
+    }
+    return result
+}
+
+#local
+fn retry_delay_ms(int base_delay_ms, int attempt): int {
+    int delay = base_delay_ms
+    if delay < 0 {delay = 0}
+    for int index = 1; index < attempt && delay < 60000; index += 1 {
+        delay *= 2
+    }
+    if delay > 60000 {delay = 60000}
+    return delay
 }
 
 fn copy_options(ref<ai_types.stream_options_t> source): ref<ai_types.stream_options_t> {

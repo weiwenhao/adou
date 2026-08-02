@@ -160,6 +160,21 @@ fn chat_t.apply(&self, session_stream.event_t event): void! {
         }
         return
     }
+    if event.kind == session_stream.EVENT_SUMMARIZATION_RETRY_SCHEDULED {
+        self.running = true
+        self.error_message = event.retry_error_message
+        self.status = fmt.sprintf('Retrying summary (%d/%d) in %.1fs...', event.retry_attempt, event.retry_max_attempts, event.retry_delay_ms as float / 1000.0)
+        return
+    }
+    if event.kind == session_stream.EVENT_SUMMARIZATION_RETRY_ATTEMPT_START {
+        self.running = true
+        self.error_message = ''
+        self.status = event.retry_source == 'branchSummary' ? 'Summarizing branch...' : 'Compacting context...'
+        return
+    }
+    if event.kind == session_stream.EVENT_SUMMARIZATION_RETRY_FINISHED {
+        return
+    }
     if event.kind == session_stream.EVENT_BRANCH_SUMMARY_START {
         self.running = true
         self.status = 'Summarizing branch...'
