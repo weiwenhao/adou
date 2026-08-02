@@ -105,6 +105,10 @@ type view_t = struct {
     // --resume opens the selector before the normal prompt. Escape/cancel
     // exits that startup flow instead of silently continuing a session.
     bool startup_session_picker
+    // Pi sends initialMessage and every remaining CLI message sequentially.
+    // Keep the not-yet-sent startup prompts separate from the normal steering
+    // and follow-up queues so they cannot be merged into one turn.
+    [string] pending_initial_messages = []
     bool pending_tree_navigation
     string pending_tree_editor_text
     string pending_tree_target_id
@@ -165,6 +169,7 @@ fn view_t.run_loop(&self): void! {
             bool finished = self.consume_stream(stream)
             if finished {
                 self.active_stream = null
+                self.active_stream = self.start_next_initial_prompt()
             }
             continue
         }
@@ -621,6 +626,21 @@ fn view_t.start_prompt(&self, string text): ref<session_stream.stream_t>? {
         return null
     }
     return stream
+}
+
+fn view_t.start_next_initial_prompt(&self): ref<session_stream.stream_t>? {
+    for self.pending_initial_messages.len() > 0 {
+        string text = self.pending_initial_messages[0]
+        self.pending_initial_messages = self.pending_initial_messages.slice(1, self.pending_initial_messages.len())
+        var stream = self.runner.prompt(text) catch error {
+            self.chat.error_message = error.msg()
+            self.chat.status = 'Request failed'
+            self.redraw()
+            continue
+        }
+        return stream
+    }
+    return null
 }
 
 fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {

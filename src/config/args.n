@@ -202,6 +202,28 @@ fn parse([string] argv): types.cli_args_t {
     return result
 }
 
+// Pi combines stdin and @file text with the first CLI message, then sends
+// every remaining CLI message as a separate prompt.  Keep this transformation
+// independent of the application loop so the text ordering can be tested
+// without starting a provider.
+fn prepend_initial_text([string] messages, string prefix): [string] {
+    if prefix == '' {
+        return messages
+    }
+    [string] result = []
+    if messages.len() == 0 {
+        result.push(prefix)
+        return result
+    }
+    result.push(prefix + messages[0])
+    int index = 1
+    for index < messages.len() {
+        result.push(messages[index])
+        index += 1
+    }
+    return result
+}
+
 #local
 fn consume_string([string] argv, int index, string option): string_result_t {
     if index + 1 >= argv.len() || argv[index + 1].starts_with('-') {

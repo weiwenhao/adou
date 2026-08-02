@@ -83,6 +83,11 @@ fn run(): void! {
         return
     }
     var config = resolve.resolve(arguments, cwd)
+    if config.mode == 'rpc' && arguments.file_args.len() > 0 {
+        println('Error: @file arguments are not supported in RPC mode')
+        syscall.exit(1) catch exit_error {}
+        return
+    }
     if config.offline && config.initial_messages.len() > 0 {
         if config.mode == 'json' {
             println(json_error('Offline mode cannot send prompts to a provider'))
@@ -94,9 +99,7 @@ fn run(): void! {
     if arguments.file_args.len() > 0 {
         string file_text = load_file_arguments(arguments.file_args, cwd)
         if file_text != '' {
-            [string] messages = [file_text]
-            messages.append(config.initial_messages)
-            config.initial_messages = messages
+            config.initial_messages = args.prepend_initial_text(config.initial_messages, file_text)
         }
     }
     bool stdin_tty = term.is_tty(term.STDIN)
@@ -112,12 +115,10 @@ fn run(): void! {
     // that case: on some Nature runtimes a closed non-TTY descriptor reports
     // a full zero-filled buffer instead of a zero-byte read, which would
     // silently prepend thousands of NULs to the real prompt.
-    if !stdin_tty && config.mode != 'rpc' && config.initial_messages.len() == 0 && stdin_can_contain_prompt() {
+    if !stdin_tty && config.mode != 'rpc' && stdin_can_contain_prompt() {
         string piped = read_piped_stdin()
         if piped != '' {
-            [string] messages = [piped]
-            messages.append(config.initial_messages)
-            config.initial_messages = messages
+            config.initial_messages = args.prepend_initial_text(config.initial_messages, piped)
             config.print_mode = true
         }
     }
@@ -193,7 +194,7 @@ fn run(): void! {
     }
 
     if config.initial_messages.len() > 0 && (config.print_mode || !interactive) {
-        run_headless(runner, strings.join(config.initial_messages, ' '), config.print_mode, config.mode == 'json')
+        run_headless(runner, config.initial_messages, config.print_mode, config.mode == 'json')
         return
     }
     if !interactive {
@@ -216,7 +217,8 @@ fn run(): void! {
         view.show_session_overlay()
     }
     if config.initial_messages.len() > 0 {
-        view.active_stream = runner.prompt(strings.join(config.initial_messages, ' '))
+        view.pending_initial_messages = config.initial_messages
+        view.active_stream = view.start_next_initial_prompt()
     }
     view.run() catch error {
         terminal.restore() catch restore_error {}
@@ -311,25 +313,28 @@ fn open_repository(config_types.config_t config, string cwd): ref<repository.man
 }
 
 #local
-fn run_headless(ref<session.runner_t> runner, string prompt, bool plain, bool json_mode): void! {
+fn run_headless(ref<session.runner_t> runner, [string] prompts, bool plain, bool json_mode): void! {
     if json_mode {
-        run_json(runner, prompt)
+        run_json(runner, prompts)
         return
     }
     if plain {
-        var stream = runner.prompt(prompt)
-        for true {
-            var event = stream.recv() catch error {
-                break
+        [ai_types.message_t] messages = []
+        for prompt in prompts {
+            var stream = runner.prompt(prompt)
+            for true {
+                var event = stream.recv() catch error {
+                    break
+                }
+                if event.kind == session_stream.EVENT_SESSION_END {
+                    break
+                }
             }
-            if event.kind == session_stream.EVENT_SESSION_END {
-                break
+            messages = stream.result() catch error {
+                string message = error.msg()
+                println('Error: ' + message)
+                return
             }
-        }
-        var messages = stream.result() catch error {
-            string message = error.msg()
-            println('Error: ' + message)
-            return
         }
         string answer = last_assistant_text(messages)
         if answer != '' {
@@ -345,37 +350,41 @@ fn run_headless(ref<session.runner_t> runner, string prompt, bool plain, bool js
         thinking = 'on'
     }
     view.configure(runner.agent_config.model.context_window, thinking)
-    var stream = runner.prompt(prompt)
-    for true {
-        var event = stream.recv() catch error {
-            break
+    for prompt in prompts {
+        var stream = runner.prompt(prompt)
+        for true {
+            var event = stream.recv() catch error {
+                break
+            }
+            view.apply(event)
+            if event.kind == session_stream.EVENT_SESSION_END {
+                break
+            }
         }
-        view.apply(event)
-        if event.kind == session_stream.EVENT_SESSION_END {
-            break
+        stream.result() catch error {
+            view.error_message = error.msg()
         }
-    }
-    stream.result() catch error {
-        view.error_message = error.msg()
     }
     var lines = view.render(120)
     println(strings.join(lines, '\n'))
 }
 
 #local
-fn run_json(ref<session.runner_t> runner, string prompt): void! {
+fn run_json(ref<session.runner_t> runner, [string] prompts): void! {
     if runner.repository.persisted {
         println(runner.repository.header_json())
     }
-    var stream = runner.prompt(prompt)
-    for true {
-        var event = stream.recv() catch error {break}
-        println(event_json.encode(event))
-        if event.kind == session_stream.EVENT_SESSION_END {break}
-    }
-    var ignored = stream.result() catch error {
-        println(json_error(error.msg()))
-        return
+    for prompt in prompts {
+        var stream = runner.prompt(prompt)
+        for true {
+            var event = stream.recv() catch error {break}
+            println(event_json.encode(event))
+            if event.kind == session_stream.EVENT_SESSION_END {break}
+        }
+        var ignored = stream.result() catch error {
+            println(json_error(error.msg()))
+            return
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.18
+文档版本：0.19
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -671,6 +671,8 @@ adou [--provider deepseek|openai|anthropic]
 默认模型为 `deepseek/deepseek-v4-flash`，密钥按已保存的 `~/.pi/agent/auth.json`、环境变量 `DEEPSEEK_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 解析。`PI_CODING_AGENT_DIR` 可覆盖 `~/.pi/agent`（`ADOU_CODING_AGENT_DIR` 为兼容别名）。`--api-key` MAY 支持，但帮助文本必须提示命令行参数可能进入 shell history。
 
 配置必须包含模型 `contextWindow` 和 `maxTokens`。未知 context window 时不得凭空触发 threshold compaction；overflow error recovery 仍可依据 provider error pattern 执行。
+
+初始消息必须保持 Pi 的顺序语义：非 RPC 模式下，stdin 内容先拼接到 `@file` 文本，再拼接到第一条 CLI 消息；剩余 CLI 消息逐条发送为独立的 agent turn，不能用空格合并。纯文本输出只打印最后一轮 assistant 响应，JSON 模式则按每一轮顺序输出完整事件流；RPC 模式拒绝 `@file` 参数并以非零状态退出。
 
 MVP 内置 TUI 命令：
 

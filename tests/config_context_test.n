@@ -71,6 +71,17 @@ test 'CLI keeps @file arguments separate from the prompt' {
     assert(parsed.messages.len() == 1 && parsed.messages[0] == 'summarize')
 }
 
+test 'Pi initial message composition prefixes stdin and files only onto the first prompt' {
+    [string] prompts = args.prepend_initial_text(['first', 'second'], 'stdin')
+    prompts = args.prepend_initial_text(prompts, '<file>')
+    assert(prompts.len() == 2)
+    assert(prompts[0] == '<file>stdinfirst')
+    assert(prompts[1] == 'second')
+
+    [string] file_only = args.prepend_initial_text([], '<file>')
+    assert(file_only.len() == 1 && file_only[0] == '<file>')
+}
+
 test 'print mode is set even when it reads the prompt from stdin' {
     var parsed = args.parse(['adou', '--print'])
     assert(parsed.errors.len() == 0 && parsed.print_mode && parsed.messages.len() == 0)
