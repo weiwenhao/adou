@@ -704,12 +704,24 @@ fn rpc_queue_message(ref<session.runner_t> runner, string id, string text, bool 
 #local
 fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope_patterns, ref<mutex.mutex_t> output_lock): void! {
     [ref<ai_types.model_t>] available = []
-    for model in models.all() {
-        if !models.allowed(model.provider + '/' + model.id, model_scope_patterns) {
-            continue
+    [models.scoped_model_t] scoped = models.resolve_scope(model_scope_patterns)
+    if scoped.len() > 0 {
+        // Pi cycles the resolved scoped list in the exact order supplied by
+        // --models, after dropping entries whose provider has no auth.
+        for entry in scoped {
+            ref<ai_types.model_t> model = entry.model
+            if auth.effective(model.provider) != '' || (model.provider == runner.agent_config.model.provider && runner.agent_config.stream_options.api_key != '') {
+                available.push(model)
+            }
         }
-        if auth.effective(model.provider) != '' || (model.provider == runner.agent_config.model.provider && runner.agent_config.stream_options.api_key != '') {
-            available.push(model)
+    } else {
+        // An empty resolved scope is equivalent to no scope in Pi.  This is
+        // important for unmatched patterns and for an interactive startup
+        // before credentials have been configured.
+        for model in models.all() {
+            if auth.effective(model.provider) != '' || (model.provider == runner.agent_config.model.provider && runner.agent_config.stream_options.api_key != '') {
+                available.push(model)
+            }
         }
     }
     if available.len() <= 1 {
@@ -738,7 +750,7 @@ fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope
     rpc_object_t result = {}
     result['model'] = rpc_model_data(next)
     result['thinkingLevel'] = boxed_string(runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off')
-    result['isScoped'] = boxed_bool(model_scope_patterns.len() > 0)
+    result['isScoped'] = boxed_bool(scoped.len() > 0)
     rpc_write(output_lock, rpc_ok_data(id, 'cycle_model', json.box_value(json.object_value(result as map<string, ref<json.value_t>>))))
 }
 

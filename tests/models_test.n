@@ -44,3 +44,18 @@ test 'reports Pi supported thinking levels per model' {
     assert(deepseek_levels.len() == 3 && deepseek_levels[0] == 'off' && deepseek_levels[1] == 'high' && deepseek_levels[2] == 'max')
     assert(openai_levels.len() == 7 && openai_levels[0] == 'off' && openai_levels[6] == 'max')
 }
+
+test 'resolves Pi model scopes in pattern order with per-entry thinking' {
+    var scoped = config_models.resolve_scope(['anthropic/claude-sonnet-4-5:low', 'openai/gpt-5.1-codex:medium', 'deepseek/deepseek-v4-flash:max'])
+    assert(scoped.len() == 3)
+    assert(scoped[0].model.provider == 'anthropic' && scoped[0].model.id == 'claude-sonnet-4-5' && scoped[0].thinking_level == 'low')
+    assert(scoped[1].model.provider == 'openai' && scoped[1].model.id == 'gpt-5.1-codex' && scoped[1].thinking_level == 'medium')
+    assert(scoped[2].model.provider == 'deepseek' && scoped[2].model.id == 'deepseek-v4-flash' && scoped[2].thinking_level == 'max')
+}
+
+test 'scoped model resolution removes duplicate matches without later override' {
+    var scoped = config_models.resolve_scope(['deepseek-v4-flash', 'deepseek/*:max'])
+    assert(scoped.len() == 1)
+    assert(scoped[0].thinking_level == '')
+    assert(config_models.thinking_for('deepseek/deepseek-v4-flash', ['deepseek-v4-flash', 'deepseek/*:max']) == '')
+}

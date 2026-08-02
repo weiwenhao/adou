@@ -43,3 +43,40 @@ case "$state" in
 esac
 
 echo 'e2e: canonical model resolution OK'
+
+scope_dir=$(mktemp -d "${TMPDIR:-/tmp}/adou-model-scope.XXXXXX")
+trap 'rm -rf "$tmp_dir" "$scope_dir"' EXIT HUP INT TERM
+scope_output=$(printf '%s\n' \
+    '{"id":"initial","type":"get_state"}' \
+    '{"id":"cycle","type":"cycle_model"}' \
+    '{"id":"after","type":"get_state"}' | \
+    DEEPSEEK_API_KEY=scope-deepseek-key \
+    OPENAI_API_KEY=scope-openai-key \
+    ANTHROPIC_API_KEY=scope-anthropic-key \
+    PI_CODING_AGENT_DIR="$scope_dir/agent" \
+    PI_CODING_AGENT_SESSION_DIR="$scope_dir/sessions" \
+    "$binary" --models 'anthropic/claude-sonnet-4-5:low,openai/gpt-5.1-codex:medium,deepseek/deepseek-v4-flash:max' --mode rpc --no-session)
+python3 - "$scope_output" <<'PY'
+import json
+import sys
+
+items = [json.loads(line) for line in sys.argv[1].splitlines() if line.strip()]
+by_id = {item.get("id"): item for item in items if item.get("id")}
+initial = by_id.get("initial", {}).get("data", {}).get("model", {})
+if (initial.get("provider"), initial.get("id")) != ("anthropic", "claude-sonnet-4-5"):
+    raise SystemExit(f"--models order was not preserved at startup: {initial!r}")
+if by_id.get("initial", {}).get("data", {}).get("thinkingLevel") != "low":
+    raise SystemExit(f"initial scoped thinking level was not applied: {by_id.get('initial')!r}")
+cycle = by_id.get("cycle", {}).get("data", {})
+model = cycle.get("model", {})
+if (model.get("provider"), model.get("id")) != ("openai", "gpt-5.1-codex"):
+    raise SystemExit(f"cycle_model did not follow scoped order: {cycle!r}")
+if cycle.get("thinkingLevel") != "medium" or cycle.get("isScoped") is not True:
+    raise SystemExit(f"per-entry scoped thinking/isScoped mismatch: {cycle!r}")
+after = by_id.get("after", {}).get("data", {})
+if (after.get("model", {}).get("provider"), after.get("model", {}).get("id")) != ("openai", "gpt-5.1-codex"):
+    raise SystemExit(f"cycle_model did not update state: {after!r}")
+if after.get("thinkingLevel") != "medium":
+    raise SystemExit(f"cycled thinking level was not persisted: {after!r}")
+PY
+echo 'e2e: scoped model order and per-entry thinking OK'

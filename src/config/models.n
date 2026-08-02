@@ -1,6 +1,14 @@
 import adou.src.ai.types as ai_types
 import strings
 
+// A resolved --models entry.  Pi resolves scope patterns once, preserves the
+// user's pattern order, removes duplicate models, and carries an optional
+// per-entry thinking level into model cycling.
+type scoped_model_t = struct {
+    ref<ai_types.model_t> model
+    string thinking_level
+}
+
 fn all(): [ref<ai_types.model_t>] {
     return [deepseek_v4_flash(), openai_default(), anthropic_default(),]
 }
@@ -171,30 +179,77 @@ fn allowed(string reference, [string] patterns): bool {
 // pattern. Pi uses the first scoped model as the initial selection when no
 // existing session or explicit --model is present.
 fn first_allowed([string] patterns): ref<ai_types.model_t>? {
-    for model in all() {
-        if allowed(model.provider + '/' + model.id, patterns) {
-            return model
-        }
+    [scoped_model_t] resolved = resolve_scope(patterns)
+    if resolved.len() > 0 {
+        return resolved[0].model
     }
     return null
 }
 
-// Return the optional `:thinking-level` suffix attached to the scoped model
-// pattern that selected a model.  Pi treats this as a per-entry initial
-// setting; an explicit --thinking value still wins in resolve.n.
-fn thinking_for(string reference, [string] patterns): string {
-    for pattern in patterns {
-        int separator = pattern.rfind(':')
-        if separator < 0 {
+// Resolve --models exactly once in user order.  Non-glob patterns select one
+// model (exact/partial matching follows find()), while glob patterns select
+// every matching catalog model in catalog order.  A model selected by an
+// earlier pattern is not reinserted when a later pattern also matches it.
+fn resolve_scope([string] patterns): [scoped_model_t] {
+    [scoped_model_t] result = []
+    for raw_pattern in patterns {
+        string pattern = raw_pattern.trim([' ', '\t'])
+        if pattern == '' {continue}
+        string base = strip_thinking_suffix(pattern)
+        string level = ''
+        if base != pattern {
+            level = pattern.slice(base.len() + 1, pattern.len()).to_lower()
+        }
+        if has_glob(base) {
+            for model in all() {
+                string reference = model.provider + '/' + model.id
+                if !matches_value_pattern(reference, base) && !matches_value_pattern(model.id, base) {
+                    continue
+                }
+                if !scope_contains(result, model) {
+                    result.push(scoped_model_t {model: model, thinking_level: level})
+                }
+            }
             continue
         }
-        string base = pattern.slice(0, separator)
-        string level = pattern.slice(separator + 1, pattern.len()).to_lower()
-        if matches_reference_pattern(reference, base) && valid_thinking(level) {
-            return level
+        ref<ai_types.model_t>? selected = find(base)
+        if selected is ref<ai_types.model_t> model {
+            if !scope_contains(result, model) {
+                result.push(scoped_model_t {model: model, thinking_level: level})
+            }
+        }
+    }
+    return result
+}
+
+// Return the optional `:thinking-level` suffix attached to the first scoped
+// model pattern that matches a reference.  A matching pattern without a
+// suffix intentionally stops the search: Pi treats the first occurrence as
+// authoritative instead of letting a later duplicate override it.
+fn thinking_for(string reference, [string] patterns): string {
+    for pattern in patterns {
+        string trimmed = pattern.trim([' ', '\t'])
+        if trimmed == '' {continue}
+        string base = strip_thinking_suffix(trimmed)
+        if matches_reference_pattern(reference, base) || (has_glob(base) && matches_value_pattern(reference, base)) {
+            if base != trimmed {
+                string level = trimmed.slice(base.len() + 1, trimmed.len()).to_lower()
+                if valid_thinking(level) {return level}
+            }
+            return ''
         }
     }
     return ''
+}
+
+#local
+fn scope_contains([scoped_model_t] values, ref<ai_types.model_t> candidate): bool {
+    for value in values {
+        if value.model.provider.to_lower() == candidate.provider.to_lower() && value.model.id.to_lower() == candidate.id.to_lower() {
+            return true
+        }
+    }
+    return false
 }
 
 #local

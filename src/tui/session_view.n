@@ -2619,20 +2619,25 @@ fn view_t.is_model_enabled(&self, string model_id): bool {
 fn view_t.available_cycle_models(&self): [ref<ai_types.model_t>] {
     if self.model_scope_patterns.len() > 0 {
         [ref<ai_types.model_t>] scoped = []
-        for model in models.all() {
-            if models.allowed(model.provider + '/' + model.id, self.model_scope_patterns) && model_is_authenticated(self.runner, model) {
-                scoped.push(model)
+        [models.scoped_model_t] resolved = models.resolve_scope(self.model_scope_patterns)
+        for entry in resolved {
+            if model_is_authenticated(self.runner, entry.model) {
+                scoped.push(entry.model)
             }
         }
-        return scoped
+        if scoped.len() > 0 {
+            return scoped
+        }
+        // Pi falls back to every available model when --models resolves to
+        // nothing (for example before a provider has been authenticated).
     }
-    if !self.scoped_models_active {
-        [ref<ai_types.model_t>] available = []
-        for model in models.all() {
-            if model_is_authenticated(self.runner, model) {
-                available.push(model)
-            }
+    [ref<ai_types.model_t>] available = []
+    for model in models.all() {
+        if model_is_authenticated(self.runner, model) {
+            available.push(model)
         }
+    }
+    if !self.scoped_models_active || self.model_scope_patterns.len() > 0 {
         return available
     }
     [ref<ai_types.model_t>] result = []
