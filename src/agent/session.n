@@ -760,6 +760,26 @@ fn run_prompt(ref<runner_t> runner, ref<session_stream.stream_t> output, string 
 
 #local
 fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, string text): void! {
+    // Pi checks the last assistant again before accepting a new prompt.  A
+    // cancelled/error turn is deliberately eligible here (unlike the
+    // post-turn threshold check), so the next prompt does not inherit an
+    // over-window context merely because the previous turn was aborted.
+    ref<ai_types.assistant_message_t>? previous_assistant = runner.last_assistant_message()
+    if previous_assistant is ref<ai_types.assistant_message_t> previous {
+        bool same_model = previous.provider == runner.agent_config.model.provider && previous.model == runner.agent_config.model.id
+        if runner.compaction_settings.enabled && same_model && errors.is_context_overflow(previous, runner.agent_config.model.context_window) {
+            bool will_retry = previous.stop_reason != ai_types.STOP_STOP
+            bool ignored = runner.run_compaction(output, 'overflow', will_retry, '') catch error {
+                output.push(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, reason: 'overflow', error_message: error.msg(),}) catch push_error {}
+                false
+            }
+        } else if runner.should_threshold_compact(previous) {
+            bool ignored = runner.run_compaction(output, 'threshold', false, '') catch error {
+                output.push(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, reason: 'threshold', error_message: error.msg(),}) catch push_error {}
+                false
+            }
+        }
+    }
     var context = runner.context_from_repository()
     ai_types.message_t prompt = new ai_types.user_message_t(content = text, timestamp = time.now().ms_timestamp())
     var current = loop.prompt([prompt], context, runner.agent_config, runner.stream_function)
@@ -941,6 +961,18 @@ fn runner_t.copy_active_messages(&self): [ai_types.message_t] {
     var result = self.active_messages.slice(0, self.active_messages.len())
     self.lock.unlock()
     return result
+}
+
+fn runner_t.last_assistant_message(&self): ref<ai_types.assistant_message_t>? {
+    self.lock.lock()
+    for int index = self.active_messages.len() - 1; index >= 0; index -= 1 {
+        if self.active_messages[index] is ref<ai_types.assistant_message_t> assistant {
+            self.lock.unlock()
+            return assistant
+        }
+    }
+    self.lock.unlock()
+    return null
 }
 
 fn runner_t.append_active_message(&self, ai_types.message_t message) {
