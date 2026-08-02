@@ -142,7 +142,7 @@ fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model
     view.chat.set_auto_compaction(runner.compaction_settings.enabled)
     view.chat.git_branch = detect_git_branch(cwd)
     view.chat.load_messages(runner.active_messages)
-    var stored_settings = config_settings.load()
+    var stored_settings = config_settings.load_for(cwd)
     view.scoped_model_ids = stored_settings.enabled_model_ids
     view.scoped_models_active = stored_settings.enabled_model_ids.len() > 0
     if runner.repository.get_warnings().len() > 0 {
@@ -714,8 +714,22 @@ fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         for tool in self.runner.base_context.tools {
             tool_names.push(tool.name)
         }
-        string append_prompt = strings.join(self.append_system_prompts, '\n\n')
-        self.runner.base_context.system_prompt = system_prompt.build_with_tools(self.runner.repository.cwd, context_files, self.system_prompt_override, append_prompt, tool_names)
+        string resolved_system_prompt = self.system_prompt_override
+        if resolved_system_prompt == '' {
+            var discovered_system = project.system_prompt_file(self.runner.repository.cwd, '')
+            if discovered_system is ref<project.file_t> system_file {
+                resolved_system_prompt = system_file.content
+            }
+        }
+        [string] resolved_append_prompts = self.append_system_prompts
+        if resolved_append_prompts.len() == 0 {
+            var discovered_append = project.append_system_prompt_file(self.runner.repository.cwd, '')
+            if discovered_append is ref<project.file_t> append_file {
+                resolved_append_prompts.push(append_file.content)
+            }
+        }
+        string append_prompt = strings.join(resolved_append_prompts, '\n\n')
+        self.runner.base_context.system_prompt = system_prompt.build_with_tools(self.runner.repository.cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
         self.chat.status = warnings.len() > 0 ? 'Project instructions reloaded with warnings' : 'Project instructions reloaded'
         self.redraw()
         return null

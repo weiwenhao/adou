@@ -195,13 +195,27 @@ fn run(): void! {
         var loaded = project.load(session_cwd, '')
         context_files = loaded.files
     }
-    string append_prompt = strings.join(config.append_system_prompts, '\n\n')
+    string resolved_system_prompt = config.system_prompt
+    if resolved_system_prompt == '' {
+        var discovered_system = project.system_prompt_file(session_cwd, '')
+        if discovered_system is ref<project.file_t> system_file {
+            resolved_system_prompt = system_file.content
+        }
+    }
+    [string] resolved_append_prompts = config.append_system_prompts
+    if resolved_append_prompts.len() == 0 {
+        var discovered_append = project.append_system_prompt_file(session_cwd, '')
+        if discovered_append is ref<project.file_t> append_file {
+            resolved_append_prompts.push(append_file.content)
+        }
+    }
+    string append_prompt = strings.join(resolved_append_prompts, '\n\n')
     var tools = builtins.select_tools(session_cwd, config.tool_names, config.exclude_tool_names, config.no_tools || config.no_builtin_tools)
     [string] tool_names = []
     for tool in tools {
         tool_names.push(tool.name)
     }
-    string system = system_prompt.build_with_tools(session_cwd, context_files, config.system_prompt, append_prompt, tool_names)
+    string system = system_prompt.build_with_tools(session_cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
     var context = new agent_types.context_t(system_prompt = system, tools = tools)
     var agent_config = new agent_types.config_t(model = config.model, stream_options = config.stream_options)
     agent_config.queues.steering_mode = config.steering_mode
@@ -212,6 +226,9 @@ fn run(): void! {
     runner.retry_base_delay_ms = config.retry_base_delay_ms
 
     if config.mode == 'rpc' {
+        // Keep the original CLI overrides for later RPC session switches;
+        // an empty value means the new session should rediscover its own
+        // project .pi SYSTEM.md/APPEND_SYSTEM.md files.
         run_rpc(runner, config.no_context_files, config.system_prompt, config.append_system_prompts, config.scoped_models)
         return
     }
@@ -931,8 +948,22 @@ fn rebind_rpc_context(ref<session.runner_t> runner, string cwd, bool no_context_
         tools = builtins.select_tools(cwd, tool_names, [], false)
     }
     runner.base_context.tools = tools
-    string append_prompt = strings.join(append_system_prompts, '\n\n')
-    runner.base_context.system_prompt = system_prompt.build_with_tools(cwd, context_files, system_prompt_override, append_prompt, tool_names)
+    string resolved_system_prompt = system_prompt_override
+    if resolved_system_prompt == '' {
+        var discovered_system = project.system_prompt_file(cwd, '')
+        if discovered_system is ref<project.file_t> system_file {
+            resolved_system_prompt = system_file.content
+        }
+    }
+    [string] resolved_append_prompts = append_system_prompts
+    if resolved_append_prompts.len() == 0 {
+        var discovered_append = project.append_system_prompt_file(cwd, '')
+        if discovered_append is ref<project.file_t> append_file {
+            resolved_append_prompts.push(append_file.content)
+        }
+    }
+    string append_prompt = strings.join(resolved_append_prompts, '\n\n')
+    runner.base_context.system_prompt = system_prompt.build_with_tools(cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
 }
 
 #local

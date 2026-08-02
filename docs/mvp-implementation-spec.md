@@ -679,7 +679,7 @@ adou [--provider deepseek|openai|anthropic]
      [--no-session]
 ```
 
-默认模型为 `deepseek/deepseek-v4-flash`，密钥按已保存的 `~/.pi/agent/auth.json`、环境变量 `DEEPSEEK_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 解析。`PI_CODING_AGENT_DIR` 可覆盖 `~/.pi/agent`（`ADOU_CODING_AGENT_DIR` 为兼容别名）。`--api-key` MAY 支持，但帮助文本必须提示命令行参数可能进入 shell history。
+默认模型为 `deepseek/deepseek-v4-flash`，密钥按已保存的 `~/.pi/agent/auth.json`、环境变量 `DEEPSEEK_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 解析。全局设置位于 `~/.pi/agent/settings.json`；启动时还会读取当前 session cwd 下的 `.pi/settings.json`，项目字段覆盖全局字段，未出现的字段继续继承全局值。项目 `.pi/SYSTEM.md` 覆盖 `~/.pi/agent/SYSTEM.md`，`.pi/APPEND_SYSTEM.md` 覆盖全局追加提示。`PI_CODING_AGENT_DIR` 可覆盖 `~/.pi/agent`（`ADOU_CODING_AGENT_DIR` 为兼容别名）。MVP 不加载 `.pi/extensions`、`.pi/skills` 和 `.pi/prompts` 动态扩展资源。`--api-key` MAY 支持，但帮助文本必须提示命令行参数可能进入 shell history。
 
 配置必须包含模型 `contextWindow` 和 `maxTokens`。未知 context window 时不得凭空触发 threshold compaction；overflow error recovery 仍可依据 provider error pattern 执行。
 

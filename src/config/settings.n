@@ -28,8 +28,21 @@ type settings_t = struct {
 }
 
 fn load(): settings_t {
-    var result = settings_t{}
-    string file_path = settings_path()
+    return load_file(settings_path(), settings_t{})
+}
+
+// Pi keeps a global settings file and a project-local .pi/settings.json. The
+// project object is a partial override: fields absent from the project file
+// retain their global values, while arrays such as enabledModels replace the
+// corresponding global array when explicitly present.
+fn load_for(string cwd): settings_t {
+    var result = load_file(settings_path(), settings_t{})
+    return load_file(paths.project_settings_path(cwd), result)
+}
+
+#local
+fn load_file(string file_path, settings_t initial): settings_t {
+    var result = initial
     if !path_utils.exists(file_path) {return result}
     var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return result}
     string content = input.content() catch error {
@@ -51,6 +64,9 @@ fn load(): settings_t {
     result.retry_max_attempts = positive_int(object, 'retryMaxAttempts', result.retry_max_attempts)
     result.retry_base_delay_ms = positive_int(object, 'retryBaseDelayMs', result.retry_base_delay_ms)
     if object.contains('enabledModels') && object['enabledModels'].kind == json.VALUE_ARRAY {
+        // An explicitly configured project array replaces the global scope;
+        // it is not appended to it.
+        result.enabled_model_ids = []
         var enabled_values = object['enabledModels'].as_array() catch error {[]}
         for item in enabled_values {
             if item.kind == json.VALUE_STRING {

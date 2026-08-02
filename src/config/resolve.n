@@ -10,7 +10,9 @@ fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
     if arguments.errors.len() > 0 {
         throw errorf('%s', join_errors(arguments.errors))
     }
-    var preferences = settings.load()
+    // Pi overlays project-local .pi/settings.json on top of the user settings
+    // before resolving the model and the remaining startup defaults.
+    var preferences = settings.load_for(cwd)
     string requested_model = first(arguments.model, syscall.get_env('ADOU_MODEL'))
     string provider = first(arguments.provider, syscall.get_env('ADOU_PROVIDER'))
     bool model_explicit = arguments.model != '' || syscall.get_env('ADOU_MODEL') != ''

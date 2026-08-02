@@ -1,6 +1,16 @@
 import adou.src.config.settings
+import fs
 import os
+import path
 import syscall
+
+fn write_settings_file(string file_path, string content): void! {
+    os.mkdirs(path.dir(file_path), 0o700)
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    int written = output.write(content as [u8])
+    output.close()
+    assert(written == content.len())
+}
 
 test 'settings round trip preserves core Pi preferences' {
     string home = '/tmp/adou-settings-test'
@@ -40,5 +50,23 @@ test 'Pi preference setters persist one setting without replacing the others' {
     assert(loaded.default_thinking_level == 'high' && loaded.hide_thinking)
     assert(loaded.retry_max_attempts == 7 && loaded.retry_base_delay_ms == 3000)
     assert(loaded.enabled_model_ids.len() == 1 && loaded.enabled_model_ids[0] == 'openai/gpt-5.1-codex')
+    os.rmdir(home, true)
+}
+
+test 'project .pi settings override global settings field by field' {
+    string home = '/tmp/adou-settings-project-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    var global = settings.settings_t {default_provider: 'openai', default_model: 'gpt-5.1-codex', default_thinking_level: 'high', auto_compaction: false, steering_mode: 'all', follow_up_mode: 'one-at-a-time', hide_thinking: true, retry_enabled: false, retry_max_attempts: 7, retry_base_delay_ms: 3000, enabled_model_ids: ['openai/gpt-5.1-codex'],}
+    settings.save(global)
+    string cwd = path.join(home, 'project')
+    write_settings_file(path.join(cwd, '.pi/settings.json'), '{"defaultProvider":"deepseek","defaultThinkingLevel":"low","autoCompaction":true,"enabledModels":["deepseek/deepseek-v4-flash"]}')
+    var loaded = settings.load_for(cwd)
+    assert(loaded.default_provider == 'deepseek' && loaded.default_model == 'gpt-5.1-codex')
+    assert(loaded.default_thinking_level == 'low' && loaded.auto_compaction)
+    assert(loaded.steering_mode == 'all' && loaded.follow_up_mode == 'one-at-a-time')
+    assert(loaded.hide_thinking && !loaded.retry_enabled)
+    assert(loaded.retry_max_attempts == 7 && loaded.retry_base_delay_ms == 3000)
+    assert(loaded.enabled_model_ids.len() == 1 && loaded.enabled_model_ids[0] == 'deepseek/deepseek-v4-flash')
     os.rmdir(home, true)
 }

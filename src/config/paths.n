@@ -34,6 +34,7 @@ fn sessions_dir(): string {
 fn auth_path(): string {return path.join(agent_dir(), 'auth.json')}
 fn settings_path(): string {return path.join(agent_dir(), 'settings.json')}
 fn trust_path(): string {return path.join(agent_dir(), 'trust.json')}
+fn project_settings_path(string cwd): string {return path.join(cwd, '.pi/settings.json')}
 
 #local
 fn expand_home(string value): string {

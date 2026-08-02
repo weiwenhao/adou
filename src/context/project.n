@@ -65,6 +65,42 @@ fn load(string cwd, string agent_dir): load_result_t! {
     return result
 }
 
+// Pi treats the project .pi system prompt as a project-scoped override, with
+// the user's ~/.pi/agent file as the fallback. These files are distinct from
+// AGENTS.md/CLAUDE.md context discovery and are loaded for the active session
+// cwd only.
+fn system_prompt_file(string cwd, string agent_dir): ref<file_t>? {
+    string base_cwd = platform_cwd.current() catch error {'/'}
+    string resolved_cwd = path_utils.resolve_to_cwd(cwd, base_cwd)
+    string resolved_agent_dir = agent_dir
+    if resolved_agent_dir == '' {
+        resolved_agent_dir = paths.agent_dir()
+    } else {
+        resolved_agent_dir = path_utils.resolve_to_cwd(resolved_agent_dir, resolved_cwd)
+    }
+    ref<file_t>? project_file = read_named_file(path.join(resolved_cwd, '.pi/SYSTEM.md'))
+    if project_file is ref<file_t> found_project {
+        return found_project
+    }
+    return read_named_file(path.join(resolved_agent_dir, 'SYSTEM.md'))
+}
+
+fn append_system_prompt_file(string cwd, string agent_dir): ref<file_t>? {
+    string base_cwd = platform_cwd.current() catch error {'/'}
+    string resolved_cwd = path_utils.resolve_to_cwd(cwd, base_cwd)
+    string resolved_agent_dir = agent_dir
+    if resolved_agent_dir == '' {
+        resolved_agent_dir = paths.agent_dir()
+    } else {
+        resolved_agent_dir = path_utils.resolve_to_cwd(resolved_agent_dir, resolved_cwd)
+    }
+    ref<file_t>? project_file = read_named_file(path.join(resolved_cwd, '.pi/APPEND_SYSTEM.md'))
+    if project_file is ref<file_t> found_project {
+        return found_project
+    }
+    return read_named_file(path.join(resolved_agent_dir, 'APPEND_SYSTEM.md'))
+}
+
 #local
 fn load_from_dir(string directory): file_load_t {
     [string] candidates = ['AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD']
@@ -84,6 +120,22 @@ fn load_from_dir(string directory): file_load_t {
         return file_load_t {file: new file_t(path = file_path, content = content),}
     }
     return file_load_t{}
+}
+
+#local
+fn read_named_file(string file_path): ref<file_t>? {
+    if !path_utils.exists(file_path) {
+        return null
+    }
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        return new file_t(path = file_path, content = '')
+    }
+    string content = input.content() catch error {
+        input.close()
+        return new file_t(path = file_path, content = '')
+    }
+    input.close()
+    return new file_t(path = file_path, content = content)
 }
 
 #local
