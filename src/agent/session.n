@@ -158,7 +158,19 @@ fn runner_t.replace_repository(&self, ref<repository.manager_t> next): void! {
         self.agent_config.stream_options.reasoning_effort = effective
         self.agent_config.stream_options.thinking_enabled = effective != 'off'
     }
+    string provider = self.agent_config.model.provider
+    string model_id = self.agent_config.model.id
+    string thinking = self.agent_config.stream_options.thinking_enabled ? self.agent_config.stream_options.reasoning_effort : 'off'
     self.lock.unlock()
+    // Pi's runtime factory repairs metadata when binding an older or empty
+    // session. This makes a later resume deterministic instead of silently
+    // losing the active thinking/model settings.
+    if loaded.messages.len() == 0 {
+        next.append_model_change(provider, model_id) catch error {throw error}
+        next.append_thinking_change(thinking) catch error {throw error}
+    } else if !loaded.has_thinking_level {
+        next.append_thinking_change(thinking) catch error {throw error}
+    }
     self.sync_agent_environment()
 }
 

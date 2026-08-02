@@ -13,6 +13,8 @@ agent_dir="$tmp_dir/agent"
 session_dir="$tmp_dir/sessions"
 first_output="$tmp_dir/first.jsonl"
 second_output="$tmp_dir/second.jsonl"
+third_output="$tmp_dir/third.jsonl"
+legacy_session="$tmp_dir/legacy.jsonl"
 
 run_rpc() {
     output=$1
@@ -28,6 +30,7 @@ printf '%s\n' '{"id":"state0","type":"get_state"}' | run_rpc "$first_output"
 
 parent=$(python3 - "$first_output" <<'PY'
 import json
+import os
 import sys
 
 for line in open(sys.argv[1], encoding='utf-8'):
@@ -54,20 +57,56 @@ print(json.dumps({"id": "new", "type": "new_session", "parentSession": parent}))
 print(json.dumps({"id": "state1", "type": "get_state"}))
 PY
 
-python3 - "$first_output" "$second_output" "$parent" <<'PY'
+python3 - "$legacy_session" "$PWD" <<'PY'
 import json
 import sys
 
-first_path, second_path, parent = sys.argv[1:]
+path, cwd = sys.argv[1:]
+header = {
+    "type": "session",
+    "version": 3,
+    "id": "legacy-session",
+    "timestamp": "2026-08-02T00:00:00.000Z",
+    "cwd": cwd,
+}
+message = {
+    "type": "message",
+    "id": "legacy-message",
+    "parentId": None,
+    "timestamp": "2026-08-02T00:00:01.000Z",
+    "message": {"role": "user", "content": "legacy prompt", "timestamp": 1},
+}
+with open(path, "w", encoding="utf-8") as stream:
+    stream.write(json.dumps(header) + "\n")
+    stream.write(json.dumps(message) + "\n")
+PY
+
+python3 - "$legacy_session" <<'PY' | run_rpc "$third_output" --session "$parent"
+import json
+import sys
+
+print(json.dumps({"id": "switch", "type": "switch_session", "sessionPath": sys.argv[1]}))
+print(json.dumps({"id": "state2", "type": "get_state"}))
+PY
+
+python3 - "$first_output" "$second_output" "$third_output" "$parent" "$legacy_session" <<'PY'
+import json
+import os
+import sys
+
+first_path, second_path, third_path, parent, legacy_path = sys.argv[1:]
 
 def read(path):
     return [json.loads(line) for line in open(path, encoding='utf-8') if line.strip()]
 
 first = read(first_path)
 second = read(second_path)
+third = read(third_path)
 state0 = next(item for item in first if item.get('id') == 'state0')
 new = next(item for item in second if item.get('id') == 'new')
 state1 = next(item for item in second if item.get('id') == 'state1')
+switch = next(item for item in third if item.get('id') == 'switch')
+state2 = next(item for item in third if item.get('id') == 'state2')
 
 if new.get('type') != 'response' or new.get('success') is not True:
     raise SystemExit(f'RPC new_session failed: {new!r}')
@@ -84,6 +123,17 @@ if not new_file or new_file == parent:
     raise SystemExit(f'new_session did not create a new persisted file: {new_state!r}')
 if new_state.get('sessionId') == old_state.get('sessionId'):
     raise SystemExit(f'new_session reused the previous session id: {new_state!r}')
+
+if switch.get('type') != 'response' or switch.get('success') is not True:
+    raise SystemExit(f'RPC switch_session failed: {switch!r}')
+if os.path.realpath(state2.get('data', {}).get('sessionFile', '')) != os.path.realpath(legacy_path):
+    raise SystemExit(f'RPC switch_session did not bind the target session: {state2!r}')
+
+with open(legacy_path, encoding='utf-8') as stream:
+    legacy_header = json.loads(stream.readline())
+    legacy_entries = [json.loads(line) for line in stream if line.strip()]
+if [entry.get('type') for entry in legacy_entries] != ['message', 'thinking_level_change']:
+    raise SystemExit(f'switch_session did not repair legacy thinking metadata: {legacy_entries!r}')
 
 with open(new_file, encoding='utf-8') as stream:
     header = json.loads(stream.readline())
