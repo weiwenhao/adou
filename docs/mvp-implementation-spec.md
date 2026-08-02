@@ -1,7 +1,7 @@
 # Adou MVP 移植实现规范
 
 状态：实施基线  
-文档版本：0.24
+文档版本：0.25
 日期：2026-08-02
 
 ## 1. 文档目的
@@ -573,7 +573,7 @@ contextTokens > contextWindow - reserveTokens
 - compaction 自身可取消，取消后不写 compaction entry；
 - 摘要请求遵循 provider retry policy，但 deterministic error 和 abort 不重试。
 
-MVP 同时提供 `/compact [instructions]`，复用同一套 preparation 和 summary 逻辑，不能维护第二套手动压缩实现。
+MVP 同时提供 `/compact [instructions]`，复用同一套 preparation 和 summary 逻辑，不能维护第二套手动压缩实现。手动压缩开始前必须先中断当前活动 turn 并等待 session 回到 idle；RPC `compact` 的响应只能在被中断 turn 发出 `session_end`、摘要完成并写入 compaction entry 后返回，不能因 provider 流尚未收尾而提前响应。
 
 ## 14. TUI 移植规范
 
