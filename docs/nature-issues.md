@@ -42,7 +42,7 @@
 - 现象：`http.client.new().timeout(ms)` 原先只把超时传给 TCP/TLS connect。连接成功后，响应状态行、header 或 SSE body 如果不再到达数据，读取协程可以永久等待。
 - 预期：同一个请求超时配置至少作为 response header/body 的 idle read timeout；每次成功读取后重新计时，超时必须关闭底层连接并唤醒读取协程。
 - 当前修复：`connable` 增加 per-connection read timeout；TCP/TLS runtime 在同一次 read wait 上启动可复用 libuv timer，超时直接唤醒原读取协程。HTTP 为响应头和每次流式 body read 统一归一化 `HTTP response read timeout`。
-- 回归：独立 feature `20260730_00_http_timeout.testar` 覆盖 `test_stream_read_timeout` 和 `test_response_header_timeout`；Nature CTest 与 Adou provider timeout fixture 均通过。
+- 回归：独立 Nature feature `20260730_00_http_timeout.testar` 覆盖 `test_stream_read_timeout` 和 `test_response_header_timeout`；Nature 自带测试与 Adou provider timeout fixture 均通过。
 - 后续评估：写请求 body 的超时和更底层 TCP/TLS deadline API 是否需要统一，避免每个上层协议重复 watchdog。
 
 ## NAT-010：跨协程关闭正在读取的 TCP 连接会破坏 waiter 并触发 libuv 断言
@@ -57,12 +57,12 @@
 
 ## NAT-011：runtime target 与 install 使用不同的静态库路径
 
-- 分类：CMake / build / install
+- 分类：上游 build / install
 - 状态：已提交 issue [#260](https://github.com/nature-lang/nature/issues/260)
-- 现象：`cmake --build build --target runtime` 生成 `build/lib/<platform>/libruntime.a`，但 `cmake --install build` 从源码树 `lib/<platform>/libruntime.a` 安装。若不手工同步，install 会悄悄打包旧 runtime。
+- 现象：上游构建流程生成 `build/lib/<platform>/libruntime.a`，但安装步骤从源码树 `lib/<platform>/libruntime.a` 安装。若不手工同步，install 会悄悄打包旧 runtime。
 - 预期：install 必须直接安装 target artifact，或 runtime target 自动更新唯一的规范输出位置。
-- 当前绕过：构建后用 `cmake -E copy` 把 target artifact 同步到 install source，再执行 staged install。
-- 修复方向：使用 `$<TARGET_FILE:runtime>`/`install(TARGETS runtime ...)`，移除源码树与构建树双份静态库真源。
+- 当前绕过：构建后手工把 target artifact 同步到 install source，再执行 staged install。
+- 修复方向：让 install 直接引用 target artifact，移除源码树与构建树双份静态库真源。
 
 ## NAT-012：buf.reader.read_until 吞掉所有底层 I/O 错误
 
@@ -71,7 +71,7 @@
 - 现象：`read_until` 对 `fill()` 的任意 error 都设置 `has_error=true` 并返回已缓冲内容，因此 timeout、connection reset 等错误被当成 EOF，HTTP parser 会继续下一次 read。
 - 预期：只有 EOF 可以返回 delimiter 之前的 partial bytes；其他 I/O 错误必须原样传播。
 - 当前修复：`read_until` 改为 errable 返回类型，只吞 `EOF/end of file`，其余错误 `throw`。
-- 回归：HTTP response-header timeout fixture 穿过 `buf.reader` 并得到 `HTTP response read timeout`，Nature CTest 已通过。
+- 回归：HTTP response-header timeout fixture 穿过 `buf.reader` 并得到 `HTTP response read timeout`，Nature 自带测试已通过。
 
 ## NAT-013：TCP server close 可先于 accepted connection close callback 释放 freelist
 
@@ -80,7 +80,7 @@
 - 现象：accepted connection 执行 `conn.close()` 后立即执行 `server.close()`，server 路径先释放 `inner_server_t`；稍后 connection close callback 仍会通过 `conn->server` 访问 freelist，可能触发 libuv 断言或 use-after-free。
 - 预期：server close 等待/引用计数所有 active accepted connections，最后一个 connection callback 完成后再释放 server 状态。
 - 当前修复：`inner_server_t` 增加 `closing`、`listener_closed` 和 active connection 引用计数；listener 与 accepted connection 全部结束后才释放 server 和 freelist。`server.close()` 不再在调用 `uv_close` 前释放 `inner_server_t`，也不再由 callback 二次释放。
-- 回归：HTTP timeout fixture 已移除 `conn.close()` 与 `server.close()` 之间的延时，并通过 Nature CTest；Adou 七项真实 HTTP/SSE provider 测试连续通过。
+- 回归：HTTP timeout fixture 已移除 `conn.close()` 与 `server.close()` 之间的延时，并通过 Nature 自带测试；Adou 七项真实 HTTP/SSE provider 测试连续通过。
 
 ## NAT-014：channel close 不唤醒已阻塞的 sender/receiver
 
@@ -235,13 +235,13 @@
 - 现象：Nature HTTP 客户端读取 OpenAI-compatible SSE 响应时，响应已经发送完整的 `[DONE]` 记录，TUI 协程仍继续执行下一次 `response.read()`，或在读取异常后再次执行 `response.close()`，进程可能以 SIGBUS（exit 139）退出。LLDB 栈落在 `http.client.response_t.close`，程序计数器落入由 UTF-8 字节组成的无效地址，说明 `types.connable` 接口分发状态已被破坏。相同请求在 headless 路径的调度时序下可能不崩溃，因此需要保留 TTY/协程时序作为复现条件。
 - 最小复现方向：使用 `http.client` 连接本地 HTTP/1.1 SSE 服务，依次发送一个或多个 `data:` 事件、`data: [DONE]\n\n`，客户端在收到 `[DONE]` 后继续 `response.read()`，并在 `read` error 路径调用 `response.close()`；在 TUI/并发渲染协程下重复运行观察 SIGBUS。
 - 预期：`[DONE]` 作为应用层终止记录后，HTTP body reader 应安全结束；`response.close()` 必须幂等且可从任意协程调用，不能发生接口跳转损坏、use-after-free 或进程级崩溃。
-- 当前绕过：Adou provider 在收到 `[DONE]` 后立即结束读取，不再访问连接尾部；成功流和已发生读取错误的失败路径均不重复调用 `response.close()`。底层连接交由 Nature 的响应生命周期回收。此绕过已用源码和 CMake 安装后的二进制分别通过本地 SSE TUI、headless 流测试以及真实 DeepSeek key 测试。
+- 当前绕过：Adou provider 在收到 `[DONE]` 后立即结束读取，不再访问连接尾部；成功流和已发生读取错误的失败路径均不重复调用 `response.close()`。底层连接交由 Nature 的响应生命周期回收。此绕过已用源码构建和安装后的二进制分别通过本地 SSE TUI、headless 流测试以及真实 DeepSeek key 测试。
 - 修复方向：将 `response_t` 的 body 状态、底层 `connable` 引用和 close/read waiter 的所有权拆开审计；确保 EOF/`[DONE]`、跨协程 abort、close callback 只执行一次，且 interface receiver 在 response 生命周期内保持有效。增加纯 Nature 最小 HTTP SSE feature 回归，覆盖 headless、TTY 协程和 read-error 后 close 三条路径。
 
 ## 回归要求
 
 修复任何条目时至少执行：
 
-1. 将最小复现加入 Nature 自身 testar/CTest。
+1. 将最小复现加入 Nature 自身 testar/测试套件。
 2. 验证原始源码可编译。
 3. 运行 Adou 全量 Nature 测试，防止移植层的临时绕过掩盖回归。

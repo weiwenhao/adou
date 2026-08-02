@@ -50,7 +50,7 @@
 
 ### 2.1 构建与测试入口
 
-Adou 只使用 Make 组织构建，不依赖 CMake。Nature 源码和测试由 Nature 自己的命令负责编译与执行：
+Adou 只使用 Make 组织构建，不依赖其他构建系统。Nature 源码和测试由 Nature 自己的命令负责编译与执行：
 
 ```sh
 make build
@@ -60,7 +60,7 @@ make check
 make run
 ```
 
-`make test` 按文件串行调用 `nature test`；每次调用前会检查并清理当前用户遗留的 Nature 编译器进程，避免 Nature 编译器的高内存峰值发生重叠。测试不调用 CTest，也不依赖 `vendors/pi` 运行时。
+`make test` 按文件串行调用 `nature test`；每次调用前会检查并清理当前用户遗留的 Nature 编译器进程，避免 Nature 编译器的高内存峰值发生重叠。测试不依赖外部测试驱动，也不依赖 `vendors/pi` 运行时。
 `make e2e` 使用刚构建的 `build/bin/adou` 运行 CLI/RPC 端到端脚本；`make check` 依次运行单元测试和 E2E。
 
 ## 3. MVP 目标
