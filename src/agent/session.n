@@ -804,8 +804,10 @@ fn run_tree_navigation_inner(ref<runner_t> runner, ref<session_stream.stream_t> 
 #local
 fn run_prompt(ref<runner_t> runner, ref<session_stream.stream_t> output, string text): void! {
     run_prompt_inner(runner, output, text) catch error {
+        runner.end_operation()
         output.push(session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,}) catch settled_error {}
         output.fail(error.msg()) catch stream_error {}
+        return
     }
     runner.end_operation()
 }
@@ -906,6 +908,10 @@ fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, s
     var settled_event = session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,}
     output.push(settled_event)
     var final_context = runner.copy_active_messages()
+    // Release the session slot before publishing session_end.  Consumers of a
+    // completed stream (notably Pi's one-shot multi-prompt mode) may submit
+    // the next prompt immediately after receiving that terminal event.
+    runner.end_operation()
     output.finish(final_context)
 }
 

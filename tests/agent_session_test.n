@@ -158,6 +158,19 @@ test 'session forwards lifecycle and persists each completed message' {
     assert(count_kind(result[0], session_stream.EVENT_SESSION_END) == 1)
 }
 
+test 'sequential prompts can start after the previous session_end' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant('first answer', ai_types.STOP_STOP, '', 1, 2), assistant('second answer', ai_types.STOP_STOP, '', 1, 2)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    var first = consume(runner.prompt('first'))
+    var second = consume(runner.prompt('second'))
+    assert(fixture.agent_calls == 2)
+    assert(second[1].len() == 4)
+    assert(second[1][2] is ref<ai_types.user_message_t>)
+    var submitted = second[1][2] as ref<ai_types.user_message_t>
+    assert(submitted.content == 'second')
+}
+
 test 'prompt accepts an empty message like Pi' {
     var manager = repository.in_memory('/tmp')
     var fixture = new provider_fixture_t(agent_responses = [assistant('empty prompt answer', ai_types.STOP_STOP, '', 1, 2)])

@@ -135,6 +135,42 @@ fn run(): void! {
     // resources, built-in tool executors, and footer paths must follow that
     // session cwd rather than the directory from which Adou was launched.
     string session_cwd = repository.cwd
+    // Resolve cwd-bound settings after opening the session.  A --session or
+    // --resume target may belong to another project, and Pi binds its runtime
+    // to that target's .pi/settings.json rather than the launch directory.
+    var session_preferences = settings.load_for(session_cwd)
+    bool scoped_models_explicit = config.scoped_models.len() > 0
+    config.steering_mode = session_preferences.steering_mode
+    config.follow_up_mode = session_preferences.follow_up_mode
+    config.compaction.enabled = arguments.no_compaction ? false : session_preferences.auto_compaction
+    config.retry_enabled = session_preferences.retry_enabled
+    config.retry_max_attempts = session_preferences.retry_max_attempts
+    config.retry_base_delay_ms = session_preferences.retry_base_delay_ms
+    config.hide_thinking = session_preferences.hide_thinking
+    if config.scoped_models.len() == 0 && session_preferences.enabled_model_ids.len() > 0 {
+        config.scoped_models = session_preferences.enabled_model_ids
+    }
+    var stored_context = repository.build_context()
+    if !config.provider_explicit && !config.model_explicit && !stored_context.has_model && session_preferences.default_model != '' {
+        string preferred = session_preferences.default_provider != '' ? session_preferences.default_provider + '/' + session_preferences.default_model : session_preferences.default_model
+        ref<ai_types.model_t>? preferred_model = models.find(preferred)
+        if preferred_model is ref<ai_types.model_t> selected_model {
+            config.model = selected_model
+            config.provider = selected_model.provider
+            if arguments.base_url != '' {config.model.base_url = arguments.base_url}
+            if arguments.context_window > 0 {config.model.context_window = arguments.context_window}
+            if arguments.max_tokens > 0 {config.model.max_tokens = arguments.max_tokens}
+            if !config.api_key_explicit {
+                config.stream_options.api_key = auth.effective(selected_model.provider)
+            }
+            config.stream_options.max_tokens = config.model.max_tokens
+        }
+    }
+    if !arguments.thinking_explicit && !stored_context.has_thinking_level && !scoped_models_explicit {
+        config.thinking = models.clamp_thinking_level(config.model, session_preferences.default_thinking_level)
+        config.stream_options.reasoning_effort = config.thinking
+        config.stream_options.thinking_enabled = config.thinking != 'off'
+    }
     if config.session_name != '' {
         repository.append_session_info(config.session_name) catch error {
             println('Could not set session name')
@@ -159,7 +195,6 @@ fn run(): void! {
     // model/provider restoration. An explicit CLI thinking value still wins.
     // Without this step a resumed session silently falls back to the global
     // default even though its thinking_level_change entry is present in JSONL.
-    var stored_context = repository.build_context()
     if !arguments.thinking_explicit && stored_context.has_thinking_level {
         config.thinking = models.clamp_thinking_level(config.model, stored_context.thinking_level)
         config.stream_options.reasoning_effort = config.thinking
@@ -716,7 +751,19 @@ fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string
 fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<mutex.mutex_t> output_lock): void! {
     rpc_write(output_lock, rpc_ok(id, 'prompt'))
     for true {
-        var event = stream.recv() catch error {break}
+        var (event, received) = stream.try_recv() catch error {break}
+        if !received {
+            // Nature can leave a buffered terminal send behind a coroutine
+            // handoff.  Once finish() has marked the stream terminal, the
+            // worker can safely publish the canonical event itself instead
+            // of waiting forever for that handoff.
+            if stream.is_terminal() {
+                rpc_write(output_lock, event_json.encode(session_stream.event_t {kind: session_stream.EVENT_SESSION_END,}))
+                break
+            }
+            co.sleep(1)
+            continue
+        }
         rpc_write(output_lock, event_json.encode(event))
         if event.kind == session_stream.EVENT_SESSION_END {break}
     }

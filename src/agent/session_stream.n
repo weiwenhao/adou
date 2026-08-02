@@ -139,6 +139,17 @@ fn stream_t.recv(&self): event_t! {
     return self.events.recv()
 }
 
+fn stream_t.try_recv(&self): (event_t, bool)! {
+    return self.events.try_recv()
+}
+
+fn stream_t.is_terminal(&self): bool {
+    self.lock.lock()
+    bool result = self.terminal
+    self.lock.unlock()
+    return result
+}
+
 fn stream_t.result(&self): [ai_types.message_t]! {
     self.lock.lock()
     bool ready = self.terminal

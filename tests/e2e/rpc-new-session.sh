@@ -15,6 +15,7 @@ first_output="$tmp_dir/first.jsonl"
 second_output="$tmp_dir/second.jsonl"
 third_output="$tmp_dir/third.jsonl"
 fourth_output="$tmp_dir/fourth.jsonl"
+fifth_output="$tmp_dir/fifth.jsonl"
 legacy_session="$tmp_dir/legacy.jsonl"
 project_session="$tmp_dir/project.jsonl"
 project_dir="$tmp_dir/project"
@@ -140,12 +141,14 @@ print(json.dumps({"id": "switch-project", "type": "switch_session", "sessionPath
 print(json.dumps({"id": "state3", "type": "get_state"}))
 PY
 
-python3 - "$first_output" "$second_output" "$third_output" "$fourth_output" "$parent" "$legacy_session" "$project_session" <<'PY'
+printf '%s\n' '{"id":"state4","type":"get_state"}' | run_rpc "$fifth_output" --session "$project_session"
+
+python3 - "$first_output" "$second_output" "$third_output" "$fourth_output" "$fifth_output" "$parent" "$legacy_session" "$project_session" <<'PY'
 import json
 import os
 import sys
 
-first_path, second_path, third_path, fourth_path, parent, legacy_path, project_path = sys.argv[1:]
+first_path, second_path, third_path, fourth_path, fifth_path, parent, legacy_path, project_path = sys.argv[1:]
 
 def read(path):
     return [json.loads(line) for line in open(path, encoding='utf-8') if line.strip()]
@@ -154,6 +157,7 @@ first = read(first_path)
 second = read(second_path)
 third = read(third_path)
 fourth = read(fourth_path)
+fifth = read(fifth_path)
 state0 = next(item for item in first if item.get('id') == 'state0')
 new = next(item for item in second if item.get('id') == 'new')
 state1 = next(item for item in second if item.get('id') == 'state1')
@@ -161,6 +165,7 @@ switch = next(item for item in third if item.get('id') == 'switch')
 state2 = next(item for item in third if item.get('id') == 'state2')
 switch_project = next(item for item in fourth if item.get('id') == 'switch-project')
 state3 = next(item for item in fourth if item.get('id') == 'state3')
+state4 = next(item for item in fifth if item.get('id') == 'state4')
 
 if new.get('type') != 'response' or new.get('success') is not True:
     raise SystemExit(f'RPC new_session failed: {new!r}')
@@ -196,6 +201,10 @@ if os.path.realpath(state3.get('data', {}).get('sessionFile', '')) != os.path.re
 project_state = state3.get('data', {})
 if project_state.get('autoCompactionEnabled') is not False or project_state.get('steeringMode') != 'all' or project_state.get('followUpMode') != 'all':
     raise SystemExit(f'project .pi settings were not reloaded during session switch: {project_state!r}')
+
+startup_project_state = state4.get('data', {})
+if startup_project_state.get('autoCompactionEnabled') is not False or startup_project_state.get('steeringMode') != 'all' or startup_project_state.get('followUpMode') != 'all':
+    raise SystemExit(f'project .pi settings were not loaded from a selected session cwd at startup: {startup_project_state!r}')
 
 with open(new_file, encoding='utf-8') as stream:
     header = json.loads(stream.readline())
