@@ -14,7 +14,10 @@ session_dir="$tmp_dir/sessions"
 first_output="$tmp_dir/first.jsonl"
 second_output="$tmp_dir/second.jsonl"
 third_output="$tmp_dir/third.jsonl"
+fourth_output="$tmp_dir/fourth.jsonl"
 legacy_session="$tmp_dir/legacy.jsonl"
+project_session="$tmp_dir/project.jsonl"
+project_dir="$tmp_dir/project"
 
 run_rpc() {
     output=$1
@@ -57,11 +60,12 @@ print(json.dumps({"id": "new", "type": "new_session", "parentSession": parent}))
 print(json.dumps({"id": "state1", "type": "get_state"}))
 PY
 
-python3 - "$legacy_session" "$PWD" <<'PY'
+python3 - "$legacy_session" "$PWD" "$project_session" "$project_dir" <<'PY'
 import json
+import os
 import sys
 
-path, cwd = sys.argv[1:]
+path, cwd, project_path, project_cwd = sys.argv[1:]
 header = {
     "type": "session",
     "version": 3,
@@ -79,6 +83,45 @@ message = {
 with open(path, "w", encoding="utf-8") as stream:
     stream.write(json.dumps(header) + "\n")
     stream.write(json.dumps(message) + "\n")
+
+os.makedirs(os.path.join(project_cwd, ".pi"), exist_ok=True)
+with open(os.path.join(project_cwd, ".pi", "settings.json"), "w", encoding="utf-8") as stream:
+    json.dump(
+        {
+            "autoCompaction": False,
+            "steeringMode": "all",
+            "followUpMode": "all",
+            "retryEnabled": False,
+            "retryMaxAttempts": 2,
+            "retryBaseDelayMs": 17,
+        },
+        stream,
+    )
+project_header = {
+    "type": "session",
+    "version": 3,
+    "id": "project-session",
+    "timestamp": "2026-08-02T00:00:00.000Z",
+    "cwd": project_cwd,
+}
+project_model = {
+    "type": "model_change",
+    "id": "project-model",
+    "parentId": None,
+    "timestamp": "2026-08-02T00:00:01.000Z",
+    "provider": "deepseek",
+    "modelId": "deepseek-v4-flash",
+}
+project_thinking = {
+    "type": "thinking_level_change",
+    "id": "project-thinking",
+    "parentId": "project-model",
+    "timestamp": "2026-08-02T00:00:02.000Z",
+    "thinkingLevel": "off",
+}
+with open(project_path, "w", encoding="utf-8") as stream:
+    for entry in (project_header, project_model, project_thinking):
+        stream.write(json.dumps(entry) + "\n")
 PY
 
 python3 - "$legacy_session" <<'PY' | run_rpc "$third_output" --session "$parent"
@@ -89,12 +132,20 @@ print(json.dumps({"id": "switch", "type": "switch_session", "sessionPath": sys.a
 print(json.dumps({"id": "state2", "type": "get_state"}))
 PY
 
-python3 - "$first_output" "$second_output" "$third_output" "$parent" "$legacy_session" <<'PY'
+python3 - "$project_session" <<'PY' | run_rpc "$fourth_output" --session "$parent"
+import json
+import sys
+
+print(json.dumps({"id": "switch-project", "type": "switch_session", "sessionPath": sys.argv[1]}))
+print(json.dumps({"id": "state3", "type": "get_state"}))
+PY
+
+python3 - "$first_output" "$second_output" "$third_output" "$fourth_output" "$parent" "$legacy_session" "$project_session" <<'PY'
 import json
 import os
 import sys
 
-first_path, second_path, third_path, parent, legacy_path = sys.argv[1:]
+first_path, second_path, third_path, fourth_path, parent, legacy_path, project_path = sys.argv[1:]
 
 def read(path):
     return [json.loads(line) for line in open(path, encoding='utf-8') if line.strip()]
@@ -102,11 +153,14 @@ def read(path):
 first = read(first_path)
 second = read(second_path)
 third = read(third_path)
+fourth = read(fourth_path)
 state0 = next(item for item in first if item.get('id') == 'state0')
 new = next(item for item in second if item.get('id') == 'new')
 state1 = next(item for item in second if item.get('id') == 'state1')
 switch = next(item for item in third if item.get('id') == 'switch')
 state2 = next(item for item in third if item.get('id') == 'state2')
+switch_project = next(item for item in fourth if item.get('id') == 'switch-project')
+state3 = next(item for item in fourth if item.get('id') == 'state3')
 
 if new.get('type') != 'response' or new.get('success') is not True:
     raise SystemExit(f'RPC new_session failed: {new!r}')
@@ -134,6 +188,14 @@ with open(legacy_path, encoding='utf-8') as stream:
     legacy_entries = [json.loads(line) for line in stream if line.strip()]
 if [entry.get('type') for entry in legacy_entries] != ['message', 'thinking_level_change']:
     raise SystemExit(f'switch_session did not repair legacy thinking metadata: {legacy_entries!r}')
+
+if switch_project.get('type') != 'response' or switch_project.get('success') is not True:
+    raise SystemExit(f'RPC project switch failed: {switch_project!r}')
+if os.path.realpath(state3.get('data', {}).get('sessionFile', '')) != os.path.realpath(project_path):
+    raise SystemExit(f'RPC project switch did not bind the target session: {state3!r}')
+project_state = state3.get('data', {})
+if project_state.get('autoCompactionEnabled') is not False or project_state.get('steeringMode') != 'all' or project_state.get('followUpMode') != 'all':
+    raise SystemExit(f'project .pi settings were not reloaded during session switch: {project_state!r}')
 
 with open(new_file, encoding='utf-8') as stream:
     header = json.loads(stream.readline())

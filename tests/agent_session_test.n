@@ -10,7 +10,11 @@ import adou.src.session.repository
 import adou.src.session.types as session_types
 import co
 import co.mutex
+import fs
 import json
+import os
+import path
+import syscall
 import time
 
 type provider_fixture_t = struct {
@@ -83,6 +87,14 @@ fn make_runner(ref<repository.manager_t> manager, ref<provider_fixture_t> fixtur
     var config = new agent_types.config_t(model = model(context_window), stream_options = new ai_types.stream_options_t(api_key = 'fixture-key', max_retries = 0))
     var settings = compaction_types.settings_t {reserve_tokens: reserve_tokens, keep_recent_tokens: keep_recent_tokens,}
     return session.new(manager, context, config, provider_fn(fixture), settings)
+}
+
+fn write_settings_file(string file_path, string content): void! {
+    os.mkdirs(path.dir(file_path), 0o700)
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    int written = output.write(content as [u8])
+    output.close()
+    assert(written == content.len())
 }
 
 fn prompt_error(ref<session.runner_t> runner, string text): string {
@@ -166,6 +178,26 @@ test 'busy prompt reports the Pi queue guidance' {
     string message = prompt_error(runner, 'second prompt')
     assert(message == "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message.")
     runner.end_operation()
+}
+
+test 'switching sessions reloads project Pi preferences over user settings' {
+    string root = '/tmp/adou-session-project-settings-test'
+    os.rmdir(root, true) catch error {}
+    string previous_agent_dir = syscall.get_env('PI_CODING_AGENT_DIR')
+    syscall.set_env('PI_CODING_AGENT_DIR', path.join(root, 'agent'))
+    write_settings_file(path.join(root, 'agent/settings.json'), '{"autoCompaction":false,"steeringMode":"one-at-a-time","followUpMode":"one-at-a-time","retryEnabled":true,"retryMaxAttempts":8,"retryBaseDelayMs":4000}')
+    string project = path.join(root, 'project')
+    write_settings_file(path.join(project, '.pi/settings.json'), '{"autoCompaction":true,"steeringMode":"all","followUpMode":"all","retryEnabled":false,"retryMaxAttempts":2,"retryBaseDelayMs":17}')
+    var manager = repository.in_memory('/tmp/adou-session-old-project')
+    var fixture = new provider_fixture_t()
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    var next = repository.in_memory(project)
+    runner.replace_repository(next)
+    assert(runner.agent_config.queues.steering_mode == 'all' && runner.agent_config.queues.follow_up_mode == 'all')
+    assert(runner.compaction_settings.enabled && !runner.retry_enabled)
+    assert(runner.retry_max_attempts == 2 && runner.retry_base_delay_ms == 17)
+    syscall.set_env('PI_CODING_AGENT_DIR', previous_agent_dir)
+    os.rmdir(root, true)
 }
 
 test 'prompt rejects missing authentication before starting an operation' {
