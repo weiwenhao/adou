@@ -106,6 +106,33 @@ fn set_default_thinking(string level): void! {
     save(settings)
 }
 
+// Pi's SettingsManager persists each mutable session preference immediately.
+// Keep the narrow setters here so RPC and TUI callers do not accidentally
+// replace unrelated settings while changing one toggle.
+fn set_auto_compaction(bool enabled): void! {
+    var settings = load()
+    settings.auto_compaction = enabled
+    save(settings)
+}
+
+fn set_steering_mode(string mode): void! {
+    var settings = load()
+    settings.steering_mode = queue_mode(mode)
+    save(settings)
+}
+
+fn set_follow_up_mode(string mode): void! {
+    var settings = load()
+    settings.follow_up_mode = queue_mode(mode)
+    save(settings)
+}
+
+fn set_retry_enabled(bool enabled): void! {
+    var settings = load()
+    settings.retry_enabled = enabled
+    save(settings)
+}
+
 fn settings_path(): string {
     return paths.settings_path()
 }

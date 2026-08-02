@@ -126,6 +126,19 @@ fn clamp_thinking_level(ref<ai_types.model_t> model, string requested): string {
     return 'off'
 }
 
+// Match Pi's getSupportedThinkingLevels() for the built-in MVP catalog. The
+// DeepSeek V4 models expose only off/high/max; ordinary reasoning models keep
+// the full public level sequence, while non-reasoning models expose off only.
+fn available_thinking_levels(ref<ai_types.model_t> model): [string] {
+    if !model.reasoning {
+        return ['off']
+    }
+    if model.id == 'deepseek-v4-flash' || model.id == 'deepseek-v4-pro' {
+        return ['off', 'high', 'max']
+    }
+    return ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+}
+
 fn list(): string {
     [string] names = []
     for model in all() {

@@ -2179,20 +2179,36 @@ fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
         if overlay.selected == 0 {
             self.toggle_thinking()
         } else if overlay.selected == 1 {
-            self.runner.compaction_settings.enabled = !self.runner.compaction_settings.enabled
+            self.runner.set_auto_compaction(!self.runner.compaction_settings.enabled) catch error {
+                self.chat.error_message = error.msg()
+                self.redraw()
+                return
+            }
             self.chat.set_auto_compaction(self.runner.compaction_settings.enabled)
             self.chat.status = 'Auto-compaction ' + (self.runner.compaction_settings.enabled ? 'enabled' : 'disabled')
         } else if overlay.selected == 2 {
-            self.runner.agent_config.queues.steering_mode = next_queue_mode(self.runner.agent_config.queues.steering_mode)
+            self.runner.set_steering_mode(next_queue_mode(self.runner.agent_config.queues.steering_mode)) catch error {
+                self.chat.error_message = error.msg()
+                self.redraw()
+                return
+            }
             self.chat.status = 'Steering mode: ' + self.runner.agent_config.queues.steering_mode
         } else if overlay.selected == 3 {
-            self.runner.agent_config.queues.follow_up_mode = next_queue_mode(self.runner.agent_config.queues.follow_up_mode)
+            self.runner.set_follow_up_mode(next_queue_mode(self.runner.agent_config.queues.follow_up_mode)) catch error {
+                self.chat.error_message = error.msg()
+                self.redraw()
+                return
+            }
             self.chat.status = 'Follow-up mode: ' + self.runner.agent_config.queues.follow_up_mode
         } else if overlay.selected == 4 {
             bool visible = self.chat.toggle_thinking_visibility()
             self.chat.status = 'Thinking blocks: ' + (visible ? 'visible' : 'hidden')
         } else if overlay.selected == 5 {
-            self.runner.retry_enabled = !self.runner.retry_enabled
+            self.runner.set_auto_retry(!self.runner.retry_enabled) catch error {
+                self.chat.error_message = error.msg()
+                self.redraw()
+                return
+            }
             self.chat.status = 'Auto-retry ' + (self.runner.retry_enabled ? 'enabled' : 'disabled')
         }
         self.save_preferences()

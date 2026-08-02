@@ -320,6 +320,43 @@ fn runner_t.set_thinking_level(&self, string level): void! {
     self.sync_agent_environment()
 }
 
+// These settings are mutable while the agent is idle or streaming. Pi's
+// SettingsManager writes each change immediately; keep the runner state and
+// persisted preferences in lockstep for RPC and TUI callers.
+fn runner_t.set_auto_compaction(&self, bool enabled): void! {
+    self.lock.lock()
+    self.compaction_settings.enabled = enabled
+    self.lock.unlock()
+    settings.set_auto_compaction(enabled)
+}
+
+fn runner_t.set_steering_mode(&self, string mode): void! {
+    if mode != agent_types.QUEUE_ALL && mode != agent_types.QUEUE_ONE {
+        throw errorf('mode must be all or one-at-a-time')
+    }
+    self.lock.lock()
+    self.agent_config.queues.steering_mode = mode
+    self.lock.unlock()
+    settings.set_steering_mode(mode)
+}
+
+fn runner_t.set_follow_up_mode(&self, string mode): void! {
+    if mode != agent_types.QUEUE_ALL && mode != agent_types.QUEUE_ONE {
+        throw errorf('mode must be all or one-at-a-time')
+    }
+    self.lock.lock()
+    self.agent_config.queues.follow_up_mode = mode
+    self.lock.unlock()
+    settings.set_follow_up_mode(mode)
+}
+
+fn runner_t.set_auto_retry(&self, bool enabled): void! {
+    self.lock.lock()
+    self.retry_enabled = enabled
+    self.lock.unlock()
+    settings.set_retry_enabled(enabled)
+}
+
 fn runner_t.refresh_auth(&self): void! {
     self.lock.lock()
     if self.busy {

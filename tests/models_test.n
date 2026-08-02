@@ -35,3 +35,12 @@ test 'clamps DeepSeek V4 thinking levels like Pi' {
     assert(config_models.clamp_thinking_level(model, 'xhigh') == 'max')
     assert(config_models.clamp_thinking_level(model, 'max') == 'max')
 }
+
+test 'reports Pi supported thinking levels per model' {
+    var deepseek = config_models.find('deepseek/deepseek-v4-flash') as ref<types.model_t>
+    var openai = config_models.find('openai/gpt-5.1-codex') as ref<types.model_t>
+    var deepseek_levels = config_models.available_thinking_levels(deepseek)
+    var openai_levels = config_models.available_thinking_levels(openai)
+    assert(deepseek_levels.len() == 3 && deepseek_levels[0] == 'off' && deepseek_levels[1] == 'high' && deepseek_levels[2] == 'max')
+    assert(openai_levels.len() == 7 && openai_levels[0] == 'off' && openai_levels[6] == 'max')
+}

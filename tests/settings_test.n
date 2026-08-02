@@ -23,3 +23,22 @@ test 'settings round trip preserves core Pi preferences' {
     assert(defaults.default_thinking_level == 'medium')
     assert(defaults.steering_mode == 'one-at-a-time' && defaults.follow_up_mode == 'one-at-a-time')
 }
+
+test 'Pi preference setters persist one setting without replacing the others' {
+    string home = '/tmp/adou-settings-setters-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    var original = settings.settings_t {default_provider: 'openai', default_model: 'gpt-5.1-codex', default_thinking_level: 'high', auto_compaction: true, steering_mode: 'one-at-a-time', follow_up_mode: 'one-at-a-time', hide_thinking: true, retry_enabled: true, retry_max_attempts: 7, retry_base_delay_ms: 3000, enabled_model_ids: ['openai/gpt-5.1-codex'],}
+    settings.save(original)
+    settings.set_auto_compaction(false)
+    settings.set_steering_mode('all')
+    settings.set_follow_up_mode('all')
+    settings.set_retry_enabled(false)
+    var loaded = settings.load()
+    assert(!loaded.auto_compaction && loaded.steering_mode == 'all' && loaded.follow_up_mode == 'all' && !loaded.retry_enabled)
+    assert(loaded.default_provider == 'openai' && loaded.default_model == 'gpt-5.1-codex')
+    assert(loaded.default_thinking_level == 'high' && loaded.hide_thinking)
+    assert(loaded.retry_max_attempts == 7 && loaded.retry_base_delay_ms == 3000)
+    assert(loaded.enabled_model_ids.len() == 1 && loaded.enabled_model_ids[0] == 'openai/gpt-5.1-codex')
+    os.rmdir(home, true)
+}

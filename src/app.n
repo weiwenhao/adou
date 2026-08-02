@@ -508,16 +508,22 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
         } else if command == 'cycle_thinking_level' {
             rpc_cycle_thinking(runner, id, output_lock)
         } else if command == 'get_available_thinking_levels' {
-            rpc_write(output_lock, rpc_ok_data(id, command, rpc_thinking_levels()))
+            rpc_write(output_lock, rpc_ok_data(id, command, rpc_thinking_levels(runner.agent_config.model)))
         } else if command == 'set_steering_mode' {
             rpc_set_queue_mode(runner, id, true, rpc_string(object, 'mode'), output_lock)
         } else if command == 'set_follow_up_mode' {
             rpc_set_queue_mode(runner, id, false, rpc_string(object, 'mode'), output_lock)
         } else if command == 'set_auto_compaction' {
-            runner.compaction_settings.enabled = rpc_bool(object, 'enabled', true)
+            runner.set_auto_compaction(rpc_bool(object, 'enabled', true)) catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
             rpc_write(output_lock, rpc_ok(id, command))
         } else if command == 'set_auto_retry' {
-            runner.retry_enabled = rpc_bool(object, 'enabled', true)
+            runner.set_auto_retry(rpc_bool(object, 'enabled', true)) catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
             rpc_write(output_lock, rpc_ok(id, command))
         } else if command == 'compact' {
             rpc_run_compaction(runner, id, rpc_string(object, 'customInstructions'), output_lock)
@@ -594,7 +600,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
             }
             rpc_write(output_lock, rpc_ok_data(id, command, fork_data))
         } else {
-            rpc_write(output_lock, rpc_error(id, command, 'Unknown RPC command: ' + command))
+            rpc_write(output_lock, rpc_error(id, command, 'Unknown command: ' + command))
         }
     }
     // A piped RPC client may close stdin immediately after sending a prompt.
@@ -731,9 +737,15 @@ fn rpc_set_queue_mode(ref<session.runner_t> runner, string id, bool steering, st
         return
     }
     if steering {
-        runner.agent_config.queues.steering_mode = mode
+        runner.set_steering_mode(mode) catch error {
+            rpc_write(output_lock, rpc_error(id, 'set_steering_mode', error.msg()))
+            return
+        }
     } else {
-        runner.agent_config.queues.follow_up_mode = mode
+        runner.set_follow_up_mode(mode) catch error {
+            rpc_write(output_lock, rpc_error(id, 'set_follow_up_mode', error.msg()))
+            return
+        }
     }
     rpc_write(output_lock, rpc_ok(id, steering ? 'set_steering_mode' : 'set_follow_up_mode'))
 }
@@ -962,8 +974,11 @@ fn rpc_model_data(ref<ai_types.model_t> model): ref<json.value_t>! {
 }
 
 #local
-fn rpc_thinking_levels(): ref<json.value_t>! {
-    [ref<json.value_t>] values = [boxed_string('off'), boxed_string('minimal'), boxed_string('low'), boxed_string('medium'), boxed_string('high'), boxed_string('xhigh'), boxed_string('max')]
+fn rpc_thinking_levels(ref<ai_types.model_t> model): ref<json.value_t>! {
+    [ref<json.value_t>] values = []
+    for level in models.available_thinking_levels(model) {
+        values.push(boxed_string(level))
+    }
     rpc_object_t result = {}
     result['levels'] = json.box_value(json.array_value(values))
     return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
