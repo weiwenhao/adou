@@ -959,7 +959,7 @@ fn runner_t.run_compaction(&self, ref<session_stream.stream_t> output, string re
     }
     self.lock.unlock()
     int estimated_after = token_estimate.estimate_context_tokens(self.active_messages).tokens
-    output.push(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, reason: reason, will_retry: will_retry, summary: result.summary, tokens_before: result.tokens_before, estimated_tokens_after: estimated_after,})
+    output.push(session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, reason: reason, will_retry: will_retry, compaction_has_result: true, summary: result.summary, compaction_first_kept_entry_id: result.first_kept_entry_id, tokens_before: result.tokens_before, estimated_tokens_after: estimated_after, compaction_usage: result.usage, compaction_details: details,})
     self.lock.lock()
     self.compacting = false
     self.lock.unlock()

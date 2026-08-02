@@ -255,8 +255,16 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-compaction-abort-") as root:
             raise SystemExit(f"compact response failed: {seen!r}")
         if not any(item.get("type") == "compaction_start" and item.get("reason") == "manual" for item in seen):
             raise SystemExit(f"manual compaction_start event missing: {seen!r}")
-        if not any(item.get("type") == "compaction_end" and item.get("errorMessage", "") == "" for item in seen):
+        compaction_end = next((item for item in seen if item.get("type") == "compaction_end"), None)
+        if not compaction_end or compaction_end.get("errorMessage", "") != "":
             raise SystemExit(f"successful compaction_end event missing: {seen!r}")
+        if compaction_end.get("aborted") is not False or compaction_end.get("willRetry") is not False:
+            raise SystemExit(f"Pi compaction terminal flags missing: {compaction_end!r}")
+        result = compaction_end.get("result")
+        if not isinstance(result, dict) or not result.get("summary") or "tokensBefore" not in result or "estimatedTokensAfter" not in result:
+            raise SystemExit(f"Pi nested compaction result missing: {compaction_end!r}")
+        if "summary" in compaction_end or "tokensBefore" in compaction_end:
+            raise SystemExit(f"compaction result was flattened instead of nested: {compaction_end!r}")
 
         with open(session_file, encoding="utf-8") as session:
             entries = [json.loads(line) for line in session if line.strip()]

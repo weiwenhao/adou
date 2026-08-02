@@ -3,6 +3,7 @@ import adou.src.ai.abort
 import adou.src.ai.types as ai_types
 import co
 import co.mutex
+import json
 
 const EVENT_COMPACTION_START = 'compaction_start'
 const EVENT_COMPACTION_END = 'compaction_end'
@@ -39,6 +40,10 @@ type event_t = struct {
     bool bash_truncated
     string bash_full_output_path
     bool bash_exclude_from_context
+    bool compaction_has_result
+    string compaction_first_kept_entry_id
+    ai_types.usage_t compaction_usage
+    json.value_t compaction_details
     int retry_attempt
     int retry_max_attempts
     int retry_delay_ms

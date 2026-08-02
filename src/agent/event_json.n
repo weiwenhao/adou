@@ -18,14 +18,24 @@ fn encode(session_stream.event_t event): string! {
         object = add_agent_fields(object, event.agent_event)
     }
     if event.reason != '' {object['reason'] = boxed_string(event.reason)}
-    if event.aborted {object['aborted'] = boxed_bool(true)}
-    if event.kind == agent_types.EVENT_AGENT_END || event.will_retry {
+    if event.kind == session_stream.EVENT_COMPACTION_END {
+        object['aborted'] = boxed_bool(event.aborted)
+        object['willRetry'] = boxed_bool(event.will_retry)
+        if event.compaction_has_result {
+            object['result'] = encode_compaction_result(event)
+        }
+    } else if event.aborted {
+        object['aborted'] = boxed_bool(true)
+    }
+    if event.kind == agent_types.EVENT_AGENT_END {
         object['willRetry'] = boxed_bool(event.will_retry)
     }
     if event.error_message != '' {object['errorMessage'] = boxed_string(event.error_message)}
-    if event.summary != '' {object['summary'] = boxed_string(event.summary)}
-    if event.tokens_before != 0 {object['tokensBefore'] = number_int(event.tokens_before)}
-    if event.estimated_tokens_after != 0 {object['estimatedTokensAfter'] = number_int(event.estimated_tokens_after)}
+    if event.kind != session_stream.EVENT_COMPACTION_END {
+        if event.summary != '' {object['summary'] = boxed_string(event.summary)}
+        if event.tokens_before != 0 {object['tokensBefore'] = number_int(event.tokens_before)}
+        if event.estimated_tokens_after != 0 {object['estimatedTokensAfter'] = number_int(event.estimated_tokens_after)}
+    }
     if event.bash_command != '' {object['command'] = boxed_string(event.bash_command)}
     if event.bash_output != '' {object['output'] = boxed_string(event.bash_output)}
     if event.bash_exit_code >= 0 {object['exitCode'] = number_int(event.bash_exit_code)}
@@ -134,6 +144,20 @@ fn encode_tool_result(tool_types.tool_result_t result): ref<json.value_t>! {
     }
     if has_usage(result.usage) {
         object['usage'] = message_json.encode_usage(result.usage)
+    }
+    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+}
+
+#local
+fn encode_compaction_result(session_stream.event_t event): ref<json.value_t>! {
+    object_t object = {}
+    object['summary'] = boxed_string(event.summary)
+    object['firstKeptEntryId'] = boxed_string(event.compaction_first_kept_entry_id)
+    object['tokensBefore'] = number_int(event.tokens_before)
+    object['estimatedTokensAfter'] = number_int(event.estimated_tokens_after)
+    object['usage'] = message_json.encode_usage(event.compaction_usage)
+    if event.compaction_details.kind != json.VALUE_NULL {
+        object['details'] = json.box_value(event.compaction_details)
     }
     return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
 }

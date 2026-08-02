@@ -91,3 +91,20 @@ test 'json mode encodes Pi queue_update snapshots' {
     assert(object['steering'].as_array().len() == 1 && object['followUp'].as_array().len() == 1)
     assert(object['steering'].as_array()[0].as_string() == 'stop and inspect')
 }
+
+test 'json mode nests the Pi compaction result and preserves terminal flags' {
+    var details = json.object_value({})
+    var usage = ai_types.usage_t {input: 10, output: 4, total_tokens: 14}
+    var event = session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, reason: 'manual', aborted: false, will_retry: false, compaction_has_result: true, summary: 'checkpoint', compaction_first_kept_entry_id: 'entry-2', tokens_before: 100, estimated_tokens_after: 30, compaction_usage: usage, compaction_details: details,}
+    var object = json.parse(event_json.encode(event)).as_object()
+    assert(object['aborted'].kind == json.VALUE_BOOL && !object['aborted'].as_bool())
+    assert(object['willRetry'].kind == json.VALUE_BOOL && !object['willRetry'].as_bool())
+    assert(object['result'].kind == json.VALUE_OBJECT)
+    var result = object['result'].as_object()
+    assert(result['summary'].as_string() == 'checkpoint')
+    assert(result['firstKeptEntryId'].as_string() == 'entry-2')
+    assert(result['tokensBefore'].number == '100')
+    assert(result['estimatedTokensAfter'].number == '30')
+    assert(result['usage'].kind == json.VALUE_OBJECT)
+    assert(!object.contains('summary') && !object.contains('tokensBefore'))
+}
