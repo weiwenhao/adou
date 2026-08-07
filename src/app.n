@@ -42,7 +42,6 @@ import time
 
 const VERSION = '0.1.0-dev'
 
-type rpc_object_t = {string:any}
 type rpc_bash_update_state_t = struct {
     string id
     ref<mutex.mutex_t> output_lock
@@ -491,7 +490,7 @@ fn run_json(ref<session.runner_t> runner, [string] prompts): void! {
 
 #local
 fn json_error(string message): string! {
-    rpc_object_t object = {}
+    {string:any} object = {}
     object['type'] = 'error'
     object['message'] = message
     return json.serialize(object)
@@ -583,7 +582,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
             rpc_write(output_lock, rpc_error('', 'parse', 'RPC command must be a JSON object'))
             continue
         }
-        var object = parsed as rpc_object_t
+        var object = parsed as {string:any}
         string command = rpc_string(object, 'type')
         string id = rpc_string(object, 'id')
         if command == 'prompt' {
@@ -681,7 +680,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
                 rpc_write(output_lock, rpc_error(id, command, error.msg()))
                 continue
             }
-            rpc_object_t fork_data = {}
+            {string:any} fork_data = {}
             fork_data['text'] = fork_text
             fork_data['cancelled'] = false
             rpc_write(output_lock, rpc_ok_data(id, command, fork_data))
@@ -830,7 +829,7 @@ fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope
             return
         }
     }
-    rpc_object_t result = {}
+    {string:any} result = {}
     result['model'] = rpc_model_data(next)
     result['thinkingLevel'] = runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off'
     result['isScoped'] = scoped.len() > 0
@@ -854,7 +853,7 @@ fn rpc_cycle_thinking(ref<session.runner_t> runner, string id, ref<mutex.mutex_t
         rpc_write(output_lock, rpc_error(id, 'cycle_thinking_level', error.msg()))
         return
     }
-    rpc_object_t result = {}
+    {string:any} result = {}
     string effective = runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off'
     result['level'] = effective
     rpc_write(output_lock, rpc_ok_data(id, 'cycle_thinking_level', result))
@@ -921,7 +920,7 @@ fn rpc_bash_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> st
         runner.end_operation()
         return
     }
-    rpc_object_t data = {}
+    {string:any} data = {}
     data['output'] = result.output
     if !result.cancelled {data['exitCode'] = result.exit_code}
     data['cancelled'] = result.cancelled
@@ -949,7 +948,7 @@ fn rpc_export_html(ref<session.runner_t> runner, string id, string requested_pat
         rpc_write(output_lock, rpc_error(id, 'export_html', error.msg()))
         return
     }
-    rpc_object_t data = {}
+    {string:any} data = {}
     data['path'] = absolute
     rpc_write(output_lock, rpc_ok_data(id, 'export_html', data))
 }
@@ -1046,7 +1045,7 @@ fn rpc_compaction_worker(ref<session.runner_t> runner, ref<session_stream.stream
         rpc_write(output_lock, rpc_error(id, 'compact', failure))
         return
     }
-    rpc_object_t data = {}
+    {string:any} data = {}
     data['summary'] = summary
     data['tokensBefore'] = tokens_before
     data['estimatedTokensAfter'] = estimated_after
@@ -1077,8 +1076,8 @@ fn rpc_set_model(ref<session.runner_t> runner, string id, string provider_name, 
 }
 
 #local
-fn rpc_state(ref<session.runner_t> runner): rpc_object_t {
-    rpc_object_t object = {}
+fn rpc_state(ref<session.runner_t> runner): {string:any} {
+    {string:any} object = {}
     object['model'] = rpc_model_data(runner.agent_config.model)
     object['thinkingLevel'] = runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off'
     object['isStreaming'] = runner.busy
@@ -1097,7 +1096,7 @@ fn rpc_state(ref<session.runner_t> runner): rpc_object_t {
 }
 
 #local
-fn rpc_models(ref<session.runner_t> runner): rpc_object_t {
+fn rpc_models(ref<session.runner_t> runner): {string:any} {
     [any] values = []
     for model in models.all() {
         if auth.effective(model.provider) == '' && !(model.provider == runner.agent_config.model.provider && runner.agent_config.stream_options.api_key != '') {
@@ -1105,14 +1104,14 @@ fn rpc_models(ref<session.runner_t> runner): rpc_object_t {
         }
         values.push(rpc_model_data(model))
     }
-    rpc_object_t result = {}
+    {string:any} result = {}
     result['models'] = values
     return result
 }
 
 #local
-fn rpc_model_data(ref<ai_types.model_t> model): rpc_object_t {
-    rpc_object_t object = {}
+fn rpc_model_data(ref<ai_types.model_t> model): {string:any} {
+    {string:any} object = {}
     object['provider'] = model.provider
     object['id'] = model.id
     object['name'] = model.id
@@ -1123,7 +1122,7 @@ fn rpc_model_data(ref<ai_types.model_t> model): rpc_object_t {
     object['input'] = inputs
     object['contextWindow'] = model.context_window
     object['maxTokens'] = model.max_tokens
-    rpc_object_t cost = {}
+    {string:any} cost = {}
     cost['input'] = model.cost.input
     cost['output'] = model.cost.output
     cost['cacheRead'] = model.cost.cache_read
@@ -1133,30 +1132,30 @@ fn rpc_model_data(ref<ai_types.model_t> model): rpc_object_t {
 }
 
 #local
-fn rpc_thinking_levels(ref<ai_types.model_t> model): rpc_object_t {
+fn rpc_thinking_levels(ref<ai_types.model_t> model): {string:any} {
     [any] values = []
     for level in models.available_thinking_levels(model) {
         values.push(level)
     }
-    rpc_object_t result = {}
+    {string:any} result = {}
     result['levels'] = values
     return result
 }
 
 #local
-fn rpc_messages([ai_types.message_t] messages): rpc_object_t {
+fn rpc_messages([ai_types.message_t] messages): {string:any} {
     [any] values = []
     for message in messages {
         var encoded = message_json.encode(message) catch error {{}}
         values.push(encoded)
     }
-    rpc_object_t result = {}
+    {string:any} result = {}
     result['messages'] = values
     return result
 }
 
 #local
-fn rpc_entries(ref<repository.manager_t> repository, string since): rpc_object_t! {
+fn rpc_entries(ref<repository.manager_t> repository, string since): {string:any}! {
     [any] values = []
     bool found_since = since == ''
     for entry in repository.get_entries() {
@@ -1173,16 +1172,16 @@ fn rpc_entries(ref<repository.manager_t> repository, string since): rpc_object_t
         // error Pi returns for an unknown cursor.
         throw errorf('Entry not found: %s', since)
     }
-    rpc_object_t result = {}
+    {string:any} result = {}
     result['entries'] = values
     result['leafId'] = rpc_nullable_string(repository.get_leaf_id())
     return result
 }
 
 #local
-fn rpc_tree(ref<repository.manager_t> repository): rpc_object_t {
+fn rpc_tree(ref<repository.manager_t> repository): {string:any} {
     [any] roots = rpc_tree_nodes(repository, '')
-    rpc_object_t result = {}
+    {string:any} result = {}
     result['tree'] = roots
     result['leafId'] = rpc_nullable_string(repository.get_leaf_id())
     return result
@@ -1194,7 +1193,7 @@ fn rpc_tree_nodes(ref<repository.manager_t> repository, string parent_id): [any]
     for entry in repository.get_entries() {
         bool matches = parent_id == '' ? !entry.has_parent : entry.has_parent && entry.parent_id == parent_id
         if !matches {continue}
-        rpc_object_t node = {}
+        {string:any} node = {}
         node['entry'] = entry.raw
         node['children'] = rpc_tree_nodes(repository, entry.id)
         string label = repository.get_label(entry.id)
@@ -1211,18 +1210,18 @@ fn rpc_tree_nodes(ref<repository.manager_t> repository, string parent_id): [any]
 }
 
 #local
-fn rpc_fork_messages(ref<repository.manager_t> repository): rpc_object_t {
+fn rpc_fork_messages(ref<repository.manager_t> repository): {string:any} {
     [any] values = []
     for entry in repository.get_entries() {
         if entry.kind != session_types.ENTRY_MESSAGE {continue}
         string text = rpc_fork_message_text(repository, entry.id)
         if text == '' {continue}
-        rpc_object_t item = {}
+        {string:any} item = {}
         item['entryId'] = entry.id
         item['text'] = text
         values.push(item)
     }
-    rpc_object_t result = {}
+    {string:any} result = {}
     result['messages'] = values
     return result
 }
@@ -1250,27 +1249,27 @@ fn rpc_nullable_string(string value): any {
 }
 
 #local
-fn rpc_cancelled_data(bool cancelled): rpc_object_t {
-    rpc_object_t object = {}
+fn rpc_cancelled_data(bool cancelled): {string:any} {
+    {string:any} object = {}
     object['cancelled'] = cancelled
     return object
 }
 
 #local
-fn rpc_commands(): rpc_object_t {
+fn rpc_commands(): {string:any} {
     // Pi's get_commands is the extension/prompt/skill registry, not the
     // built-in slash-command help list.  Adou has no dynamic extensions in
     // the MVP, so the protocol-compatible result is an empty array. Built-in
     // commands remain available through the TUI completion menu and /help.
     [any] values = []
-    rpc_object_t result = {}
+    {string:any} result = {}
     result['commands'] = values
     return result
 }
 
 #local
-fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): rpc_object_t {
-    rpc_object_t object = {}
+fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): {string:any} {
+    {string:any} object = {}
     string session_file = repository.get_session_file()
     if session_file != '' {object['sessionFile'] = session_file}
     object['sessionId'] = repository.get_session_id()
@@ -1279,7 +1278,7 @@ fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): rp
     object['toolCalls'] = stats.tool_calls
     object['toolResults'] = stats.tool_results
     object['totalMessages'] = stats.total_messages
-    rpc_object_t tokens = {}
+    {string:any} tokens = {}
     tokens['input'] = stats.usage.input
     tokens['output'] = stats.usage.output
     tokens['cacheRead'] = stats.usage.cache_read
@@ -1288,7 +1287,7 @@ fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): rp
     object['tokens'] = tokens
     object['cost'] = stats.usage.cost.total
     if stats.context_window > 0 && repository.context_usage_known() {
-        rpc_object_t context_usage = {}
+        {string:any} context_usage = {}
         context_usage['tokens'] = stats.context_tokens
         context_usage['contextWindow'] = stats.context_window
         context_usage['percent'] = stats.context_tokens as float * 100.0 / stats.context_window as float
@@ -1298,8 +1297,8 @@ fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): rp
 }
 
 #local
-fn rpc_text_data(string key, string value): rpc_object_t {
-    rpc_object_t object = {}
+fn rpc_text_data(string key, string value): {string:any} {
+    {string:any} object = {}
     if value == '' {
         object[key] = null
     } else {
@@ -1310,7 +1309,7 @@ fn rpc_text_data(string key, string value): rpc_object_t {
 
 #local
 fn rpc_ok(string id, string command): string! {
-    rpc_object_t object = {}
+    {string:any} object = {}
     if id != '' {object['id'] = id}
     object['type'] = 'response'
     object['command'] = command
@@ -1320,7 +1319,7 @@ fn rpc_ok(string id, string command): string! {
 
 #local
 fn rpc_ok_data(string id, string command, any data): string! {
-    rpc_object_t object = {}
+    {string:any} object = {}
     if id != '' {object['id'] = id}
     object['type'] = 'response'
     object['command'] = command
@@ -1331,7 +1330,7 @@ fn rpc_ok_data(string id, string command, any data): string! {
 
 #local
 fn rpc_error(string id, string command, string message): string! {
-    rpc_object_t object = {}
+    {string:any} object = {}
     if id != '' {object['id'] = id}
     object['type'] = 'response'
     object['command'] = command
@@ -1352,13 +1351,13 @@ fn rpc_write(ref<mutex.mutex_t> output_lock, string line) {
 }
 
 #local
-fn rpc_string(rpc_object_t object, string key): string {
+fn rpc_string({string:any} object, string key): string {
     if object.contains(key) && object[key] is string {return object[key] as string}
     return ''
 }
 
 #local
-fn rpc_bool(rpc_object_t object, string key, bool fallback): bool {
+fn rpc_bool({string:any} object, string key, bool fallback): bool {
     if object.contains(key) && object[key] is bool {return object[key] as bool}
     return fallback
 }
