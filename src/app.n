@@ -585,13 +585,12 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
     for true {
         string line = reader.read_line() catch error {break}
         line = line.trim([' ', '\t', '\r', '\n'])
-        if line == '' {continue}
         var parsed = json_util.parse(line) catch error {
-            rpc_write(output_lock, rpc_error('', 'parse', error.msg()))
+            rpc_write(output_lock, rpc_error('', 'parse', 'Failed to parse command: ' + error.msg()))
             continue
         }
         if !json_util.is_obj(parsed) {
-            rpc_write(output_lock, rpc_error('', 'parse', 'RPC command must be a JSON object'))
+            rpc_write(output_lock, rpc_error('', 'parse', 'Failed to parse command: RPC command must be a JSON object'))
             continue
         }
         var object = parsed as {string:any}
