@@ -10,6 +10,8 @@ import adou.src.config.args
 import adou.src.config.auth
 import adou.src.config.models
 import adou.src.config.resolve
+import adou.src.debug
+import adou.src.timings
 import adou.src.config.settings
 import adou.src.config.types as config_types
 import adou.src.context.project
@@ -48,8 +50,13 @@ type rpc_bash_update_state_t = struct {
 }
 
 fn run(): void! {
+    timings.reset_timings()
+    timings.time('parseArgs')
     var argv = os.args()
     var arguments = args.parse(argv)
+    debug.configure(arguments.debug)
+    debug.log('startup', 'adou start pid=' + fmt.sprintf('%d', syscall.getpid()))
+    timings.time('resolveConfig')
     if arguments.version {
         println('adou ', VERSION)
         return
@@ -267,7 +274,9 @@ fn run(): void! {
         // Keep the original CLI overrides for later RPC session switches;
         // an empty value means the new session should rediscover its own
         // project .pi SYSTEM.md/APPEND_SYSTEM.md files.
+        debug.log('mode', 'starting rpc loop')
         run_rpc(runner, config.no_context_files, config.system_prompt, config.append_system_prompts, config.scoped_models)
+        timings.print_timings()
         return
     }
 
