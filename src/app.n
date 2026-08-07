@@ -14,6 +14,7 @@ import adou.src.config.settings
 import adou.src.config.types as config_types
 import adou.src.context.project
 import adou.src.context.system_prompt
+import adou.src.json_util
 import adou.src.platform.cwd as platform_cwd
 import adou.src.session.repository
 import adou.src.session.types as session_types
@@ -29,7 +30,7 @@ import fs
 import os
 import strings
 import syscall
-import term
+import adou.src.tui.term as term
 import path
 import json
 import io
@@ -41,7 +42,7 @@ import time
 
 const VERSION = '0.1.0-dev'
 
-type rpc_object_t = map<string, ref<json.value_t>>
+type rpc_object_t = {string:any}
 type rpc_bash_update_state_t = struct {
     string id
     ref<mutex.mutex_t> output_lock
@@ -490,10 +491,10 @@ fn run_json(ref<session.runner_t> runner, [string] prompts): void! {
 
 #local
 fn json_error(string message): string! {
-    map<string, ref<json.value_t>> object = {}
-    object['type'] = json.box_value(json.string_value('error'))
-    object['message'] = json.box_value(json.string_value(message))
-    return json.stringify(json.object_value(object))
+    rpc_object_t object = {}
+    object['type'] = 'error'
+    object['message'] = message
+    return json.serialize(object)
 }
 
 #local
@@ -574,18 +575,15 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
         string line = reader.read_line() catch error {break}
         line = line.trim([' ', '\t', '\r', '\n'])
         if line == '' {continue}
-        var parsed = json.parse(line) catch error {
+        var parsed = json_util.parse(line) catch error {
             rpc_write(output_lock, rpc_error('', 'parse', error.msg()))
             continue
         }
-        if parsed.kind != json.VALUE_OBJECT {
+        if !json_util.is_obj(parsed) {
             rpc_write(output_lock, rpc_error('', 'parse', 'RPC command must be a JSON object'))
             continue
         }
-        rpc_object_t object = parsed.as_object() catch error {
-            rpc_write(output_lock, rpc_error('', 'parse', error.msg()))
-            continue
-        } as rpc_object_t
+        var object = parsed as rpc_object_t
         string command = rpc_string(object, 'type')
         string id = rpc_string(object, 'id')
         if command == 'prompt' {
@@ -684,9 +682,9 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
                 continue
             }
             rpc_object_t fork_data = {}
-            fork_data['text'] = boxed_string(fork_text)
-            fork_data['cancelled'] = boxed_bool(false)
-            rpc_write(output_lock, rpc_ok_data(id, command, json.box_value(json.object_value(fork_data as map<string, ref<json.value_t>>))))
+            fork_data['text'] = fork_text
+            fork_data['cancelled'] = false
+            rpc_write(output_lock, rpc_ok_data(id, command, fork_data))
         } else if command == 'clone' {
             runner.clone_session() catch error {
                 rpc_write(output_lock, rpc_error(id, command, error.msg()))
@@ -810,7 +808,7 @@ fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope
         }
     }
     if available.len() <= 1 {
-        rpc_write(output_lock, rpc_ok_data(id, 'cycle_model', json.box_value(json.null_value())))
+        rpc_write(output_lock, rpc_ok_data(id, 'cycle_model', null))
         return
     }
     int current = 0
@@ -834,15 +832,15 @@ fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope
     }
     rpc_object_t result = {}
     result['model'] = rpc_model_data(next)
-    result['thinkingLevel'] = boxed_string(runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off')
-    result['isScoped'] = boxed_bool(scoped.len() > 0)
-    rpc_write(output_lock, rpc_ok_data(id, 'cycle_model', json.box_value(json.object_value(result as map<string, ref<json.value_t>>))))
+    result['thinkingLevel'] = runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off'
+    result['isScoped'] = scoped.len() > 0
+    rpc_write(output_lock, rpc_ok_data(id, 'cycle_model', result))
 }
 
 #local
 fn rpc_cycle_thinking(ref<session.runner_t> runner, string id, ref<mutex.mutex_t> output_lock): void! {
     if !runner.agent_config.model.reasoning {
-        rpc_write(output_lock, rpc_ok_data(id, 'cycle_thinking_level', json.box_value(json.null_value())))
+        rpc_write(output_lock, rpc_ok_data(id, 'cycle_thinking_level', null))
         return
     }
     [string] levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -858,8 +856,8 @@ fn rpc_cycle_thinking(ref<session.runner_t> runner, string id, ref<mutex.mutex_t
     }
     rpc_object_t result = {}
     string effective = runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off'
-    result['level'] = boxed_string(effective)
-    rpc_write(output_lock, rpc_ok_data(id, 'cycle_thinking_level', json.box_value(json.object_value(result as map<string, ref<json.value_t>>))))
+    result['level'] = effective
+    rpc_write(output_lock, rpc_ok_data(id, 'cycle_thinking_level', result))
 }
 
 #local
@@ -924,13 +922,13 @@ fn rpc_bash_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> st
         return
     }
     rpc_object_t data = {}
-    data['output'] = boxed_string(result.output)
-    if !result.cancelled {data['exitCode'] = number_json(result.exit_code)}
-    data['cancelled'] = boxed_bool(result.cancelled)
-    data['timedOut'] = boxed_bool(result.timed_out)
-    data['truncated'] = boxed_bool(result.truncated)
-    if result.full_output_path != '' {data['fullOutputPath'] = boxed_string(result.full_output_path)}
-    rpc_write(output_lock, rpc_ok_data(id, 'bash', json.box_value(json.object_value(data as map<string, ref<json.value_t>>))))
+    data['output'] = result.output
+    if !result.cancelled {data['exitCode'] = result.exit_code}
+    data['cancelled'] = result.cancelled
+    data['timedOut'] = result.timed_out
+    data['truncated'] = result.truncated
+    if result.full_output_path != '' {data['fullOutputPath'] = result.full_output_path}
+    rpc_write(output_lock, rpc_ok_data(id, 'bash', data))
     runner.end_operation()
 }
 
@@ -952,8 +950,8 @@ fn rpc_export_html(ref<session.runner_t> runner, string id, string requested_pat
         return
     }
     rpc_object_t data = {}
-    data['path'] = boxed_string(absolute)
-    rpc_write(output_lock, rpc_ok_data(id, 'export_html', json.box_value(json.object_value(data as map<string, ref<json.value_t>>))))
+    data['path'] = absolute
+    rpc_write(output_lock, rpc_ok_data(id, 'export_html', data))
 }
 
 #local
@@ -1049,20 +1047,19 @@ fn rpc_compaction_worker(ref<session.runner_t> runner, ref<session_stream.stream
         return
     }
     rpc_object_t data = {}
-    data['summary'] = boxed_string(summary)
-    data['tokensBefore'] = number_json(tokens_before)
-    data['estimatedTokensAfter'] = number_json(estimated_after)
+    data['summary'] = summary
+    data['tokensBefore'] = tokens_before
+    data['estimatedTokensAfter'] = estimated_after
     ref<session_types.entry_t>? latest = runner.repository.latest_compaction()
     if latest is ref<session_types.entry_t> entry {
-        var raw = entry.raw.as_object() catch error {
-            rpc_write(output_lock, rpc_ok_data(id, 'compact', json.box_value(json.object_value(data as map<string, ref<json.value_t>>))))
-            return
-        }
-        if raw.contains('firstKeptEntryId') && raw['firstKeptEntryId'].kind == json.VALUE_STRING {
-            data['firstKeptEntryId'] = boxed_string(raw['firstKeptEntryId'].text)
+        if entry.raw is {string:any} {
+            var raw = entry.raw as {string:any}
+            if raw.contains('firstKeptEntryId') && raw['firstKeptEntryId'] is string {
+                data['firstKeptEntryId'] = raw['firstKeptEntryId'] as string
+            }
         }
     }
-    rpc_write(output_lock, rpc_ok_data(id, 'compact', json.box_value(json.object_value(data as map<string, ref<json.value_t>>))))
+    rpc_write(output_lock, rpc_ok_data(id, 'compact', data))
 }
 
 #local
@@ -1080,28 +1077,28 @@ fn rpc_set_model(ref<session.runner_t> runner, string id, string provider_name, 
 }
 
 #local
-fn rpc_state(ref<session.runner_t> runner): ref<json.value_t>! {
+fn rpc_state(ref<session.runner_t> runner): rpc_object_t {
     rpc_object_t object = {}
     object['model'] = rpc_model_data(runner.agent_config.model)
-    object['thinkingLevel'] = boxed_string(runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off')
-    object['isStreaming'] = boxed_bool(runner.busy)
-    object['isCompacting'] = boxed_bool(runner.compacting)
-    object['steeringMode'] = boxed_string(runner.agent_config.queues.steering_mode)
-    object['followUpMode'] = boxed_string(runner.agent_config.queues.follow_up_mode)
+    object['thinkingLevel'] = runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off'
+    object['isStreaming'] = runner.busy
+    object['isCompacting'] = runner.compacting
+    object['steeringMode'] = runner.agent_config.queues.steering_mode
+    object['followUpMode'] = runner.agent_config.queues.follow_up_mode
     string session_file = runner.repository.get_session_file()
-    if session_file != '' {object['sessionFile'] = boxed_string(session_file)}
-    object['sessionId'] = boxed_string(runner.repository.get_session_id())
-    string session_name = runner.repository.get_session_name()
-    if session_name != '' {object['sessionName'] = boxed_string(session_name)}
-    object['autoCompactionEnabled'] = boxed_bool(runner.compaction_settings.enabled)
-    object['messageCount'] = number_json(runner.active_messages.len())
-    object['pendingMessageCount'] = number_json(runner.agent_config.queues.pending_count())
-    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+    if session_file != '' {object['sessionFile'] = session_file}
+    object['sessionId'] = runner.repository.get_session_id()
+    string session_name = runner.repository.get_session_name() catch error {''}
+    if session_name != '' {object['sessionName'] = session_name}
+    object['autoCompactionEnabled'] = runner.compaction_settings.enabled
+    object['messageCount'] = runner.active_messages.len()
+    object['pendingMessageCount'] = runner.agent_config.queues.pending_count()
+    return object
 }
 
 #local
-fn rpc_models(ref<session.runner_t> runner): ref<json.value_t>! {
-    [ref<json.value_t>] values = []
+fn rpc_models(ref<session.runner_t> runner): rpc_object_t {
+    [any] values = []
     for model in models.all() {
         if auth.effective(model.provider) == '' && !(model.provider == runner.agent_config.model.provider && runner.agent_config.stream_options.api_key != '') {
             continue
@@ -1109,58 +1106,58 @@ fn rpc_models(ref<session.runner_t> runner): ref<json.value_t>! {
         values.push(rpc_model_data(model))
     }
     rpc_object_t result = {}
-    result['models'] = json.box_value(json.array_value(values))
-    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+    result['models'] = values
+    return result
 }
 
 #local
-fn rpc_model_data(ref<ai_types.model_t> model): ref<json.value_t>! {
+fn rpc_model_data(ref<ai_types.model_t> model): rpc_object_t {
     rpc_object_t object = {}
-    object['provider'] = boxed_string(model.provider)
-    object['id'] = boxed_string(model.id)
-    object['name'] = boxed_string(model.id)
-    object['api'] = boxed_string(model.api)
-    object['baseUrl'] = boxed_string(model.base_url)
-    object['reasoning'] = boxed_bool(model.reasoning)
-    [ref<json.value_t>] inputs = [boxed_string('text')]
-    object['input'] = json.box_value(json.array_value(inputs))
-    object['contextWindow'] = number_json(model.context_window)
-    object['maxTokens'] = number_json(model.max_tokens)
+    object['provider'] = model.provider
+    object['id'] = model.id
+    object['name'] = model.id
+    object['api'] = model.api
+    object['baseUrl'] = model.base_url
+    object['reasoning'] = model.reasoning
+    [any] inputs = ['text']
+    object['input'] = inputs
+    object['contextWindow'] = model.context_window
+    object['maxTokens'] = model.max_tokens
     rpc_object_t cost = {}
-    cost['input'] = float_json(model.cost.input)
-    cost['output'] = float_json(model.cost.output)
-    cost['cacheRead'] = float_json(model.cost.cache_read)
-    cost['cacheWrite'] = float_json(model.cost.cache_write)
-    object['cost'] = json.box_value(json.object_value(cost as map<string, ref<json.value_t>>))
-    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+    cost['input'] = model.cost.input
+    cost['output'] = model.cost.output
+    cost['cacheRead'] = model.cost.cache_read
+    cost['cacheWrite'] = model.cost.cache_write
+    object['cost'] = cost
+    return object
 }
 
 #local
-fn rpc_thinking_levels(ref<ai_types.model_t> model): ref<json.value_t>! {
-    [ref<json.value_t>] values = []
+fn rpc_thinking_levels(ref<ai_types.model_t> model): rpc_object_t {
+    [any] values = []
     for level in models.available_thinking_levels(model) {
-        values.push(boxed_string(level))
+        values.push(level)
     }
     rpc_object_t result = {}
-    result['levels'] = json.box_value(json.array_value(values))
-    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+    result['levels'] = values
+    return result
 }
 
 #local
-fn rpc_messages([ai_types.message_t] messages): ref<json.value_t>! {
-    [ref<json.value_t>] values = []
+fn rpc_messages([ai_types.message_t] messages): rpc_object_t {
+    [any] values = []
     for message in messages {
-        var encoded = message_json.encode(message)
-        values.push(json.box_value(encoded))
+        var encoded = message_json.encode(message) catch error {{}}
+        values.push(encoded)
     }
     rpc_object_t result = {}
-    result['messages'] = json.box_value(json.array_value(values))
-    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+    result['messages'] = values
+    return result
 }
 
 #local
-fn rpc_entries(ref<repository.manager_t> repository, string since): ref<json.value_t>! {
-    [ref<json.value_t>] values = []
+fn rpc_entries(ref<repository.manager_t> repository, string since): rpc_object_t! {
+    [any] values = []
     bool found_since = since == ''
     for entry in repository.get_entries() {
         if !found_since {
@@ -1169,8 +1166,7 @@ fn rpc_entries(ref<repository.manager_t> repository, string since): ref<json.val
             }
             continue
         }
-        var boxed = json.box_value(entry.raw)
-        values.push(boxed)
+        values.push(entry.raw)
     }
     if since != '' && !found_since {
         // Keep the helper errable so callers can surface the same explicit
@@ -1178,58 +1174,57 @@ fn rpc_entries(ref<repository.manager_t> repository, string since): ref<json.val
         throw errorf('Entry not found: %s', since)
     }
     rpc_object_t result = {}
-    result['entries'] = json.box_value(json.array_value(values))
+    result['entries'] = values
     result['leafId'] = rpc_nullable_string(repository.get_leaf_id())
-    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+    return result
 }
 
 #local
-fn rpc_tree(ref<repository.manager_t> repository): ref<json.value_t>! {
-    [ref<json.value_t>] roots = rpc_tree_nodes(repository, '')
+fn rpc_tree(ref<repository.manager_t> repository): rpc_object_t {
+    [any] roots = rpc_tree_nodes(repository, '')
     rpc_object_t result = {}
-    result['tree'] = json.box_value(json.array_value(roots))
+    result['tree'] = roots
     result['leafId'] = rpc_nullable_string(repository.get_leaf_id())
-    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+    return result
 }
 
 #local
-fn rpc_tree_nodes(ref<repository.manager_t> repository, string parent_id): [ref<json.value_t>]! {
-    [ref<json.value_t>] values = []
+fn rpc_tree_nodes(ref<repository.manager_t> repository, string parent_id): [any] {
+    [any] values = []
     for entry in repository.get_entries() {
         bool matches = parent_id == '' ? !entry.has_parent : entry.has_parent && entry.parent_id == parent_id
         if !matches {continue}
         rpc_object_t node = {}
-        node['entry'] = json.box_value(entry.raw)
-        [ref<json.value_t>] children = rpc_tree_nodes(repository, entry.id)
-        node['children'] = json.box_value(json.array_value(children))
+        node['entry'] = entry.raw
+        node['children'] = rpc_tree_nodes(repository, entry.id)
         string label = repository.get_label(entry.id)
         if label != '' {
-            node['label'] = boxed_string(label)
+            node['label'] = label
             string label_timestamp = repository.get_label_timestamp(entry.id)
             if label_timestamp != '' {
-                node['labelTimestamp'] = boxed_string(label_timestamp)
+                node['labelTimestamp'] = label_timestamp
             }
         }
-        values.push(json.box_value(json.object_value(node as map<string, ref<json.value_t>>)))
+        values.push(node)
     }
     return values
 }
 
 #local
-fn rpc_fork_messages(ref<repository.manager_t> repository): ref<json.value_t>! {
-    [ref<json.value_t>] values = []
+fn rpc_fork_messages(ref<repository.manager_t> repository): rpc_object_t {
+    [any] values = []
     for entry in repository.get_entries() {
         if entry.kind != session_types.ENTRY_MESSAGE {continue}
         string text = rpc_fork_message_text(repository, entry.id)
         if text == '' {continue}
         rpc_object_t item = {}
-        item['entryId'] = boxed_string(entry.id)
-        item['text'] = boxed_string(text)
-        values.push(json.box_value(json.object_value(item as map<string, ref<json.value_t>>)))
+        item['entryId'] = entry.id
+        item['text'] = text
+        values.push(item)
     }
     rpc_object_t result = {}
-    result['messages'] = json.box_value(json.array_value(values))
-    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+    result['messages'] = values
+    return result
 }
 
 #local
@@ -1238,103 +1233,111 @@ fn rpc_fork_message_text(ref<repository.manager_t> repository, string entry_id):
     if !(possible is ref<session_types.entry_t>) {return ''}
     var entry = possible as ref<session_types.entry_t>
     if entry.kind != session_types.ENTRY_MESSAGE {return ''}
-    var object = entry.raw.as_object() catch error {return ''}
-    if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {return ''}
+    if !(entry.raw is {string:any}) {return ''}
+    var object = entry.raw as {string:any}
+    if !object.contains('message') || !(object['message'] is {string:any}) {return ''}
     var message = message_json.decode(object['message']) catch error {return ''}
     if message is ref<ai_types.user_message_t> user {return user.content}
     return ''
 }
 
 #local
-fn rpc_nullable_string(string value): ref<json.value_t> {
-    return value == '' ? json.box_value(json.null_value()) : boxed_string(value)
+fn rpc_nullable_string(string value): any {
+    if value == '' {
+        return null
+    }
+    return value
 }
 
 #local
-fn rpc_cancelled_data(bool cancelled): ref<json.value_t>! {
+fn rpc_cancelled_data(bool cancelled): rpc_object_t {
     rpc_object_t object = {}
-    object['cancelled'] = boxed_bool(cancelled)
-    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+    object['cancelled'] = cancelled
+    return object
 }
 
 #local
-fn rpc_commands(): ref<json.value_t>! {
+fn rpc_commands(): rpc_object_t {
     // Pi's get_commands is the extension/prompt/skill registry, not the
     // built-in slash-command help list.  Adou has no dynamic extensions in
     // the MVP, so the protocol-compatible result is an empty array. Built-in
     // commands remain available through the TUI completion menu and /help.
-    [ref<json.value_t>] values = []
+    [any] values = []
     rpc_object_t result = {}
-    result['commands'] = json.box_value(json.array_value(values))
-    return json.box_value(json.object_value(result as map<string, ref<json.value_t>>))
+    result['commands'] = values
+    return result
 }
 
 #local
-fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): ref<json.value_t>! {
+fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): rpc_object_t {
     rpc_object_t object = {}
     string session_file = repository.get_session_file()
-    if session_file != '' {object['sessionFile'] = boxed_string(session_file)}
-    object['sessionId'] = boxed_string(repository.get_session_id())
-    object['userMessages'] = number_json(stats.user_messages)
-    object['assistantMessages'] = number_json(stats.assistant_messages)
-    object['toolCalls'] = number_json(stats.tool_calls)
-    object['toolResults'] = number_json(stats.tool_results)
-    object['totalMessages'] = number_json(stats.total_messages)
+    if session_file != '' {object['sessionFile'] = session_file}
+    object['sessionId'] = repository.get_session_id()
+    object['userMessages'] = stats.user_messages
+    object['assistantMessages'] = stats.assistant_messages
+    object['toolCalls'] = stats.tool_calls
+    object['toolResults'] = stats.tool_results
+    object['totalMessages'] = stats.total_messages
     rpc_object_t tokens = {}
-    tokens['input'] = number_json(stats.usage.input)
-    tokens['output'] = number_json(stats.usage.output)
-    tokens['cacheRead'] = number_json(stats.usage.cache_read)
-    tokens['cacheWrite'] = number_json(stats.usage.cache_write)
-    tokens['total'] = number_json(stats.usage.total_tokens)
-    object['tokens'] = json.box_value(json.object_value(tokens as map<string, ref<json.value_t>>))
-    object['cost'] = float_json(stats.usage.cost.total)
+    tokens['input'] = stats.usage.input
+    tokens['output'] = stats.usage.output
+    tokens['cacheRead'] = stats.usage.cache_read
+    tokens['cacheWrite'] = stats.usage.cache_write
+    tokens['total'] = stats.usage.total_tokens
+    object['tokens'] = tokens
+    object['cost'] = stats.usage.cost.total
     if stats.context_window > 0 && repository.context_usage_known() {
         rpc_object_t context_usage = {}
-        context_usage['tokens'] = number_json(stats.context_tokens)
-        context_usage['contextWindow'] = number_json(stats.context_window)
-        context_usage['percent'] = float_json(stats.context_tokens as float * 100.0 / stats.context_window as float)
-        object['contextUsage'] = json.box_value(json.object_value(context_usage as map<string, ref<json.value_t>>))
+        context_usage['tokens'] = stats.context_tokens
+        context_usage['contextWindow'] = stats.context_window
+        context_usage['percent'] = stats.context_tokens as float * 100.0 / stats.context_window as float
+        object['contextUsage'] = context_usage
     }
-    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+    return object
 }
 
 #local
-fn rpc_text_data(string key, string value): ref<json.value_t>! {
+fn rpc_text_data(string key, string value): rpc_object_t {
     rpc_object_t object = {}
-    object[key] = value == '' ? json.box_value(json.null_value()) : boxed_string(value)
-    return json.box_value(json.object_value(object as map<string, ref<json.value_t>>))
+    if value == '' {
+        object[key] = null
+    } else {
+        object[key] = value
+    }
+    return object
 }
 
 #local
 fn rpc_ok(string id, string command): string! {
     rpc_object_t object = {}
-    if id != '' {object['id'] = boxed_string(id)}
-    object['type'] = boxed_string('response')
-    object['command'] = boxed_string(command)
-    object['success'] = boxed_bool(true)
-    return json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+    if id != '' {object['id'] = id}
+    object['type'] = 'response'
+    object['command'] = command
+    object['success'] = true
+    return json.serialize(object)
 }
 
 #local
-fn rpc_ok_data(string id, string command, ref<json.value_t> data): string! {
+fn rpc_ok_data(string id, string command, any data): string! {
     rpc_object_t object = {}
-    if id != '' {object['id'] = boxed_string(id)}
-    object['type'] = boxed_string('response')
-    object['command'] = boxed_string(command)
-    object['success'] = boxed_bool(true)
+    if id != '' {object['id'] = id}
+    object['type'] = 'response'
+    object['command'] = command
+    object['success'] = true
     object['data'] = data
-    return json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+    return json.serialize(object)
 }
 
 #local
 fn rpc_error(string id, string command, string message): string! {
     rpc_object_t object = {}
-    if id != '' {object['id'] = boxed_string(id)}
-    object['type'] = boxed_string('response')
-    object['command'] = boxed_string(command)
-    object['success'] = boxed_bool(false)
-    object['error'] = boxed_string(message)
-    return json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+    if id != '' {object['id'] = id}
+    object['type'] = 'response'
+    object['command'] = command
+    object['success'] = false
+    object['error'] = message
+    return json.serialize(object)
 }
 
 #local
@@ -1350,32 +1353,15 @@ fn rpc_write(ref<mutex.mutex_t> output_lock, string line) {
 
 #local
 fn rpc_string(rpc_object_t object, string key): string {
-    if object.contains(key) && object[key].kind == json.VALUE_STRING {return object[key].text}
+    if object.contains(key) && object[key] is string {return object[key] as string}
     return ''
 }
 
 #local
 fn rpc_bool(rpc_object_t object, string key, bool fallback): bool {
-    if object.contains(key) && object[key].kind == json.VALUE_BOOL {return object[key].boolean}
+    if object.contains(key) && object[key] is bool {return object[key] as bool}
     return fallback
 }
-
-#local
-fn boxed_string(string value): ref<json.value_t> {return json.box_value(json.string_value(value))}
-
-#local
-fn boxed_bool(bool value): ref<json.value_t> {return json.box_value(json.bool_value(value))}
-
-#local
-fn float_json(float value): ref<json.value_t>! {
-    if value == 0.0 {
-        return json.box_value(json.number_value('0'))
-    }
-    return json.box_value(json.number_value(fmt.sprintf('%.8f', value)))
-}
-
-#local
-fn number_json(int value): ref<json.value_t>! {return json.box_value(json.number_value(fmt.sprintf('%d', value)))}
 
 #local
 fn last_assistant_text([ai_types.message_t] messages): string {

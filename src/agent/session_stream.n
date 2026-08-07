@@ -53,7 +53,7 @@ type event_t = struct {
     bool compaction_has_result
     string compaction_first_kept_entry_id
     ai_types.usage_t compaction_usage
-    json.value_t compaction_details
+    any compaction_details
     int retry_attempt
     int retry_max_attempts
     int retry_delay_ms
@@ -128,10 +128,14 @@ fn stream_t.finish(&self, [ai_types.message_t] context): void! {
         if delivered {break}
         co.sleep(1)
     }
+    // `result()` waits on done when it observes a non-terminal stream.  Wake
+    // that waiter as soon as terminal state is committed even when RPC keeps
+    // the event channel open for delivery acknowledgement; delaying done
+    // until mark_delivery_done creates a producer/worker deadlock.
+    self.done.close()
     if wait_for_delivery {
         return
     }
-    self.done.close()
     self.end()
 }
 
