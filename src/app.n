@@ -139,7 +139,6 @@ fn run(): void! {
     // --resume target may belong to another project, and Pi binds its runtime
     // to that target's .pi/settings.json rather than the launch directory.
     var session_preferences = settings.load_for(session_cwd)
-    bool scoped_models_explicit = config.scoped_models.len() > 0
     config.steering_mode = session_preferences.steering_mode
     config.follow_up_mode = session_preferences.follow_up_mode
     config.compaction.enabled = arguments.no_compaction ? false : session_preferences.auto_compaction
@@ -150,8 +149,12 @@ fn run(): void! {
     if config.scoped_models.len() == 0 && session_preferences.enabled_model_ids.len() > 0 {
         config.scoped_models = session_preferences.enabled_model_ids
     }
+    bool scoped_models_explicit = config.scoped_models.len() > 0
     var stored_context = repository.build_context()
-    if !config.provider_explicit && !config.model_explicit && !stored_context.has_model && session_preferences.default_model != '' {
+    // Pi considers enabledModels a model scope, so it wins over the saved
+    // default model: resolve() already selected the first scoped model and
+    // this restore must not override it with the plain defaultModel.
+    if !config.provider_explicit && !config.model_explicit && session_preferences.enabled_model_ids.len() == 0 && !stored_context.has_model && session_preferences.default_model != '' {
         string preferred = session_preferences.default_provider != '' ? session_preferences.default_provider + '/' + session_preferences.default_model : session_preferences.default_model
         ref<ai_types.model_t>? preferred_model = models.find(preferred)
         if preferred_model is ref<ai_types.model_t> selected_model {
