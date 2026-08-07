@@ -123,7 +123,7 @@ fn run(): void! {
     if !stdin_tty && config.mode != 'rpc' && stdin_can_contain_prompt() {
         string piped = read_piped_stdin()
         if piped != '' {
-            config.initial_messages = args.prepend_initial_text(config.initial_messages, piped)
+            config.initial_messages = args.prepend_initial_text(config.initial_messages, piped.trim([' ', '\t', '\r', '\n']))
             config.print_mode = true
         }
     }
@@ -1406,7 +1406,7 @@ fn load_file_arguments([string] file_args, string cwd): string! {
 #local
 fn read_piped_stdin(): string! {
     var input = fs.stdin()
-    [u8] output = vec<u8>.new(0, 4096)
+    [u8] output = vec<u8>.new(0, 0)
     for true {
         var buffer = vec<u8>.new(0, 4096)
         int count = input.read(buffer)
@@ -1429,7 +1429,16 @@ fn read_piped_stdin(): string! {
         }
         output.append(chunk)
     }
-    return output as string
+    // Some Nature runtime pipe reads include zero-filled capacity before the
+    // bytes read from the descriptor.  Drop those runtime padding bytes before
+    // applying Pi's whitespace trim to the actual stdin content.
+    [u8] cleaned = vec<u8>.cap_of(output.len())
+    for byte in output {
+        if byte != 0 {
+            cleaned.push(byte)
+        }
+    }
+    return cleaned as string
 }
 
 // A non-TTY stdin is not necessarily a pipe.  The process launcher commonly
