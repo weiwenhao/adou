@@ -1,0 +1,12 @@
+// Provider definition for Mistral.
+// Metadata follows vendors/pi/packages/ai/src/providers/mistral.ts.
+import adou.src.ai.providers.mistral_models
+import adou.src.ai.types
+
+fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'mistral', name: 'Mistral', api: 'mistral-conversations', base_url: 'https://api.mistral.ai', env_vars: ['MISTRAL_API_KEY'], headers: {},}
+}
+
+fn models(): [ref<types.model_t>] {
+    return mistral_models.models()
+}

@@ -1,0 +1,205 @@
+import adou.src.ai.providers.decorators
+import adou.src.ai.providers.replay
+import adou.src.ai.types
+import adou.src.json_util
+import json
+import strings
+
+fn endpoint(ref<types.model_t> model): string {
+    string base = decorators.resolve_base_url(model)
+    for base.ends_with('/') {
+        base = base.slice(0, base.len() - 1)
+    }
+    return base + '/v1/chat/completions'
+}
+
+fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+    {string:any} body = {}
+    body['model'] = model.id
+    body['stream'] = true
+    [any] messages = convert_messages(context)
+    if context.system_prompt != '' {
+        [any] with_system = []
+        {string:any} system = {}
+        system['role'] = 'system'
+        system['content'] = context.system_prompt
+        with_system.push(system)
+        for message in messages {
+            with_system.push(message)
+        }
+        messages = with_system
+    }
+    body['messages'] = messages
+    int max_tokens = options.max_tokens
+    if max_tokens <= 0 {
+        max_tokens = model.max_tokens
+    }
+    if max_tokens > 0 {
+        body['max_tokens'] = max_tokens
+    }
+    if context.tools.len() > 0 {
+        body['tools'] = convert_tools(context.tools)
+    }
+    if options.reasoning_effort != '' {
+        body['reasoning_effort'] = options.reasoning_effort
+    }
+    return json.serialize(body)
+}
+
+fn authorization(ref<types.stream_options_t> options): string! {
+    if options.api_key == '' {
+        throw errorf('No API key for provider: mistral')
+    }
+    return 'Bearer ' + options.api_key
+}
+
+#local
+fn convert_messages(ref<types.context_t> context): [any] {
+    [any] result = []
+    var replay = replay.tracker()
+    for message in context.messages {
+        if message is ref<types.user_message_t> user {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(missing))
+            }
+            result.push(message_item('user', user.content))
+        } else if message is ref<types.assistant_message_t> assistant {
+            for missing in replay.before_assistant(assistant) {
+                result.push(tool_result_item(missing))
+            }
+            if assistant.stop_reason == types.STOP_ERROR || assistant.stop_reason == types.STOP_ABORTED {
+                continue
+            }
+            var item = assistant_item(assistant)
+            if !json_util.is_null(item) {
+                result.push(item)
+            }
+        } else if message is ref<types.tool_result_message_t> tool_result {
+            replay.observe_tool_result(tool_result.tool_call_id)
+            result.push(tool_result_item(tool_result))
+        } else if message is ref<types.compaction_summary_message_t> summary {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(missing))
+            }
+            result.push(message_item('user', 'The conversation history before this point was compacted into the following summary:\n\n<summary>\n' + summary.summary + '\n</summary>'))
+        } else if message is ref<types.branch_summary_message_t> summary {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(missing))
+            }
+            result.push(message_item('user', 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\n' + summary.summary + '</summary>'))
+        } else if message is ref<types.custom_message_t> custom {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(missing))
+            }
+            result.push(message_item('user', custom.content))
+        } else if message is ref<types.bash_execution_message_t> bash {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(missing))
+            }
+            if !bash.exclude_from_context {
+                result.push(message_item('user', types.bash_execution_text(bash)))
+            }
+        }
+    }
+    for missing in replay.finish() {
+        result.push(tool_result_item(missing))
+    }
+    return result
+}
+
+#local
+fn message_item(string role, string content): any {
+    {string:any} item = {}
+    item['role'] = role
+    item['content'] = content
+    return item
+}
+
+#local
+fn assistant_item(ref<types.assistant_message_t> message): any {
+    [any] content_parts = []
+    [any] tool_calls = []
+    string text = ''
+    string reasoning = ''
+    for block in message.content {
+        if block is ref<types.text_content_t> text_block {
+            text += text_block.text
+        } else if block is ref<types.thinking_content_t> thinking_block {
+            reasoning += thinking_block.thinking
+        } else if block is ref<types.tool_call_t> tool_call {
+            {string:any} function = {}
+            function['name'] = tool_call.name
+            var serialized = json.serialize(tool_call.arguments) catch error {
+                '{}'
+            }
+            function['arguments'] = serialized
+            {string:any} call = {}
+            call['id'] = tool_call.id
+            call['type'] = 'function'
+            call['function'] = function
+            tool_calls.push(call)
+        }
+    }
+    if text != '' {
+        content_parts.push(text)
+    }
+    if reasoning != '' {
+        {string:any} thinking_block = {}
+        thinking_block['type'] = 'thinking'
+        [any] thinking_parts = []
+        {string:any} part = {}
+        part['type'] = 'text'
+        part['text'] = reasoning
+        thinking_parts.push(part)
+        thinking_block['thinking'] = thinking_parts
+        content_parts.push(thinking_block)
+    }
+    if content_parts.len() == 0 && tool_calls.len() == 0 {
+        return null
+    }
+    {string:any} item = {}
+    item['role'] = 'assistant'
+    if content_parts.len() > 0 {
+        item['content'] = content_parts
+    } else {
+        item['content'] = null
+    }
+    if tool_calls.len() > 0 {
+        item['tool_calls'] = tool_calls
+    }
+    return item
+}
+
+#local
+fn tool_result_item(ref<types.tool_result_message_t> message): any {
+    [string] lines = []
+    for block in message.content {
+        lines.push(block.text)
+    }
+    string content = strings.join(lines, '\n')
+    if content == '' {
+        content = '(no tool output)'
+    }
+    {string:any} item = {}
+    item['role'] = 'tool'
+    item['tool_call_id'] = message.tool_call_id
+    item['content'] = content
+    return item
+}
+
+#local
+fn convert_tools([ref<types.tool_t>] tools): [any]! {
+    [any] result = []
+    for tool in tools {
+        {string:any} function = {}
+        function['name'] = tool.name
+        function['description'] = tool.description
+        function['parameters'] = tool.parameters
+        function['strict'] = false
+        {string:any} item = {}
+        item['type'] = 'function'
+        item['function'] = function
+        result.push(item)
+    }
+    return result
+}

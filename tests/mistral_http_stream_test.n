@@ -1,0 +1,123 @@
+import adou.src.ai.providers.mistral_messages
+import adou.src.ai.providers.mistral_provider
+import adou.src.ai.types
+import co
+import fmt
+import http
+
+const MISTRAL_PORT = 18923
+
+type capture_t = struct {
+    string body
+    string authorization
+}
+
+fn serve_fixture(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+fn fixture_model(int port): ref<types.model_t> {
+    return new types.model_t(id = 'mistral-large-latest', api = 'mistral-conversations', provider = 'mistral', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
+}
+
+fn fixture_context(): ref<types.context_t> {
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    return context
+}
+
+fn success_sse(): string {
+    string body = ''
+    body += 'data: {"id":"mistral_chunk_1","model":"mistral-large-latest","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n'
+    body += 'data: {"id":"mistral_chunk_2","model":"mistral-large-latest","choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"reasoning..."}]}]},"finish_reason":null}]}\n\n'
+    body += 'data: {"id":"mistral_chunk_3","model":"mistral-large-latest","choices":[{"index":0,"delta":{"content":"你好"},"finish_reason":null}]}\n\n'
+    body += 'data: {"id":"mistral_chunk_4","model":"mistral-large-latest","choices":[{"index":0,"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7,"promptTokensDetails":{"cachedTokens":1}}}\n\n'
+    body += 'data: [DONE]\n\n'
+    return body
+}
+
+test 'streams a real Mistral HTTP response' {
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = MISTRAL_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.body = request.body
+        capture.authorization = request.headers['Authorization'] catch e {''}
+        response.content_type = 'text/event-stream'
+        response.send(success_sse())
+        server.close()
+    }
+    server.post('/v1/chat/completions', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'mistral-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = mistral_provider.stream(fixture_model(MISTRAL_PORT), fixture_context(), options)
+    [string] kinds = []
+    for true {
+        var event = stream.recv()
+        kinds.push(event.kind)
+        if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
+            break
+        }
+    }
+    var result = stream.result()
+    assert(kinds[0] == types.EVENT_START)
+    assert(kinds_has(kinds, types.EVENT_THINKING_DELTA))
+    assert(kinds_has(kinds, types.EVENT_TEXT_DELTA))
+    assert(kinds_has(kinds, types.EVENT_TEXT_END))
+    assert(kinds[kinds.len() - 1] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    assert(capture.authorization == 'Bearer mistral-key')
+    assert(capture.body.find('"model":"mistral-large-latest"') >= 0)
+    assert(capture.body.find('"stream":true') >= 0)
+    // usage.cacheRead derives from promptTokensDetails.cachedTokens.
+    assert(result.usage.cache_read == 1)
+    assert(result.usage.input == 2)
+    assert(result.usage.total_tokens == 7)
+    // thinking + text content blocks.
+    assert(result.content.len() == 2)
+}
+
+test 'mistral tool call streaming accumulates partial json' {
+    var server = http.server()
+    server.port = MISTRAL_PORT + 1
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        string body = ''
+        body += 'data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":null},"finish_reason":null}]}\n\n'
+        body += 'data: {"id":"c2","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_1","index":0,"function":{"name":"read","arguments":"{\\"path\\":\\"README"}}]},"finish_reason":null}]}\n\n'
+        body += 'data: {"id":"c3","choices":[{"index":0,"delta":{"tool_calls":[{"id":"call_1","index":0,"function":{"name":"read","arguments":".md\\"}"}}]},"finish_reason":"tool_calls"}]}\n\n'
+        body += 'data: [DONE]\n\n'
+        response.content_type = 'text/event-stream'
+        response.send(body)
+        server.close()
+    }
+    server.post('/v1/chat/completions', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'mistral-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = mistral_provider.stream(fixture_model(MISTRAL_PORT + 1), fixture_context(), options)
+    for true {
+        var event = stream.recv()
+        if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
+            break
+        }
+    }
+    var result = stream.result()
+    assert(result.stop_reason == types.STOP_TOOL_USE)
+    assert(result.content.len() == 1)
+    var call = result.content[0] as ref<types.tool_call_t>
+    assert(call.name == 'read')
+    assert(call.id == 'call_1')
+    var arguments = call.arguments as {string:any}
+    assert(arguments['path'] as string == 'README.md')
+}
+
+fn kinds_has([string] kinds, string kind): bool {
+    for existing in kinds {
+        if existing == kind {
+            return true
+        }
+    }
+    return false
+}
