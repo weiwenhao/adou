@@ -38,6 +38,87 @@ pub fn save(string cwd, bool trusted): void! {
     string file_path = trust_path()
     {string:any} object = read_object(file_path)
     object[normalize(cwd)] = trusted
+    write_object(file_path, object)
+}
+
+pub type trust_update_t = struct {
+    string trust_path
+    bool decision
+    bool remove
+}
+
+// Pi's setMany: apply multiple updates in one locked read-modify-write; a
+// null decision removes the entry instead of storing null.
+pub fn set_many([trust_update_t] updates): void! {
+    string file_path = trust_path()
+    {string:any} object = read_object(file_path)
+    for update in updates {
+        string key = normalize(update.trust_path)
+        // Rebuild the map for every update: mutating a parsed map in place
+        // corrupts neighboring entries in the current toolchain.
+        {string:any} rebuilt = {}
+        for existing_key, value in object {
+            if !(update.remove && existing_key == key) {
+                rebuilt[existing_key] = value
+            }
+        }
+        if !update.remove {
+            bool value = update.decision
+            rebuilt[key] = value
+        }
+        object = rebuilt
+    }
+    write_object(file_path, object)
+}
+
+pub fn clear(string cwd): void! {
+    string file_path = trust_path()
+    {string:any} object = read_object(file_path)
+    string key = normalize(cwd)
+    if object.contains(key) {
+        object.del(key)
+        write_object(file_path, object)
+    }
+}
+
+pub fn trust_parent_path(string cwd): string {
+    string normalized = normalize(cwd)
+    string parent = path.dir(normalized)
+    if parent == normalized || parent == '' {
+        return ''
+    }
+    return parent
+}
+
+// Pi's hasTrustRequiringProjectResources: project-local .pi resources or a
+// non-user .agents/skills directory in cwd or an ancestor require trust.
+pub fn has_trust_requiring_resources(string cwd): bool {
+    [string] resources = ['settings.json', 'extensions', 'skills', 'prompts', 'themes', 'SYSTEM.md', 'APPEND_SYSTEM.md']
+    string current = normalize(cwd)
+    string config_dir = path.join(current, CONFIG_DIR_NAME)
+    for resource in resources {
+        if path_utils.exists(path.join(config_dir, resource)) {
+            return true
+        }
+    }
+    string home = home_dir()
+    string user_skills = path.join(home, '.agents', 'skills')
+    for true {
+        string agents_skills = path.join(current, '.agents', 'skills')
+        if agents_skills != user_skills && path_utils.exists(agents_skills) {
+            return true
+        }
+        string parent = path.dir(current)
+        if parent == current || parent == '' {
+            return false
+        }
+        current = parent
+    }
+    return false
+}
+
+#local
+fn write_object(string file_path, {string:any} object): void! {
     os.mkdirs(path.dir(file_path), 0o700)
     var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
     string content = json.serialize(object)
@@ -45,6 +126,13 @@ pub fn save(string cwd, bool trusted): void! {
     output.close()
     if written != content.len() {throw errorf('Could not write project trust store')}
 }
+
+#local
+fn home_dir(): string {
+    return syscall.get_env('HOME')
+}
+
+pub const CONFIG_DIR_NAME = '.pi'
 
 #local
 fn read_object(string file_path): {string:any} {
