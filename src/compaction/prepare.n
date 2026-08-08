@@ -1,11 +1,12 @@
 import adou.src.ai.types as ai_types
+import adou.src.json_util
 import adou.src.compaction.cut_point
 import adou.src.compaction.token_estimate
 import adou.src.compaction.types
 import adou.src.session.types as session_types
 import json
 
-fn prepare([ref<session_types.entry_t>] entries, [ai_types.message_t] context_messages, types.settings_t settings): ref<types.preparation_t>?! {
+pub fn prepare([ref<session_types.entry_t>] entries, [ai_types.message_t] context_messages, types.settings_t settings): ref<types.preparation_t>?! {
     if entries.len() == 0 || entries[entries.len() - 1].kind == session_types.ENTRY_COMPACTION {
         return null
     }
@@ -20,14 +21,14 @@ fn prepare([ref<session_types.entry_t>] entries, [ai_types.message_t] context_me
     string previous_summary = ''
     int boundary_start = 0
     if previous_compaction_index >= 0 {
-        var previous_object = entries[previous_compaction_index].raw.as_object()
-        if previous_object.contains('summary') && previous_object['summary'].kind == json.VALUE_STRING {
+        var previous_object = entries[previous_compaction_index].raw as {string:any}
+        if previous_object.contains('summary') && previous_object['summary'] is string && previous_object['summary'] as string != '' {
             has_previous_summary = true
-            previous_summary = previous_object['summary'].text
+            previous_summary = previous_object['summary'] as string
         }
         string previous_first_kept = ''
-        if previous_object.contains('firstKeptEntryId') && previous_object['firstKeptEntryId'].kind == json.VALUE_STRING {
-            previous_first_kept = previous_object['firstKeptEntryId'].text
+        if previous_object.contains('firstKeptEntryId') && previous_object['firstKeptEntryId'] is string {
+            previous_first_kept = previous_object['firstKeptEntryId'] as string
         }
         int kept_index = find_entry(entries, previous_first_kept)
         if kept_index >= 0 {
@@ -63,6 +64,13 @@ fn prepare([ref<session_types.entry_t>] entries, [ai_types.message_t] context_me
             }
         }
     }
+    [ai_types.message_t] retained_tail = []
+    for int index = cut.first_kept_entry_index; index < boundary_end; index += 1 {
+        var messages = cut_point.entry_messages(entries[index])
+        if messages.len() > 0 {
+            retained_tail.push(messages[0])
+        }
+    }
     if messages_to_summarize.len() == 0 && turn_prefix_messages.len() == 0 {
         return null
     }
@@ -76,10 +84,10 @@ fn prepare([ref<session_types.entry_t>] entries, [ai_types.message_t] context_me
     for message in turn_prefix_messages {
         collect_message_file_ops(message, &file_ops)
     }
-    return new types.preparation_t(first_kept_entry_id = first_kept_entry_id, messages_to_summarize = messages_to_summarize, turn_prefix_messages = turn_prefix_messages, is_split_turn = cut.is_split_turn, tokens_before = tokens_before, has_previous_summary = has_previous_summary, previous_summary = previous_summary, file_ops = file_ops, settings = settings)
+    return new types.preparation_t(first_kept_entry_id = first_kept_entry_id, messages_to_summarize = messages_to_summarize, turn_prefix_messages = turn_prefix_messages, retained_tail = retained_tail, is_split_turn = cut.is_split_turn, tokens_before = tokens_before, has_previous_summary = has_previous_summary, previous_summary = previous_summary, file_ops = file_ops, settings = settings)
 }
 
-fn file_lists(types.file_ops_t operations): ([string], [string]) {
+pub fn file_lists(types.file_ops_t operations): ([string], [string]) {
     [string] modified = []
     for file in operations.edited {
         modified = add_unique(modified, file)
@@ -98,18 +106,18 @@ fn file_lists(types.file_ops_t operations): ([string], [string]) {
     return (read_only, modified)
 }
 
-fn collect_message_file_ops(ai_types.message_t message, ptr<types.file_ops_t> operations): void! {
+pub fn collect_message_file_ops(ai_types.message_t message, ptr<types.file_ops_t> operations): void! {
     if message is ref<ai_types.assistant_message_t> assistant {
         for block in assistant.content {
             if block is ref<ai_types.tool_call_t> call {
-                if call.arguments.kind != json.VALUE_OBJECT {
+                if !json_util.is_obj(call.arguments) {
                     continue
                 }
-                var arguments = call.arguments.as_object()
-                if !arguments.contains('path') || arguments['path'].kind != json.VALUE_STRING || arguments['path'].text == '' {
+                var arguments = call.arguments as {string:any}
+                if !arguments.contains('path') || !(arguments['path'] is string) || arguments['path'] as string == '' {
                     continue
                 }
-                string file_path = arguments['path'].text
+                string file_path = arguments['path'] as string
                 if call.name == 'read' {
                     operations.read = add_unique(operations.read, file_path)
                 } else if call.name == 'write' {
@@ -122,26 +130,26 @@ fn collect_message_file_ops(ai_types.message_t message, ptr<types.file_ops_t> op
     }
 }
 
-fn collect_previous_file_ops(ref<session_types.entry_t> entry, ptr<types.file_ops_t> operations): void! {
-    var object = entry.raw.as_object()
-    if object.contains('fromHook') && object['fromHook'].kind == json.VALUE_BOOL && object['fromHook'].boolean {
+pub fn collect_previous_file_ops(ref<session_types.entry_t> entry, ptr<types.file_ops_t> operations): void! {
+    var object = entry.raw as {string:any}
+    if object.contains('fromHook') && object['fromHook'] is bool && object['fromHook'] as bool {
         return
     }
-    if !object.contains('details') || object['details'].kind != json.VALUE_OBJECT {
+    if !object.contains('details') || !json_util.is_obj(object['details']) {
         return
     }
-    var details = object['details'].as_object()
-    if details.contains('readFiles') && details['readFiles'].kind == json.VALUE_ARRAY {
-        for file in details['readFiles'].as_array() {
-            if file.kind == json.VALUE_STRING {
-                operations.read = add_unique(operations.read, file.text)
+    var details = object['details'] as {string:any}
+    if details.contains('readFiles') && details['readFiles'] is [any] {
+        for file in details['readFiles'] as [any] {
+            if file is string {
+                operations.read = add_unique(operations.read, file as string)
             }
         }
     }
-    if details.contains('modifiedFiles') && details['modifiedFiles'].kind == json.VALUE_ARRAY {
-        for file in details['modifiedFiles'].as_array() {
-            if file.kind == json.VALUE_STRING {
-                operations.edited = add_unique(operations.edited, file.text)
+    if details.contains('modifiedFiles') && details['modifiedFiles'] is [any] {
+        for file in details['modifiedFiles'] as [any] {
+            if file is string {
+                operations.edited = add_unique(operations.edited, file as string)
             }
         }
     }
@@ -165,8 +173,7 @@ fn add_unique([string] values, string value): [string] {
     return values
 }
 
-#local
-fn contains([string] values, string value): bool {
+pub fn contains([string] values, string value): bool {
     for candidate in values {
         if candidate == value {
             return true
@@ -175,8 +182,7 @@ fn contains([string] values, string value): bool {
     return false
 }
 
-#local
-fn sort_strings([string] values) {
+pub fn sort_strings([string] values) {
     for int end = values.len() - 1; end > 0; end -= 1 {
         for int index = 0; index < end; index += 1 {
             if values[index] > values[index + 1] {

@@ -1,8 +1,8 @@
 // UTF-8 helpers shared by text tools and the terminal layer. File reads use
 // the same replacement-character behavior as Buffer.toString("utf8") in Pi.
-const REPLACEMENT = '\xef\xbf\xbd'
+pub const REPLACEMENT = '\xef\xbf\xbd'
 
-fn replacement_decode([u8] input): string {
+pub fn replacement_decode([u8] input): string {
     [u8] output = []
     int cursor = 0
     for cursor < input.len() {
@@ -39,7 +39,7 @@ fn replacement_decode([u8] input): string {
     return output as string
 }
 
-fn is_valid(string input): bool {
+pub fn is_valid(string input): bool {
     var bytes = input as [u8]
     int cursor = 0
     for cursor < bytes.len() {
@@ -67,7 +67,7 @@ fn is_valid(string input): bool {
 
 // JavaScript String.length counts UTF-16 code units. Pi's write result uses
 // that value even though the message labels it as bytes.
-fn utf16_length(string input): int {
+pub fn utf16_length(string input): int {
     var value = replacement_decode(input as [u8]) as [u8]
     int result = 0
     int cursor = 0
@@ -86,7 +86,7 @@ fn utf16_length(string input): int {
     return result
 }
 
-fn utf16_prefix(string input, int maximum): string {
+pub fn utf16_prefix(string input, int maximum): string {
     if maximum <= 0 {
         return ''
     }

@@ -1,38 +1,37 @@
 import adou.src.ai.types as ai_types
-import json
 
-const CURRENT_VERSION = 3
-const ENTRY_MESSAGE = 'message'
-const ENTRY_COMPACTION = 'compaction'
-const ENTRY_BRANCH_SUMMARY = 'branch_summary'
-const ENTRY_MODEL_CHANGE = 'model_change'
-const ENTRY_THINKING_CHANGE = 'thinking_level_change'
-const ENTRY_SESSION_INFO = 'session_info'
-const ENTRY_LABEL = 'label'
-const COMPACTION_SUMMARY_PREFIX = 'The conversation history before this point was compacted into the following summary:\n\n<summary>\n'
-const COMPACTION_SUMMARY_SUFFIX = '\n</summary>'
-const BRANCH_SUMMARY_PREFIX = 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\n'
-const BRANCH_SUMMARY_SUFFIX = '</summary>'
+pub const CURRENT_VERSION = 3
+pub const ENTRY_MESSAGE = 'message'
+pub const ENTRY_COMPACTION = 'compaction'
+pub const ENTRY_BRANCH_SUMMARY = 'branch_summary'
+pub const ENTRY_MODEL_CHANGE = 'model_change'
+pub const ENTRY_THINKING_CHANGE = 'thinking_level_change'
+pub const ENTRY_SESSION_INFO = 'session_info'
+pub const ENTRY_LABEL = 'label'
+pub const COMPACTION_SUMMARY_PREFIX = 'The conversation history before this point was compacted into the following summary:\n\n<summary>\n'
+pub const COMPACTION_SUMMARY_SUFFIX = '\n</summary>'
+pub const BRANCH_SUMMARY_PREFIX = 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\n'
+pub const BRANCH_SUMMARY_SUFFIX = '</summary>'
 
-type header_t = struct {
+pub type header_t = struct {
     int version
     string id
     string timestamp
     string cwd
     string parent_session
-    json.value_t raw
+    any raw
 }
 
-type entry_t = struct {
+pub type entry_t = struct {
     string kind
     string id
     bool has_parent
     string parent_id
     string timestamp
-    json.value_t raw
+    any raw
 }
 
-type context_t = struct {
+pub type context_t = struct {
     [ai_types.message_t] messages = []
     string thinking_level = 'off'
     bool has_thinking_level
@@ -41,7 +40,7 @@ type context_t = struct {
     string model_id
 }
 
-type load_result_t = struct {
+pub type load_result_t = struct {
     ref<header_t> header
     [ref<entry_t>] entries = []
     bool recovered_tail

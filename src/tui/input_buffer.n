@@ -1,38 +1,38 @@
-const ESC = 0x1b
-const STATUS_COMPLETE = 1
-const STATUS_INCOMPLETE = 2
-const STATUS_NOT_ESCAPE = 3
-const PASTE_START = '\x1b[200~'
-const PASTE_END = '\x1b[201~'
+pub const ESC = 0x1b
+pub const STATUS_COMPLETE = 1
+pub const STATUS_INCOMPLETE = 2
+pub const STATUS_NOT_ESCAPE = 3
+pub const PASTE_START = '\x1b[200~'
+pub const PASTE_END = '\x1b[201~'
 
-type process_result_t = struct {
+pub type process_result_t = struct {
     [string] sequences = []
     [string] pastes = []
     bool needs_timeout
 }
 
-type extract_result_t = struct {
+pub type extract_result_t = struct {
     [string] sequences = []
     [u8] remainder = []
 }
 
-type emission_t = struct {
+pub type emission_t = struct {
     bool emit
     string sequence
 }
 
-type buffer_t = struct {
+pub type buffer_t = struct {
     [u8] buffer = []
     bool paste_mode
     [u8] paste_buffer = []
     int pending_kitty_codepoint = -1
 }
 
-fn new(): ref<buffer_t> {
+pub fn new(): ref<buffer_t> {
     return new buffer_t(buffer = vec<u8>.cap_of(32), paste_buffer = vec<u8>.cap_of(32))
 }
 
-fn buffer_t.process(&self, [u8] data): process_result_t {
+pub fn buffer_t.process(&self, [u8] data): process_result_t {
     var result = empty_process_result()
     if data.len() == 0 && self.buffer.len() == 0 {
         result.sequences.push('')
@@ -102,7 +102,7 @@ fn buffer_t.process(&self, [u8] data): process_result_t {
     return result
 }
 
-fn buffer_t.flush(&self): [string] {
+pub fn buffer_t.flush(&self): [string] {
     if self.buffer.len() == 0 {
         return []
     }
@@ -112,19 +112,18 @@ fn buffer_t.flush(&self): [string] {
     return [sequence]
 }
 
-fn buffer_t.clear(&self) {
+pub fn buffer_t.clear(&self) {
     self.buffer = vec<u8>.cap_of(32)
     self.paste_mode = false
     self.paste_buffer = vec<u8>.cap_of(32)
     self.pending_kitty_codepoint = -1
 }
 
-fn buffer_t.get_buffer(&self): string {
+pub fn buffer_t.get_buffer(&self): string {
     return self.buffer as string
 }
 
-#local
-fn buffer_t.finish_paste(&self): process_result_t {
+pub fn buffer_t.finish_paste(&self): process_result_t {
     var result = empty_process_result()
     int end_index = find_bytes(self.paste_buffer, PASTE_END as [u8])
     if end_index < 0 {
@@ -149,8 +148,7 @@ fn buffer_t.finish_paste(&self): process_result_t {
     return result
 }
 
-#local
-fn buffer_t.emit_sequence(&self, string sequence): emission_t {
+pub fn buffer_t.emit_sequence(&self, string sequence): emission_t {
     int raw_codepoint = single_codepoint(sequence as [u8])
     if raw_codepoint >= 0 && raw_codepoint == self.pending_kitty_codepoint {
         self.pending_kitty_codepoint = -1

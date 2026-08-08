@@ -1,6 +1,6 @@
 import libc
 
-fn current(): string! {
+pub fn current(): string! {
     var buffer = vec<u8>.new(0, 32768)
     libc.cstr raw = libc.getcwd(buffer.ref() as libc.cstr, buffer.len() as uint)
     if raw == 0 {

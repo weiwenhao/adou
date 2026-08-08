@@ -1,15 +1,15 @@
-type terminal_t = struct {
+pub type terminal_t = struct {
     int width
     int height
     [string] lines = []
     int row
 }
 
-fn new(int width, int height): ref<terminal_t> {
+pub fn new(int width, int height): ref<terminal_t> {
     return new terminal_t(width = width, height = height, lines = vec<string>.new('', height))
 }
 
-fn terminal_t.resize(&self, int width, int height) {
+pub fn terminal_t.resize(&self, int width, int height) {
     self.width = width
     self.height = height
     [string] resized = vec<string>.new('', height)
@@ -24,7 +24,7 @@ fn terminal_t.resize(&self, int width, int height) {
     }
 }
 
-fn terminal_t.write(&self, string output) {
+pub fn terminal_t.write(&self, string output) {
     int cursor = 0
     for cursor < output.len() {
         if output[cursor] == 0x1b {
@@ -53,7 +53,7 @@ fn terminal_t.write(&self, string output) {
     }
 }
 
-fn terminal_t.snapshot(&self): [string] {
+pub fn terminal_t.snapshot(&self): [string] {
     [string] result = vec<string>.cap_of(self.lines.len())
     for line in self.lines {
         result.push(line)
@@ -61,8 +61,7 @@ fn terminal_t.snapshot(&self): [string] {
     return result
 }
 
-#local
-fn terminal_t.consume_escape(&self, string output, int start): int {
+pub fn terminal_t.consume_escape(&self, string output, int start): int {
     int family_index = start + 1
     if family_index >= output.len() {
         return 1
@@ -116,8 +115,7 @@ fn terminal_t.consume_escape(&self, string output, int start): int {
     return consumed + 1
 }
 
-#local
-fn terminal_t.move_down(&self, int count) {
+pub fn terminal_t.move_down(&self, int count) {
     for int index = 0; index < count; index += 1 {
         int current_row = self.row
         int next = current_row + 1

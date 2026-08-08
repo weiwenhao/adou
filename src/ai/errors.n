@@ -1,6 +1,6 @@
 import adou.src.ai.types
 
-fn is_retryable_assistant_error(ref<types.assistant_message_t> message): bool {
+pub fn is_retryable_assistant_error(ref<types.assistant_message_t> message): bool {
     if message.stop_reason != types.STOP_ERROR || message.error_message == '' {
         return false
     }
@@ -9,11 +9,11 @@ fn is_retryable_assistant_error(ref<types.assistant_message_t> message): bool {
     if contains_any(error_message, non_retryable) {
         return false
     }
-    [string] retryable = ['overloaded', 'rate limit', 'rate-limit', 'too many requests', '429', '500', '502', '503', '504', '524', 'service unavailable', 'server error', 'internal error', 'provider returned error', 'network error', 'connection error', 'connection refused', 'connection lost', 'other side closed', 'fetch failed', 'getaddrinfo', 'enotfound', 'eai_again', 'upstream connect', 'reset before headers', 'socket hang up', 'socket connection was closed', 'timed out', 'timeout', 'terminated', 'websocket closed', 'websocket error', 'ended without', 'stream ended before message_stop', 'stream ended before a terminal response event', 'http2 request did not get a response', 'retry delay', 'you can retry your request', 'try your request again', 'please retry your request', 'resourceexhausted']
+    [string] retryable = ['overloaded', 'rate limit', 'rate-limit', 'too many requests', '429', '500', '502', '503', '504', '524', 'service unavailable', 'server error', 'internal error', 'provider returned error', 'network error', 'connection error', 'connection refused', 'connection lost', 'other side closed', 'fetch failed', 'tls read failed', 'getaddrinfo', 'enotfound', 'eai_again', 'upstream connect', 'reset before headers', 'socket hang up', 'socket connection was closed', 'timed out', 'timeout', 'terminated', 'websocket closed', 'websocket error', 'ended without', 'stream ended before message_stop', 'stream ended before a terminal response event', 'http2 request did not get a response', 'retry delay', 'you can retry your request', 'try your request again', 'please retry your request', 'resourceexhausted']
     return contains_any(error_message, retryable)
 }
 
-fn is_context_overflow(ref<types.assistant_message_t> message, int context_window): bool {
+pub fn is_context_overflow(ref<types.assistant_message_t> message, int context_window): bool {
     string error_message = message.error_message.to_lower()
     if message.stop_reason == types.STOP_ERROR && error_message != '' {
         [string] exclusions = ['throttling error:', 'service unavailable:', 'rate limit', 'too many requests']

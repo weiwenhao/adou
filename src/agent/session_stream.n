@@ -5,29 +5,29 @@ import co
 import co.mutex
 import json
 
-const EVENT_COMPACTION_START = 'compaction_start'
-const EVENT_COMPACTION_END = 'compaction_end'
-const EVENT_BRANCH_SUMMARY_START = 'branch_summary_start'
-const EVENT_BRANCH_SUMMARY_END = 'branch_summary_end'
-const EVENT_SESSION_END = 'session_end'
-const EVENT_BASH_START = 'bash_start'
-const EVENT_BASH_UPDATE = 'bash_update'
-const EVENT_BASH_END = 'bash_end'
+pub const EVENT_COMPACTION_START = 'compaction_start'
+pub const EVENT_COMPACTION_END = 'compaction_end'
+pub const EVENT_BRANCH_SUMMARY_START = 'branch_summary_start'
+pub const EVENT_BRANCH_SUMMARY_END = 'branch_summary_end'
+pub const EVENT_SESSION_END = 'session_end'
+pub const EVENT_BASH_START = 'bash_start'
+pub const EVENT_BASH_UPDATE = 'bash_update'
+pub const EVENT_BASH_END = 'bash_end'
 // Pi exposes streamed RPC/AgentSession bash output under this public event
 // name.  The start/update/end events above remain internal to the interactive
 // TUI, while this event carries one sanitized output delta at a time.
-const EVENT_BASH_EXECUTION_UPDATE = 'bash_execution_update'
-const EVENT_SESSION_INFO_CHANGED = 'session_info_changed'
-const EVENT_THINKING_LEVEL_CHANGED = 'thinking_level_changed'
-const EVENT_RETRY_START = 'auto_retry_start'
-const EVENT_RETRY_END = 'auto_retry_end'
-const EVENT_AGENT_SETTLED = 'agent_settled'
-const EVENT_QUEUE_UPDATE = 'queue_update'
-const EVENT_SUMMARIZATION_RETRY_SCHEDULED = 'summarization_retry_scheduled'
-const EVENT_SUMMARIZATION_RETRY_ATTEMPT_START = 'summarization_retry_attempt_start'
-const EVENT_SUMMARIZATION_RETRY_FINISHED = 'summarization_retry_finished'
+pub const EVENT_BASH_EXECUTION_UPDATE = 'bash_execution_update'
+pub const EVENT_SESSION_INFO_CHANGED = 'session_info_changed'
+pub const EVENT_THINKING_LEVEL_CHANGED = 'thinking_level_changed'
+pub const EVENT_RETRY_START = 'auto_retry_start'
+pub const EVENT_RETRY_END = 'auto_retry_end'
+pub const EVENT_AGENT_SETTLED = 'agent_settled'
+pub const EVENT_QUEUE_UPDATE = 'queue_update'
+pub const EVENT_SUMMARIZATION_RETRY_SCHEDULED = 'summarization_retry_scheduled'
+pub const EVENT_SUMMARIZATION_RETRY_ATTEMPT_START = 'summarization_retry_attempt_start'
+pub const EVENT_SUMMARIZATION_RETRY_FINISHED = 'summarization_retry_finished'
 
-type event_t = struct {
+pub type event_t = struct {
     string kind
     bool has_agent_event
     agent_types.agent_event_t agent_event
@@ -69,10 +69,10 @@ type event_t = struct {
 // Settings and session metadata can change while no operation stream exists.
 // RPC installs this sink so those Pi AgentSession events remain observable in
 // the same JSONL channel as prompt events.
-type event_sink_fn = fn(event_t)
-type optional_event_sink_fn = event_sink_fn|null
+pub type event_sink_fn = fn(event_t)
+pub type optional_event_sink_fn = event_sink_fn|null
 
-type stream_t = struct {
+pub type stream_t = struct {
     chan<event_t> events
     chan<u8> done
     chan<u8> delivery_done
@@ -86,11 +86,11 @@ type stream_t = struct {
     bool delivery_marked
 }
 
-fn new(): ref<stream_t> {
+pub fn new(): ref<stream_t> {
     return new stream_t(events = chan<event_t>.new(128), done = chan<u8>.new(), delivery_done = chan<u8>.new())
 }
 
-fn stream_t.push(&self, event_t event): void! {
+pub fn stream_t.push(&self, event_t event): void! {
     self.lock.lock()
     if self.terminal || self.ended {
         self.lock.unlock()
@@ -108,7 +108,7 @@ fn stream_t.push(&self, event_t event): void! {
     }
 }
 
-fn stream_t.finish(&self, [ai_types.message_t] context): void! {
+pub fn stream_t.finish(&self, [ai_types.message_t] context): void! {
     self.lock.lock()
     if self.terminal || self.ended {
         self.lock.unlock()
@@ -139,22 +139,22 @@ fn stream_t.finish(&self, [ai_types.message_t] context): void! {
     self.end()
 }
 
-fn stream_t.recv(&self): event_t! {
+pub fn stream_t.recv(&self): event_t! {
     return self.events.recv()
 }
 
-fn stream_t.try_recv(&self): (event_t, bool)! {
+pub fn stream_t.try_recv(&self): (event_t, bool)! {
     return self.events.try_recv()
 }
 
-fn stream_t.is_terminal(&self): bool {
+pub fn stream_t.is_terminal(&self): bool {
     self.lock.lock()
     bool result = self.terminal
     self.lock.unlock()
     return result
 }
 
-fn stream_t.result(&self): [ai_types.message_t]! {
+pub fn stream_t.result(&self): [ai_types.message_t]! {
     self.lock.lock()
     bool ready = self.terminal
     self.lock.unlock()
@@ -175,7 +175,7 @@ fn stream_t.result(&self): [ai_types.message_t]! {
     return result
 }
 
-fn stream_t.abort(&self) {
+pub fn stream_t.abort(&self) {
     self.cancellation.abort()
 }
 
@@ -183,14 +183,14 @@ fn stream_t.abort(&self) {
 // runner may become idle just before that worker serializes the terminal event;
 // this small acknowledgement lets RPC `abort` wait for the public event line,
 // not merely the internal operation flag.
-fn stream_t.require_delivery(&self) {
+pub fn stream_t.require_delivery(&self) {
     self.lock.lock()
     self.delivery_required = true
     self.delivery_marked = false
     self.lock.unlock()
 }
 
-fn stream_t.mark_delivery_done(&self) {
+pub fn stream_t.mark_delivery_done(&self) {
     self.lock.lock()
     if self.delivery_marked {
         self.lock.unlock()
@@ -205,7 +205,7 @@ fn stream_t.mark_delivery_done(&self) {
     }
 }
 
-fn stream_t.wait_delivery(&self) {
+pub fn stream_t.wait_delivery(&self) {
     self.lock.lock()
     bool required = self.delivery_required
     bool marked = self.delivery_marked
@@ -215,14 +215,14 @@ fn stream_t.wait_delivery(&self) {
     }
 }
 
-fn stream_t.fail(&self, string message): void! {
+pub fn stream_t.fail(&self, string message): void! {
     self.lock.lock()
     self.failure = message
     self.lock.unlock()
     self.end()
 }
 
-fn stream_t.end(&self): void! {
+pub fn stream_t.end(&self): void! {
     self.lock.lock()
     if self.ended {
         self.lock.unlock()

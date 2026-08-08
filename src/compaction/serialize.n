@@ -1,13 +1,14 @@
 import adou.src.ai.types
+import adou.src.json_util
 import adou.src.unicode.utf8
 import fmt
 import json
 import strings
 
-const TOOL_RESULT_MAX_CHARS = 2000
-const SUMMARIZATION_SYSTEM_PROMPT = 'You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.'
+pub const TOOL_RESULT_MAX_CHARS = 2000
+pub const SUMMARIZATION_SYSTEM_PROMPT = 'You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\nDo NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.'
 
-fn conversation([types.message_t] messages): string! {
+pub fn conversation([types.message_t] messages): string! {
     [string] parts = []
     for message in messages {
         if message is ref<types.user_message_t> user {
@@ -62,7 +63,7 @@ fn conversation([types.message_t] messages): string! {
     return strings.join(parts, '\n\n')
 }
 
-fn truncate_tool_result(string text): string {
+pub fn truncate_tool_result(string text): string {
     int length = utf8.utf16_length(text)
     if length <= TOOL_RESULT_MAX_CHARS {
         return text
@@ -72,12 +73,12 @@ fn truncate_tool_result(string text): string {
 
 #local
 fn format_tool_call(ref<types.tool_call_t> call): string! {
-    if call.arguments.kind != json.VALUE_OBJECT {
-        return call.name + '(' + json.stringify(call.arguments) + ')'
+    if !json_util.is_obj(call.arguments) {
+        return call.name + '(' + json_util.stringify(call.arguments) + ')'
     }
     [string] arguments = []
-    for key, value in call.arguments.as_object() {
-        arguments.push(key + '=' + json.stringify(*value))
+    for key, value in call.arguments as {string:any} {
+        arguments.push(key + '=' + json_util.stringify(value))
     }
     return call.name + '(' + strings.join(arguments, ', ') + ')'
 }

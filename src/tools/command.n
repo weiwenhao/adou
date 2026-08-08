@@ -11,7 +11,7 @@ import syscall
 
 // Nature's process runtime currently does not pass command_t.cwd through to
 // libuv. Keep all tool subprocesses in the requested directory explicitly.
-type result_t = struct {
+pub type result_t = struct {
     string stdout
     string stderr
     i32 exit_code
@@ -20,12 +20,12 @@ type result_t = struct {
     bool aborted
 }
 
-type output_chunk_fn = fn(string)
+pub type output_chunk_fn = fn(string)
 
 // Pi exposes the active session/model to every bash invocation.  Keep the
 // values in a small process-local configuration rather than mutating Adou's
 // own environment (which would race concurrent tool coroutines).
-type agent_env_t = struct {
+pub type agent_env_t = struct {
     string session_id
     string session_file
     string provider
@@ -35,7 +35,7 @@ type agent_env_t = struct {
 
 anyptr global_agent_env = 0
 
-fn configure_agent_environment(string session_id, string session_file, string provider, string model, string reasoning_level) {
+pub fn configure_agent_environment(string session_id, string session_file, string provider, string model, string reasoning_level) {
     var configured = new agent_env_t(session_id = session_id, session_file = session_file, provider = provider, model = model, reasoning_level = reasoning_level)
     global_agent_env = configured as anyptr
 }
@@ -45,17 +45,17 @@ fn configure_agent_environment(string session_id, string session_file, string pr
 // tool result nor the persisted session. Pi strips them before both streaming
 // and storing command output. Keep a small state machine here so sequences
 // split across libuv chunks are removed as well.
-type sanitizer_t = struct {
+pub type sanitizer_t = struct {
     int state
 }
 
-const SANITIZE_NORMAL = 0
-const SANITIZE_ESC = 1
-const SANITIZE_CSI = 2
-const SANITIZE_OSC = 3
-const SANITIZE_OSC_ESC = 4
+pub const SANITIZE_NORMAL = 0
+pub const SANITIZE_ESC = 1
+pub const SANITIZE_CSI = 2
+pub const SANITIZE_OSC = 3
+pub const SANITIZE_OSC_ESC = 4
 
-fn sanitizer_t.clean(&self, [u8] value): [u8] {
+pub fn sanitizer_t.clean(&self, [u8] value): [u8] {
     [u8] output = []
     for byte in value {
         if self.state == SANITIZE_NORMAL {
@@ -108,7 +108,7 @@ fn sanitizer_t.clean(&self, [u8] value): [u8] {
     return output
 }
 
-fn sanitize_output(string value): string {
+pub fn sanitize_output(string value): string {
     var sanitizer = new sanitizer_t()
     return sanitizer.clean(value as [u8]) as string
 }
@@ -117,13 +117,13 @@ fn sanitize_output(string value): string {
 // io.writer implementations.  This writer keeps the final capture while also
 // exposing each decoded chunk to the caller, which lets bash publish Pi-style
 // partial tool results before the child exits.
-type streaming_writer_t:io.writer = struct {
+pub type streaming_writer_t:io.writer = struct {
     ref<io.buffer> buffer
     output_chunk_fn on_chunk
     ref<sanitizer_t> sanitizer
 }
 
-fn streaming_writer_t.write(&self, [u8] value):int! {
+pub fn streaming_writer_t.write(&self, [u8] value):int! {
     var clean = self.sanitizer.clean(value)
     self.buffer.write(clean)
     if clean.len() > 0 {
@@ -134,13 +134,13 @@ fn streaming_writer_t.write(&self, [u8] value):int! {
     return value.len()
 }
 
-fn shell(string cwd, string command): result_t! {
+pub fn shell(string cwd, string command): result_t! {
     string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
     var state = process.run('/bin/bash', ['-lc', script])
     return result_t {stdout: sanitize_output(state.stdout), stderr: sanitize_output(state.stderr), exit_code: state.exit_code, term_sig: state.term_sig,}
 }
 
-fn shell_timeout(string cwd, string command, int timeout_ms): result_t! {
+pub fn shell_timeout(string cwd, string command, int timeout_ms): result_t! {
     if timeout_ms <= 0 {
         return shell(cwd, command)
     }
@@ -175,7 +175,7 @@ fn shell_timeout(string cwd, string command, int timeout_ms): result_t! {
     return result_t {stdout: stdout, stderr: stderr, exit_code: did_timeout ? 124 : child.exit_code, term_sig: child.term_sig, timed_out: did_timeout,}
 }
 
-fn shell_abortable(string cwd, string command, int timeout_ms, ref<abort.abort_t> cancellation): result_t! {
+pub fn shell_abortable(string cwd, string command, int timeout_ms, ref<abort.abort_t> cancellation): result_t! {
     string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
     var stdout_buffer = io.buffer.new()
     var stderr_buffer = io.buffer.new()
@@ -221,7 +221,7 @@ fn shell_abortable(string cwd, string command, int timeout_ms, ref<abort.abort_t
     return result_t {stdout: stdout, stderr: stderr, exit_code: timed_out ? 124 : child.exit_code, term_sig: child.term_sig, timed_out: timed_out, aborted: cancellation.is_aborted(),}
 }
 
-fn shell_abortable_stream(string cwd, string command, int timeout_ms, ref<abort.abort_t> cancellation, output_chunk_fn on_chunk): result_t! {
+pub fn shell_abortable_stream(string cwd, string command, int timeout_ms, ref<abort.abort_t> cancellation, output_chunk_fn on_chunk): result_t! {
     string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
     var stdout_buffer = io.buffer.new()
     var stderr_buffer = io.buffer.new()
@@ -269,7 +269,7 @@ fn shell_abortable_stream(string cwd, string command, int timeout_ms, ref<abort.
     return result_t {stdout: stdout, stderr: stderr, exit_code: timed_out ? 124 : child.exit_code, term_sig: child.term_sig, timed_out: timed_out, aborted: cancellation.is_aborted(),}
 }
 
-fn argv(string cwd, string name, [string] args): result_t! {
+pub fn argv(string cwd, string name, [string] args): result_t! {
     string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + 'exec ' + quote(name) + ' "$@"'
     [string] process_args = ['-lc', script, 'adou-tool']
     for arg in args {
@@ -279,7 +279,7 @@ fn argv(string cwd, string name, [string] args): result_t! {
     return result_t {stdout: sanitize_output(state.stdout), stderr: sanitize_output(state.stderr), exit_code: state.exit_code, term_sig: state.term_sig,}
 }
 
-fn quote(string value): string {
+pub fn quote(string value): string {
     // Shell single quotes cannot contain a single quote. The concatenated
     // double-quoted fragment keeps arbitrary user paths out of shell syntax.
     return "'" + value.replace("'", "'\"'\"'") + "'"

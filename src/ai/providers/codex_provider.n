@@ -1,9 +1,8 @@
 import adou.src.ai.abort
 import adou.src.ai.event_stream
 import adou.src.ai.provider_retry
-import adou.src.ai.providers.decorators
-import adou.src.ai.providers.google_messages
-import adou.src.ai.providers.google_processor
+import adou.src.ai.providers.codex_messages
+import adou.src.ai.providers.openai_responses
 import adou.src.ai.sse
 import adou.src.ai.types
 import adou.src.debug
@@ -18,8 +17,9 @@ pub type run_state_t = struct {
     ref<types.model_t> model
     ref<types.context_t> context
     ref<types.stream_options_t> options
-    ref<google_processor.processor_t> processor
+    ref<openai_responses.processor_t> processor
     string body
+    string account_id
     ref<client.response_t>? response = null
 }
 
@@ -29,23 +29,28 @@ pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.
     return result
 }
 
-pub fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
-    debug.log('provider', 'google stream start model=' + model.id)
-    var processor = google_processor.processor(model, time.now().ms_timestamp())
-    var state = new run_state_t(stream = stream, model = model, context = context, options = options, processor = processor,)
+#local
+fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
+    debug.log('provider', 'codex stream start model=' + model.id)
+    var processor = openai_responses.processor(model, time.now().ms_timestamp())
+    var state = new run_state_t(stream = stream, model = model, context = context, options = options, processor = processor, account_id = codex_messages.account_id(options.api_key) catch error {''},)
     run_inner(stream, state) catch error {
-        debug.log('provider', 'google stream failure: ' + error.msg())
+        debug.log('provider', 'codex stream failure: ' + error.msg())
         fail(stream, state, error.msg())
     }
 }
 
-pub fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
+#local
+fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
     if stream.is_aborted() {
         throw errorf('Operation aborted')
     }
-    state.body = google_messages.build(state.model, state.context, state.options)
+    if state.account_id == '' {
+        throw errorf('No account id in Codex token')
+    }
+    state.body = codex_messages.build(state.model, state.context, state.options)
     var current = send_with_retry(state, 0)
-    debug.log('provider', 'google response status=' + fmt.sprintf('%d', current.status))
+    debug.log('provider', 'codex response status=' + fmt.sprintf('%d', current.status))
     stream.push(state.processor.start())
     var decoder = sse.parser()
     [u8] scratch = vec<u8>.new(0, 8192)
@@ -81,21 +86,19 @@ pub fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
             }
         }
     }
-    var done = state.processor.finish()
-    for event in done {
-        stream.push(event)
-    }
+    state.processor.finish()
     stream.end()
-    debug.log('provider', 'google stream end')
+    debug.log('provider', 'codex stream end')
 }
 
-pub fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response_t>! {
+#local
+fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response_t>! {
     var stream = state.stream
     if stream.is_aborted() {
         throw errorf('Request aborted')
     }
     var current = send_once(state) catch error {
-        debug.log('provider', 'google request attempt failed: ' + error.msg())
+        debug.log('provider', 'codex request attempt failed: ' + error.msg())
         if stream.is_aborted() || retry_index >= state.options.max_retries {
             throw error
         }
@@ -112,14 +115,14 @@ pub fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.resp
         throw errorf('Request aborted')
     }
     if current.status >= 200 && current.status < 300 {
-        debug.log('provider', 'google request accepted status=' + fmt.sprintf('%d', current.status))
+        debug.log('provider', 'codex request accepted status=' + fmt.sprintf('%d', current.status))
         return current
     }
     int status = current.status
     string status_message = current.message
     var headers = response_headers(current)
     string error_body = read_error_body(current)
-    string provider_error = fmt.sprintf('Google API error: HTTP %d %s: %s', status, status_message, error_body)
+    string provider_error = fmt.sprintf('Codex API error: HTTP %d %s: %s', status, status_message, error_body)
     if retry_index >= state.options.max_retries || !provider_retry.should_retry(status, headers) {
         throw errorf('%s', provider_error)
     }
@@ -128,19 +131,28 @@ pub fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.resp
     return send_with_retry(state, retry_index + 1)
 }
 
-pub fn send_once(ref<run_state_t> state): ref<client.response_t>! {
-    debug.log('provider', 'google sending request')
-    var request = client.new().post(google_messages.endpoint(state.model) + google_messages.query_key(state.options)).timeout(state.options.timeout_ms).header('Content-Type', 'application/json').header('Accept', 'text/event-stream').content(state.body)
-    if state.model.provider == 'google-vertex' {
-        string auth = google_messages.vertex_auth_header(state.options)
-        if auth != '' {
-            request.header('Authorization', auth)
-        }
+#local
+fn send_once(ref<run_state_t> state): ref<client.response_t>! {
+    debug.log('provider', 'codex sending request')
+    var request = client.new().post(codex_messages.endpoint(state.model)).timeout(state.options.timeout_ms).header('Authorization', 'Bearer ' + state.options.api_key).header('chatgpt-account-id', state.account_id).header('originator', 'pi').header('OpenAI-Beta', 'responses=experimental').header('Content-Type', 'application/json').header('Accept', 'text/event-stream').content(state.body)
+    if state.options.session_id != '' {
+        string cache_key = clamp_key(state.options.session_id)
+        request.header('session-id', cache_key)
+        request.header('x-client-request-id', cache_key)
     }
     return request.send()
 }
 
-pub fn response_headers(ref<client.response_t> response): [provider_retry.header_t] {
+#local
+fn clamp_key(string value): string {
+    if value.len() > 64 {
+        return value.slice(0, 64)
+    }
+    return value
+}
+
+#local
+fn response_headers(ref<client.response_t> response): [provider_retry.header_t] {
     [provider_retry.header_t] result = []
     for name, value in response.headers {
         result.push(provider_retry.header_t {name: name, value: value,})
@@ -148,16 +160,19 @@ pub fn response_headers(ref<client.response_t> response): [provider_retry.header
     return result
 }
 
-pub fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
-    debug.log('provider', 'google terminal failure: ' + message)
+#local
+fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
+    debug.log('provider', 'codex terminal failure: ' + message)
     state.processor.output.stop_reason = stream.is_aborted() ? types.STOP_ABORTED : types.STOP_ERROR
     state.processor.output.error_message = message
+    clear_streaming_scratch(state.processor.output)
     var event = types.assistant_event_t {kind: types.EVENT_ERROR, reason: state.processor.output.stop_reason, error: state.processor.output,}
     stream.push(event) catch error {}
     stream.end() catch error {}
 }
 
-pub fn read_error_body(ref<client.response_t> response): string! {
+#local
+fn read_error_body(ref<client.response_t> response): string! {
     [u8] result = []
     [u8] scratch = vec<u8>.new(0, 4096)
     for result.len() < ERROR_BODY_LIMIT {
@@ -175,4 +190,13 @@ pub fn read_error_body(ref<client.response_t> response): string! {
     }
     response.close()
     return result as string
+}
+
+#local
+fn clear_streaming_scratch(ref<types.assistant_message_t> message) {
+    for block in message.content {
+        if block is ref<types.tool_call_t> tool_call {
+            tool_call.partial_json = ''
+        }
+    }
 }

@@ -5,11 +5,11 @@ import adou.src.json_util
 import fmt
 import json
 import strings
-const ANTHROPIC_VERSION = '2023-06-01'
-const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14'
-const FINE_GRAINED_TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-05-14'
+pub const ANTHROPIC_VERSION = '2023-06-01'
+pub const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14'
+pub const FINE_GRAINED_TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-05-14'
 
-fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
     {string:any} body = {}
     body['model'] = model.id
     body['messages'] = convert_messages(context.messages, cache_control(model, options))
@@ -52,7 +52,7 @@ fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.strea
     return json.serialize(body)
 }
 
-fn endpoint(ref<types.model_t> model): string {
+pub fn endpoint(ref<types.model_t> model): string {
     string base = decorators.resolve_base_url(model)
     for base.ends_with('/') {
         base = base.slice(0, base.len() - 1)
@@ -60,14 +60,14 @@ fn endpoint(ref<types.model_t> model): string {
     return base + '/messages'
 }
 
-fn api_key(ref<types.stream_options_t> options): string! {
+pub fn api_key(ref<types.stream_options_t> options): string! {
     if options.api_key == '' {
         throw errorf('No API key for provider: anthropic')
     }
     return options.api_key
 }
 
-fn beta_header(ref<types.model_t> model, ref<types.context_t> context): string {
+pub fn beta_header(ref<types.model_t> model, ref<types.context_t> context): string {
     [string] features = []
     if model.reasoning && !model.adaptive_thinking {
         features.push(INTERLEAVED_THINKING_BETA)
@@ -78,8 +78,7 @@ fn beta_header(ref<types.model_t> model, ref<types.context_t> context): string {
     return strings.join(features, ',')
 }
 
-#local
-fn max_tokens(ref<types.model_t> model, ref<types.stream_options_t> options): int {
+pub fn max_tokens(ref<types.model_t> model, ref<types.stream_options_t> options): int {
     if options.max_tokens > 0 {
         return options.max_tokens
     }
@@ -115,8 +114,7 @@ fn attach_cache({string:any} target, any cache): {string:any} {
     return target
 }
 
-#local
-fn convert_messages([types.message_t] messages, any cache): [any]! {
+pub fn convert_messages([types.message_t] messages, any cache): [any]! {
     [any] result = []
     [any] pending_tool_results = []
     var replay = replay.tracker()
@@ -260,8 +258,7 @@ fn tool_result_block(ref<types.tool_result_message_t> message): any {
     return block
 }
 
-#local
-fn message_item(string role, [any] content): any {
+pub fn message_item(string role, [any] content): any {
     {string:any} item = {}
     item['role'] = role
     item['content'] = content
@@ -289,8 +286,7 @@ fn attach_cache_to_last_user([any] messages, any cache): void! {
     messages[messages.len() - 1] = object
 }
 
-#local
-fn convert_tools([ref<types.tool_t>] tools, any cache, bool eager_input_streaming): [any]! {
+pub fn convert_tools([ref<types.tool_t>] tools, any cache, bool eager_input_streaming): [any]! {
     [any] result = []
     for index, tool in tools {
         {string:any} schema = {}
@@ -323,8 +319,7 @@ fn convert_tools([ref<types.tool_t>] tools, any cache, bool eager_input_streamin
     return result
 }
 
-#local
-fn normalize_tool_id(string id): string {
+pub fn normalize_tool_id(string id): string {
     [u8] result = []
     for byte in id as [u8] {
         if result.len() >= 64 {

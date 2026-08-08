@@ -1,9 +1,9 @@
 import strings
-const DEFAULT_MAX_LINE_BYTES = 256 * 1024
-const DEFAULT_MAX_EVENT_BYTES = 1024 * 1024
+pub const DEFAULT_MAX_LINE_BYTES = 256 * 1024
+pub const DEFAULT_MAX_EVENT_BYTES = 1024 * 1024
 // event_t is one fully framed Server-Sent Event. id and retry contain the
 // latest values defined by the stream, as required by the SSE processing model.
-type event_t = struct {
+pub type event_t = struct {
     string event
     string data
     string id
@@ -12,7 +12,7 @@ type event_t = struct {
 // parser_t keeps only an incomplete line and the event currently being built.
 // It is therefore independent of HTTP chunk boundaries and does not buffer the
 // complete response body.
-type parser_t = struct {
+pub type parser_t = struct {
     [u8] line = []
     [string] data_lines = []
     string event_name
@@ -25,10 +25,10 @@ type parser_t = struct {
     bool saw_cr
     bool finished
 }
-fn parser(): ref<parser_t> {
+pub fn parser(): ref<parser_t> {
     return new parser_t(max_line_bytes = DEFAULT_MAX_LINE_BYTES, max_event_bytes = DEFAULT_MAX_EVENT_BYTES,)
 }
-fn parser_with_limits(int max_line_bytes, int max_event_bytes): ref < parser_t > ! {
+pub fn parser_with_limits(int max_line_bytes, int max_event_bytes): ref < parser_t > ! {
     if max_line_bytes <= 0 || max_event_bytes <= 0 {
         throw errorf('SSE parser limits must be positive')
     }
@@ -36,7 +36,7 @@ fn parser_with_limits(int max_line_bytes, int max_event_bytes): ref < parser_t >
 }
 // feed accepts arbitrary byte chunks and returns every event completed by this
 // chunk. CRLF, bare CR, bare LF and CRLF split across chunks are supported.
-fn parser_t.feed(&self, [u8] chunk): [event_t]! {
+pub fn parser_t.feed(&self, [u8] chunk): [event_t]! {
     if self.finished {
         throw errorf('SSE parser is finished')
     }
@@ -66,12 +66,12 @@ fn parser_t.feed(&self, [u8] chunk): [event_t]! {
 }
 // finish marks EOF. SSE requires a blank line to dispatch an event, so a
 // partially framed event is validated and discarded instead of being emitted.
-fn parser_t.finish(&self): void! {
+pub fn parser_t.finish(&self): void! {
     self.finish_inner(false)
 }
 // Anthropic's SDK-compatible decoder dispatches a final data-bearing event at
 // EOF even when the server omits the terminating blank line.
-fn parser_t.finish_pending(&self): [event_t]! {
+pub fn parser_t.finish_pending(&self): [event_t]! {
     return self.finish_inner(true)
 }
 #local

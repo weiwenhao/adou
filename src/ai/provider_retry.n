@@ -2,8 +2,8 @@ import adou.src.ai.abort
 import co
 import libc
 import time
-const DEFAULT_MAX_DELAY_MS = 60000
-type header_t = struct {
+pub const DEFAULT_MAX_DELAY_MS = 60000
+pub type header_t = struct {
     string name
     string value
 }
@@ -14,13 +14,13 @@ type header_t = struct {
 // must normalize this transport spelling before handing the body to the SSE
 // decoder; otherwise a perfectly valid final `[DONE]` frame is surfaced as a
 // failed assistant turn.
-fn is_clean_eof(string message): bool {
+pub fn is_clean_eof(string message): bool {
     string normalized = message.to_lower()
     return normalized == 'eof' || normalized == 'end of file' || normalized.find('end of file') >= 0
 }
 // Mirrors the retryability rules used by the OpenAI and Anthropic SDKs.
 // An explicit x-should-retry response header overrides the status code.
-fn should_retry(int status, [header_t] headers): bool {
+pub fn should_retry(int status, [header_t] headers): bool {
     string explicit = header(headers, 'x-should-retry').to_lower()
     if explicit == 'true' {
         return true
@@ -32,7 +32,7 @@ fn should_retry(int status, [header_t] headers): bool {
 }
 // Return the provider-requested delay, or the SDK-compatible exponential
 // fallback. retry_index is zero for the first retry.
-fn delay_ms([header_t] headers, int retry_index, int max_delay_ms, string provider_error): int! {
+pub fn delay_ms([header_t] headers, int retry_index, int max_delay_ms, string provider_error): int! {
     string retry_after_ms = header(headers, 'retry-after-ms')
     if retry_after_ms != '' {
         int delay = parse_milliseconds(retry_after_ms)
@@ -45,7 +45,7 @@ fn delay_ms([header_t] headers, int retry_index, int max_delay_ms, string provid
     }
     return exponential_delay_ms(retry_index)
 }
-fn exponential_delay_ms(int retry_index): int {
+pub fn exponential_delay_ms(int retry_index): int {
     int delay = 500
     for int i = 0; i < retry_index && delay < 8000; i += 1 {
         delay *= 2
@@ -61,7 +61,7 @@ fn exponential_delay_ms(int retry_index): int {
     }
     return delay * (100 - jitter) / 100
 }
-fn sleep(ref<abort.abort_t> cancellation, int milliseconds): void! {
+pub fn sleep(ref<abort.abort_t> cancellation, int milliseconds): void! {
     if milliseconds < 0 {
         milliseconds = 0
     }
@@ -81,8 +81,7 @@ fn sleep(ref<abort.abort_t> cancellation, int milliseconds): void! {
         throw errorf('Request aborted')
     }
 }
-#local
-fn header([header_t] headers, string name): string {
+pub fn header([header_t] headers, string name): string {
     string target = name.to_lower()
     for item in headers {
         if item.name.to_lower() == target {

@@ -1,11 +1,12 @@
 import adou.src.ai.abort
 import adou.src.ai.clone
 import adou.src.ai.types
+import adou.src.debug
 import co.mutex
-const DEFAULT_CAPACITY = 32
+pub const DEFAULT_CAPACITY = 32
 // assistant_stream_t preserves Pi's two related stream concepts: a bounded
 // sequence of events and a separately awaitable final AssistantMessage.
-type assistant_stream_t = struct {
+pub type assistant_stream_t = struct {
     chan<types.assistant_event_t> events
     chan<u8> done
     ref<mutex.mutex_t> lock = mutex.mutex_t.new()
@@ -14,10 +15,10 @@ type assistant_stream_t = struct {
     bool terminal
     bool ended
 }
-fn new(): ref<assistant_stream_t> {
+pub fn new(): ref<assistant_stream_t> {
     return with_capacity(DEFAULT_CAPACITY)
 }
-fn with_capacity(int capacity): ref<assistant_stream_t> {
+pub fn with_capacity(int capacity): ref<assistant_stream_t> {
     if capacity <= 0 {
         capacity = 1
     }
@@ -25,7 +26,8 @@ fn with_capacity(int capacity): ref<assistant_stream_t> {
 }
 // push blocks when the bounded channel is full. This is intentional
 // backpressure: provider input cannot outgrow a slow TUI without bound.
-fn assistant_stream_t.push(&self, types.assistant_event_t event): void! {
+pub fn assistant_stream_t.push(&self, types.assistant_event_t event): void! {
+    debug.log('ai-stream', 'push begin kind=' + event.kind)
     self.lock.lock()
     if self.terminal || self.ended {
         self.lock.unlock()
@@ -39,6 +41,7 @@ fn assistant_stream_t.push(&self, types.assistant_event_t event): void! {
     // content vector and crash with SIGSEGV.  Snapshot while the producer is
     // still stopped inside push, then only publish the immutable copy.
     var snapshot = snapshot_event(event)
+    debug.log('ai-stream', 'snapshot complete kind=' + snapshot.kind)
     bool is_terminal = snapshot.kind == types.EVENT_DONE || snapshot.kind == types.EVENT_ERROR
     if is_terminal {
         if snapshot.kind == types.EVENT_DONE {
@@ -50,16 +53,17 @@ fn assistant_stream_t.push(&self, types.assistant_event_t event): void! {
     }
     self.lock.unlock()
     self.events.send(snapshot)
+    debug.log('ai-stream', 'event delivered kind=' + snapshot.kind)
     if is_terminal {
         self.done.close()
     }
 }
-fn assistant_stream_t.recv(&self): types.assistant_event_t! {
+pub fn assistant_stream_t.recv(&self): types.assistant_event_t! {
     return self.events.recv()
 }
 // result may be called before or after completion and may be called more than
 // once. Closing done acts as a broadcast; every waiter then reads final_message.
-fn assistant_stream_t.result(&self): ref < types.assistant_message_t > ! {
+pub fn assistant_stream_t.result(&self): ref < types.assistant_message_t > ! {
     self.lock.lock()
     bool ready = self.terminal
     self.lock.unlock()
@@ -77,7 +81,8 @@ fn assistant_stream_t.result(&self): ref < types.assistant_message_t > ! {
     }
     return result
 }
-fn assistant_stream_t.end(&self): void! {
+pub fn assistant_stream_t.end(&self): void! {
+    debug.log('ai-stream', 'end requested')
     self.lock.lock()
     if self.ended {
         self.lock.unlock()
@@ -90,11 +95,12 @@ fn assistant_stream_t.end(&self): void! {
     if!has_terminal {
         self.done.close()
     }
+    debug.log('ai-stream', 'end completed terminal=' + (has_terminal ? 'true' : 'false'))
 }
-fn assistant_stream_t.abort(&self) {
+pub fn assistant_stream_t.abort(&self) {
     self.cancellation.abort()
 }
-fn assistant_stream_t.is_aborted(&self): bool {
+pub fn assistant_stream_t.is_aborted(&self): bool {
     return self.cancellation.is_aborted()
 }
 

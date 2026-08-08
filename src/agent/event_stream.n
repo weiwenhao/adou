@@ -3,9 +3,9 @@ import adou.src.ai.abort
 import adou.src.ai.types as ai_types
 import co.mutex
 
-const DEFAULT_CAPACITY = 64
+pub const DEFAULT_CAPACITY = 64
 
-type stream_t = struct {
+pub type stream_t = struct {
     chan<types.agent_event_t> events
     chan<u8> done
     ref<mutex.mutex_t> lock = mutex.mutex_t.new()
@@ -16,11 +16,11 @@ type stream_t = struct {
     string failure
 }
 
-fn new(): ref<stream_t> {
+pub fn new(): ref<stream_t> {
     return new stream_t(events = chan<types.agent_event_t>.new(DEFAULT_CAPACITY), done = chan<u8>.new())
 }
 
-fn stream_t.push(&self, types.agent_event_t event): void! {
+pub fn stream_t.push(&self, types.agent_event_t event): void! {
     self.lock.lock()
     if self.terminal || self.ended {
         self.lock.unlock()
@@ -38,11 +38,11 @@ fn stream_t.push(&self, types.agent_event_t event): void! {
     }
 }
 
-fn stream_t.recv(&self): types.agent_event_t! {
+pub fn stream_t.recv(&self): types.agent_event_t! {
     return self.events.recv()
 }
 
-fn stream_t.result(&self): [ai_types.message_t]! {
+pub fn stream_t.result(&self): [ai_types.message_t]! {
     self.lock.lock()
     bool ready = self.terminal
     self.lock.unlock()
@@ -62,18 +62,18 @@ fn stream_t.result(&self): [ai_types.message_t]! {
     return result
 }
 
-fn stream_t.fail(&self, string message): void! {
+pub fn stream_t.fail(&self, string message): void! {
     self.lock.lock()
     self.failure = message
     self.lock.unlock()
     self.end()
 }
 
-fn stream_t.abort(&self) {
+pub fn stream_t.abort(&self) {
     self.cancellation.abort()
 }
 
-fn stream_t.end(&self): void! {
+pub fn stream_t.end(&self): void! {
     self.lock.lock()
     if self.ended {
         self.lock.unlock()

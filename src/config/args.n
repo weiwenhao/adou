@@ -1,22 +1,22 @@
 import adou.src.config.types
 
-type string_result_t = struct {
+pub type string_result_t = struct {
     int index
     bool ok
     string value
     string error_message
 }
 
-type int_result_t = struct {
+pub type int_result_t = struct {
     int index
     bool ok
     int value
     string error_message
 }
 
-const HELP = 'adou - Nature coding agent with Pi core tools\n\nUsage:\n  adou [options] [@files...] [messages...]\n\nOptions:\n  --provider <deepseek|openai|anthropic>  Provider (default: inferred from API key, then deepseek)\n  --model <id>                   Model ID\n  --models <patterns>            Models allowed in the selector (comma-separated)\n  --list-models [pattern]        List available models, optionally filtered\n  --base-url <url>               Provider API base URL\n  --thinking <level>             off|minimal|low|medium|high|xhigh|max\n  --mode <text|json|rpc>         Output protocol (json emits newline-delimited events)\n  --session <path>               Open a Pi v3 JSONL session\n  --session-id <id>              Open a session by exact ID\n  --session-dir <dir>            Session storage directory\n  --continue, -c                 Continue the most recent project session\n  --resume, -r                   Resume the most recent project session\n  --fork <path>                  Fork an existing session into a new session\n  --name, -n <name>              Set the session display name\n  --print, -p                    One-shot mode; print the assistant response without the TUI\n  --export <path>                Export the current session and exit\n  --system-prompt <text>         Replace the default system prompt\n  --append-system-prompt <text>  Append text to the system prompt (repeatable)\n  --no-context-files, -nc        Do not load AGENTS.md or CLAUDE.md files\n  --no-tools, -nt                Disable all tools\n  --no-builtin-tools, -nbt       Disable built-in tools\n  --tools, -t <names>            Comma-separated built-in tools to enable\n  --exclude-tools, -xt <names>   Comma-separated built-in tools to disable\n  --no-session                   Keep the session in memory only\n  --approve, -a                  Mark the project as trusted\n  --no-approve, -na              Do not trust the project\n  --offline                      Do not make network requests\n  --verbose                     Show diagnostic errors\n  --context-window <tokens>      Model context window (required for threshold compaction on unknown models)\n  --max-tokens <tokens>          Maximum output tokens\n  --timeout-ms <milliseconds>    Provider timeout\n  --max-retries <count>          Transient provider retry count\n  --reserve-tokens <tokens>      Compaction reserve tokens\n  --keep-recent-tokens <tokens>  Tokens retained after compaction\n  --no-compaction                Disable automatic compaction\n  --api-key <key>                API key; may be retained in shell history, prefer environment variables\n  --help, -h                     Show this help\n  --version, -v                  Show version\n\nEnvironment:\n  DEEPSEEK_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, ADOU_MODEL, ADOU_PROVIDER\n  ADOU_CONTEXT_WINDOW, ADOU_MAX_TOKENS, ADOU_SESSION_DIR'
+pub const HELP = 'adou - Nature coding agent with Pi core tools\n\nUsage:\n  adou [options] [@files...] [messages...]\n\nOptions:\n  --provider <deepseek|openai|anthropic>  Provider (default: inferred from API key, then deepseek)\n  --model <id>                   Model ID\n  --models <patterns>            Models allowed in the selector (comma-separated)\n  --list-models [pattern]        List available models, optionally filtered\n  --base-url <url>               Provider API base URL\n  --thinking <level>             off|minimal|low|medium|high|xhigh|max\n  --mode <text|json|rpc>         Output protocol (json emits newline-delimited events)\n  --session <path>               Open a Pi v3 JSONL session\n  --session-id <id>              Open a session by exact ID\n  --session-dir <dir>            Session storage directory\n  --continue, -c                 Continue the most recent project session\n  --resume, -r                   Resume the most recent project session\n  --fork <path>                  Fork an existing session into a new session\n  --name, -n <name>              Set the session display name\n  --print, -p                    One-shot mode; print the assistant response without the TUI\n  --export <path>                Export the current session and exit\n  --system-prompt <text>         Replace the default system prompt\n  --append-system-prompt <text>  Append text to the system prompt (repeatable)\n  --no-context-files, -nc        Do not load AGENTS.md or CLAUDE.md files\n  --no-tools, -nt                Disable all tools\n  --no-builtin-tools, -nbt       Disable built-in tools\n  --tools, -t <names>            Comma-separated built-in tools to enable\n  --exclude-tools, -xt <names>   Comma-separated built-in tools to disable\n  --no-session                   Keep the session in memory only\n  --approve, -a                  Mark the project as trusted\n  --no-approve, -na              Do not trust the project\n  --offline                      Do not make network requests\n  --verbose                     Show diagnostic errors\n  --context-window <tokens>      Model context window (required for threshold compaction on unknown models)\n  --max-tokens <tokens>          Maximum output tokens\n  --timeout-ms <milliseconds>    Provider timeout\n  --max-retries <count>          Transient provider retry count\n  --reserve-tokens <tokens>      Compaction reserve tokens\n  --keep-recent-tokens <tokens>  Tokens retained after compaction\n  --no-compaction                Disable automatic compaction\n  --api-key <key>                API key; may be retained in shell history, prefer environment variables\n  --help, -h                     Show this help\n  --version, -v                  Show version\n\nEnvironment:\n  DEEPSEEK_API_KEY, OPENAI_API_KEY, ANTHROPIC_API_KEY, ADOU_MODEL, ADOU_PROVIDER\n  ADOU_CONTEXT_WINDOW, ADOU_MAX_TOKENS, ADOU_SESSION_DIR'
 
-fn parse([string] argv): types.cli_args_t {
+pub fn parse([string] argv): types.cli_args_t {
     var result = types.cli_args_t{}
     [string] errors = []
     int index = 1
@@ -96,7 +96,12 @@ fn parse([string] argv): types.cli_args_t {
         } else if argument == '--session-id' {
             var consumed = consume_string(argv, index, argument)
             index = consumed.index
-            if consumed.ok {result.session_id = consumed.value} else {errors.push(consumed.error_message)}
+            if consumed.ok {
+                result.session_id = consumed.value
+                if !valid_session_id(result.session_id) {
+                    errors.push('Session id must be non-empty, contain only alphanumeric characters, \'-\', \'_\', and \'.\', and start and end with an alphanumeric character')
+                }
+            } else {errors.push(consumed.error_message)}
         } else if argument == '--session-dir' {
             var consumed = consume_string(argv, index, argument)
             index = consumed.index
@@ -158,6 +163,8 @@ fn parse([string] argv): types.cli_args_t {
             }
         } else if argument == '--verbose' {
             result.verbose = true
+        } else if argument == '--debug' {
+            result.debug = true
         } else if argument == '--offline' {
             result.offline = true
         } else if argument == '--approve' || argument == '-a' {
@@ -183,7 +190,13 @@ fn parse([string] argv): types.cli_args_t {
         errors.push('Invalid thinking level "' + result.thinking + '". Valid values: off, minimal, low, medium, high, xhigh, max')
     }
     if result.session_path != '' && result.session_id != '' {
-        errors.push('--session and --session-id cannot be used together')
+        errors.push('--session-id cannot be combined with --session')
+    }
+    if result.session_id != '' && result.continue_recent {
+        errors.push('--session-id cannot be combined with --continue')
+    }
+    if result.session_id != '' && result.resume {
+        errors.push('--session-id cannot be combined with --resume')
     }
     if result.session_path != '' && result.continue_recent {
         errors.push('--session and --continue cannot be used together')
@@ -191,10 +204,10 @@ fn parse([string] argv): types.cli_args_t {
     if result.session_path != '' && result.resume {
         errors.push('--session and --resume cannot be used together')
     }
-    if result.no_session && (result.session_path != '' || result.session_id != '' || result.continue_recent || result.resume || result.fork_path != '') {
-        errors.push('--no-session cannot be combined with --session, --session-id, --continue, --resume or --fork')
+    if result.no_session && (result.session_path != '' || result.continue_recent || result.resume || result.fork_path != '') {
+        errors.push('--no-session cannot be combined with --session, --continue, --resume or --fork')
     }
-    if result.fork_path != '' && (result.session_path != '' || result.session_id != '' || result.continue_recent || result.resume) {
+    if result.fork_path != '' && (result.session_path != '' || result.continue_recent || result.resume) {
         errors.push('--fork cannot be combined with --session, --continue or --resume')
     }
     if result.mode == 'rpc' && result.print_mode {
@@ -211,7 +224,7 @@ fn parse([string] argv): types.cli_args_t {
 // every remaining CLI message as a separate prompt.  Keep this transformation
 // independent of the application loop so the text ordering can be tested
 // without starting a provider.
-fn prepend_initial_text([string] messages, string prefix): [string] {
+pub fn prepend_initial_text([string] messages, string prefix): [string] {
     if prefix == '' {
         return messages
     }
@@ -252,9 +265,26 @@ fn consume_int([string] argv, int index, string option): int_result_t {
     return int_result_t {index: consumed.index, ok: true, value: parsed,}
 }
 
-#local
-fn valid_thinking(string value): bool {
+pub fn valid_thinking(string value): bool {
     return value == 'off' || value == 'minimal' || value == 'low' || value == 'medium' || value == 'high' || value == 'xhigh' || value == 'max'
+}
+
+pub fn valid_session_id(string value): bool {
+    if value == '' || !is_session_id_alphanumeric(value[0]) || !is_session_id_alphanumeric(value[value.len() - 1]) {
+        return false
+    }
+    for int index = 0; index < value.len(); index += 1 {
+        u8 character = value[index]
+        if !is_session_id_alphanumeric(character) && character != '-'.char() && character != '_'.char() && character != '.'.char() {
+            return false
+        }
+    }
+    return true
+}
+
+#local
+fn is_session_id_alphanumeric(u8 value): bool {
+    return (value >= 'a'.char() && value <= 'z'.char()) || (value >= 'A'.char() && value <= 'Z'.char()) || (value >= '0'.char() && value <= '9'.char())
 }
 
 #local

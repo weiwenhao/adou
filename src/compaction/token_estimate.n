@@ -1,16 +1,17 @@
 import adou.src.ai.types
+import adou.src.json_util
 import adou.src.compaction.types as compaction_types
 import adou.src.unicode.utf8
 import json
 
-fn calculate_context_tokens(types.usage_t usage): int {
+pub fn calculate_context_tokens(types.usage_t usage): int {
     if usage.total_tokens != 0 {
         return usage.total_tokens
     }
     return usage.input + usage.output + usage.cache_read + usage.cache_write
 }
 
-fn estimate_tokens(types.message_t message): int! {
+pub fn estimate_tokens(types.message_t message): int! {
     int chars = 0
     if message is ref<types.user_message_t> user {
         chars = utf8.utf16_length(user.content)
@@ -22,7 +23,7 @@ fn estimate_tokens(types.message_t message): int! {
                 chars += utf8.utf16_length(thinking.thinking)
             } else if block is ref<types.tool_call_t> call {
                 chars += utf8.utf16_length(call.name)
-                chars += utf8.utf16_length(json.stringify(call.arguments))
+                chars += utf8.utf16_length(json_util.stringify(call.arguments))
             }
         }
     } else if message is ref<types.tool_result_message_t> tool {
@@ -43,7 +44,7 @@ fn estimate_tokens(types.message_t message): int! {
     return (chars + 3) / 4
 }
 
-fn estimate_context_tokens([types.message_t] messages): compaction_types.context_estimate_t! {
+pub fn estimate_context_tokens([types.message_t] messages): compaction_types.context_estimate_t! {
     int last_usage_index = -1
     types.usage_t last_usage = types.usage_t{}
     for int index = messages.len() - 1; index >= 0; index -= 1 {
@@ -71,7 +72,7 @@ fn estimate_context_tokens([types.message_t] messages): compaction_types.context
     return compaction_types.context_estimate_t {tokens: usage_tokens + trailing_tokens, usage_tokens: usage_tokens, trailing_tokens: trailing_tokens, last_usage_index: last_usage_index,}
 }
 
-fn should_compact(int context_tokens, int context_window, compaction_types.settings_t settings): bool {
+pub fn should_compact(int context_tokens, int context_window, compaction_types.settings_t settings): bool {
     if !settings.enabled || context_window <= 0 {
         return false
     }

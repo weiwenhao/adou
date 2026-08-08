@@ -2,22 +2,22 @@ import co.mutex
 // abort_t is a cooperative cancellation token. Providers register response
 // closers so abort wakes a coroutine blocked in network I/O instead of merely
 // setting a flag that will not be observed until the next chunk.
-type abort_callback_t = fn (): void
-type abort_t = struct {
+pub type abort_callback_t = fn (): void
+pub type abort_t = struct {
     ref<mutex.mutex_t> lock = mutex.mutex_t.new()
     bool aborted
     [abort_callback_t] callbacks = []
 }
-fn new(): ref<abort_t> {
+pub fn new(): ref<abort_t> {
     return new abort_t()
 }
-fn abort_t.is_aborted(&self): bool {
+pub fn abort_t.is_aborted(&self): bool {
     self.lock.lock()
     bool result = self.aborted
     self.lock.unlock()
     return result
 }
-fn abort_t.on_abort(&self, abort_callback_t callback) {
+pub fn abort_t.on_abort(&self, abort_callback_t callback) {
     self.lock.lock()
     if self.aborted {
         self.lock.unlock()
@@ -27,7 +27,7 @@ fn abort_t.on_abort(&self, abort_callback_t callback) {
     self.callbacks.push(callback)
     self.lock.unlock()
 }
-fn abort_t.abort(&self) {
+pub fn abort_t.abort(&self) {
     self.lock.lock()
     if self.aborted {
         self.lock.unlock()

@@ -3,10 +3,10 @@
 import adou.src.ai.providers.mistral_models
 import adou.src.ai.types
 
-fn def(): types.provider_def_t {
+pub fn def(): types.provider_def_t {
     return types.provider_def_t {id: 'mistral', name: 'Mistral', api: 'mistral-conversations', base_url: 'https://api.mistral.ai', env_vars: ['MISTRAL_API_KEY'], headers: {},}
 }
 
-fn models(): [ref<types.model_t>] {
+pub fn models(): [ref<types.model_t>] {
     return mistral_models.models()
 }

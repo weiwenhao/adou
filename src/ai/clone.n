@@ -1,6 +1,6 @@
 import adou.src.ai.types
 
-fn assistant(ref<types.assistant_message_t> source): ref<types.assistant_message_t> {
+pub fn assistant(ref<types.assistant_message_t> source): ref<types.assistant_message_t> {
     var result = new types.assistant_message_t(role = source.role, api = source.api, provider = source.provider, model = source.model, response_id = source.response_id, usage = source.usage, stop_reason = source.stop_reason, error_message = source.error_message, timestamp = source.timestamp)
     for block in source.content {
         if block is ref<types.text_content_t> text {
@@ -17,7 +17,7 @@ fn assistant(ref<types.assistant_message_t> source): ref<types.assistant_message
     return result
 }
 
-fn message(types.message_t source): types.message_t {
+pub fn message(types.message_t source): types.message_t {
     if source is ref<types.user_message_t> user {
         types.message_t result = new types.user_message_t(role = user.role, content = user.content, timestamp = user.timestamp)
         return result

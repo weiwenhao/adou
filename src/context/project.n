@@ -5,22 +5,22 @@ import fs
 import path
 import syscall
 
-type file_t = struct {
+pub type file_t = struct {
     string path
     string content
 }
 
-type load_result_t = struct {
+pub type load_result_t = struct {
     [ref<file_t>] files = []
     [string] warnings = []
 }
 
-type file_load_t = struct {
+pub type file_load_t = struct {
     ref<file_t>? file = null
     string warning
 }
 
-fn load(string cwd, string agent_dir): load_result_t! {
+pub fn load(string cwd, string agent_dir): load_result_t! {
     string resolved_cwd = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
     string resolved_agent_dir = agent_dir
     if resolved_agent_dir == '' {
@@ -69,7 +69,7 @@ fn load(string cwd, string agent_dir): load_result_t! {
 // the user's ~/.pi/agent file as the fallback. These files are distinct from
 // AGENTS.md/CLAUDE.md context discovery and are loaded for the active session
 // cwd only.
-fn system_prompt_file(string cwd, string agent_dir): ref<file_t>? {
+pub fn system_prompt_file(string cwd, string agent_dir): ref<file_t>? {
     string base_cwd = platform_cwd.current() catch error {'/'}
     string resolved_cwd = path_utils.resolve_to_cwd(cwd, base_cwd)
     string resolved_agent_dir = agent_dir
@@ -85,7 +85,7 @@ fn system_prompt_file(string cwd, string agent_dir): ref<file_t>? {
     return read_named_file(path.join(resolved_agent_dir, 'SYSTEM.md'))
 }
 
-fn append_system_prompt_file(string cwd, string agent_dir): ref<file_t>? {
+pub fn append_system_prompt_file(string cwd, string agent_dir): ref<file_t>? {
     string base_cwd = platform_cwd.current() catch error {'/'}
     string resolved_cwd = path_utils.resolve_to_cwd(cwd, base_cwd)
     string resolved_agent_dir = agent_dir

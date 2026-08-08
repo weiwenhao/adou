@@ -1,6 +1,6 @@
 import adou.src.ai.types
 
-fn calculate_cost(ref<types.model_t> model, types.usage_t usage): types.usage_t {
+pub fn calculate_cost(ref<types.model_t> model, types.usage_t usage): types.usage_t {
     float input_rate = model.cost.input
     float output_rate = model.cost.output
     float cache_read_rate = model.cost.cache_read

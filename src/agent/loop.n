@@ -10,7 +10,7 @@ import co.mutex
 import json
 import time
 
-type run_state_t = struct {
+pub type run_state_t = struct {
     ref<agent_stream.stream_t> stream
     ref<agent_types.context_t> context
     [types.message_t] new_messages = []
@@ -21,40 +21,40 @@ type run_state_t = struct {
     bool first_turn = true
 }
 
-type prepared_t = struct {
+pub type prepared_t = struct {
     int index
     ref<types.tool_call_t> tool_call
     ref<agent_types.agent_tool_t>? tool = null
-    ref<json.value_t>? arguments = null
+    any arguments = null
     bool immediate
     tool_types.tool_result_t result
     bool is_error
 }
 
-type finalized_t = struct {
+pub type finalized_t = struct {
     int index
     ref<types.tool_call_t> tool_call
     tool_types.tool_result_t result
     bool is_error
 }
 
-type update_state_t = struct {
+pub type update_state_t = struct {
     ref<mutex.mutex_t> lock = mutex.mutex_t.new()
     bool accepting = true
 }
 
-type batch_t = struct {
+pub type batch_t = struct {
     [ref<types.tool_result_message_t>] messages = []
     bool terminate
 }
 
-fn prompt([types.message_t] prompts, ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function): ref<agent_stream.stream_t> {
+pub fn prompt([types.message_t] prompts, ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function): ref<agent_stream.stream_t> {
     var stream = agent_stream.new()
     go run_prompt(stream, prompts, context, config, stream_function)
     return stream
 }
 
-fn continue_from(ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function): ref<agent_stream.stream_t>! {
+pub fn continue_from(ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function): ref<agent_stream.stream_t>! {
     if context.messages.len() == 0 {
         throw errorf('Cannot continue: no messages in context')
     }
@@ -66,8 +66,7 @@ fn continue_from(ref<agent_types.context_t> context, ref<agent_types.config_t> c
     return stream
 }
 
-#local
-fn run_prompt(ref<agent_stream.stream_t> stream, [types.message_t] prompts, ref<agent_types.context_t> source, ref<agent_types.config_t> config, agent_types.stream_fn stream_function): void! {
+pub fn run_prompt(ref<agent_stream.stream_t> stream, [types.message_t] prompts, ref<agent_types.context_t> source, ref<agent_types.config_t> config, agent_types.stream_fn stream_function): void! {
     var context = copy_context(source)
     for prompt_message in prompts {
         context.messages.push(prompt_message)
@@ -79,8 +78,7 @@ fn run_prompt(ref<agent_stream.stream_t> stream, [types.message_t] prompts, ref<
     }
 }
 
-#local
-fn run_prompt_inner(ref<run_state_t> state, [types.message_t] prompts): void! {
+pub fn run_prompt_inner(ref<run_state_t> state, [types.message_t] prompts): void! {
     emit_simple(state, agent_types.EVENT_AGENT_START)
     emit_simple(state, agent_types.EVENT_TURN_START)
     for message in prompts {
@@ -110,8 +108,7 @@ fn new_state(ref<agent_stream.stream_t> stream, ref<agent_types.context_t> conte
     return new run_state_t(stream = stream, context = context, config = config, stream_function = stream_function, model = config.model, options = copy_options(config.stream_options))
 }
 
-#local
-fn run_loop(ref<run_state_t> state): void! {
+pub fn run_loop(ref<run_state_t> state): void! {
     [types.message_t] pending = state.config.queues.drain_steering()
     for true {
         bool has_more_tool_calls = true
@@ -344,13 +341,24 @@ fn prepare_call(ref<run_state_t> state, ref<types.assistant_message_t> assistant
         return prepared
     }
     var found = tool as ref<agent_types.agent_tool_t>
-    var validated = schema.validate_and_coerce(found.name, found.parameters, call.arguments) catch e {
+    // Normalize legacy/resumed tool arguments before validating against the
+    // current public schema, matching Pi's prepareArguments hook.
+    any raw_arguments = call.arguments
+    if found.prepare_arguments is agent_types.prepare_arguments_fn prepare_arguments {
+        raw_arguments = prepare_arguments(raw_arguments) catch e {
+            prepared.immediate = true
+            prepared.is_error = true
+            prepared.result = error_result(e.msg())
+            return prepared
+        }
+    }
+    var validated = schema.validate_and_coerce(found.name, found.parameters, raw_arguments) catch e {
         prepared.immediate = true
         prepared.is_error = true
         prepared.result = error_result(e.msg())
         return prepared
     }
-    var arguments = box_json(validated)
+    var arguments = validated
     if state.config.before_tool_call is agent_types.before_tool_call_fn before {
         var before_result = before(assistant_message, call, arguments, state.context, state.stream.cancellation) catch e {
             prepared.immediate = true
@@ -385,7 +393,7 @@ fn prepare_call(ref<run_state_t> state, ref<types.assistant_message_t> assistant
 #local
 fn execute_prepared(ref<run_state_t> state, ref<types.assistant_message_t> assistant_message, ref<prepared_t> prepared): ref<finalized_t> {
     var tool = prepared.tool as ref<agent_types.agent_tool_t>
-    var arguments = prepared.arguments as ref<json.value_t>
+    var arguments = prepared.arguments
     var updates = new update_state_t()
     agent_types.tool_update_fn on_update = fn(tool_types.tool_result_t partial_result) {
         updates.lock.lock()
@@ -456,7 +464,7 @@ fn error_result(string message): tool_types.tool_result_t {
 
 #local
 fn tool_result_message(ref<finalized_t> outcome): ref<types.tool_result_message_t> {
-    return new types.tool_result_message_t(tool_call_id = outcome.tool_call.id, tool_name = outcome.tool_call.name, content = outcome.result.content, details = outcome.result.details, usage = outcome.result.usage, is_error = outcome.is_error, timestamp = time.now().ms_timestamp())
+    return new types.tool_result_message_t(tool_call_id = outcome.tool_call.id, tool_name = outcome.tool_call.name, content = outcome.result.content, details = outcome.result.details, usage = outcome.result.usage, added_tool_names = outcome.result.added_tool_names, is_error = outcome.is_error, timestamp = time.now().ms_timestamp())
 }
 
 #local
@@ -524,8 +532,7 @@ fn copy_context(ref<agent_types.context_t> source): ref<agent_types.context_t> {
     return result
 }
 
-#local
-fn copy_options(ref<types.stream_options_t> source): ref<types.stream_options_t> {
+pub fn copy_options(ref<types.stream_options_t> source): ref<types.stream_options_t> {
     return new types.stream_options_t(api_key = source.api_key, timeout_ms = source.timeout_ms, max_tokens = source.max_tokens, max_retries = source.max_retries, max_retry_delay_ms = source.max_retry_delay_ms, session_id = source.session_id, reasoning_effort = source.reasoning_effort, reasoning_summary = source.reasoning_summary, thinking_enabled = source.thinking_enabled, thinking_budget_tokens = source.thinking_budget_tokens, thinking_display = source.thinking_display, cache_retention = source.cache_retention)
 }
 
@@ -539,8 +546,7 @@ fn set_final_assistant(ref<agent_types.context_t> context, ref<types.assistant_m
     }
 }
 
-#local
-fn tool_calls(ref<types.assistant_message_t> message): [ref<types.tool_call_t>] {
+pub fn tool_calls(ref<types.assistant_message_t> message): [ref<types.tool_call_t>] {
     [ref<types.tool_call_t>] result = []
     for block in message.content {
         if block is ref<types.tool_call_t> call {
@@ -550,8 +556,7 @@ fn tool_calls(ref<types.assistant_message_t> message): [ref<types.tool_call_t>] 
     return result
 }
 
-#local
-fn find_tool([ref<agent_types.agent_tool_t>] tools, string name): ref<agent_types.agent_tool_t>? {
+pub fn find_tool([ref<agent_types.agent_tool_t>] tools, string name): ref<agent_types.agent_tool_t>? {
     for tool in tools {
         if tool.name == name {
             return tool
@@ -581,11 +586,6 @@ fn clone_assistant_event(types.assistant_event_t source): types.assistant_event_
         result.tool_call = new types.tool_call_t(id = call.id, name = call.name, arguments = call.arguments, partial_json = call.partial_json)
     }
     return result
-}
-
-#local
-fn box_json(json.value_t value): ref<json.value_t> {
-    return new json.value_t(kind = value.kind, boolean = value.boolean, number = value.number, text = value.text, array = value.array, object = value.object)
 }
 
 #local

@@ -1,7 +1,7 @@
 import adou.src.ai.types as ai_types
 import adou.src.compaction.types as compaction_types
 
-type cli_args_t = struct {
+pub type cli_args_t = struct {
     string provider
     string model
     string base_url
@@ -29,6 +29,7 @@ type cli_args_t = struct {
     bool list_models
     string list_models_pattern
     bool verbose
+    bool debug
     bool offline
     bool trust_override
     bool trust_override_explicit
@@ -51,7 +52,7 @@ type cli_args_t = struct {
     [string] errors = []
 }
 
-type config_t = struct {
+pub type config_t = struct {
     string cwd
     string provider
     ref<ai_types.model_t> model
@@ -73,6 +74,7 @@ type config_t = struct {
     bool list_models
     string list_models_pattern
     bool verbose
+    bool debug
     bool offline
     bool trust_override
     bool trust_override_explicit

@@ -1,11 +1,8 @@
 import adou.src.ai.types
-import fmt
-import json
-import libc
+import adou.src.json_util
 
-type object_t = map<string, ref<json.value_t>>
 
-fn encode(types.message_t message): json.value_t! {
+pub fn encode(types.message_t message): any! {
     if message is ref<types.user_message_t> user {
         return encode_user(user)
     }
@@ -24,8 +21,8 @@ fn encode(types.message_t message): json.value_t! {
     throw errorf('unsupported session message')
 }
 
-fn decode(ref<json.value_t> value): types.message_t! {
-    var object = value.as_object() as object_t
+pub fn decode(any value): types.message_t! {
+    var object = value as {string:any}
     string role = required_string(object, 'role')
     if role == 'user' {
         return decode_user(object)
@@ -45,95 +42,95 @@ fn decode(ref<json.value_t> value): types.message_t! {
     throw errorf('unsupported session message role: %s', role)
 }
 
-fn encode_usage(types.usage_t usage): ref<json.value_t>! {
-    object_t cost = {}
-    cost['input'] = number_float(usage.cost.input)
-    cost['output'] = number_float(usage.cost.output)
-    cost['cacheRead'] = number_float(usage.cost.cache_read)
-    cost['cacheWrite'] = number_float(usage.cost.cache_write)
-    cost['total'] = number_float(usage.cost.total)
-    object_t object = {}
-    object['input'] = number_int(usage.input)
-    object['output'] = number_int(usage.output)
-    object['cacheRead'] = number_int(usage.cache_read)
-    object['cacheWrite'] = number_int(usage.cache_write)
+pub fn encode_usage(types.usage_t usage): any! {
+    {string:any} cost = {}
+    cost['input'] = usage.cost.input
+    cost['output'] = usage.cost.output
+    cost['cacheRead'] = usage.cost.cache_read
+    cost['cacheWrite'] = usage.cost.cache_write
+    cost['total'] = usage.cost.total
+    {string:any} object = {}
+    object['input'] = usage.input
+    object['output'] = usage.output
+    object['cacheRead'] = usage.cache_read
+    object['cacheWrite'] = usage.cache_write
     if usage.cache_write_1h != 0 {
-        object['cacheWrite1h'] = number_int(usage.cache_write_1h)
+        object['cacheWrite1h'] = usage.cache_write_1h
     }
     if usage.reasoning != 0 {
-        object['reasoning'] = number_int(usage.reasoning)
+        object['reasoning'] = usage.reasoning
     }
-    object['totalTokens'] = number_int(usage.total_tokens)
-    object['cost'] = boxed_object(cost)
-    return boxed_object(object)
+    object['totalTokens'] = usage.total_tokens
+    object['cost'] = cost
+    return object
 }
 
-fn decode_usage(ref<json.value_t> value): types.usage_t! {
-    var object = value.as_object() as object_t
+pub fn decode_usage(any value): types.usage_t! {
+    var object = value as {string:any}
     types.usage_t usage = types.usage_t{}
-    usage.input = optional_int(object, 'input')
-    usage.output = optional_int(object, 'output')
-    usage.cache_read = optional_int(object, 'cacheRead')
-    usage.cache_write = optional_int(object, 'cacheWrite')
-    usage.cache_write_1h = optional_int(object, 'cacheWrite1h')
-    usage.reasoning = optional_int(object, 'reasoning')
-    usage.total_tokens = optional_int(object, 'totalTokens')
-    if object.contains('cost') && object['cost'].kind == json.VALUE_OBJECT {
-        var cost = object['cost'].as_object() as object_t
-        usage.cost.input = optional_float(cost, 'input')
-        usage.cost.output = optional_float(cost, 'output')
-        usage.cost.cache_read = optional_float(cost, 'cacheRead')
-        usage.cost.cache_write = optional_float(cost, 'cacheWrite')
-        usage.cost.total = optional_float(cost, 'total')
+    usage.input = json_util.opt_int(object, 'input')
+    usage.output = json_util.opt_int(object, 'output')
+    usage.cache_read = json_util.opt_int(object, 'cacheRead')
+    usage.cache_write = json_util.opt_int(object, 'cacheWrite')
+    usage.cache_write_1h = json_util.opt_int(object, 'cacheWrite1h')
+    usage.reasoning = json_util.opt_int(object, 'reasoning')
+    usage.total_tokens = json_util.opt_int(object, 'totalTokens')
+    if object.contains('cost') && object['cost'] is {string:any} {
+        var cost = object['cost'] as {string:any}
+        usage.cost.input = json_util.opt_float(cost, 'input')
+        usage.cost.output = json_util.opt_float(cost, 'output')
+        usage.cost.cache_read = json_util.opt_float(cost, 'cacheRead')
+        usage.cost.cache_write = json_util.opt_float(cost, 'cacheWrite')
+        usage.cost.total = json_util.opt_float(cost, 'total')
     }
     return usage
 }
 
-fn encode_content([types.content_t] content): ref<json.value_t>! {
-    [ref<json.value_t>] result = []
+pub fn encode_content([types.content_t] content): any! {
+    [any] result = []
     for block in content {
-        object_t item = {}
+        {string:any} item = {}
         if block is ref<types.text_content_t> text {
-            item['type'] = boxed_string('text')
-            item['text'] = boxed_string(text.text)
+            item['type'] = 'text'
+            item['text'] = text.text
             if text.text_signature != '' {
-                item['textSignature'] = boxed_string(text.text_signature)
+                item['textSignature'] = text.text_signature
             }
         } else if block is ref<types.thinking_content_t> thinking {
-            item['type'] = boxed_string('thinking')
-            item['thinking'] = boxed_string(thinking.thinking)
+            item['type'] = 'thinking'
+            item['thinking'] = thinking.thinking
             if thinking.thinking_signature != '' {
-                item['thinkingSignature'] = boxed_string(thinking.thinking_signature)
+                item['thinkingSignature'] = thinking.thinking_signature
             }
             if thinking.redacted {
-                item['redacted'] = boxed_bool(true)
+                item['redacted'] = true
             }
         } else if block is ref<types.tool_call_t> call {
-            item['type'] = boxed_string('toolCall')
-            item['id'] = boxed_string(call.id)
-            item['name'] = boxed_string(call.name)
-            item['arguments'] = json.box_value(call.arguments)
+            item['type'] = 'toolCall'
+            item['id'] = call.id
+            item['name'] = call.name
+            item['arguments'] = call.arguments
         }
-        result.push(boxed_object(item))
+        result.push(item)
     }
-    return json.box_value(json.array_value(result))
+    return result
 }
 
-fn decode_content(ref<json.value_t> value): [types.content_t]! {
+pub fn decode_content(any value): [types.content_t]! {
     [types.content_t] result = []
-    for item_value in value.as_array() {
-        var item = item_value.as_object() as object_t
+    for item_value in value as [any] {
+        var item = item_value as {string:any}
         string kind = required_string(item, 'type')
         if kind == 'text' {
-            types.content_t block = new types.text_content_t(text = optional_string(item, 'text'), text_signature = optional_string(item, 'textSignature'))
+            types.content_t block = new types.text_content_t(text = json_util.opt_string(item, 'text'), text_signature = json_util.opt_string(item, 'textSignature'))
             result.push(block)
         } else if kind == 'thinking' {
-            types.content_t block = new types.thinking_content_t(thinking = optional_string(item, 'thinking'), thinking_signature = optional_string(item, 'thinkingSignature'), redacted = optional_bool(item, 'redacted'))
+            types.content_t block = new types.thinking_content_t(thinking = json_util.opt_string(item, 'thinking'), thinking_signature = json_util.opt_string(item, 'thinkingSignature'), redacted = json_util.opt_bool(item, 'redacted'))
             result.push(block)
         } else if kind == 'toolCall' {
-            json.value_t arguments = json.object_value({})
+            any arguments = {}
             if item.contains('arguments') {
-                arguments = clone_value(item['arguments'])
+                arguments = json_util.clone(item['arguments'])
             }
             types.content_t block = new types.tool_call_t(id = required_string(item, 'id'), name = required_string(item, 'name'), arguments = arguments)
             result.push(block)
@@ -142,309 +139,231 @@ fn decode_content(ref<json.value_t> value): [types.content_t]! {
     return result
 }
 
-fn encode_text_blocks([ref<types.text_content_t>] content): ref<json.value_t>! {
-    [ref<json.value_t>] result = []
+pub fn encode_text_blocks([ref<types.text_content_t>] content): any! {
+    [any] result = []
     for text in content {
-        object_t item = {}
-        item['type'] = boxed_string('text')
-        item['text'] = boxed_string(text.text)
+        {string:any} item = {}
+        item['type'] = 'text'
+        item['text'] = text.text
         if text.text_signature != '' {
-            item['textSignature'] = boxed_string(text.text_signature)
+            item['textSignature'] = text.text_signature
         }
-        result.push(boxed_object(item))
+        result.push(item)
     }
-    return json.box_value(json.array_value(result))
+    return result
 }
 
-fn decode_text_blocks(ref<json.value_t> value): [ref<types.text_content_t>]! {
+pub fn decode_text_blocks(any value): [ref<types.text_content_t>]! {
     [ref<types.text_content_t>] result = []
-    for item_value in value.as_array() {
-        var item = item_value.as_object() as object_t
-        if optional_string(item, 'type') == 'text' {
-            result.push(new types.text_content_t(text = optional_string(item, 'text'), text_signature = optional_string(item, 'textSignature')))
+    for item_value in value as [any] {
+        var item = item_value as {string:any}
+        if json_util.opt_string(item, 'type') == 'text' {
+            result.push(new types.text_content_t(text = json_util.opt_string(item, 'text'), text_signature = json_util.opt_string(item, 'textSignature')))
         }
     }
     return result
 }
 
 #local
-fn encode_user(ref<types.user_message_t> message): json.value_t! {
-    object_t object = {}
-    object['role'] = boxed_string('user')
-    object['content'] = boxed_string(message.content)
-    object['timestamp'] = number_int(message.timestamp)
-    return json.object_value(object as map<string, ref<json.value_t>>)
+fn encode_user(ref<types.user_message_t> message): any! {
+    {string:any} object = {}
+    object['role'] = 'user'
+    object['content'] = message.content
+    object['timestamp'] = message.timestamp
+    return object
 }
 
 #local
-fn encode_assistant(ref<types.assistant_message_t> message): json.value_t! {
-    object_t object = {}
-    object['role'] = boxed_string('assistant')
+fn encode_assistant(ref<types.assistant_message_t> message): any! {
+    {string:any} object = {}
+    object['role'] = 'assistant'
     object['content'] = encode_content(message.content)
-    object['api'] = boxed_string(message.api)
-    object['provider'] = boxed_string(message.provider)
-    object['model'] = boxed_string(message.model)
+    object['api'] = message.api
+    object['provider'] = message.provider
+    object['model'] = message.model
     if message.response_id != '' {
-        object['responseId'] = boxed_string(message.response_id)
+        object['responseId'] = message.response_id
     }
     object['usage'] = encode_usage(message.usage)
-    object['stopReason'] = boxed_string(message.stop_reason)
+    object['stopReason'] = message.stop_reason
     if message.error_message != '' {
-        object['errorMessage'] = boxed_string(message.error_message)
+        object['errorMessage'] = message.error_message
     }
-    object['timestamp'] = number_int(message.timestamp)
-    return json.object_value(object as map<string, ref<json.value_t>>)
+    object['timestamp'] = message.timestamp
+    return object
 }
 
-#local
-fn encode_tool_result(ref<types.tool_result_message_t> message): json.value_t! {
-    object_t object = {}
-    object['role'] = boxed_string('toolResult')
-    object['toolCallId'] = boxed_string(message.tool_call_id)
-    object['toolName'] = boxed_string(message.tool_name)
+pub fn encode_tool_result(ref<types.tool_result_message_t> message): any! {
+    {string:any} object = {}
+    object['role'] = 'toolResult'
+    object['toolCallId'] = message.tool_call_id
+    object['toolName'] = message.tool_name
     object['content'] = encode_text_blocks(message.content)
-    if message.details.kind != 0 {
-        object['details'] = json.box_value(message.details)
+    if !json_util.is_null(message.details) {
+        object['details'] = message.details
     }
     if has_usage(message.usage) {
         object['usage'] = encode_usage(message.usage)
     }
     if message.added_tool_names.len() > 0 {
-        [ref<json.value_t>] names = []
+        [any] names = []
         for name in message.added_tool_names {
-            names.push(boxed_string(name))
+            names.push(name)
         }
-        object['addedToolNames'] = json.box_value(json.array_value(names))
+        object['addedToolNames'] = names
     }
-    object['isError'] = boxed_bool(message.is_error)
-    object['timestamp'] = number_int(message.timestamp)
-    return json.object_value(object as map<string, ref<json.value_t>>)
+    object['isError'] = message.is_error
+    object['timestamp'] = message.timestamp
+    return object
 }
 
 #local
-fn encode_bash_execution(ref<types.bash_execution_message_t> message): json.value_t! {
-    object_t object = {}
-    object['role'] = boxed_string('bashExecution')
-    object['command'] = boxed_string(message.command)
-    object['output'] = boxed_string(message.output)
+fn encode_bash_execution(ref<types.bash_execution_message_t> message): any! {
+    {string:any} object = {}
+    object['role'] = 'bashExecution'
+    object['command'] = message.command
+    object['output'] = message.output
     if message.exit_code >= 0 {
-        object['exitCode'] = number_int(message.exit_code)
+        object['exitCode'] = message.exit_code
     }
-    object['cancelled'] = boxed_bool(message.cancelled)
-    object['truncated'] = boxed_bool(message.truncated)
+    object['cancelled'] = message.cancelled
+    object['truncated'] = message.truncated
     if message.full_output_path != '' {
-        object['fullOutputPath'] = boxed_string(message.full_output_path)
+        object['fullOutputPath'] = message.full_output_path
     }
     if message.exclude_from_context {
-        object['excludeFromContext'] = boxed_bool(true)
+        object['excludeFromContext'] = true
     }
-    object['timestamp'] = number_int(message.timestamp)
-    return json.object_value(object as map<string, ref<json.value_t>>)
+    object['timestamp'] = message.timestamp
+    return object
 }
 
 #local
-fn encode_custom(ref<types.custom_message_t> message): json.value_t! {
-    object_t object = {}
-    object['role'] = boxed_string('custom')
-    object['customType'] = boxed_string(message.custom_type)
-    object['content'] = boxed_string(message.content)
-    object['display'] = boxed_bool(message.display)
-    if message.details.kind != json.VALUE_NULL {
-        object['details'] = json.box_value(message.details)
+fn encode_custom(ref<types.custom_message_t> message): any! {
+    {string:any} object = {}
+    object['role'] = 'custom'
+    object['customType'] = message.custom_type
+    object['content'] = message.content
+    object['display'] = message.display
+    if !json_util.is_null(message.details) {
+        object['details'] = message.details
     }
-    object['timestamp'] = number_int(message.timestamp)
-    return json.object_value(object as map<string, ref<json.value_t>>)
+    object['timestamp'] = message.timestamp
+    return object
 }
 
 #local
-fn decode_user(object_t object): types.message_t! {
+fn decode_user({string:any} object): types.message_t! {
     string content = ''
     if object.contains('content') {
         var raw = object['content']
-        if raw.kind == json.VALUE_STRING {
-            content = raw.as_string()
-        } else if raw.kind == json.VALUE_ARRAY {
+        if raw is string {
+            content = raw as string
+        } else if raw is [any] {
             [string] texts = []
-            for item in raw.as_array() {
-                if item.kind == json.VALUE_OBJECT {
-                    var block = item.as_object() as object_t
-                    if optional_string(block, 'type') == 'text' {
-                        texts.push(optional_string(block, 'text'))
+            for item in raw as [any] {
+                if item is {string:any} {
+                    var block = item as {string:any}
+                    if json_util.opt_string(block, 'type') == 'text' {
+                        texts.push(json_util.opt_string(block, 'text'))
                     }
                 }
             }
             content = join_lines(texts)
         }
     }
-    types.message_t result = new types.user_message_t(content = content, timestamp = optional_int(object, 'timestamp'))
+    types.message_t result = new types.user_message_t(content = content, timestamp = json_util.opt_int(object, 'timestamp'))
     return result
 }
 
 #local
-fn decode_assistant(object_t object): types.message_t! {
+fn decode_assistant({string:any} object): types.message_t! {
     [types.content_t] content = []
-    if object.contains('content') && object['content'].kind == json.VALUE_ARRAY {
+    if object.contains('content') && object['content'] is [any] {
         content = decode_content(object['content'])
     }
     types.usage_t usage = types.usage_t{}
-    if object.contains('usage') && object['usage'].kind == json.VALUE_OBJECT {
+    if object.contains('usage') && object['usage'] is {string:any} {
         usage = decode_usage(object['usage'])
     }
-    types.message_t result = new types.assistant_message_t(content = content, api = optional_string(object, 'api'), provider = optional_string(object, 'provider'), model = optional_string(object, 'model'), response_id = optional_string(object, 'responseId'), usage = usage, stop_reason = optional_string_default(object, 'stopReason', types.STOP_STOP), error_message = optional_string(object, 'errorMessage'), timestamp = optional_int(object, 'timestamp'))
+    types.message_t result = new types.assistant_message_t(content = content, api = json_util.opt_string(object, 'api'), provider = json_util.opt_string(object, 'provider'), model = json_util.opt_string(object, 'model'), response_id = json_util.opt_string(object, 'responseId'), usage = usage, stop_reason = optional_string_default(object, 'stopReason', types.STOP_STOP), error_message = json_util.opt_string(object, 'errorMessage'), timestamp = json_util.opt_int(object, 'timestamp'))
     return result
 }
 
 #local
-fn decode_tool_result(object_t object): types.message_t! {
+fn decode_tool_result({string:any} object): types.message_t! {
     [ref<types.text_content_t>] content = []
-    if object.contains('content') && object['content'].kind == json.VALUE_ARRAY {
+    if object.contains('content') && object['content'] is [any] {
         content = decode_text_blocks(object['content'])
     }
-    json.value_t details = json.null_value()
+    any details = null
     if object.contains('details') {
-        details = clone_value(object['details'])
+        details = json_util.clone(object['details'])
     }
     types.usage_t usage = types.usage_t{}
-    if object.contains('usage') && object['usage'].kind == json.VALUE_OBJECT {
+    if object.contains('usage') && object['usage'] is {string:any} {
         usage = decode_usage(object['usage'])
     }
     [string] added = []
-    if object.contains('addedToolNames') && object['addedToolNames'].kind == json.VALUE_ARRAY {
-        for name in object['addedToolNames'].as_array() {
-            if name.kind == json.VALUE_STRING {
-                added.push(name.as_string())
+    if object.contains('addedToolNames') && object['addedToolNames'] is [any] {
+        for name in object['addedToolNames'] as [any] {
+            if name is string {
+                added.push(name as string)
             }
         }
     }
-    types.message_t result = new types.tool_result_message_t(tool_call_id = optional_string(object, 'toolCallId'), tool_name = optional_string(object, 'toolName'), content = content, details = details, usage = usage, added_tool_names = added, is_error = optional_bool(object, 'isError'), timestamp = optional_int(object, 'timestamp'))
+    types.message_t result = new types.tool_result_message_t(tool_call_id = json_util.opt_string(object, 'toolCallId'), tool_name = json_util.opt_string(object, 'toolName'), content = content, details = details, usage = usage, added_tool_names = added, is_error = json_util.opt_bool(object, 'isError'), timestamp = json_util.opt_int(object, 'timestamp'))
     return result
 }
 
 #local
-fn decode_bash_execution(object_t object): types.message_t! {
-    types.message_t result = new types.bash_execution_message_t(command = optional_string(object, 'command'), output = optional_string(object, 'output'), exit_code = object.contains('exitCode') ? optional_int(object, 'exitCode') : -1, cancelled = optional_bool(object, 'cancelled'), truncated = optional_bool(object, 'truncated'), full_output_path = optional_string(object, 'fullOutputPath'), exclude_from_context = optional_bool(object, 'excludeFromContext'), timestamp = optional_int(object, 'timestamp'))
+fn decode_bash_execution({string:any} object): types.message_t! {
+    types.message_t result = new types.bash_execution_message_t(command = json_util.opt_string(object, 'command'), output = json_util.opt_string(object, 'output'), exit_code = object.contains('exitCode') ? json_util.opt_int(object, 'exitCode') : -1, cancelled = json_util.opt_bool(object, 'cancelled'), truncated = json_util.opt_bool(object, 'truncated'), full_output_path = json_util.opt_string(object, 'fullOutputPath'), exclude_from_context = json_util.opt_bool(object, 'excludeFromContext'), timestamp = json_util.opt_int(object, 'timestamp'))
     return result
 }
 
 #local
-fn decode_custom(object_t object): types.message_t! {
+fn decode_custom({string:any} object): types.message_t! {
     string content = ''
     if object.contains('content') {
-        if object['content'].kind == json.VALUE_STRING {
-            content = object['content'].as_string()
-        } else if object['content'].kind == json.VALUE_ARRAY {
+        if object['content'] is string {
+            content = object['content'] as string
+        } else if object['content'] is [any] {
             [string] texts = []
-            for value in object['content'].as_array() {
-                if value.kind == json.VALUE_OBJECT {
-                    var block = value.as_object() as object_t
-                    if optional_string(block, 'type') == 'text' {
-                        texts.push(optional_string(block, 'text'))
+            for value in object['content'] as [any] {
+                if value is {string:any} {
+                    var block = value as {string:any}
+                    if json_util.opt_string(block, 'type') == 'text' {
+                        texts.push(json_util.opt_string(block, 'text'))
                     }
                 }
             }
             content = join_lines(texts)
         }
     }
-    json.value_t details = json.null_value()
+    any details = null
     if object.contains('details') {
-        details = clone_value(object['details'])
+        details = json_util.clone(object['details'])
     }
-    types.message_t result = new types.custom_message_t(custom_type = optional_string(object, 'customType'), content = content, display = optional_bool(object, 'display'), details = details, timestamp = optional_int(object, 'timestamp'))
+    types.message_t result = new types.custom_message_t(custom_type = json_util.opt_string(object, 'customType'), content = content, display = json_util.opt_bool(object, 'display'), details = details, timestamp = json_util.opt_int(object, 'timestamp'))
     return result
 }
 
-#local
-fn has_usage(types.usage_t usage): bool {
+pub fn has_usage(types.usage_t usage): bool {
     return usage.input != 0 || usage.output != 0 || usage.cache_read != 0 || usage.cache_write != 0 || usage.total_tokens != 0 || usage.cost.total != 0.0
 }
 
-#local
-fn required_string(object_t object, string key): string! {
-    if !object.contains(key) {
-        throw errorf('session JSON missing `%s`', key)
-    }
-    return object[key].as_string()
+pub fn required_string({string:any} object, string key): string! {
+    return json_util.required_string(object, key)
 }
 
 #local
-fn optional_string(object_t object, string key): string {
-    if !object.contains(key) || object[key].kind != json.VALUE_STRING {
-        return ''
-    }
-    return object[key].text
-}
-
-#local
-fn optional_string_default(object_t object, string key, string fallback): string {
-    string value = optional_string(object, key)
+fn optional_string_default({string:any} object, string key, string fallback): string {
+    string value = json_util.opt_string(object, key)
     if value == '' {
         return fallback
     }
     return value
-}
-
-#local
-fn optional_bool(object_t object, string key): bool {
-    if !object.contains(key) || object[key].kind != json.VALUE_BOOL {
-        return false
-    }
-    return object[key].boolean
-}
-
-#local
-fn optional_int(object_t object, string key): int {
-    if !object.contains(key) || object[key].kind != json.VALUE_NUMBER {
-        return 0
-    }
-    return libc.atol(object[key].number.to_cstr()) as int
-}
-
-#local
-fn optional_float(object_t object, string key): float {
-    if !object.contains(key) || object[key].kind != json.VALUE_NUMBER {
-        return 0.0
-    }
-    return libc.atof(object[key].number.to_cstr()) as float
-}
-
-#local
-fn number_int(int value): ref<json.value_t>! {
-    return json.box_value(json.number_value(fmt.sprintf('%d', value)))
-}
-
-#local
-fn number_float(float value): ref<json.value_t>! {
-    if value == 0.0 {
-        return json.box_value(json.number_value('0'))
-    }
-    string token = fmt.sprintf('%.15f', value)
-    if token.contains('.') {
-        token = token.rtrim(['0'])
-        if token.ends_with('.') {
-            token = token.slice(0, token.len() - 1)
-        }
-    }
-    return json.box_value(json.number_value(token))
-}
-
-#local
-fn boxed_string(string value): ref<json.value_t> {
-    return json.box_value(json.string_value(value))
-}
-
-#local
-fn boxed_bool(bool value): ref<json.value_t> {
-    return json.box_value(json.bool_value(value))
-}
-
-#local
-fn boxed_object(object_t value): ref<json.value_t> {
-    return json.box_value(json.object_value(value as map<string, ref<json.value_t>>))
-}
-
-#local
-fn clone_value(ref<json.value_t> value): json.value_t! {
-    return json.parse(json.stringify(*value))
 }
 
 #local

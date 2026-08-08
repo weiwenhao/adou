@@ -12,7 +12,10 @@ import adou.src.config.trust as trust
 import adou.src.config.types
 import adou.src.context.project
 import adou.src.context.system_prompt
+import adou.src.debug
+import adou.src.json_util
 import adou.src.session.message_json
+import adou.src.session.identity
 import adou.src.session.export_html as session_export
 import adou.src.session.repository
 import adou.src.session.types as session_types
@@ -39,15 +42,25 @@ import path
 import process
 import strings
 import syscall
-import term
+import adou.src.tui.term
 import time
 
-type input_t = struct {
+pub type input_t = struct {
     string data
     bool paste
 }
 
-type interactive_bash_state_t = struct {
+pub const TERMINAL_INPUT_BYTES = 1
+pub const TERMINAL_INPUT_EOF = 2
+pub const TERMINAL_INPUT_TIMEOUT = 3
+
+pub type terminal_input_t = struct {
+    int kind
+    [u8] data = []
+    i64 timeout_id
+}
+
+pub type interactive_bash_state_t = struct {
     ref<mutex.mutex_t> lock
     string output
     int sent_bytes
@@ -55,25 +68,25 @@ type interactive_bash_state_t = struct {
     chan<u8> relay_done
 }
 
-const OVERLAY_AUTH_METHOD = 1
-const OVERLAY_API_KEY = 2
-const OVERLAY_MODEL = 3
-const OVERLAY_LOGOUT = 4
-const OVERLAY_SETTINGS = 5
-const OVERLAY_HELP = 6
-const OVERLAY_PROVIDER = 7
-const OVERLAY_SESSION = 8
-const OVERLAY_TREE = 9
-const OVERLAY_NAME = 10
-const OVERLAY_FORK = 11
-const OVERLAY_LABEL = 12
-const OVERLAY_BRANCH_SUMMARY = 13
-const OVERLAY_BRANCH_CUSTOM = 14
-const OVERLAY_SCOPED_MODELS = 15
-const OVERLAY_SESSION_INFO = 16
-const OVERLAY_VISIBLE_OPTIONS = 12
+pub const OVERLAY_AUTH_METHOD = 1
+pub const OVERLAY_API_KEY = 2
+pub const OVERLAY_MODEL = 3
+pub const OVERLAY_LOGOUT = 4
+pub const OVERLAY_SETTINGS = 5
+pub const OVERLAY_HELP = 6
+pub const OVERLAY_PROVIDER = 7
+pub const OVERLAY_SESSION = 8
+pub const OVERLAY_TREE = 9
+pub const OVERLAY_NAME = 10
+pub const OVERLAY_FORK = 11
+pub const OVERLAY_LABEL = 12
+pub const OVERLAY_BRANCH_SUMMARY = 13
+pub const OVERLAY_BRANCH_CUSTOM = 14
+pub const OVERLAY_SCOPED_MODELS = 15
+pub const OVERLAY_SESSION_INFO = 16
+pub const OVERLAY_VISIBLE_OPTIONS = 12
 
-type overlay_t = struct {
+pub type overlay_t = struct {
     int kind
     string title
     string provider
@@ -87,7 +100,7 @@ type overlay_t = struct {
     int sort_mode
 }
 
-type view_t = struct {
+pub type view_t = struct {
     ref<term.terminal_t> terminal
     ref<session.runner_t> runner
     ref<chat.chat_t> chat
@@ -128,9 +141,15 @@ type view_t = struct {
     string system_prompt_override
     [string] append_system_prompts = []
     bool no_context_files
+    // Pi coalesces render requests into one frame per animation interval.
+    // Keep the same property so a burst of stream deltas cannot race the
+    // differential renderer or write duplicate terminal frames.
+    ref<mutex.mutex_t> render_lock = mutex.mutex_t.new()
+    bool redraw_scheduled
+    bool redraw_dirty
 }
 
-fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model, string cwd): ref<view_t> {
+pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model, string cwd): ref<view_t> {
     var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, command_menu = false, command_index = 0, kitty_protocol = true)
     string thinking = runner.agent_config.stream_options.reasoning_effort
     if !runner.agent_config.stream_options.thinking_enabled {
@@ -151,18 +170,22 @@ fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model
     return view
 }
 
-fn view_t.run(&self): void! {
+pub fn view_t.run(&self): void! {
+    debug.log('tui', 'run loop start')
     signal.notify(self.signals, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGWINCH)
-    go read_input(self.terminal, self.input_buffer, self.input_events)
+    var terminal_input = chan<terminal_input_t>.new(64)
+    go read_terminal(self, terminal_input)
+    go read_input(self, terminal_input, self.input_events)
     go read_signals(self)
     self.run_loop() catch error {
         self.stop_signals()
         throw error
     }
     self.stop_signals()
+    debug.log('tui', 'run loop end')
 }
 
-fn view_t.run_loop(&self): void! {
+pub fn view_t.run_loop(&self): void! {
     self.render()
     for !self.quitting {
         if self.active_stream is ref<session_stream.stream_t> stream {
@@ -184,7 +207,8 @@ fn view_t.run_loop(&self): void! {
     }
 }
 
-fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! {
+pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! {
+    debug.log('tui', 'consume stream start')
     bool branch_aborted = false
     string branch_error = ''
     bool stream_failed = false
@@ -208,27 +232,30 @@ fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! {
             break
         }
         if event_received {
+            debug.log('tui', 'session event=' + event.kind)
             if event.kind == session_stream.EVENT_BRANCH_SUMMARY_END {
                 branch_aborted = event.aborted
                 branch_error = event.error_message
             }
             self.chat.apply(event)
-            self.render()
+            self.redraw()
             if event.kind == session_stream.EVENT_SESSION_END {
                 break
             }
             continue
         }
         if stream.events.is_closed() {
+            debug.log('tui', 'stream channel closed before session_end')
             break
         }
         co.sleep(8)
     }
     var final_messages = stream.result() catch error {
+        debug.log('tui', 'stream result failed: ' + error.msg())
         stream_failed = true
         self.chat.error_message = error.msg()
         self.chat.status = 'Request failed'
-        self.render()
+        self.redraw()
         []
     }
     // The terminal event carries the canonical active branch.  Reload it
@@ -236,6 +263,7 @@ fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! {
     // and cancellation cannot leave stale messages rendered in the TUI.
     if !stream_failed {
         self.chat.load_messages(final_messages)
+        self.redraw()
     }
     if self.pending_tree_navigation {
         string target_id = self.pending_tree_target_id
@@ -253,12 +281,12 @@ fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! {
         self.pending_tree_navigation = false
         self.pending_tree_editor_text = ''
         self.pending_tree_target_id = ''
-        self.render()
+        self.redraw()
     }
     return true
 }
 
-fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream_t>? {
+pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream_t>? {
     if self.overlay is ref<overlay_t> active_overlay {
         self.handle_overlay_input(active_overlay, input)
         return null
@@ -405,7 +433,7 @@ fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream_t>?
     return null
 }
 
-fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, input_t input) {
+pub fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, input_t input) {
     if input.paste {
         self.editor.handle_paste(input.data)
         self.redraw()
@@ -480,7 +508,7 @@ fn view_t.apply_editor_action(&self, editor.key_result_t result) {
 // Ctrl+Z does not leave the shell in raw mode or turn into editor undo.
 #local
 fn view_t.suspend_terminal(&self) {
-    self.terminal.restore() catch error {
+    self.restore_terminal() catch error {
         self.chat.error_message = error.msg()
         self.redraw()
         return
@@ -502,7 +530,16 @@ fn view_t.reenter_terminal(&self): void! {
     term.enter_raw(self.terminal.input_fd)
     self.terminal.restored = false
     self.terminal.active = true
-    self.terminal.write(term.BRACKETED_PASTE_ON + term.CURSOR_HIDE + term.KEYBOARD_PROTOCOL_ON)
+    self.write_terminal(term.BRACKETED_PASTE_ON + term.CURSOR_HIDE + term.KEYBOARD_PROTOCOL_ON)
+}
+
+#local
+fn view_t.restore_terminal(&self): void! {
+    bool was_active = !self.terminal.restored
+    self.terminal.restore()
+    if was_active {
+        debug.log_terminal_output(term.KEYBOARD_PROTOCOL_OFF + term.BRACKETED_PASTE_OFF + term.CURSOR_SHOW)
+    }
 }
 
 // Ctrl+G follows Pi's external-editor action. The TUI is restored while the
@@ -531,7 +568,7 @@ fn view_t.open_external_editor(&self) {
         return
     }
     file.close()
-    self.terminal.restore() catch error {
+    self.restore_terminal() catch error {
         self.chat.error_message = error.msg()
         self.redraw()
         return
@@ -590,7 +627,7 @@ fn view_t.open_external_editor(&self) {
     self.redraw()
 }
 
-fn view_t.start_prompt(&self, string text): ref<session_stream.stream_t>? {
+pub fn view_t.start_prompt(&self, string text): ref<session_stream.stream_t>? {
     self.command_menu = false
     self.overlay = null
     if text.starts_with('!') {
@@ -620,30 +657,34 @@ fn view_t.start_prompt(&self, string text): ref<session_stream.stream_t>? {
         return command_stream
     }
     var stream = self.runner.prompt(text) catch error {
+        debug.log('tui', 'prompt rejected: ' + error.msg())
         self.chat.error_message = error.msg()
         self.chat.status = 'Request failed'
         self.redraw()
         return null
     }
+    debug.log('tui', 'prompt submitted chars=' + fmt.sprintf('%d', text.len()))
     return stream
 }
 
-fn view_t.start_next_initial_prompt(&self): ref<session_stream.stream_t>? {
+pub fn view_t.start_next_initial_prompt(&self): ref<session_stream.stream_t>? {
     for self.pending_initial_messages.len() > 0 {
         string text = self.pending_initial_messages[0]
         self.pending_initial_messages = self.pending_initial_messages.slice(1, self.pending_initial_messages.len())
         var stream = self.runner.prompt(text) catch error {
+            debug.log('tui', 'initial prompt rejected: ' + error.msg())
             self.chat.error_message = error.msg()
             self.chat.status = 'Request failed'
             self.redraw()
             continue
         }
+        debug.log('tui', 'initial prompt submitted chars=' + fmt.sprintf('%d', text.len()))
         return stream
     }
     return null
 }
 
-fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
+pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
     var parts = command_tokens(text)
     if parts.len() == 0 {
         return null
@@ -683,6 +724,10 @@ fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
     if command == '/hotkeys' {
         self.show_hotkeys_overlay()
         self.redraw()
+        return null
+    }
+    if command == '/debug' {
+        self.handle_debug_command()
         return null
     }
     if command == '/scoped-models' {
@@ -930,7 +975,7 @@ fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
     return null
 }
 
-fn view_t.open_session(&self, string file_path): ref<session_stream.stream_t>? {
+pub fn view_t.open_session(&self, string file_path): ref<session_stream.stream_t>? {
     var next = repository.open_reference(self.runner.repository.cwd, self.runner.repository.session_dir, file_path) catch error {
         self.chat.error_message = error.msg()
         self.redraw()
@@ -939,7 +984,7 @@ fn view_t.open_session(&self, string file_path): ref<session_stream.stream_t>? {
     return self.finish_session_switch(next)
 }
 
-fn view_t.import_session(&self, string file_path): ref<session_stream.stream_t>? {
+pub fn view_t.import_session(&self, string file_path): ref<session_stream.stream_t>? {
     var next = self.runner.repository.import_file(file_path) catch error {
         self.chat.error_message = error.msg()
         self.redraw()
@@ -997,7 +1042,7 @@ fn view_t.rebind_project_context(&self, string cwd): void! {
     self.runner.base_context.system_prompt = system_prompt.build_with_tools(cwd, context_files, self.system_prompt_override, append_prompt, tool_names)
 }
 
-fn view_t.set_session_name(&self, string name): ref<session_stream.stream_t>? {
+pub fn view_t.set_session_name(&self, string name): ref<session_stream.stream_t>? {
     self.runner.set_session_name(name) catch error {
         self.chat.error_message = error.msg()
         self.redraw()
@@ -1009,7 +1054,7 @@ fn view_t.set_session_name(&self, string name): ref<session_stream.stream_t>? {
     return null
 }
 
-fn view_t.export_session(&self, string command_text, [string] parts): ref<session_stream.stream_t>? {
+pub fn view_t.export_session(&self, string command_text, [string] parts): ref<session_stream.stream_t>? {
     if !self.runner.repository.persisted {
         self.chat.status = 'Cannot export an in-memory session'
         self.redraw()
@@ -1060,7 +1105,7 @@ fn view_t.export_session(&self, string command_text, [string] parts): ref<sessio
     return null
 }
 
-fn view_t.show_session_overlay(&self) {
+pub fn view_t.show_session_overlay(&self) {
     if self.runner.repository.session_dir == '' {
         self.chat.status = 'No persisted sessions are available'
         if self.startup_session_picker {
@@ -1162,7 +1207,7 @@ fn sort_session_paths_alpha([string] values): [string] {
     return result
 }
 
-fn view_t.show_tree_overlay(&self) {
+pub fn view_t.show_tree_overlay(&self) {
     [string] options = []
     for entry in self.runner.repository.get_entries() {
         if entry.kind == session_types.ENTRY_LABEL {
@@ -1193,7 +1238,7 @@ fn view_t.show_tree_overlay(&self) {
     }
 }
 
-fn view_t.restore_tree_overlay(&self, string entry_id) {
+pub fn view_t.restore_tree_overlay(&self, string entry_id) {
     self.show_tree_overlay()
     if self.overlay is ref<overlay_t> tree {
         for index, option in tree.options {
@@ -1205,18 +1250,19 @@ fn view_t.restore_tree_overlay(&self, string entry_id) {
     }
 }
 
-fn view_t.show_branch_summary_overlay(&self, string entry_id) {
+pub fn view_t.show_branch_summary_overlay(&self, string entry_id) {
     self.overlay = new overlay_t(kind = OVERLAY_BRANCH_SUMMARY, title = 'Summarize branch?', provider = entry_id, options = ['No summary', 'Summarize', 'Summarize with custom prompt'])
 }
 
-fn view_t.show_fork_overlay(&self) {
+pub fn view_t.show_fork_overlay(&self) {
     [string] options = []
     for entry in self.runner.repository.get_entries() {
         if entry.kind != session_types.ENTRY_MESSAGE {
             continue
         }
-        var object = entry.raw.as_object() catch error {continue}
-        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+        if !json_util.is_obj(entry.raw) {continue}
+        var object = entry.raw as {string:any}
+        if !object.contains('message') || !(object['message'] is {string:any}) {
             continue
         }
         var message = message_json.decode(object['message']) catch error {continue}
@@ -1235,13 +1281,14 @@ fn view_t.show_fork_overlay(&self) {
     self.overlay = new overlay_t(kind = OVERLAY_FORK, title = 'Fork from user message:', options = options)
 }
 
-fn view_t.fork_message_text(&self, string entry_id): string {
+pub fn view_t.fork_message_text(&self, string entry_id): string {
     for entry in self.runner.repository.get_entries() {
         if entry.id != entry_id || entry.kind != session_types.ENTRY_MESSAGE {
             continue
         }
-        var object = entry.raw.as_object() catch error {return ''}
-        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+        if !json_util.is_obj(entry.raw) {return ''}
+        var object = entry.raw as {string:any}
+        if !object.contains('message') || !(object['message'] is {string:any}) {
             return ''
         }
         var message = message_json.decode(object['message']) catch error {return ''}
@@ -1253,12 +1300,12 @@ fn view_t.fork_message_text(&self, string entry_id): string {
     return ''
 }
 
-fn view_t.show_name_overlay(&self) {
+pub fn view_t.show_name_overlay(&self) {
     string name = self.runner.repository.get_session_name() catch error {''}
     self.overlay = new overlay_t(kind = OVERLAY_NAME, title = 'Session name:', query = name)
 }
 
-fn view_t.show_session_info_overlay(&self, repository.stats_t stats) {
+pub fn view_t.show_session_info_overlay(&self, repository.stats_t stats) {
     string file = self.runner.repository.persisted ? self.runner.repository.get_session_file() : 'In-memory'
     [string] options = [
         'Session Info',
@@ -1286,8 +1333,7 @@ fn view_t.show_session_info_overlay(&self, repository.stats_t stats) {
     self.overlay = new overlay_t(kind = OVERLAY_SESSION_INFO, title = 'Session Info', options = options)
 }
 
-#local
-fn html_escape(string value): string {
+pub fn html_escape(string value): string {
     return value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 }
 
@@ -1412,8 +1458,7 @@ fn env_name(string provider): string {
     return 'OPENAI_API_KEY'
 }
 
-fn view_t.render(&self): void! {
-    var size = self.terminal.size()
+pub fn view_t.render_lines(&self, int width, int height): [string]! {
     self.chat.model = self.runner.agent_config.model.id
     self.chat.provider = self.runner.agent_config.model.provider
     self.chat.set_provider_visibility(authenticated_provider_count(self.runner) > 1)
@@ -1421,19 +1466,71 @@ fn view_t.render(&self): void! {
     self.chat.set_usage_totals(self.runner.repository.usage_totals())
     self.chat.set_latest_cache_hit_rate(self.runner.repository.latest_cache_hit_rate())
     self.chat.set_context_known(self.runner.repository.context_usage_known())
-    [string] lines = self.chat.render(size.columns)
+    [string] lines = self.chat.render(width)
     [string] editor_lines = []
     if self.overlay is ref<overlay_t> active_overlay {
-        editor_lines = render_overlay(active_overlay, size.columns)
+        editor_lines = render_overlay(active_overlay, width)
     } else {
-        editor_lines = render_editor(self.editor, size.columns, self.command_menu, self.command_index, self.chat.thinking, size.rows)
+        editor_lines = render_editor(self.editor, width, self.command_menu, self.command_index, self.chat.thinking, height)
     }
     lines.append(editor_lines)
-    if lines.len() > size.rows {
-        lines = lines.slice(lines.len() - size.rows, lines.len())
-    }
+    return lines
+}
+
+pub fn view_t.render(&self): void! {
+    var size = self.terminal.size()
+    var lines = self.render_lines(size.columns, size.rows)
     var result = self.renderer.render(lines, size.columns, size.rows)
-    self.terminal.write(result.output)
+    self.write_terminal(result.output)
+}
+
+pub fn view_t.handle_debug_command(&self) {
+    var size = self.terminal.size() catch error {
+        self.chat.error_message = 'Could not read terminal size: ' + error.msg()
+        self.redraw()
+        return
+    }
+    var all_lines = self.render_lines(size.columns, size.rows) catch error {
+        self.chat.error_message = 'Could not render debug output: ' + error.msg()
+        self.redraw()
+        return
+    }
+    string timestamp = identity.iso_now() catch error {fmt.sprintf('%d', time.now().ms_timestamp())}
+    string debug_data = 'Debug output at ' + timestamp + '\n'
+    debug_data += fmt.sprintf('Terminal: %dx%d\n', size.columns, size.rows)
+    debug_data += fmt.sprintf('Total lines: %d\n\n', all_lines.len())
+    debug_data += '=== All rendered lines with visible widths ===\n'
+    for index, line in all_lines {
+        string escaped = json.serialize(line) catch error {'<line encode error>'}
+        int line_width = text_utils.visible_width(line) catch error {0}
+        debug_data += fmt.sprintf('[%d] (w=%d) %s\n', index, line_width, escaped)
+    }
+    debug_data += '\n=== Agent messages (JSONL) ===\n'
+    for message in self.runner.copy_active_messages() {
+        var encoded = message_json.encode(message) catch error {
+            debug_data += fmt.sprintf('<message encode error: %s>\n', error.msg())
+            continue
+        }
+        string encoded_line = json_util.stringify(encoded) catch error {
+            debug_data += fmt.sprintf('<message stringify error: %s>\n', error.msg())
+            continue
+        }
+        debug_data += encoded_line + '\n'
+    }
+    string target = debug.write_debug_file(debug_data) catch error {
+        self.chat.error_message = 'Could not write debug log: ' + error.msg()
+        self.redraw()
+        return
+    }
+    self.chat.error_message = ''
+    self.chat.status = 'Debug log written\n' + target
+    self.redraw()
+}
+
+#local
+fn view_t.write_terminal(&self, string output): void! {
+    self.terminal.write(output)
+    debug.log_terminal_output(output)
 }
 
 #local
@@ -1466,10 +1563,70 @@ fn detect_git_branch(string cwd): string {
     return result.stdout.trim([' ', '\t', '\n', '\r'])
 }
 
-fn view_t.redraw(&self) {
-    self.render() catch error {
-        self.chat.error_message = error.msg()
-        self.chat.status = 'Render failed'
+pub fn view_t.redraw(&self) {
+    if self.quitting {
+        return
+    }
+    self.render_lock.lock()
+    self.redraw_dirty = true
+    if self.redraw_scheduled {
+        self.render_lock.unlock()
+        return
+    }
+    self.redraw_scheduled = true
+    self.render_lock.unlock()
+    go deferred_redraw(self)
+}
+
+#local
+fn deferred_redraw(ref<view_t> view): void! {
+    // Pi's TUI uses a 16ms minimum render interval.  A deferred coroutine
+    // keeps input handling responsive while coalescing deltas from one SSE
+    // burst into a single terminal write.
+    co.sleep(16)
+    for true {
+        if view.quitting {
+            view.render_lock.lock()
+            view.redraw_dirty = false
+            view.redraw_scheduled = false
+            view.render_lock.unlock()
+            return
+        }
+        view.render_lock.lock()
+        bool dirty = view.redraw_dirty
+        view.redraw_dirty = false
+        view.render_lock.unlock()
+        if !dirty {
+            break
+        }
+        view.render() catch error {
+            view.chat.error_message = error.msg()
+            view.chat.status = 'Render failed'
+        }
+        if view.quitting {
+            view.render_lock.lock()
+            view.redraw_dirty = false
+            view.redraw_scheduled = false
+            view.render_lock.unlock()
+            return
+        }
+        view.render_lock.lock()
+        bool again = view.redraw_dirty
+        view.render_lock.unlock()
+        if !again {
+            break
+        }
+        co.sleep(16)
+    }
+    view.render_lock.lock()
+    view.redraw_scheduled = false
+    bool queued = !view.quitting && view.redraw_dirty
+    if view.quitting {
+        view.redraw_dirty = false
+    }
+    view.render_lock.unlock()
+    if queued {
+        view.redraw()
     }
 }
 
@@ -1508,37 +1665,96 @@ fn view_t.stop_signals(&self) {
 }
 
 #local
-fn read_input(ref<term.terminal_t> terminal, ref<input_buffer.buffer_t> input_buffer, chan<input_t> output): void! {
-    bool pending_timeout = false
-    int idle_reads = 0
-    for true {
-        var bytes = terminal.read()
+fn read_terminal(ref<view_t> view, chan<terminal_input_t> output): void! {
+    // Nature's terminal reader is backed by fs/libuv. Keep the blocking read
+    // in its own coroutine so the parser can handle escape timeouts without
+    // changing the descriptor flags or polling an idle terminal.
+    for !view.quitting {
+        var bytes = view.terminal.read() catch error {
+            debug.log('tui', 'terminal input failed: ' + error.msg())
+            output.send(terminal_input_t {kind: TERMINAL_INPUT_EOF,}) catch send_error {}
+            output.close() catch close_error {}
+            return
+        }
         if bytes.len() == 0 {
-            if terminal.is_eof() {
-                output.close()
-                return
+            output.send(terminal_input_t {kind: TERMINAL_INPUT_EOF,}) catch send_error {}
+            output.close() catch close_error {}
+            return
+        }
+        output.send(terminal_input_t {kind: TERMINAL_INPUT_BYTES, data: bytes,}) catch error {
+            output.close() catch close_error {}
+            return
+        }
+    }
+    output.close() catch error {}
+}
+
+#local
+fn input_timeout(chan<terminal_input_t> output, i64 timeout_id) {
+    co.sleep(10)
+    output.try_send(terminal_input_t {kind: TERMINAL_INPUT_TIMEOUT, timeout_id: timeout_id,}) catch error {}
+}
+
+#local
+fn read_input(ref<view_t> view, chan<terminal_input_t> input, chan<input_t> output): void! {
+    // Pi gives an escape sequence a short window to receive its remaining
+    // bytes. A timer coroutine provides that window while the terminal reader
+    // continues accepting bytes through the Nature channel.
+    const ESCAPE_SEQUENCE_TIMEOUT_MS = 10
+    bool pending_timeout = false
+    i64 pending_since = 0
+    i64 timeout_id = 0
+    for true {
+        var event = input.recv() catch error {
+            var flushed = view.input_buffer.flush()
+            for sequence in flushed {
+                output.send(input_t {data: sequence,}) catch send_error {}
             }
-            if pending_timeout {
-                idle_reads += 1
-                if idle_reads >= 3 {
-                    var flushed = input_buffer.flush()
-                    for sequence in flushed {
-                        output.send(input_t {data: sequence,})
-                    }
-                    pending_timeout = false
-                    idle_reads = 0
+            output.close() catch close_error {}
+            return
+        }
+        if event.kind == TERMINAL_INPUT_EOF {
+            var flushed = view.input_buffer.flush()
+            for sequence in flushed {
+                output.send(input_t {data: sequence,}) catch send_error {}
+            }
+            output.close()
+            return
+        }
+        if event.kind == TERMINAL_INPUT_TIMEOUT {
+            if pending_timeout && event.timeout_id == timeout_id {
+                var flushed = view.input_buffer.flush()
+                for sequence in flushed {
+                    output.send(input_t {data: sequence,}) catch send_error {}
                 }
+                pending_timeout = false
+                pending_since = 0
             }
             continue
         }
-        idle_reads = 0
-        var processed = input_buffer.process(bytes)
+        if pending_timeout {
+            i64 now = time.now().ms_timestamp()
+            if pending_since > 0 && now - pending_since >= ESCAPE_SEQUENCE_TIMEOUT_MS {
+                var flushed = view.input_buffer.flush()
+                for sequence in flushed {
+                    output.send(input_t {data: sequence,}) catch send_error {}
+                }
+                pending_timeout = false
+                pending_since = 0
+            }
+        }
+        var processed = view.input_buffer.process(event.data)
         pending_timeout = processed.needs_timeout
+        pending_since = pending_timeout ? time.now().ms_timestamp() : 0
+        if pending_timeout {
+            timeout_id += 1
+            go input_timeout(input, timeout_id)
+        }
         for sequence in processed.sequences {
-            output.send(input_t {data: sequence,})
+            output.send(input_t {data: sequence,}) catch send_error {}
         }
         for paste in processed.pastes {
-            output.send(input_t {data: paste, paste: true,})
+            output.send(input_t {data: paste, paste: true,}) catch send_error {}
         }
     }
 }
@@ -1585,7 +1801,7 @@ fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int 
     return result
 }
 
-fn view_t.update_command_menu(&self) {
+pub fn view_t.update_command_menu(&self) {
     string text = self.editor.get_text()
     self.command_menu = text.starts_with('/') && !text.contains(' ') && matching_command_names(text).len() > 0
     if !self.command_menu {
@@ -1598,7 +1814,7 @@ fn view_t.update_command_menu(&self) {
     }
 }
 
-fn view_t.complete_command(&self): string {
+pub fn view_t.complete_command(&self): string {
     var matches = matching_command_names(self.editor.get_text())
     if matches.len() == 0 || self.command_index < 0 || self.command_index >= matches.len() {
         return ''
@@ -1609,13 +1825,13 @@ fn view_t.complete_command(&self): string {
     return value
 }
 
-fn view_t.show_auth_overlay(&self, string provider) {
+pub fn view_t.show_auth_overlay(&self, string provider) {
     [string] options = ['Sign in with an account', 'Sign in with an API key']
     string title = provider == '' ? 'Select authentication method:' : 'Select authentication method for ' + provider + ':'
     self.overlay = new overlay_t(kind = OVERLAY_AUTH_METHOD, title = title, provider = provider, options = options)
 }
 
-fn view_t.show_model_overlay(&self, string query) {
+pub fn view_t.show_model_overlay(&self, string query) {
     [string] options = vec<string>.cap_of(8)
     for model in models.all() {
         string reference = model.provider + '/' + model.id
@@ -1637,7 +1853,7 @@ fn view_t.show_model_overlay(&self, string query) {
     }
 }
 
-fn view_t.show_scoped_models_overlay(&self) {
+pub fn view_t.show_scoped_models_overlay(&self) {
     [string] options = []
     for model in models.all() {
         string id = model.provider + '/' + model.id
@@ -1655,12 +1871,12 @@ fn view_t.show_scoped_models_overlay(&self) {
     }
 }
 
-fn view_t.show_logout_overlay(&self) {
+pub fn view_t.show_logout_overlay(&self) {
     [string] options = ['deepseek', 'openai', 'anthropic']
     self.overlay = new overlay_t(kind = OVERLAY_LOGOUT, title = 'Select provider to logout:', options = options)
 }
 
-fn view_t.show_settings_overlay(&self) {
+pub fn view_t.show_settings_overlay(&self) {
     [string] options = [
         'Thinking: ' + self.chat.thinking,
         'Auto-compaction: ' + (self.runner.compaction_settings.enabled ? 'on' : 'off'),
@@ -1672,7 +1888,7 @@ fn view_t.show_settings_overlay(&self) {
     self.overlay = new overlay_t(kind = OVERLAY_SETTINGS, title = 'Settings', options = options)
 }
 
-fn view_t.show_help_overlay(&self) {
+pub fn view_t.show_help_overlay(&self) {
     [string] options = [
         '/model        Select model',
         '/scoped-models Select from all configured models',
@@ -1699,7 +1915,7 @@ fn view_t.show_help_overlay(&self) {
     self.overlay = new overlay_t(kind = OVERLAY_HELP, title = 'Commands', options = options)
 }
 
-fn view_t.show_hotkeys_overlay(&self) {
+pub fn view_t.show_hotkeys_overlay(&self) {
     [string] options = [
         'Escape       Cancel or abort; press twice to open tree',
         'Ctrl+C       Clear editor; press twice to exit',
@@ -1725,7 +1941,7 @@ fn view_t.show_hotkeys_overlay(&self) {
     self.overlay = new overlay_t(kind = OVERLAY_HELP, title = 'Keyboard shortcuts', options = options)
 }
 
-fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input) {
+pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input) {
     if input.paste {
         overlay.query += input.data
         overlay.selected = 0
@@ -2026,7 +2242,7 @@ fn view_t.rename_session(&self, string file_path, string name) {
     self.redraw()
 }
 
-fn view_t.complete_label(&self, ref<overlay_t> overlay) {
+pub fn view_t.complete_label(&self, ref<overlay_t> overlay) {
     string entry_id = overlay.provider
     self.runner.repository.append_label_change(entry_id, overlay.query) catch error {
         self.chat.error_message = error.msg()
@@ -2047,7 +2263,7 @@ fn view_t.complete_label(&self, ref<overlay_t> overlay) {
     self.redraw()
 }
 
-fn view_t.complete_api_key_login(&self, ref<overlay_t> overlay) {
+pub fn view_t.complete_api_key_login(&self, ref<overlay_t> overlay) {
     string key = overlay.query
     if key == '' {
         key = auth.effective(overlay.provider)
@@ -2073,7 +2289,7 @@ fn view_t.complete_api_key_login(&self, ref<overlay_t> overlay) {
     self.redraw()
 }
 
-fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
+pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
     var options = filtered_options(overlay)
     if overlay.kind == OVERLAY_AUTH_METHOD {
         string method = overlay.selected == 0 ? 'account' : 'api_key'
@@ -2256,7 +2472,7 @@ fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
     }
 }
 
-fn view_t.complete_tree_navigation(&self, string entry_id) {
+pub fn view_t.complete_tree_navigation(&self, string entry_id) {
     string editor_text = self.runner.navigate_tree(entry_id) catch error {
         self.chat.error_message = error.msg()
         self.redraw()
@@ -2272,7 +2488,7 @@ fn view_t.complete_tree_navigation(&self, string entry_id) {
     self.redraw()
 }
 
-fn view_t.start_tree_summary(&self, string entry_id, string instructions) {
+pub fn view_t.start_tree_summary(&self, string entry_id, string instructions) {
     var target = self.runner.inspect_tree_target(entry_id) catch error {
         self.chat.error_message = error.msg()
         self.redraw()
@@ -2291,7 +2507,7 @@ fn view_t.start_tree_summary(&self, string entry_id, string instructions) {
     self.redraw()
 }
 
-fn view_t.toggle_thinking(&self) {
+pub fn view_t.toggle_thinking(&self) {
     string next = self.chat.thinking == 'off' ? 'medium' : 'off'
     self.runner.set_thinking_level(next) catch error {
         self.chat.error_message = error.msg()
@@ -2302,7 +2518,7 @@ fn view_t.toggle_thinking(&self) {
     self.save_preferences()
 }
 
-fn view_t.cycle_thinking_level(&self) {
+pub fn view_t.cycle_thinking_level(&self) {
     if !self.runner.agent_config.model.reasoning {
         self.chat.status = 'Current model does not support thinking'
         self.redraw()
@@ -2330,7 +2546,7 @@ fn view_t.cycle_thinking_level(&self) {
     self.redraw()
 }
 
-fn view_t.cycle_model(&self, int direction) {
+pub fn view_t.cycle_model(&self, int direction) {
     var available = self.available_cycle_models()
     if available.len() == 0 {
         self.chat.status = 'No authenticated model available'
@@ -2378,7 +2594,7 @@ fn view_t.apply_scoped_thinking(&self, ref<ai_types.model_t> model) {
     self.chat.thinking = self.runner.agent_config.stream_options.thinking_enabled ? self.runner.agent_config.stream_options.reasoning_effort : 'off'
 }
 
-fn view_t.restore_queued_messages(&self) {
+pub fn view_t.restore_queued_messages(&self) {
     var queued = self.runner.restore_queued_messages()
     [string] texts = []
     for message in queued {
@@ -2400,7 +2616,7 @@ fn view_t.restore_queued_messages(&self) {
     self.redraw()
 }
 
-fn view_t.save_preferences(&self) {
+pub fn view_t.save_preferences(&self) {
     var existing = config_settings.load()
     var preferences = config_settings.settings_t {default_provider: existing.default_provider, default_model: existing.default_model, default_thinking_level: self.chat.thinking, auto_compaction: self.runner.compaction_settings.enabled, steering_mode: self.runner.agent_config.queues.steering_mode, follow_up_mode: self.runner.agent_config.queues.follow_up_mode, hide_thinking: !self.chat.thinking_visible, retry_enabled: self.runner.retry_enabled, retry_max_attempts: existing.retry_max_attempts, retry_base_delay_ms: existing.retry_base_delay_ms, enabled_model_ids: self.scoped_model_ids,}
     config_settings.save(preferences) catch error {
@@ -2418,7 +2634,7 @@ fn view_t.save_default_model(&self) {
     }
 }
 
-fn view_t.copy_last_response(&self) {
+pub fn view_t.copy_last_response(&self) {
     string text = ''
     for int index = self.chat.messages.len() - 1; index >= 0; index -= 1 {
         if self.chat.messages[index] is ref<ai_types.assistant_message_t> assistant {
@@ -2437,16 +2653,18 @@ fn view_t.copy_last_response(&self) {
         return
     }
     string encoded = base64.encode(text as [u8]) as string
-    self.terminal.write('\x1b]52;c;' + encoded + '\x07') catch error {
+    string clipboard_output = '\x1b]52;c;' + encoded + '\x07'
+    self.terminal.write(clipboard_output) catch error {
         self.chat.error_message = 'Clipboard copy failed: ' + error.msg()
         self.redraw()
         return
     }
+    debug.log_terminal_output(clipboard_output)
     self.chat.status = 'Copied last assistant response to clipboard'
     self.redraw()
 }
 
-fn render_overlay(ref<overlay_t> overlay, int width): [string]! {
+pub fn render_overlay(ref<overlay_t> overlay, int width): [string]! {
     [string] result = vec<string>.cap_of(24)
     result.push(theme.border_line(width))
     result.push('')
@@ -2566,8 +2784,9 @@ fn session_option_display(string file_path, bool show_path): string {
     var active = selected.active_entries()
     for entry in active {
         if entry.kind != session_types.ENTRY_MESSAGE {continue}
-        var object = entry.raw.as_object() catch error {continue}
-        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {continue}
+        if !json_util.is_obj(entry.raw) {continue}
+        var object = entry.raw as {string:any}
+        if !object.contains('message') || !(object['message'] is {string:any}) {continue}
         var message = message_json.decode(object['message']) catch error {continue}
         if message is ref<ai_types.user_message_t> user {
             string preview = user.content.replace('\n', ' ').trim([' ', '\t'])

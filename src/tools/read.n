@@ -1,4 +1,5 @@
 import adou.src.ai.abort
+import adou.src.json_util
 import adou.src.tools.path_utils
 import adou.src.tools.truncate
 import adou.src.tools.types as tool_types
@@ -10,7 +11,7 @@ import libc
 import strings
 import syscall
 
-fn execute(string cwd, string input_path, bool has_offset, float offset, bool has_limit, float limit, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
+pub fn execute(string cwd, string input_path, bool has_offset, float offset, bool has_limit, float limit, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
     throw_if_aborted(cancellation)
     string absolute_path = path_utils.resolve_read_path(input_path, cwd)
     if !path_utils.readable(absolute_path) {
@@ -118,29 +119,27 @@ fn js_number(float value): string {
     return fmt.sprintf('%g', value)
 }
 
-#local
-fn throw_if_aborted(ref<abort.abort_t> cancellation): void! {
+pub fn throw_if_aborted(ref<abort.abort_t> cancellation): void! {
     if cancellation.is_aborted() {
         throw errorf('Operation aborted')
     }
 }
 
-#local
-fn truncation_details(truncate.result_t value): json.value_t! {
-    map<string, ref<json.value_t>> object = {}
-    object['truncated'] = json.box_value(json.bool_value(value.truncated))
-    object['truncatedBy'] = json.box_value(json.string_value(value.truncated_by))
-    object['totalLines'] = json.box_value(json.number_value(fmt.sprintf('%d', value.total_lines)))
-    object['totalBytes'] = json.box_value(json.number_value(fmt.sprintf('%d', value.total_bytes)))
-    object['outputLines'] = json.box_value(json.number_value(fmt.sprintf('%d', value.output_lines)))
-    object['outputBytes'] = json.box_value(json.number_value(fmt.sprintf('%d', value.output_bytes)))
-    object['lastLinePartial'] = json.box_value(json.bool_value(value.last_line_partial))
-    object['firstLineExceedsLimit'] = json.box_value(json.bool_value(value.first_line_exceeds_limit))
-    object['maxLines'] = json.box_value(json.number_value(fmt.sprintf('%d', value.max_lines)))
-    object['maxBytes'] = json.box_value(json.number_value(fmt.sprintf('%d', value.max_bytes)))
-    map<string, ref<json.value_t>> details = {}
-    details['truncation'] = json.box_value(json.object_value(object))
-    return json.object_value(details)
+pub fn truncation_details(truncate.result_t value): any! {
+    {string:any} object = {}
+    object['truncated'] = value.truncated
+    object['truncatedBy'] = value.truncated_by
+    object['totalLines'] = value.total_lines
+    object['totalBytes'] = value.total_bytes
+    object['outputLines'] = value.output_lines
+    object['outputBytes'] = value.output_bytes
+    object['lastLinePartial'] = value.last_line_partial
+    object['firstLineExceedsLimit'] = value.first_line_exceeds_limit
+    object['maxLines'] = value.max_lines
+    object['maxBytes'] = value.max_bytes
+    {string:any} details = {}
+    details['truncation'] = object
+    return details
 }
 
 #local
@@ -163,8 +162,7 @@ fn image_mime([u8] data): string {
     return ''
 }
 
-#local
-fn starts([u8] data, [u8] prefix): bool {
+pub fn starts([u8] data, [u8] prefix): bool {
     if prefix.len() > data.len() {
         return false
     }

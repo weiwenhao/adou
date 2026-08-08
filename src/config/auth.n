@@ -1,3 +1,6 @@
+import adou.src.ai.providers.registry
+import adou.src.ai.types
+import adou.src.json_util
 import adou.src.tools.path_utils
 import adou.src.config.paths
 import fs
@@ -6,9 +9,8 @@ import os
 import path
 import syscall
 
-type object_t = map<string, ref<json.value_t>>
 
-fn effective(string provider): string {
+pub fn effective(string provider): string {
     string stored = read(provider)
     if stored != '' {
         return stored
@@ -16,20 +18,20 @@ fn effective(string provider): string {
     return environment(provider)
 }
 
-fn environment(string provider): string {
-    if provider == 'deepseek' {
-        return syscall.get_env('DEEPSEEK_API_KEY')
-    }
-    if provider == 'anthropic' {
-        return syscall.get_env('ANTHROPIC_API_KEY')
-    }
-    if provider == 'openai' {
-        return syscall.get_env('OPENAI_API_KEY')
+pub fn environment(string provider): string {
+    var def = registry.find_def(provider)
+    if def is types.provider_def_t found {
+        for env_var in found.env_vars {
+            string value = syscall.get_env(env_var)
+            if value != '' {
+                return value
+            }
+        }
     }
     return ''
 }
 
-fn read(string provider): string {
+pub fn read(string provider): string {
     string file_path = auth_path()
     if !path_utils.exists(file_path) {
         return ''
@@ -42,82 +44,87 @@ fn read(string provider): string {
         return ''
     }
     input.close()
-    var root = json.parse(content) catch error {
+    var root = json_util.parse(content) catch error {
         return ''
     }
-    if root.kind != json.VALUE_OBJECT {
+    if !json_util.is_obj(root) {
         return ''
     }
-    var object = root.as_object() catch error {return ''} as object_t
-    if !object.contains(provider) || object[provider].kind != json.VALUE_OBJECT {
+    var object = root as {string:any}
+    if !object.contains(provider) || !json_util.is_obj(object[provider]) {
         return ''
     }
-    var credential = object[provider].as_object() catch error {return ''} as object_t
-    if credential.contains('type') && credential['type'].kind == json.VALUE_STRING && credential['type'].text != 'api_key' {
+    var credential = object[provider] as {string:any}
+    if credential.contains('type') && credential['type'] is string && credential['type'] as string != 'api_key' {
         return ''
     }
-    if credential.contains('key') && credential['key'].kind == json.VALUE_STRING {
-        return credential['key'].text
+    if credential.contains('key') && credential['key'] is string {
+        return credential['key'] as string
     }
-    if credential.contains('apiKey') && credential['apiKey'].kind == json.VALUE_STRING {
-        return credential['apiKey'].text
+    if credential.contains('apiKey') && credential['apiKey'] is string {
+        return credential['apiKey'] as string
     }
     return ''
 }
 
-fn save(string provider, string key): void! {
+pub fn save(string provider, string key): void! {
     if provider == '' || key == '' {
         throw errorf('Provider and API key are required')
     }
     string file_path = auth_path()
     os.mkdirs(path.dir(file_path), 0o700)
     var root = read_root(file_path)
-    object_t object = root.kind == json.VALUE_OBJECT ? root.as_object() as object_t : {}
-    object_t credential = {}
-    credential['type'] = boxed_string('api_key')
-    credential['key'] = boxed_string(key)
-    object[provider] = json.box_value(json.object_value(credential as map<string, ref<json.value_t>>))
-    write_file(file_path, json.stringify(json.object_value(object as map<string, ref<json.value_t>>)))
+    {string:any} object = json_util.is_obj(root) ? root as {string:any} : {}
+    {string:any} credential = {}
+    credential['type'] = 'api_key'
+    credential['key'] = key
+    object[provider] = credential
+    write_file(file_path, json.serialize(object))
 }
 
-fn remove(string provider): void! {
+pub fn remove(string provider): void! {
     string file_path = auth_path()
     if !path_utils.exists(file_path) {
         return
     }
     var root = read_root(file_path)
-    if root.kind != json.VALUE_OBJECT {
+    if !json_util.is_obj(root) {
         return
     }
-    object_t object = root.as_object() as object_t
+    {string:any} object = root as {string:any}
     if object.contains(provider) {
         object.del(provider)
-        write_file(file_path, json.stringify(json.object_value(object as map<string, ref<json.value_t>>)))
+        write_file(file_path, json.serialize(object))
     }
 }
 
-fn auth_path(): string {
+pub fn auth_path(): string {
     return paths.auth_path()
 }
 
 #local
-fn read_root(string file_path): json.value_t {
+fn read_root(string file_path): any {
     if !path_utils.exists(file_path) {
-        return json.object_value({})
+        {string:any} empty = {}
+        return empty
     }
     var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
-        return json.object_value({})
+        {string:any} empty = {}
+        return empty
     }
     string content = input.content() catch error {
         input.close()
-        return json.object_value({})
+        {string:any} empty = {}
+        return empty
     }
     input.close()
-    return json.parse(content) catch error {json.object_value({})}
+    return json_util.parse(content) catch error {
+        {string:any} empty = {}
+        return empty
+    }
 }
 
-#local
-fn write_file(string file_path, string content): void! {
+pub fn write_file(string file_path, string content): void! {
     var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
     int written = output.write(content as [u8])
     output.close()
@@ -126,7 +133,3 @@ fn write_file(string file_path, string content): void! {
     }
 }
 
-#local
-fn boxed_string(string value): ref<json.value_t> {
-    return json.box_value(json.string_value(value))
-}

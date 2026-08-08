@@ -1,3 +1,4 @@
+import adou.src.json_util
 import adou.src.tools.path_utils
 import adou.src.config.paths
 import fs
@@ -6,11 +7,10 @@ import os
 import path
 import syscall
 
-type object_t = map<string, ref<json.value_t>>
 
 // Project trust follows Pi's nearest-ancestor decision semantics.  It is
 // independent from provider credentials and can be changed with `/trust`.
-fn decision(string cwd): bool? {
+pub fn decision(string cwd): bool? {
     string file_path = trust_path()
     if !path_utils.exists(file_path) {return null}
     var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return null}
@@ -19,13 +19,13 @@ fn decision(string cwd): bool? {
         return null
     }
     input.close()
-    var root = json.parse(content) catch error {return null}
-    if root.kind != json.VALUE_OBJECT {return null}
-    object_t object = root.as_object() catch error {return null} as object_t
+    var root = json_util.parse(content) catch error {return null}
+    if !json_util.is_obj(root) {return null}
+    {string:any} object = root as {string:any}
     string current = normalize(cwd)
     for true {
-        if object.contains(current) && object[current].kind == json.VALUE_BOOL {
-            return object[current].boolean
+        if object.contains(current) && object[current] is bool {
+            return object[current] as bool
         }
         string parent = path.dir(current)
         if parent == current || parent == '' {break}
@@ -34,20 +34,20 @@ fn decision(string cwd): bool? {
     return null
 }
 
-fn save(string cwd, bool trusted): void! {
+pub fn save(string cwd, bool trusted): void! {
     string file_path = trust_path()
-    object_t object = read_object(file_path)
-    object[normalize(cwd)] = json.box_value(json.bool_value(trusted))
+    {string:any} object = read_object(file_path)
+    object[normalize(cwd)] = trusted
     os.mkdirs(path.dir(file_path), 0o700)
     var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
-    string content = json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+    string content = json.serialize(object)
     int written = output.write(content as [u8])
     output.close()
     if written != content.len() {throw errorf('Could not write project trust store')}
 }
 
 #local
-fn read_object(string file_path): object_t {
+fn read_object(string file_path): {string:any} {
     if !path_utils.exists(file_path) {return {}}
     var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return {}}
     string content = input.content() catch error {
@@ -56,17 +56,16 @@ fn read_object(string file_path): object_t {
     }
     input.close()
     if content == '' {return {}}
-    var parsed = json.parse(content) catch error {return {}}
-    if parsed.kind != json.VALUE_OBJECT {return {}}
-    return parsed.as_object() catch error {return {}} as object_t
+    var parsed = json_util.parse(content) catch error {return {}}
+    if !json_util.is_obj(parsed) {return {}}
+    return parsed as {string:any}
 }
 
-fn trust_path(): string {
+pub fn trust_path(): string {
     return paths.trust_path()
 }
 
-#local
-fn normalize(string value): string {
+pub fn normalize(string value): string {
     string result = path_utils.clean(value)
     if result == '' {return '/'}
     return result

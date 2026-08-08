@@ -1,21 +1,36 @@
+import adou.src.json_util
 import fmt
-import json
 
 // Pi keeps a parsed arguments object on every tool-call delta.  Provider
 // streams are allowed to split JSON anywhere, so parse the complete value when
 // possible and otherwise repair only the unfinished lexical pieces before
 // closing open containers.  A failed repair deliberately returns {}: schema
 // validation still protects tool execution at the end of the turn.
-fn parse(string source): json.value_t {
+pub fn parse(string source): any {
     if source.trim([' ', '\t', '\n', '\r']) == '' {
-        return json.object_value({})
+        {string:any} empty = {}
+        return empty
     }
-    var value = json.parse(source) catch e {
+    var value = json_util.parse(source) catch e {
         string repaired = repair_json(source)
         string closed = close_json(repaired)
-        return json.parse(closed) catch second {
-            json.object_value({})
+        var closed_value = json_util.parse(closed) catch second {
+            {string:any} empty = {}
+            return empty
         }
+        return closed_value
+    }
+    return value
+}
+
+// Parse a complete JSON value while applying Pi's malformed-string repair.
+// Unlike parse(), this intentionally does not close open containers: provider
+// event envelopes must be complete, while only their string contents are
+// allowed to use repair semantics.
+pub fn parse_with_repair(string source): any! {
+    var value = json_util.parse(source) catch e {
+        string repaired = repair_json(source)
+        return json_util.parse(repaired)
     }
     return value
 }

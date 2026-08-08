@@ -8,7 +8,7 @@ import json
 import strings
 
 
-fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
     {string:any} body = {}
     body['model'] = model.id
     body['messages'] = convert_messages(model, context)
@@ -40,7 +40,7 @@ fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.strea
     return json.serialize(body)
 }
 
-fn endpoint(ref<types.model_t> model): string {
+pub fn endpoint(ref<types.model_t> model): string {
     string base = decorators.resolve_base_url(model)
     for base.ends_with('/') {
         base = base.slice(0, base.len() - 1)
@@ -48,15 +48,14 @@ fn endpoint(ref<types.model_t> model): string {
     return base + '/chat/completions'
 }
 
-fn authorization(ref<types.stream_options_t> options): string! {
+pub fn authorization(ref<types.stream_options_t> options): string! {
     if options.api_key == '' {
         throw errorf('No API key for provider: deepseek')
     }
     return 'Bearer ' + options.api_key
 }
 
-#local
-fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [any]! {
+pub fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [any]! {
     [any] result = []
     if context.system_prompt != '' {
         {string:any} system = {}
@@ -117,16 +116,14 @@ fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [an
     return result
 }
 
-#local
-fn message_item(string role, string content): any {
+pub fn message_item(string role, string content): any {
     {string:any} item = {}
     item['role'] = role
     item['content'] = content
     return item
 }
 
-#local
-fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> message): any {
+pub fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> message): any {
     string text = ''
     string reasoning = ''
     [any] calls = []
@@ -173,8 +170,7 @@ fn tool_call_item(ref<types.model_t> model, ref<types.tool_call_t> call): any! {
     return item
 }
 
-#local
-fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_t> message): any {
+pub fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_t> message): any {
     [string] lines = []
     for block in message.content {
         lines.push(block.text)
@@ -190,8 +186,7 @@ fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_t> m
     return item
 }
 
-#local
-fn convert_tools([ref<types.tool_t>] tools): [any]! {
+pub fn convert_tools([ref<types.tool_t>] tools): [any]! {
     [any] result = []
     for tool in tools {
         {string:any} function = {}
@@ -224,8 +219,7 @@ fn has_tool_history(ref<types.context_t> context): bool {
     return false
 }
 
-#local
-fn normalize_tool_id(ref<types.model_t> model, string id): string {
+pub fn normalize_tool_id(ref<types.model_t> model, string id): string {
     // Responses tool ids use `{call_id}|{item_id}` and may contain hundreds of
     // bytes. Chat Completions accepts at most 40 characters; retain item-level
     // uniqueness with a deterministic suffix when sanitizing would overflow.

@@ -6,7 +6,7 @@ import adou.src.compaction.types as compaction_types
 import adou.src.config.types
 import syscall
 
-fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
+pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
     if arguments.errors.len() > 0 {
         throw errorf('%s', join_errors(arguments.errors))
     }
@@ -180,13 +180,11 @@ fn infer_provider(): string {
     return 'deepseek'
 }
 
-#local
-fn first(string primary, string fallback): string {
+pub fn first(string primary, string fallback): string {
     return primary != '' ? primary : fallback
 }
 
-#local
-fn positive(int primary, int fallback): int {
+pub fn positive(int primary, int fallback): int {
     return primary > 0 ? primary : fallback
 }
 

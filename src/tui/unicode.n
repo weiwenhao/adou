@@ -1,34 +1,34 @@
-type segment_t = struct {
+pub type segment_t = struct {
     int start
     int end
     bool word_like
 }
 
 #linkid adou_icu_available
-fn icu_available(): bool
+pub fn icu_available(): bool
 
 #linkid adou_icu_grapheme_breaks
-fn grapheme_breaks_raw(anyptr text, int length, anyptr boundaries, int capacity): int
+pub fn grapheme_breaks_raw(anyptr text, int length, anyptr boundaries, int capacity): int
 
 #linkid adou_icu_word_segments
-fn word_segments_raw(anyptr text, int length, anyptr starts, anyptr ends, anyptr word_like, int capacity): int
+pub fn word_segments_raw(anyptr text, int length, anyptr starts, anyptr ends, anyptr word_like, int capacity): int
 
 #linkid adou_icu_grapheme_width
-fn grapheme_width_raw(anyptr text, int length): int
+pub fn grapheme_width_raw(anyptr text, int length): int
 
 #linkid adou_icu_visible_width
-fn visible_width_raw(anyptr text, int length): int
+pub fn visible_width_raw(anyptr text, int length): int
 
 #linkid adou_icu_is_cjk_break
-fn is_cjk_break_raw(anyptr text, int length): bool
+pub fn is_cjk_break_raw(anyptr text, int length): bool
 
-fn require_icu(): void! {
+pub fn require_icu(): void! {
     if !icu_available() {
         throw errorf('ICU4C is required for terminal Unicode segmentation and width')
     }
 }
 
-fn graphemes(string text): [segment_t]! {
+pub fn graphemes(string text): [segment_t]! {
     require_icu()
     if text == '' {
         return []
@@ -45,7 +45,7 @@ fn graphemes(string text): [segment_t]! {
     return result
 }
 
-fn words(string text): [segment_t]! {
+pub fn words(string text): [segment_t]! {
     require_icu()
     if text == '' {
         return []
@@ -64,7 +64,7 @@ fn words(string text): [segment_t]! {
     return result
 }
 
-fn grapheme_width(string text): int! {
+pub fn grapheme_width(string text): int! {
     require_icu()
     int result = grapheme_width_raw(text.ref(), text.len())
     if result < 0 {
@@ -73,7 +73,7 @@ fn grapheme_width(string text): int! {
     return result
 }
 
-fn visible_width(string text): int! {
+pub fn visible_width(string text): int! {
     require_icu()
     int result = visible_width_raw(text.ref(), text.len())
     if result < 0 {
@@ -82,7 +82,7 @@ fn visible_width(string text): int! {
     return result
 }
 
-fn is_cjk_break(string text): bool! {
+pub fn is_cjk_break(string text): bool! {
     require_icu()
     return text != '' && is_cjk_break_raw(text.ref(), text.len())
 }

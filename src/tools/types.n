@@ -1,13 +1,14 @@
 import adou.src.ai.types
 import json
 
-type tool_result_t = struct {
+pub type tool_result_t = struct {
     [ref<types.text_content_t>] content = []
-    json.value_t details
+    any details
     types.usage_t usage
+    [string] added_tool_names = []
     bool terminate
 }
 
-fn text_result(string text): tool_result_t {
+pub fn text_result(string text): tool_result_t {
     return tool_result_t {content: [new types.text_content_t(text = text)],}
 }

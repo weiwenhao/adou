@@ -1,7 +1,7 @@
 import adou.src.tui.text_utils
 import adou.src.tui.theme
 
-fn render(string markdown, int width): [string]! {
+pub fn render(string markdown, int width): [string]! {
     [string] result = vec<string>.cap_of(16)
     var lines = split_lines(markdown)
     bool fenced = false
@@ -78,7 +78,7 @@ fn inline(string text): string {
         if text[cursor] == '`'.char() {
             int end = text.find_after('`', cursor + 1)
             if end >= 0 {
-                result += theme.INVERSE + theme.CODE + text.slice(cursor + 1, end) + theme.RESET
+                result += theme.INVERSE + theme.CODE + text.slice(cursor + 1, end) + '\x1b[27m\x1b[39m'
                 cursor = end + 1
                 continue
             }
@@ -169,8 +169,7 @@ fn is_horizontal_rule(string text): bool {
     return count >= 3
 }
 
-#local
-fn split_lines(string text): [string] {
+pub fn split_lines(string text): [string] {
     [string] result = vec<string>.cap_of(8)
     int start = 0
     for int cursor = 0; cursor <= text.len(); cursor += 1 {

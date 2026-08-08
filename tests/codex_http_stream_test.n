@@ -1,0 +1,98 @@
+import adou.src.ai.providers.codex_messages
+import adou.src.ai.providers.codex_provider
+import adou.src.ai.types
+import co
+import fmt
+import http
+
+const CODEX_PORT = 18926
+
+type capture_t = struct {
+    string path
+    string authorization
+    string account_id
+    string session_id
+    string body
+}
+
+fn serve_fixture(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+fn fixture_model(int port): ref<types.model_t> {
+    return new types.model_t(id = 'gpt-5.4', api = 'openai-codex-responses', provider = 'openai-codex', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
+}
+
+fn fixture_context(): ref<types.context_t> {
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    return context
+}
+
+// header.payload.signature with the chatgpt_account_id claim in the payload.
+fn test_token(): string {
+    return 'eyJhbGciOiJIUzI1NiJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC0xMjMifX0.signature'
+}
+
+fn success_sse(): string {
+    string body = ''
+    body += 'data: {"type":"response.created","response":{"id":"resp_codex"}}\n\n'
+    body += 'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_codex","content":[]}}\n\n'
+    body += 'data: {"type":"response.output_text.delta","output_index":0,"delta":"codex ok"}\n\n'
+    body += 'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_codex","content":[{"type":"output_text","text":"codex ok"}]}}\n\n'
+    body += 'data: {"type":"response.completed","response":{"id":"resp_codex","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n'
+    return body
+}
+
+test 'codex account id extracts from the JWT token' {
+    string account = codex_messages.account_id(test_token())
+    assert(account == 'acct-123')
+}
+
+test 'streams a real Codex responses HTTP response' {
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = CODEX_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.path = request.path
+        capture.authorization = request.headers['Authorization'] catch e {''}
+        capture.account_id = request.headers['chatgpt-account-id'] catch e {''}
+        capture.session_id = request.headers['session-id'] catch e {''}
+        capture.body = request.body
+        response.content_type = 'text/event-stream'
+        response.send(success_sse())
+        server.close()
+    }
+    server.post('/codex/responses', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = test_token(), timeout_ms = 5000, max_retries = 0, session_id = 'session-1',)
+    var stream = codex_provider.stream(fixture_model(CODEX_PORT), fixture_context(), options)
+    co.sleep(800)
+    [string] kinds = []
+    for true {
+        var event = stream.recv() catch error {break}
+        kinds.push(event.kind)
+    }
+    var result = stream.result()
+    assert(kinds[0] == types.EVENT_START)
+    assert(kinds_has(kinds, types.EVENT_TEXT_DELTA))
+    assert(kinds[kinds.len() - 1] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    assert(capture.path.find('/codex/responses') >= 0)
+    assert(capture.authorization == 'Bearer ' + test_token())
+    assert(capture.account_id == 'acct-123')
+    assert(capture.session_id == 'session-1')
+    assert(capture.body.find('"instructions"') >= 0)
+    assert(capture.body.find('"parallel_tool_calls":true') >= 0)
+}
+
+fn kinds_has([string] kinds, string kind): bool {
+    for existing in kinds {
+        if existing == kind {
+            return true
+        }
+    }
+    return false
+}

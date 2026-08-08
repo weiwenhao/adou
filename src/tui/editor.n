@@ -5,29 +5,29 @@ import adou.src.unicode.utf8
 import fmt
 import strings
 
-const ACTION_NONE = 0
-const ACTION_KILL = 1
-const ACTION_YANK = 2
-const ACTION_TYPE_WORD = 3
-const ACTION_SUBMIT = 'submit'
-const ACTION_NEWLINE = 'newline'
-const ACTION_CANCEL = 'cancel'
-const ACTION_SCROLL_UP = 'scroll_up'
-const ACTION_SCROLL_DOWN = 'scroll_down'
-const ACTION_IGNORED = 'ignored'
+pub const ACTION_NONE = 0
+pub const ACTION_KILL = 1
+pub const ACTION_YANK = 2
+pub const ACTION_TYPE_WORD = 3
+pub const ACTION_SUBMIT = 'submit'
+pub const ACTION_NEWLINE = 'newline'
+pub const ACTION_CANCEL = 'cancel'
+pub const ACTION_SCROLL_UP = 'scroll_up'
+pub const ACTION_SCROLL_DOWN = 'scroll_down'
+pub const ACTION_IGNORED = 'ignored'
 
-type key_result_t = struct {
+pub type key_result_t = struct {
     string action = ACTION_IGNORED
     bool submitted
     string text
 }
 
-type paste_t = struct {
+pub type paste_t = struct {
     int id
     string content
 }
 
-type snapshot_t = struct {
+pub type snapshot_t = struct {
     [string] lines
     int cursor_line
     int cursor_col
@@ -35,17 +35,17 @@ type snapshot_t = struct {
     int paste_counter
 }
 
-type cursor_t = struct {
+pub type cursor_t = struct {
     int line
     int column
 }
 
-type submit_t = struct {
+pub type submit_t = struct {
     bool submitted
     string text
 }
 
-type editor_t = struct {
+pub type editor_t = struct {
     [string] lines
     int cursor_line
     int cursor_col
@@ -63,15 +63,15 @@ type editor_t = struct {
     int jump_mode
 }
 
-fn new(): ref<editor_t> {
+pub fn new(): ref<editor_t> {
     return new editor_t(lines = [''], pastes = vec<paste_t>.cap_of(4), undo_stack = vec<snapshot_t>.cap_of(32), kill_ring = vec<string>.cap_of(8), history = vec<string>.cap_of(32))
 }
 
-fn editor_t.get_text(&self): string {
+pub fn editor_t.get_text(&self): string {
     return strings.join(self.lines, '\n')
 }
 
-fn editor_t.get_expanded_text(&self): string {
+pub fn editor_t.get_expanded_text(&self): string {
     string result = self.get_text()
     for paste in self.pastes {
         result = result.replace(marker_for(paste), paste.content)
@@ -79,15 +79,15 @@ fn editor_t.get_expanded_text(&self): string {
     return result
 }
 
-fn editor_t.get_lines(&self): [string] {
+pub fn editor_t.get_lines(&self): [string] {
     return copy_strings(self.lines)
 }
 
-fn editor_t.get_cursor(&self): cursor_t {
+pub fn editor_t.get_cursor(&self): cursor_t {
     return cursor_t {line: self.cursor_line, column: self.cursor_col,}
 }
 
-fn editor_t.set_text(&self, string text) {
+pub fn editor_t.set_text(&self, string text) {
     string normalized = normalize_text(text)
     if self.get_text() != normalized {
         self.push_undo_snapshot()
@@ -104,7 +104,7 @@ fn editor_t.set_text(&self, string text) {
     self.history_draft = ''
 }
 
-fn editor_t.add_history(&self, string text) {
+pub fn editor_t.add_history(&self, string text) {
     string value = text.trim([' ', '\t', '\n', '\r'])
     if value == '' {
         return
@@ -126,7 +126,7 @@ fn editor_t.add_history(&self, string text) {
     self.history_draft = ''
 }
 
-fn editor_t.insert_text(&self, string text) {
+pub fn editor_t.insert_text(&self, string text) {
     if text == '' {
         return
     }
@@ -137,7 +137,7 @@ fn editor_t.insert_text(&self, string text) {
     self.insert_text_internal(text)
 }
 
-fn editor_t.insert_character(&self, string value) {
+pub fn editor_t.insert_character(&self, string value) {
     if value == '' {
         return
     }
@@ -153,7 +153,7 @@ fn editor_t.insert_character(&self, string value) {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.handle_paste(&self, string pasted_text) {
+pub fn editor_t.handle_paste(&self, string pasted_text) {
     self.history_index = -1
     self.history_draft = ''
     self.push_undo_snapshot()
@@ -180,7 +180,7 @@ fn editor_t.handle_paste(&self, string pasted_text) {
     self.insert_text_internal(filtered)
 }
 
-fn editor_t.add_newline(&self) {
+pub fn editor_t.add_newline(&self) {
     self.history_index = -1
     self.history_draft = ''
     self.push_undo_snapshot()
@@ -203,7 +203,7 @@ fn editor_t.add_newline(&self) {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.submit(&self): submit_t {
+pub fn editor_t.submit(&self): submit_t {
     string result = self.get_expanded_text().trim([' ', '\t', '\n', '\r'])
     self.lines = ['']
     self.cursor_line = 0
@@ -223,7 +223,7 @@ fn editor_t.submit(&self): submit_t {
 // Pi's jumpToChar behavior.  Search is byte-indexed only for the candidate
 // offset; the target itself is a decoded printable string, so multi-byte
 // UTF-8 characters remain intact when the cursor is moved.
-fn editor_t.jump_to_character(&self, string target, int direction) {
+pub fn editor_t.jump_to_character(&self, string target, int direction) {
     self.last_action = ACTION_NONE
     if target == '' || direction == 0 {
         return
@@ -270,7 +270,7 @@ fn editor_t.jump_to_character(&self, string target, int direction) {
 
 // Dispatch a complete input frame.  Paste frames are handled separately by
 // input_buffer and should call handle_paste instead of this method.
-fn editor_t.handle_key(&self, string data, bool kitty_protocol): key_result_t! {
+pub fn editor_t.handle_key(&self, string data, bool kitty_protocol): key_result_t! {
     keys.set_kitty_protocol(kitty_protocol)
     string key = keys.parse_key(data)
 
@@ -371,7 +371,7 @@ fn editor_t.handle_key(&self, string data, bool kitty_protocol): key_result_t! {
     return key_result_t {}
 }
 
-fn editor_t.clear(&self) {
+pub fn editor_t.clear(&self) {
     if self.get_text() != '' {
         self.push_undo_snapshot()
     }
@@ -386,8 +386,7 @@ fn editor_t.clear(&self) {
     self.history_draft = ''
 }
 
-#local
-fn editor_t.navigate_history(&self, int direction) {
+pub fn editor_t.navigate_history(&self, int direction) {
     if self.history.len() == 0 {
         return
     }
@@ -417,8 +416,7 @@ fn editor_t.navigate_history(&self, int direction) {
     self.set_text_internal(self.history[self.history_index])
 }
 
-#local
-fn editor_t.set_text_internal(&self, string text) {
+pub fn editor_t.set_text_internal(&self, string text) {
     string normalized = normalize_text(text)
     var updated = split_lines(normalized)
     self.lines = updated.len() == 0 ? [''] : updated
@@ -430,7 +428,7 @@ fn editor_t.set_text_internal(&self, string text) {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.move_left(&self): void! {
+pub fn editor_t.move_left(&self): void! {
     self.last_action = ACTION_NONE
     if self.cursor_col > 0 {
         string line = self.lines[self.cursor_line]
@@ -449,7 +447,7 @@ fn editor_t.move_left(&self): void! {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.move_right(&self): void! {
+pub fn editor_t.move_right(&self): void! {
     self.last_action = ACTION_NONE
     string line = self.lines[self.cursor_line]
     if self.cursor_col < line.len() {
@@ -468,7 +466,7 @@ fn editor_t.move_right(&self): void! {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.move_word_left(&self): void! {
+pub fn editor_t.move_word_left(&self): void! {
     self.last_action = ACTION_NONE
     if self.cursor_col == 0 {
         if self.cursor_line > 0 {
@@ -482,7 +480,7 @@ fn editor_t.move_word_left(&self): void! {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.move_word_right(&self): void! {
+pub fn editor_t.move_word_right(&self): void! {
     self.last_action = ACTION_NONE
     string line = self.lines[self.cursor_line]
     if self.cursor_col >= line.len() {
@@ -497,19 +495,19 @@ fn editor_t.move_word_right(&self): void! {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.move_line_start(&self) {
+pub fn editor_t.move_line_start(&self) {
     self.last_action = ACTION_NONE
     self.cursor_col = 0
     self.preferred_visual_column = -1
 }
 
-fn editor_t.move_line_end(&self) {
+pub fn editor_t.move_line_end(&self) {
     self.last_action = ACTION_NONE
     self.cursor_col = self.lines[self.cursor_line].len()
     self.preferred_visual_column = -1
 }
 
-fn editor_t.move_vertical(&self, int direction): void! {
+pub fn editor_t.move_vertical(&self, int direction): void! {
     if direction == 0 {
         return
     }
@@ -539,7 +537,7 @@ fn editor_t.move_vertical(&self, int direction): void! {
 // Nature's editor does not wrap physical lines yet, so a page is measured in
 // physical input lines; this preserves the cursor/viewport behavior for
 // multiline prompts.
-fn editor_t.move_page(&self, int direction, int page_size): void! {
+pub fn editor_t.move_page(&self, int direction, int page_size): void! {
     if direction == 0 || page_size <= 0 {
         return
     }
@@ -552,7 +550,7 @@ fn editor_t.move_page(&self, int direction, int page_size): void! {
     }
 }
 
-fn editor_t.backspace(&self): void! {
+pub fn editor_t.backspace(&self): void! {
     self.last_action = ACTION_NONE
     if self.cursor_col > 0 {
         self.push_undo_snapshot()
@@ -587,7 +585,7 @@ fn editor_t.backspace(&self): void! {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.delete_forward(&self): void! {
+pub fn editor_t.delete_forward(&self): void! {
     self.last_action = ACTION_NONE
     string line = self.lines[self.cursor_line]
     if self.cursor_col < line.len() {
@@ -611,7 +609,7 @@ fn editor_t.delete_forward(&self): void! {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.delete_word_backward(&self): void! {
+pub fn editor_t.delete_word_backward(&self): void! {
     if self.cursor_col == 0 {
         if self.cursor_line > 0 {
             bool accumulate = self.last_action == ACTION_KILL
@@ -642,7 +640,7 @@ fn editor_t.delete_word_backward(&self): void! {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.delete_word_forward(&self): void! {
+pub fn editor_t.delete_word_forward(&self): void! {
     string line = self.lines[self.cursor_line]
     if self.cursor_col >= line.len() {
         if self.cursor_line < self.lines.len() - 1 {
@@ -669,7 +667,7 @@ fn editor_t.delete_word_forward(&self): void! {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.delete_to_line_start(&self) {
+pub fn editor_t.delete_to_line_start(&self) {
     string line = self.lines[self.cursor_line]
     if self.cursor_col > 0 {
         bool accumulate = self.last_action == ACTION_KILL
@@ -695,7 +693,7 @@ fn editor_t.delete_to_line_start(&self) {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.delete_to_line_end(&self) {
+pub fn editor_t.delete_to_line_end(&self) {
     string line = self.lines[self.cursor_line]
     if self.cursor_col < line.len() {
         bool accumulate = self.last_action == ACTION_KILL
@@ -718,7 +716,7 @@ fn editor_t.delete_to_line_end(&self) {
     self.preferred_visual_column = -1
 }
 
-fn editor_t.yank(&self) {
+pub fn editor_t.yank(&self) {
     if self.kill_ring.len() == 0 {
         return
     }
@@ -727,7 +725,7 @@ fn editor_t.yank(&self) {
     self.last_action = ACTION_YANK
 }
 
-fn editor_t.yank_pop(&self) {
+pub fn editor_t.yank_pop(&self) {
     if self.last_action != ACTION_YANK || self.kill_ring.len() <= 1 {
         return
     }
@@ -744,7 +742,7 @@ fn editor_t.yank_pop(&self) {
     self.last_action = ACTION_YANK
 }
 
-fn editor_t.undo(&self): bool {
+pub fn editor_t.undo(&self): bool {
     if self.undo_stack.len() == 0 {
         return false
     }
@@ -763,8 +761,7 @@ fn editor_t.undo(&self): bool {
     return true
 }
 
-#local
-fn editor_t.insert_text_internal(&self, string text) {
+pub fn editor_t.insert_text_internal(&self, string text) {
     string normalized = normalize_text(text)
     var inserted = split_lines(normalized)
     string current = self.lines[self.cursor_line]
@@ -794,14 +791,12 @@ fn editor_t.insert_text_internal(&self, string text) {
     self.preferred_visual_column = -1
 }
 
-#local
-fn editor_t.push_undo_snapshot(&self) {
+pub fn editor_t.push_undo_snapshot(&self) {
     var snapshot = snapshot_t {lines: copy_strings(self.lines), cursor_line: self.cursor_line, cursor_col: self.cursor_col, pastes: copy_pastes(self.pastes), paste_counter: self.paste_counter,}
     self.undo_stack.push(snapshot)
 }
 
-#local
-fn editor_t.kill_push(&self, string text, bool prepend, bool accumulate) {
+pub fn editor_t.kill_push(&self, string text, bool prepend, bool accumulate) {
     if text == '' {
         return
     }
@@ -813,13 +808,11 @@ fn editor_t.kill_push(&self, string text, bool prepend, bool accumulate) {
     }
 }
 
-#local
-fn editor_t.insert_yanked_text(&self, string text) {
+pub fn editor_t.insert_yanked_text(&self, string text) {
     self.insert_text_internal(text)
 }
 
-#local
-fn editor_t.delete_yanked_text(&self, string text) {
+pub fn editor_t.delete_yanked_text(&self, string text) {
     var yank_lines = split_lines(text)
     if yank_lines.len() == 1 {
         string line = self.lines[self.cursor_line]
@@ -845,8 +838,7 @@ fn editor_t.delete_yanked_text(&self, string text) {
     self.cursor_col = start_column
 }
 
-#local
-fn editor_t.remove_paste_and_renumber(&self, int removed_id) {
+pub fn editor_t.remove_paste_and_renumber(&self, int removed_id) {
     [paste_t] updated_pastes = vec<paste_t>.cap_of(self.pastes.len() - 1)
     for paste in self.pastes {
         if paste.id == removed_id {
@@ -1009,8 +1001,7 @@ fn is_ascii_word_byte(u8 value): bool {
     return value >= 'a'.char() && value <= 'z'.char() || value >= 'A'.char() && value <= 'Z'.char() || value >= '0'.char() && value <= '9'.char() || value == '_'.char()
 }
 
-#local
-fn is_whitespace(string value): bool {
+pub fn is_whitespace(string value): bool {
     if value == '' {
         return false
     }
@@ -1022,8 +1013,7 @@ fn is_whitespace(string value): bool {
     return true
 }
 
-#local
-fn copy_strings([string] values): [string] {
+pub fn copy_strings([string] values): [string] {
     [string] result = vec<string>.cap_of(values.len())
     for value in values {
         result.push(value)
@@ -1040,8 +1030,7 @@ fn copy_pastes([paste_t] values): [paste_t] {
     return result
 }
 
-#local
-fn split_lines(string text): [string] {
+pub fn split_lines(string text): [string] {
     [string] result = vec<string>.cap_of(8)
     int start = 0
     for int cursor = 0; cursor <= text.len(); cursor += 1 {

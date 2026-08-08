@@ -4,10 +4,10 @@ import strings
 import syscall
 import adou.src.unicode.normalization as normalization
 
-const NARROW_NO_BREAK_SPACE = '\xe2\x80\xaf'
-const RIGHT_SINGLE_QUOTE = '\xe2\x80\x99'
+pub const NARROW_NO_BREAK_SPACE = '\xe2\x80\xaf'
+pub const RIGHT_SINGLE_QUOTE = '\xe2\x80\x99'
 
-fn normalize_input(string input): string {
+pub fn normalize_input(string input): string {
     string result = normalize_unicode_spaces(input)
     if result.starts_with('@') {
         result = result.slice(1, result.len())
@@ -21,7 +21,7 @@ fn normalize_input(string input): string {
     return result
 }
 
-fn resolve_to_cwd(string input, string cwd): string {
+pub fn resolve_to_cwd(string input, string cwd): string {
     string normalized = normalize_input(input)
     if normalized.starts_with('/') {
         return clean(normalized)
@@ -29,7 +29,7 @@ fn resolve_to_cwd(string input, string cwd): string {
     return clean(clean(cwd) + '/' + normalized)
 }
 
-fn resolve_read_path(string input, string cwd): string {
+pub fn resolve_read_path(string input, string cwd): string {
     string resolved = resolve_to_cwd(input, cwd)
     if exists(resolved) {
         return resolved
@@ -53,21 +53,21 @@ fn resolve_read_path(string input, string cwd): string {
     return resolved
 }
 
-fn nfd_variant(string input): string {
+pub fn nfd_variant(string input): string {
     return normalization.nfd(input) catch e {
         return input
     }
 }
 
-fn exists(string input): bool {
+pub fn exists(string input): bool {
     return libc.access(input.to_cstr(), libc.F_OK) == 0
 }
 
-fn readable(string input): bool {
+pub fn readable(string input): bool {
     return libc.access(input.to_cstr(), libc.R_OK) == 0
 }
 
-fn canonicalize_existing(string input): string! {
+pub fn canonicalize_existing(string input): string! {
     libc.cstr raw = libc.realpath(input.to_cstr(), 0)
     if raw == 0 {
         throw errorf('%s', libc.error_string())
@@ -77,7 +77,7 @@ fn canonicalize_existing(string input): string! {
     return result
 }
 
-fn clean(string input): string {
+pub fn clean(string input): string {
     bool absolute = input.starts_with('/')
     [string] parts = split_path(input)
     [string] stack = []

@@ -1,14 +1,14 @@
 import adou.src.tui.text_utils
 
-const KIND_CONTAINER = 1
-const KIND_TEXT = 2
-const KIND_TRUNCATED_TEXT = 3
-const KIND_SPACER = 4
-const KIND_BOX = 5
-const KIND_LOADER = 6
-const KIND_CANCELLABLE_LOADER = 7
+pub const KIND_CONTAINER = 1
+pub const KIND_TEXT = 2
+pub const KIND_TRUNCATED_TEXT = 3
+pub const KIND_SPACER = 4
+pub const KIND_BOX = 5
+pub const KIND_LOADER = 6
+pub const KIND_CANCELLABLE_LOADER = 7
 
-type node_t = struct {
+pub type node_t = struct {
     int kind
     string text
     int padding_x
@@ -20,59 +20,59 @@ type node_t = struct {
     [ref<node_t>] children = []
 }
 
-fn container(): ref<node_t> {
+pub fn container(): ref<node_t> {
     return new node_t(kind = KIND_CONTAINER, frames = vec<string>.cap_of(0), children = vec<ref<node_t>>.cap_of(8))
 }
 
-fn text(string value, int padding_x, int padding_y): ref<node_t> {
+pub fn text(string value, int padding_x, int padding_y): ref<node_t> {
     return new node_t(kind = KIND_TEXT, text = value, padding_x = padding_x, padding_y = padding_y, frames = vec<string>.cap_of(0), children = vec<ref<node_t>>.cap_of(0))
 }
 
-fn truncated_text(string value, int padding_x, int padding_y): ref<node_t> {
+pub fn truncated_text(string value, int padding_x, int padding_y): ref<node_t> {
     return new node_t(kind = KIND_TRUNCATED_TEXT, text = value, padding_x = padding_x, padding_y = padding_y, frames = vec<string>.cap_of(0), children = vec<ref<node_t>>.cap_of(0))
 }
 
-fn spacer(int lines): ref<node_t> {
+pub fn spacer(int lines): ref<node_t> {
     return new node_t(kind = KIND_SPACER, spacer_lines = lines, frames = vec<string>.cap_of(0), children = vec<ref<node_t>>.cap_of(0))
 }
 
-fn box(int padding_x, int padding_y): ref<node_t> {
+pub fn box(int padding_x, int padding_y): ref<node_t> {
     return new node_t(kind = KIND_BOX, padding_x = padding_x, padding_y = padding_y, frames = vec<string>.cap_of(0), children = vec<ref<node_t>>.cap_of(8))
 }
 
-fn loader(string message): ref<node_t> {
+pub fn loader(string message): ref<node_t> {
     return new node_t(kind = KIND_LOADER, text = message, padding_x = 1, frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'], children = vec<ref<node_t>>.cap_of(0))
 }
 
-fn cancellable_loader(string message): ref<node_t> {
+pub fn cancellable_loader(string message): ref<node_t> {
     return new node_t(kind = KIND_CANCELLABLE_LOADER, text = message, padding_x = 1, frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'], children = vec<ref<node_t>>.cap_of(0))
 }
 
-fn node_t.add(&self, ref<node_t> child) {
+pub fn node_t.add(&self, ref<node_t> child) {
     self.children.push(child)
 }
 
-fn node_t.clear(&self) {
+pub fn node_t.clear(&self) {
     self.children = vec<ref<node_t>>.cap_of(8)
 }
 
-fn node_t.set_text(&self, string value) {
+pub fn node_t.set_text(&self, string value) {
     self.text = value
 }
 
-fn node_t.tick(&self) {
+pub fn node_t.tick(&self) {
     if self.frames.len() > 1 {
         self.frame_index = (self.frame_index + 1) % self.frames.len()
     }
 }
 
-fn node_t.cancel(&self) {
+pub fn node_t.cancel(&self) {
     if self.kind == KIND_CANCELLABLE_LOADER {
         self.cancelled = true
     }
 }
 
-fn node_t.render(&self, int width): [string]! {
+pub fn node_t.render(&self, int width): [string]! {
     if width <= 0 {
         return ['']
     }
@@ -200,8 +200,7 @@ fn render_box([ref<node_t>] children, int width, int padding_x, int padding_y): 
     return result
 }
 
-#local
-fn spaces(int count): string {
+pub fn spaces(int count): string {
     string result = ''
     for int index = 0; index < count; index += 1 {
         result += ' '

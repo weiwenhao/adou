@@ -1,45 +1,45 @@
 // Keyboard decoding shared by the TUI.  The parser accepts the legacy VT
 // forms used by xterm/tmux and Kitty's CSI-u forms without depending on a
 // terminal-specific runtime.
-const MOD_SHIFT = 1
-const MOD_ALT = 2
-const MOD_CTRL = 4
-const MOD_SUPER = 8
-const LOCK_MASK = 192
+pub const MOD_SHIFT = 1
+pub const MOD_ALT = 2
+pub const MOD_CTRL = 4
+pub const MOD_SUPER = 8
+pub const LOCK_MASK = 192
 
-const CODE_ESCAPE = 27
-const CODE_TAB = 9
-const CODE_ENTER = 13
-const CODE_SPACE = 32
-const CODE_BACKSPACE = 127
-const CODE_UP = -1
-const CODE_DOWN = -2
-const CODE_RIGHT = -3
-const CODE_LEFT = -4
-const CODE_DELETE = -10
-const CODE_INSERT = -11
-const CODE_PAGE_UP = -12
-const CODE_PAGE_DOWN = -13
-const CODE_HOME = -14
-const CODE_END = -15
+pub const CODE_ESCAPE = 27
+pub const CODE_TAB = 9
+pub const CODE_ENTER = 13
+pub const CODE_SPACE = 32
+pub const CODE_BACKSPACE = 127
+pub const CODE_UP = -1
+pub const CODE_DOWN = -2
+pub const CODE_RIGHT = -3
+pub const CODE_LEFT = -4
+pub const CODE_DELETE = -10
+pub const CODE_INSERT = -11
+pub const CODE_PAGE_UP = -12
+pub const CODE_PAGE_DOWN = -13
+pub const CODE_HOME = -14
+pub const CODE_END = -15
 
 var kitty_protocol_active = false
 
-type parsed_t = struct {
+pub type parsed_t = struct {
     bool valid
     int codepoint
     int modifier
 }
 
-fn set_kitty_protocol(bool active) {
+pub fn set_kitty_protocol(bool active) {
     kitty_protocol_active = active
 }
 
-fn is_kitty_protocol_active(): bool {
+pub fn is_kitty_protocol_active(): bool {
     return kitty_protocol_active
 }
 
-fn parse_key(string data): string {
+pub fn parse_key(string data): string {
     var sequence = parse_kitty(data)
     if sequence.valid {
         return format_codepoint(sequence.codepoint, sequence.modifier)
@@ -58,7 +58,7 @@ fn parse_key(string data): string {
     return ''
 }
 
-fn matches(string data, string key_id): bool {
+pub fn matches(string data, string key_id): bool {
     string actual = parse_key(data)
     if actual == '' {
         return false
@@ -67,7 +67,7 @@ fn matches(string data, string key_id): bool {
     return actual == expected
 }
 
-fn decode_printable(string data): string {
+pub fn decode_printable(string data): string {
     var sequence = parse_kitty(data)
     if !sequence.valid {
         var modify = parse_modify_other_keys(data)

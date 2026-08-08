@@ -1,25 +1,25 @@
 import adou.src.tui.unicode
 import strings
 
-type ansi_t = struct {
+pub type ansi_t = struct {
     bool found
     string code
     int length
 }
 
-type slice_t = struct {
+pub type slice_t = struct {
     string text
     int width
 }
 
-type tracker_t = struct {
+pub type tracker_t = struct {
     string sgr_history
     bool underline
     string hyperlink
     string hyperlink_terminator
 }
 
-fn extract_ansi(string text, int position): ansi_t {
+pub fn extract_ansi(string text, int position): ansi_t {
     if position < 0 || position >= text.len() || text[position] != 0x1b || position + 1 >= text.len() {
         return ansi_t{}
     }
@@ -50,7 +50,7 @@ fn extract_ansi(string text, int position): ansi_t {
     return ansi_t {found: true, code: text.slice(position, position + 2), length: 2,}
 }
 
-fn visible_width(string text): int! {
+pub fn visible_width(string text): int! {
     if text == '' {
         return 0
     }
@@ -73,7 +73,7 @@ fn visible_width(string text): int! {
     return unicode.visible_width(clean)
 }
 
-fn normalize_terminal_output(string text): string {
+pub fn normalize_terminal_output(string text): string {
     string result = ''
     int cursor = 0
     for cursor < text.len() {
@@ -99,7 +99,7 @@ fn normalize_terminal_output(string text): string {
     return result
 }
 
-fn truncate_to_width(string text, int maximum, string ellipsis, bool pad): string! {
+pub fn truncate_to_width(string text, int maximum, string ellipsis, bool pad): string! {
     if maximum <= 0 {
         return ''
     }
@@ -117,7 +117,7 @@ fn truncate_to_width(string text, int maximum, string ellipsis, bool pad): strin
     return pad ? result + spaces(maximum - prefix.width - ellipsis_width) : result
 }
 
-fn slice_with_width(string text, int start_column, int length, bool strict): slice_t! {
+pub fn slice_with_width(string text, int start_column, int length, bool strict): slice_t! {
     if length <= 0 {
         return slice_t{}
     }
@@ -159,7 +159,7 @@ fn slice_with_width(string text, int start_column, int length, bool strict): sli
     return slice_t {text: result, width: result_width,}
 }
 
-fn wrap_text_with_ansi(string text, int width): [string]! {
+pub fn wrap_text_with_ansi(string text, int width): [string]! {
     if text == '' {
         return ['']
     }
@@ -374,8 +374,7 @@ fn break_long_word(string word, int width, string sgr_history, bool underline, s
     return lines.len() > 0 ? lines : ['']
 }
 
-#local
-fn tracker_t.update(&self, string text) {
+pub fn tracker_t.update(&self, string text) {
     int cursor = 0
     for cursor < text.len() {
         var ansi = extract_ansi(text, cursor)
@@ -388,8 +387,7 @@ fn tracker_t.update(&self, string text) {
     }
 }
 
-#local
-fn tracker_t.process(&self, string code) {
+pub fn tracker_t.process(&self, string code) {
     if code.contains('\x1b]8;') {
         bool close = code.contains('\x1b]8;;\x07') || code.contains('\x1b]8;;\x1b\\')
         if close {
@@ -421,13 +419,11 @@ fn tracker_t.process(&self, string code) {
     self.sgr_history = full_reset ? code : self.sgr_history + code
 }
 
-#local
-fn tracker_t.active_codes(&self): string {
+pub fn tracker_t.active_codes(&self): string {
     return self.sgr_history + self.hyperlink
 }
 
-#local
-fn tracker_t.line_end_reset(&self): string {
+pub fn tracker_t.line_end_reset(&self): string {
     string result = self.underline ? '\x1b[24m' : ''
     if self.hyperlink != '' {
         result += '\x1b]8;;' + self.hyperlink_terminator
@@ -435,8 +431,7 @@ fn tracker_t.line_end_reset(&self): string {
     return result
 }
 
-#local
-fn split_lines(string text): [string] {
+pub fn split_lines(string text): [string] {
     [string] result = vec<string>.cap_of(8)
     int start = 0
     int cursor = 0
@@ -506,8 +501,7 @@ fn trim_spaces_end(string text): string {
     return text.slice(0, end)
 }
 
-#local
-fn spaces(int count): string {
+pub fn spaces(int count): string {
     string result = ''
     for int index = 0; index < count; index += 1 {
         result += ' '

@@ -6,7 +6,7 @@ import json
 import strings
 import syscall
 
-fn endpoint(ref<types.model_t> model): string {
+pub fn endpoint(ref<types.model_t> model): string {
     if model.provider == 'google-vertex' {
         return vertex_endpoint(model)
     }
@@ -17,14 +17,14 @@ fn endpoint(ref<types.model_t> model): string {
     return base + '/models/' + model.id + ':streamGenerateContent?alt=sse'
 }
 
-fn query_key(ref<types.stream_options_t> options): string {
+pub fn query_key(ref<types.stream_options_t> options): string {
     return '&key=' + options.api_key
 }
 
 // Vertex AI: https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/publishers/google/models/{model}:streamGenerateContent
 // The location and project resolve from the environment with Pi-compatible
 // defaults; the stream protocol and chunk shape match Google Generative AI.
-fn vertex_endpoint(ref<types.model_t> model): string {
+pub fn vertex_endpoint(ref<types.model_t> model): string {
     string location = syscall.get_env('VERTEX_LOCATION')
     if location == '' {
         location = syscall.get_env('GOOGLE_VERTEX_LOCATION')
@@ -56,7 +56,7 @@ fn vertex_endpoint(ref<types.model_t> model): string {
 // Vertex authenticates either with a bearer access token (ADC/OAuth flow,
 // provided through GOOGLE_VERTEX_ACCESS_TOKEN) or with a Vertex API key
 // passed as the query key like the Generative AI API.
-fn vertex_auth_header(ref<types.stream_options_t> options): string! {
+pub fn vertex_auth_header(ref<types.stream_options_t> options): string! {
     if options.api_key != '' {
         return ''
     }
@@ -67,7 +67,7 @@ fn vertex_auth_header(ref<types.stream_options_t> options): string! {
     return 'Bearer ' + token
 }
 
-fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
     {string:any} body = {}
     [any] contents = convert_contents(context)
     body['contents'] = contents
@@ -220,8 +220,7 @@ fn tool_result_content(ref<types.tool_result_message_t> message): any {
     return content
 }
 
-#local
-fn convert_tools([ref<types.tool_t>] tools): [any]! {
+pub fn convert_tools([ref<types.tool_t>] tools): [any]! {
     [any] result = []
     for tool in tools {
         {string:any} declaration = {}

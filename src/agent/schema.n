@@ -1,41 +1,41 @@
-import json
+import adou.src.json_util
 import fmt
 import strings
 
-fn validate_and_coerce(string tool_name, json.value_t schema, json.value_t arguments): json.value_t! {
-    var cloned = json.parse(arguments.stringify())
+pub fn validate_and_coerce(string tool_name, any schema, any arguments): any! {
+    var cloned = json_util.clone(arguments)
     cloned = coerce(schema, cloned)
     string problem = validate(schema, cloned, 'root')
     if problem != '' {
-        throw errorf('Validation failed for tool "%s":\n  - %s\n\nReceived arguments:\n%s', tool_name, problem, arguments.stringify())
+        throw errorf('Validation failed for tool "%s":\n  - %s\n\nReceived arguments:\n%s', tool_name, problem, json_util.stringify(arguments))
     }
     return cloned
 }
 
 #local
-fn coerce(json.value_t schema, json.value_t value): json.value_t! {
-    if schema.kind != json.VALUE_OBJECT {
+fn coerce(any schema, any value): any! {
+    if !json_util.is_obj(schema) {
         return value
     }
-    var schema_object = schema.as_object()
+    var schema_object = schema as {string:any}
     if schema_object.contains('allOf') {
-        json.value_t all_of = clone_ref(schema_object['allOf'])
-        if all_of.kind == json.VALUE_ARRAY {
-            for item in all_of.array {
-                value = coerce(clone_ref(item), value)
+        var all_of = schema_object['allOf']
+        if all_of is [any] {
+            for item in all_of as [any] {
+                value = coerce(item, value)
             }
         }
     }
     if schema_object.contains('anyOf') {
-        json.value_t any_of = clone_ref(schema_object['anyOf'])
-        if any_of.kind == json.VALUE_ARRAY {
-            value = coerce_union(any_of.array, value)
+        var any_of = schema_object['anyOf']
+        if any_of is [any] {
+            value = coerce_union(any_of as [any], value)
         }
     }
     if schema_object.contains('oneOf') {
-        json.value_t one_of = clone_ref(schema_object['oneOf'])
-        if one_of.kind == json.VALUE_ARRAY {
-            value = coerce_union(one_of.array, value)
+        var one_of = schema_object['oneOf']
+        if one_of is [any] {
+            value = coerce_union(one_of as [any], value)
         }
     }
     [string] types = schema_types(schema)
@@ -43,70 +43,69 @@ fn coerce(json.value_t schema, json.value_t value): json.value_t! {
     if types.len() > 0 && !matched_union {
         for expected in types {
             var converted = coerce_primitive(value, expected)
-            if converted.stringify() != value.stringify() {
+            if json_util.stringify(converted) != json_util.stringify(value) {
                 value = converted
                 break
             }
         }
     }
-    if includes(types, 'object') && value.kind == json.VALUE_OBJECT && schema_object.contains('properties') {
-        var value_object = value.as_object()
-        json.value_t properties_value = clone_ref(schema_object['properties'])
-        if properties_value.kind == json.VALUE_OBJECT {
-            var properties = properties_value.object
-                var output = value_object
+    if includes(types, 'object') && json_util.is_obj(value) && schema_object.contains('properties') {
+        var value_object = value as {string:any}
+        var properties_value = schema_object['properties']
+        if properties_value is {string:any} {
+            var properties = properties_value as {string:any}
+            var output = value_object
             if schema_object.contains('additionalProperties') {
-                json.value_t additional = clone_ref(schema_object['additionalProperties'])
+                var additional = schema_object['additionalProperties']
                 for key, property_value in value_object {
                     if properties.contains(key) {
-                        output[key] = box(coerce(clone_ref(properties[key]), clone_ref(property_value)))
-                    } else if additional.kind == json.VALUE_OBJECT {
-                        output[key] = box(coerce(additional, clone_ref(property_value)))
+                        output[key] = coerce(properties[key], property_value)
+                    } else if json_util.is_obj(additional) {
+                        output[key] = coerce(additional, property_value)
                     } else {
-                        output[key] = box(clone_ref(property_value))
+                        output[key] = property_value
                     }
                 }
             } else {
                 for key, property_schema in properties {
                     if value_object.contains(key) {
-                        json.value_t child_schema = clone_ref(property_schema)
-                        json.value_t child_value = clone_ref(value_object[key])
-                        var converted = coerce(child_schema, child_value)
-                        output[key] = box(converted)
+                        var converted = coerce(property_schema, value_object[key])
+                        output[key] = converted
                     }
                 }
             }
-            value = json.object_value(output)
+            value = output
         }
     }
-    if includes(types, 'array') && value.kind == json.VALUE_ARRAY && schema_object.contains('items') {
-        json.value_t items = clone_ref(schema_object['items'])
-        var value_array = value.as_array()
-        [ref<json.value_t>] output = []
-        if items.kind == json.VALUE_ARRAY {
+    if includes(types, 'array') && value is [any] && schema_object.contains('items') {
+        var items = schema_object['items']
+        var value_array = value as [any]
+        [any] output = []
+        if items is [any] {
+            var item_schemas = items as [any]
             for int i = 0; i < value_array.len(); i += 1 {
-                if i < items.array.len() {
-                    output.push(box(coerce(clone_ref(items.array[i]), clone_ref(value_array[i]))))
+                if i < item_schemas.len() {
+                    output.push(coerce(item_schemas[i], value_array[i]))
                 } else {
-                    output.push(box(clone_ref(value_array[i])))
+                    output.push(value_array[i])
                 }
             }
-        } else if items.kind == json.VALUE_OBJECT {
+        } else if json_util.is_obj(items) {
             for element in value_array {
-                output.push(box(coerce(items, clone_ref(element))))
+                output.push(coerce(items, element))
             }
         }
-        value = json.array_value(output)
+        value = output
     }
     return value
 }
 
 #local
-fn coerce_union([ref<json.value_t>] schemas, json.value_t value): json.value_t! {
+fn coerce_union([any] schemas, any value): any! {
     for schema in schemas {
-        var candidate = json.parse(value.stringify())
-        candidate = coerce(clone_ref(schema), candidate)
-        if validate(clone_ref(schema), candidate, 'root') == '' {
+        var candidate = json_util.clone(value)
+        candidate = coerce(schema, candidate)
+        if validate(schema, candidate, 'root') == '' {
             return candidate
         }
     }
@@ -114,88 +113,92 @@ fn coerce_union([ref<json.value_t>] schemas, json.value_t value): json.value_t! 
 }
 
 #local
-fn coerce_primitive(json.value_t value, string expected): json.value_t! {
+fn coerce_primitive(any value, string expected): any! {
     if expected == 'number' {
-        if value.kind == json.VALUE_NULL {
-            return json.number_value('0')
+        if json_util.is_null(value) {
+            return 0
         }
-        if value.kind == json.VALUE_STRING && value.text.trim([' ', '\t', '\n', '\r']) != '' {
-            string token = normalized_number(value.text)
+        if value is string && (value as string).trim([' ', '\t', '\n', '\r']) != '' {
+            string token = normalized_number(value as string)
             if token != '' {
-                return json.number_value(token)
+                return token.to_float() catch e {
+                    return value
+                }
             }
         }
-        if value.kind == json.VALUE_BOOL {
-            return json.number_value(value.boolean ? '1' : '0')
+        if value is bool {
+            return value as bool ? 1 : 0
         }
     } else if expected == 'integer' {
-        if value.kind == json.VALUE_NULL {
-            return json.number_value('0')
+        if json_util.is_null(value) {
+            return 0
         }
-        if value.kind == json.VALUE_STRING && value.text.trim([' ', '\t', '\n', '\r']) != '' {
-            string token = normalized_number(value.text)
+        if value is string && (value as string).trim([' ', '\t', '\n', '\r']) != '' {
+            string token = normalized_number(value as string)
             if token != '' && number_is_integer(token) {
-                return json.number_value(token)
+                return token.to_float() catch e {
+                    return value
+                }
             }
         }
-        if value.kind == json.VALUE_BOOL {
-            return json.number_value(value.boolean ? '1' : '0')
+        if value is bool {
+            return value as bool ? 1 : 0
         }
     } else if expected == 'boolean' {
-        if value.kind == json.VALUE_NULL {
-            return json.bool_value(false)
+        if json_util.is_null(value) {
+            return false
         }
-        if value.kind == json.VALUE_STRING && value.text == 'true' {
-            return json.bool_value(true)
+        if value is string && value as string == 'true' {
+            return true
         }
-        if value.kind == json.VALUE_STRING && value.text == 'false' {
-            return json.bool_value(false)
+        if value is string && value as string == 'false' {
+            return false
         }
-        if value.kind == json.VALUE_NUMBER && value.number == '1' {
-            return json.bool_value(true)
+        if json_util.is_num(value) && json_util.num_token(value) == '1' {
+            return true
         }
-        if value.kind == json.VALUE_NUMBER && value.number == '0' {
-            return json.bool_value(false)
+        if json_util.is_num(value) && json_util.num_token(value) == '0' {
+            return false
         }
     } else if expected == 'string' {
-        if value.kind == json.VALUE_NULL {
-            return json.string_value('')
+        if json_util.is_null(value) {
+            return ''
         }
-        if value.kind == json.VALUE_NUMBER {
-            return json.string_value(value.number)
+        if json_util.is_num(value) {
+            return json_util.num_token(value)
         }
-        if value.kind == json.VALUE_BOOL {
-            return json.string_value(value.boolean ? 'true' : 'false')
+        if value is bool {
+            return value as bool ? 'true' : 'false'
         }
     } else if expected == 'null' {
-        if value.kind == json.VALUE_STRING && value.text == '' {
-            return json.null_value()
+        if value is string && value as string == '' {
+            return null
         }
-        if value.kind == json.VALUE_NUMBER && value.number == '0' {
-            return json.null_value()
+        if json_util.is_num(value) && json_util.num_token(value) == '0' {
+            return null
         }
-        if value.kind == json.VALUE_BOOL && !value.boolean {
-            return json.null_value()
+        if value is bool && !(value as bool) {
+            return null
         }
     }
     return value
 }
 
 #local
-fn validate(json.value_t schema, json.value_t value, string current_path): string! {
-    if schema.kind != json.VALUE_OBJECT {
+fn validate(any schema, any value, string current_path): string! {
+    if !json_util.is_obj(schema) {
         return ''
     }
-    var schema_object = schema.as_object()
+    var schema_object = schema as {string:any}
     [string] types = schema_types(schema)
     if types.len() > 0 && !matches_any_type(value, types) {
         return current_path + ': Expected ' + strings.join(types, ' or ')
     }
     if schema_object.contains('allOf') {
-        json.value_t all_of = clone_ref(schema_object['allOf'])
-        if all_of.kind == json.VALUE_ARRAY {
-            for nested in all_of.array {
-                string problem = validate(clone_ref(nested), value, current_path)
+        var all_of = schema_object['allOf']
+        if all_of is [any] {
+            for nested in all_of as [any] {
+                string problem = validate(nested, value, current_path)
                 if problem != '' {
                     return problem
                 }
@@ -203,11 +206,11 @@ fn validate(json.value_t schema, json.value_t value, string current_path): strin
         }
     }
     if schema_object.contains('anyOf') {
-        json.value_t any_of = clone_ref(schema_object['anyOf'])
-        if any_of.kind == json.VALUE_ARRAY {
+        var any_of = schema_object['anyOf']
+        if any_of is [any] {
             bool matched = false
-            for nested in any_of.array {
-                if validate(clone_ref(nested), value, current_path) == '' {
+            for nested in any_of as [any] {
+                if validate(nested, value, current_path) == '' {
                     matched = true
                     break
                 }
@@ -218,11 +221,11 @@ fn validate(json.value_t schema, json.value_t value, string current_path): strin
         }
     }
     if schema_object.contains('oneOf') {
-        json.value_t one_of = clone_ref(schema_object['oneOf'])
-        if one_of.kind == json.VALUE_ARRAY {
+        var one_of = schema_object['oneOf']
+        if one_of is [any] {
             int matches = 0
-            for nested in one_of.array {
-                if validate(clone_ref(nested), value, current_path) == '' {
+            for nested in one_of as [any] {
+                if validate(nested, value, current_path) == '' {
                     matches += 1
                 }
             }
@@ -231,26 +234,25 @@ fn validate(json.value_t schema, json.value_t value, string current_path): strin
             }
         }
     }
-    if value.kind == json.VALUE_OBJECT {
-        var value_object = value.as_object()
+    if json_util.is_obj(value) {
+        var value_object = value as {string:any}
         if schema_object.contains('required') {
-            json.value_t required_value = clone_ref(schema_object['required'])
-            if required_value.kind == json.VALUE_ARRAY {
-                for required_ref in required_value.array {
-                    json.value_t required = clone_ref(required_ref)
-                    if required.kind == json.VALUE_STRING && !value_object.contains(required.text) {
-                        return child_path(current_path, required.text) + ': Expected required property'
+            var required_value = schema_object['required']
+            if required_value is [any] {
+                for required_ref in required_value as [any] {
+                    if required_ref is string && !value_object.contains(required_ref as string) {
+                        return child_path(current_path, required_ref as string) + ': Expected required property'
                     }
                 }
             }
         }
-        json.value_t properties_value = json.null_value()
+        any properties_value = null
         if schema_object.contains('properties') {
-            properties_value = clone_ref(schema_object['properties'])
-            if properties_value.kind == json.VALUE_OBJECT {
-                for key, property_schema in properties_value.object {
+            properties_value = schema_object['properties']
+            if properties_value is {string:any} {
+                for key, property_schema in properties_value as {string:any} {
                     if value_object.contains(key) {
-                        string problem = validate(clone_ref(property_schema), clone_ref(value_object[key]), child_path(current_path, key))
+                        string problem = validate(property_schema, value_object[key], child_path(current_path, key))
                         if problem != '' {
                             return problem
                         }
@@ -259,22 +261,22 @@ fn validate(json.value_t schema, json.value_t value, string current_path): strin
             }
         }
         if schema_object.contains('additionalProperties') {
-            json.value_t additional = clone_ref(schema_object['additionalProperties'])
-            if additional.kind == json.VALUE_BOOL && !additional.boolean {
+            var additional = schema_object['additionalProperties']
+            if additional is bool && !(additional as bool) {
                 for key, property_value in value_object {
-                    if properties_value.kind != json.VALUE_OBJECT || !properties_value.object.contains(key) {
+                    if !(properties_value is {string:any}) || !(properties_value as {string:any}).contains(key) {
                         return child_path(current_path, key) + ': Unexpected property'
                     }
                 }
             }
         }
     }
-    if value.kind == json.VALUE_ARRAY && schema_object.contains('items') {
-        json.value_t items = clone_ref(schema_object['items'])
-        if items.kind == json.VALUE_OBJECT {
-            var value_array = value.as_array()
+    if value is [any] && schema_object.contains('items') {
+        var items = schema_object['items']
+        if json_util.is_obj(items) {
+            var value_array = value as [any]
             for int i = 0; i < value_array.len(); i += 1 {
-                string problem = validate(items, clone_ref(value_array[i]), child_path(current_path, fmt.sprintf('%d', i)))
+                string problem = validate(items, value_array[i], child_path(current_path, fmt.sprintf('%d', i)))
                 if problem != '' {
                     return problem
                 }
@@ -285,23 +287,22 @@ fn validate(json.value_t schema, json.value_t value, string current_path): strin
 }
 
 #local
-fn schema_types(json.value_t schema): [string] {
+fn schema_types(any schema): [string] {
     [string] result = []
-    if schema.kind != json.VALUE_OBJECT {
+    if !json_util.is_obj(schema) {
         return result
     }
-    var schema_object = schema.as_object() catch e {return result}
+    var schema_object = schema as {string:any}
     if !schema_object.contains('type') {
         return result
     }
-    json.value_t value = clone_ref(schema_object['type']) catch e {return result}
-    if value.kind == json.VALUE_STRING {
-        result.push(value.text)
-    } else if value.kind == json.VALUE_ARRAY {
-        for item_ref in value.array {
-            json.value_t item = clone_ref(item_ref) catch e {continue}
-            if item.kind == json.VALUE_STRING {
-                result.push(item.text)
+    var value = schema_object['type']
+    if value is string {
+        result.push(value as string)
+    } else if value is [any] {
+        for item in value as [any] {
+            if item is string {
+                result.push(item as string)
             }
         }
     }
@@ -309,7 +310,7 @@ fn schema_types(json.value_t schema): [string] {
 }
 
 #local
-fn matches_any_type(json.value_t value, [string] types): bool {
+fn matches_any_type(any value, [string] types): bool {
     for expected in types {
         if matches_type(value, expected) {
             return true
@@ -319,27 +320,27 @@ fn matches_any_type(json.value_t value, [string] types): bool {
 }
 
 #local
-fn matches_type(json.value_t value, string expected): bool {
+fn matches_type(any value, string expected): bool {
     if expected == 'number' {
-        return value.kind == json.VALUE_NUMBER
+        return json_util.is_num(value)
     }
     if expected == 'integer' {
-        return value.kind == json.VALUE_NUMBER && number_is_integer(value.number)
+        return json_util.is_num(value) && number_is_integer(json_util.num_token(value))
     }
     if expected == 'boolean' {
-        return value.kind == json.VALUE_BOOL
+        return value is bool
     }
     if expected == 'string' {
-        return value.kind == json.VALUE_STRING
+        return value is string
     }
     if expected == 'null' {
-        return value.kind == json.VALUE_NULL
+        return json_util.is_null(value)
     }
     if expected == 'array' {
-        return value.kind == json.VALUE_ARRAY
+        return value is [any]
     }
     if expected == 'object' {
-        return value.kind == json.VALUE_OBJECT
+        return json_util.is_obj(value)
     }
     return false
 }
@@ -354,14 +355,13 @@ fn number_is_integer(string token): bool {
 #local
 fn normalized_number(string value): string {
     string token = value.trim([' ', '\t', '\n', '\r'])
-    var parsed = json.number_value(token) catch e {
+    float parsed = token.to_float() catch e {
         return ''
     }
-    return parsed.number
+    return token
 }
 
-#local
-fn includes([string] values, string expected): bool {
+pub fn includes([string] values, string expected): bool {
     for value in values {
         if value == expected {
             return true
@@ -376,14 +376,4 @@ fn child_path(string parent, string child): string {
         return child
     }
     return parent + '.' + child
-}
-
-#local
-fn box(json.value_t value): ref<json.value_t> {
-    return new json.value_t(kind = value.kind, boolean = value.boolean, number = value.number, text = value.text, array = value.array, object = value.object)
-}
-
-#local
-fn clone_ref(ref<json.value_t> value): json.value_t! {
-    return json.parse(value.stringify())
 }

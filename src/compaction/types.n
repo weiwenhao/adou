@@ -1,34 +1,37 @@
 import adou.src.ai.types as ai_types
 
-type settings_t = struct {
+pub type settings_t = struct {
     bool enabled = true
     int reserve_tokens = 16384
     int keep_recent_tokens = 20000
 }
 
-type context_estimate_t = struct {
+pub type context_estimate_t = struct {
     int tokens
     int usage_tokens
     int trailing_tokens
     int last_usage_index = -1
 }
 
-type cut_point_t = struct {
+pub type cut_point_t = struct {
     int first_kept_entry_index
     int turn_start_index = -1
     bool is_split_turn
 }
 
-type file_ops_t = struct {
+pub type file_ops_t = struct {
     [string] read = []
     [string] written = []
     [string] edited = []
 }
 
-type preparation_t = struct {
+pub type preparation_t = struct {
     string first_kept_entry_id
     [ai_types.message_t] messages_to_summarize = []
     [ai_types.message_t] turn_prefix_messages = []
+    // Pi keeps the recent tail in the prepared result so callers can either
+    // persist it on the compaction entry or rebuild it from firstKeptEntryId.
+    [ai_types.message_t] retained_tail = []
     bool is_split_turn
     int tokens_before
     bool has_previous_summary
@@ -37,11 +40,12 @@ type preparation_t = struct {
     settings_t settings
 }
 
-type summary_result_t = struct {
+pub type summary_result_t = struct {
     string summary
     string first_kept_entry_id
     int tokens_before
     ai_types.usage_t usage
+    [ai_types.message_t] retained_tail = []
     [string] read_files = []
     [string] modified_files = []
 }

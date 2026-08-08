@@ -1,20 +1,20 @@
 import adou.src.context.project
 
-fn build(string cwd, [ref<project.file_t>] context_files, string append_text): string {
+pub fn build(string cwd, [ref<project.file_t>] context_files, string append_text): string {
     return build_custom(cwd, context_files, '', append_text)
 }
 
 // Build the same prompt shape as Pi's custom systemPrompt option: supplied
 // text replaces the default assistant instructions, while append text,
 // project context and the working directory remain attached.
-fn build_custom(string cwd, [ref<project.file_t>] context_files, string custom_prompt, string append_text): string {
+pub fn build_custom(string cwd, [ref<project.file_t>] context_files, string custom_prompt, string append_text): string {
     // Pi's default registry contains only the coding quartet.  grep/find/ls
     // are opt-in helpers and must not leak into prompts built without an
     // explicit selectedTools list.
     return build_with_tools(cwd, context_files, custom_prompt, append_text, ['read', 'bash', 'edit', 'write'])
 }
 
-fn build_with_tools(string cwd, [ref<project.file_t>] context_files, string custom_prompt, string append_text, [string] tool_names): string {
+pub fn build_with_tools(string cwd, [ref<project.file_t>] context_files, string custom_prompt, string append_text, [string] tool_names): string {
     string tool_lines = tool_descriptions(tool_names)
     string prompt = custom_prompt != '' ? custom_prompt : 'You are an expert coding assistant operating inside Adou, a Nature implementation of the Pi coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.\n\nAvailable tools:\n' + (tool_lines == '' ? '(none)' : tool_lines) + '\n\nGuidelines:\n' + prompt_guidelines(tool_names)
     if append_text != '' {

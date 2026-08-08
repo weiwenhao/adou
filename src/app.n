@@ -42,14 +42,14 @@ import co
 import co.mutex
 import time
 
-const VERSION = '0.1.0-dev'
+pub const VERSION = '0.1.0-dev'
 
-type rpc_bash_update_state_t = struct {
+pub type rpc_bash_update_state_t = struct {
     string id
     ref<mutex.mutex_t> output_lock
 }
 
-fn run(): void! {
+pub fn run(): void! {
     timings.reset_timings()
     timings.time('parseArgs')
     var argv = os.args()
@@ -570,8 +570,7 @@ fn write_export(ref<repository.manager_t> repository, string target): string! {
     return absolute
 }
 
-#local
-fn html_escape(string value): string {
+pub fn html_escape(string value): string {
     return value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 }
 

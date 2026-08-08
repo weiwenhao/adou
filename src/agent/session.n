@@ -14,16 +14,19 @@ import adou.src.compaction.types as compaction_types
 import adou.src.config.auth
 import adou.src.config.models
 import adou.src.config.settings
+import adou.src.debug
+import adou.src.json_util
 import adou.src.session.message_json
 import adou.src.session.repository
 import adou.src.session.types as session_types
 import adou.src.tools.command
 import co
 import co.mutex
+import fmt
 import json
 import time
 
-type runner_t = struct {
+pub type runner_t = struct {
     ref<mutex.mutex_t> lock = mutex.mutex_t.new()
     bool busy
     ref<repository.manager_t> repository
@@ -57,32 +60,32 @@ type runner_t = struct {
     session_stream.optional_event_sink_fn event_sink = null
 }
 
-type tree_target_t = struct {
+pub type tree_target_t = struct {
     string target_id
     string new_leaf_id
     string editor_text
     bool current
 }
 
-fn new(ref<repository.manager_t> session_repository, ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function, compaction_types.settings_t settings): ref<runner_t>! {
+pub fn new(ref<repository.manager_t> session_repository, ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function, compaction_types.settings_t settings): ref<runner_t>! {
     var stored = session_repository.build_context()
     return new runner_t(lock = mutex.mutex_t.new(), repository = session_repository, base_context = context, agent_config = config, stream_function = stream_function, compaction_settings = settings, active_messages = stored.messages)
 }
 
-fn runner_t.prompt(&self, string text): ref<session_stream.stream_t>! {
+pub fn runner_t.prompt(&self, string text): ref<session_stream.stream_t>! {
     return self.start_prompt(text, false)
 }
 
 // RPC marks delivery before starting the coroutine.  A fast provider can
 // finish between prompt() returning and the RPC worker being registered; the
 // early mark makes terminal-event delivery deterministic.
-fn runner_t.prompt_rpc(&self, string text): ref<session_stream.stream_t>! {
+pub fn runner_t.prompt_rpc(&self, string text): ref<session_stream.stream_t>! {
     return self.start_prompt(text, true)
 }
 
-#local
-fn runner_t.start_prompt(&self, string text, bool require_delivery): ref<session_stream.stream_t>! {
+pub fn runner_t.start_prompt(&self, string text, bool require_delivery): ref<session_stream.stream_t>! {
     self.begin_prompt_operation()
+    debug.log('agent', 'prompt accepted; provider=' + self.agent_config.model.provider + ' model=' + self.agent_config.model.id + ' chars=' + fmt.sprintf('%d', text.len()))
     var stream = session_stream.new()
     if require_delivery {
         stream.require_delivery()
@@ -97,8 +100,7 @@ fn runner_t.start_prompt(&self, string text, bool require_delivery): ref<session
 // Pi validates authentication before acknowledging a prompt. Reserve the
 // operation slot before consulting storage so two concurrent prompt callers
 // cannot both pass the check, and release it again when no credential exists.
-#local
-fn runner_t.begin_prompt_operation(&self): void! {
+pub fn runner_t.begin_prompt_operation(&self): void! {
     self.lock.lock()
     if self.busy {
         self.lock.unlock()
@@ -120,6 +122,7 @@ fn runner_t.begin_prompt_operation(&self): void! {
         self.lock.unlock()
         throw errorf('No API key for %s/%s. Run /login %s first.', provider, model_id, provider)
     }
+    debug.log('agent', 'authentication available for ' + provider + '/' + model_id)
 
     // Keep an environment/file credential in the same in-memory stream
     // options used by the provider and by a subsequent model switch.
@@ -130,7 +133,7 @@ fn runner_t.begin_prompt_operation(&self): void! {
     self.lock.unlock()
 }
 
-fn runner_t.compact_now(&self, string instructions): ref<session_stream.stream_t>! {
+pub fn runner_t.compact_now(&self, string instructions): ref<session_stream.stream_t>! {
     // Pi's manual compact first disconnects/aborts any active agent turn and
     // waits for the session to become idle.  A user can therefore invoke
     // /compact while a provider stream is still running.
@@ -144,11 +147,11 @@ fn runner_t.compact_now(&self, string instructions): ref<session_stream.stream_t
     return stream
 }
 
-fn runner_t.start_new_session(&self): void! {
+pub fn runner_t.start_new_session(&self): void! {
     self.start_new_session_with_parent('')
 }
 
-fn runner_t.start_new_session_with_parent(&self, string parent_session): void! {
+pub fn runner_t.start_new_session_with_parent(&self, string parent_session): void! {
     self.lock.lock()
     if self.busy {
         self.lock.unlock()
@@ -192,7 +195,7 @@ fn runner_t.start_new_session_with_parent(&self, string parent_session): void! {
     self.sync_agent_environment()
 }
 
-fn runner_t.replace_repository(&self, ref<repository.manager_t> next): void! {
+pub fn runner_t.replace_repository(&self, ref<repository.manager_t> next): void! {
     self.lock.lock()
     if self.busy {
         self.lock.unlock()
@@ -244,7 +247,7 @@ fn runner_t.replace_repository(&self, ref<repository.manager_t> next): void! {
 // A Pi session switch creates a new cwd-bound runtime.  Keep the core
 // session preferences in sync with that runtime as well: project .pi settings
 // override the user settings for queue modes, compaction, and retry policy.
-fn runner_t.apply_preferences_for(&self, string cwd) {
+pub fn runner_t.apply_preferences_for(&self, string cwd) {
     var preferences = settings.load_for(cwd)
     self.lock.lock()
     self.agent_config.queues.steering_mode = preferences.steering_mode
@@ -256,7 +259,7 @@ fn runner_t.apply_preferences_for(&self, string cwd) {
     self.lock.unlock()
 }
 
-fn runner_t.select_leaf(&self, string entry_id): void! {
+pub fn runner_t.select_leaf(&self, string entry_id): void! {
     self.lock.lock()
     if self.busy {
         self.lock.unlock()
@@ -291,7 +294,7 @@ fn runner_t.select_leaf(&self, string entry_id): void! {
     self.sync_agent_environment()
 }
 
-fn runner_t.inspect_tree_target(&self, string entry_id): tree_target_t! {
+pub fn runner_t.inspect_tree_target(&self, string entry_id): tree_target_t! {
     ref<session_types.entry_t>? possible = self.repository.get_entry(entry_id)
     if !(possible is ref<session_types.entry_t>) {
         throw errorf('Session entry %s not found', entry_id)
@@ -301,8 +304,11 @@ fn runner_t.inspect_tree_target(&self, string entry_id): tree_target_t! {
     if entry.kind != session_types.ENTRY_MESSAGE {
         return result
     }
-    var object = entry.raw.as_object()
-    if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+    if !json_util.is_obj(entry.raw) {
+        return result
+    }
+    var object = entry.raw as {string:any}
+    if !object.contains('message') || !(object['message'] is {string:any}) {
         return result
     }
     var message = message_json.decode(object['message'])
@@ -316,7 +322,7 @@ fn runner_t.inspect_tree_target(&self, string entry_id): tree_target_t! {
     return result
 }
 
-fn runner_t.navigate_tree(&self, string entry_id): string! {
+pub fn runner_t.navigate_tree(&self, string entry_id): string! {
     self.lock.lock()
     if self.busy {
         self.lock.unlock()
@@ -338,7 +344,7 @@ fn runner_t.navigate_tree(&self, string entry_id): string! {
     return target.editor_text
 }
 
-fn runner_t.navigate_tree_with_summary(&self, string entry_id, string instructions): ref<session_stream.stream_t>! {
+pub fn runner_t.navigate_tree_with_summary(&self, string entry_id, string instructions): ref<session_stream.stream_t>! {
     self.begin_operation()
     var target = self.inspect_tree_target(entry_id) catch error {
         self.end_operation()
@@ -352,7 +358,7 @@ fn runner_t.navigate_tree_with_summary(&self, string entry_id, string instructio
     return output
 }
 
-fn runner_t.clone_session(&self): void! {
+pub fn runner_t.clone_session(&self): void! {
     self.lock.lock()
     bool has_leaf = self.repository.has_leaf
     self.lock.unlock()
@@ -365,12 +371,12 @@ fn runner_t.clone_session(&self): void! {
     self.replace_repository(next)
 }
 
-fn runner_t.fork_session(&self, string entry_id): void! {
+pub fn runner_t.fork_session(&self, string entry_id): void! {
     var next = self.repository.fork_before(entry_id)
     self.replace_repository(next)
 }
 
-fn runner_t.set_model(&self, ref<ai_types.model_t> model): void! {
+pub fn runner_t.set_model(&self, ref<ai_types.model_t> model): void! {
     string api_key = auth.effective(model.provider)
     // A CLI --api-key is an in-memory credential and is intentionally not
     // persisted by auth.save. Keep it when selecting another model from the
@@ -409,20 +415,19 @@ fn runner_t.set_model(&self, ref<ai_types.model_t> model): void! {
     self.sync_agent_environment()
 }
 
-fn runner_t.set_session_name(&self, string name): void! {
+pub fn runner_t.set_session_name(&self, string name): void! {
     self.repository.append_session_info(name)
     string effective = self.repository.get_session_name()
     self.emit_session_event(session_stream.event_t {kind: session_stream.EVENT_SESSION_INFO_CHANGED, session_name: effective,})
 }
 
-fn runner_t.set_event_sink(&self, session_stream.event_sink_fn sink) {
+pub fn runner_t.set_event_sink(&self, session_stream.event_sink_fn sink) {
     self.lock.lock()
     self.event_sink = sink
     self.lock.unlock()
 }
 
-#local
-fn runner_t.emit_session_event(&self, session_stream.event_t event) {
+pub fn runner_t.emit_session_event(&self, session_stream.event_t event) {
     self.lock.lock()
     session_stream.optional_event_sink_fn sink = self.event_sink
     ref<session_stream.stream_t>? active = self.active_stream
@@ -437,13 +442,12 @@ fn runner_t.emit_session_event(&self, session_stream.event_t event) {
     }
 }
 
-#local
-fn runner_t.sync_agent_environment(&self) {
+pub fn runner_t.sync_agent_environment(&self) {
     string thinking = self.agent_config.stream_options.thinking_enabled ? self.agent_config.stream_options.reasoning_effort : 'off'
     command.configure_agent_environment(self.repository.get_session_id(), self.repository.get_session_file(), self.agent_config.model.provider, self.agent_config.model.id, thinking)
 }
 
-fn runner_t.set_thinking_level(&self, string level): void! {
+pub fn runner_t.set_thinking_level(&self, string level): void! {
     if level != 'off' && level != 'minimal' && level != 'low' && level != 'medium' && level != 'high' && level != 'xhigh' && level != 'max' {
         throw errorf('Invalid thinking level "%s". Valid values: off, minimal, low, medium, high, xhigh, max', level)
     }
@@ -474,14 +478,14 @@ fn runner_t.set_thinking_level(&self, string level): void! {
 // These settings are mutable while the agent is idle or streaming. Pi's
 // SettingsManager writes each change immediately; keep the runner state and
 // persisted preferences in lockstep for RPC and TUI callers.
-fn runner_t.set_auto_compaction(&self, bool enabled): void! {
+pub fn runner_t.set_auto_compaction(&self, bool enabled): void! {
     self.lock.lock()
     self.compaction_settings.enabled = enabled
     self.lock.unlock()
     settings.set_auto_compaction(enabled)
 }
 
-fn runner_t.set_steering_mode(&self, string mode): void! {
+pub fn runner_t.set_steering_mode(&self, string mode): void! {
     if mode != agent_types.QUEUE_ALL && mode != agent_types.QUEUE_ONE {
         throw errorf('mode must be all or one-at-a-time')
     }
@@ -491,7 +495,7 @@ fn runner_t.set_steering_mode(&self, string mode): void! {
     settings.set_steering_mode(mode)
 }
 
-fn runner_t.set_follow_up_mode(&self, string mode): void! {
+pub fn runner_t.set_follow_up_mode(&self, string mode): void! {
     if mode != agent_types.QUEUE_ALL && mode != agent_types.QUEUE_ONE {
         throw errorf('mode must be all or one-at-a-time')
     }
@@ -501,14 +505,14 @@ fn runner_t.set_follow_up_mode(&self, string mode): void! {
     settings.set_follow_up_mode(mode)
 }
 
-fn runner_t.set_auto_retry(&self, bool enabled): void! {
+pub fn runner_t.set_auto_retry(&self, bool enabled): void! {
     self.lock.lock()
     self.retry_enabled = enabled
     self.lock.unlock()
     settings.set_retry_enabled(enabled)
 }
 
-fn runner_t.refresh_auth(&self): void! {
+pub fn runner_t.refresh_auth(&self): void! {
     self.lock.lock()
     if self.busy {
         self.lock.unlock()
@@ -519,19 +523,18 @@ fn runner_t.refresh_auth(&self): void! {
     self.lock.unlock()
 }
 
-fn runner_t.record_bash(&self, string command, string output, int exit_code, bool cancelled, bool truncated, string full_output_path, bool exclude_from_context): void! {
+pub fn runner_t.record_bash(&self, string command, string output, int exit_code, bool cancelled, bool truncated, string full_output_path, bool exclude_from_context): void! {
     self.record_bash_inner(command, output, exit_code, cancelled, truncated, full_output_path, exclude_from_context, true)
 }
 
 // Interactive user-bash is itself the active session operation, so it must
 // be able to append its result while the busy flag is held.  Model-facing and
 // RPC callers continue to use record_bash(), which retains the idle check.
-fn runner_t.record_bash_during_operation(&self, string command, string output, int exit_code, bool cancelled, bool truncated, string full_output_path, bool exclude_from_context): void! {
+pub fn runner_t.record_bash_during_operation(&self, string command, string output, int exit_code, bool cancelled, bool truncated, string full_output_path, bool exclude_from_context): void! {
     self.record_bash_inner(command, output, exit_code, cancelled, truncated, full_output_path, exclude_from_context, false)
 }
 
-#local
-fn runner_t.record_bash_inner(&self, string command, string output, int exit_code, bool cancelled, bool truncated, string full_output_path, bool exclude_from_context, bool require_idle): void! {
+pub fn runner_t.record_bash_inner(&self, string command, string output, int exit_code, bool cancelled, bool truncated, string full_output_path, bool exclude_from_context, bool require_idle): void! {
     self.lock.lock()
     if require_idle && self.busy {
         self.lock.unlock()
@@ -546,7 +549,7 @@ fn runner_t.record_bash_inner(&self, string command, string output, int exit_cod
     self.lock.unlock()
 }
 
-fn runner_t.begin_operation(&self): void! {
+pub fn runner_t.begin_operation(&self): void! {
     self.lock.lock()
     if self.busy {
         self.lock.unlock()
@@ -556,7 +559,7 @@ fn runner_t.begin_operation(&self): void! {
     self.lock.unlock()
 }
 
-fn runner_t.end_operation(&self) {
+pub fn runner_t.end_operation(&self) {
     self.lock.lock()
     self.busy = false
     self.compacting = false
@@ -566,7 +569,7 @@ fn runner_t.end_operation(&self) {
     self.lock.unlock()
 }
 
-fn runner_t.abort_active(&self) {
+pub fn runner_t.abort_active(&self) {
     self.lock.lock()
     ref<session_stream.stream_t>? active = self.active_stream
     self.lock.unlock()
@@ -575,7 +578,7 @@ fn runner_t.abort_active(&self) {
     }
 }
 
-fn runner_t.abort_bash(&self) {
+pub fn runner_t.abort_bash(&self) {
     self.lock.lock()
     ref<session_stream.stream_t>? active = self.active_bash_stream
     self.lock.unlock()
@@ -584,7 +587,7 @@ fn runner_t.abort_bash(&self) {
     }
 }
 
-fn runner_t.begin_retry(&self): ref<abort.abort_t> {
+pub fn runner_t.begin_retry(&self): ref<abort.abort_t> {
     var cancellation = abort.new()
     self.lock.lock()
     self.active_retry_abort = cancellation
@@ -592,7 +595,7 @@ fn runner_t.begin_retry(&self): ref<abort.abort_t> {
     return cancellation
 }
 
-fn runner_t.end_retry(&self, ref<abort.abort_t> cancellation) {
+pub fn runner_t.end_retry(&self, ref<abort.abort_t> cancellation) {
     self.lock.lock()
     if self.active_retry_abort is ref<abort.abort_t> current {
         if current == cancellation {
@@ -602,7 +605,7 @@ fn runner_t.end_retry(&self, ref<abort.abort_t> cancellation) {
     self.lock.unlock()
 }
 
-fn runner_t.abort_retry(&self) {
+pub fn runner_t.abort_retry(&self) {
     self.lock.lock()
     ref<abort.abort_t>? active = self.active_retry_abort
     self.lock.unlock()
@@ -615,7 +618,7 @@ fn runner_t.abort_retry(&self) {
 // signal-only primitive above for abort_retry/abort_bash and TUI signal paths,
 // but make the user-visible RPC abort wait for the worker to close its stream
 // and release the busy slot before emitting the response.
-fn runner_t.abort_and_wait(&self) {
+pub fn runner_t.abort_and_wait(&self) {
     self.lock.lock()
     ref<session_stream.stream_t>? pending_delivery = self.rpc_delivery_stream
     self.lock.unlock()
@@ -633,14 +636,14 @@ fn runner_t.abort_and_wait(&self) {
     }
 }
 
-fn runner_t.require_rpc_delivery(&self, ref<session_stream.stream_t> stream) {
+pub fn runner_t.require_rpc_delivery(&self, ref<session_stream.stream_t> stream) {
     stream.require_delivery()
     self.lock.lock()
     self.rpc_delivery_stream = stream
     self.lock.unlock()
 }
 
-fn runner_t.finish_rpc_delivery(&self, ref<session_stream.stream_t> stream) {
+pub fn runner_t.finish_rpc_delivery(&self, ref<session_stream.stream_t> stream) {
     stream.mark_delivery_done()
     self.lock.lock()
     if self.rpc_delivery_stream is ref<session_stream.stream_t> current {
@@ -651,7 +654,7 @@ fn runner_t.finish_rpc_delivery(&self, ref<session_stream.stream_t> stream) {
     self.lock.unlock()
 }
 
-fn runner_t.wait_rpc_delivery(&self) {
+pub fn runner_t.wait_rpc_delivery(&self) {
     self.lock.lock()
     ref<session_stream.stream_t>? pending = self.rpc_delivery_stream
     self.lock.unlock()
@@ -663,13 +666,13 @@ fn runner_t.wait_rpc_delivery(&self) {
 // Attach non-model operations (for example interactive `!bash`) to the same
 // cancellation slot as prompts.  This keeps RPC/TUI abort and busy-state
 // checks consistent across every user-visible operation.
-fn runner_t.attach_stream(&self, ref<session_stream.stream_t> stream) {
+pub fn runner_t.attach_stream(&self, ref<session_stream.stream_t> stream) {
     self.lock.lock()
     self.active_stream = stream
     self.lock.unlock()
 }
 
-fn runner_t.attach_bash_stream(&self, ref<session_stream.stream_t> stream) {
+pub fn runner_t.attach_bash_stream(&self, ref<session_stream.stream_t> stream) {
     self.lock.lock()
     self.active_stream = stream
     self.active_bash_stream = stream
@@ -679,7 +682,7 @@ fn runner_t.attach_bash_stream(&self, ref<session_stream.stream_t> stream) {
 // Queue mutations are session-visible operations in Pi.  Keep the internal
 // agent queue and the public queue_update event coupled so RPC and TUI callers
 // cannot enqueue a message without updating observers.
-fn runner_t.queue_steering(&self, ai_types.message_t message) {
+pub fn runner_t.queue_steering(&self, ai_types.message_t message) {
     self.lock.lock()
     ref<agent_types.queue_t> queues = self.agent_config.queues
     self.lock.unlock()
@@ -687,7 +690,7 @@ fn runner_t.queue_steering(&self, ai_types.message_t message) {
     self.emit_queue_update_for(queues)
 }
 
-fn runner_t.queue_follow_up(&self, ai_types.message_t message) {
+pub fn runner_t.queue_follow_up(&self, ai_types.message_t message) {
     self.lock.lock()
     ref<agent_types.queue_t> queues = self.agent_config.queues
     self.lock.unlock()
@@ -695,7 +698,7 @@ fn runner_t.queue_follow_up(&self, ai_types.message_t message) {
     self.emit_queue_update_for(queues)
 }
 
-fn runner_t.restore_queued_messages(&self): [ai_types.message_t] {
+pub fn runner_t.restore_queued_messages(&self): [ai_types.message_t] {
     self.lock.lock()
     ref<agent_types.queue_t> queues = self.agent_config.queues
     self.lock.unlock()
@@ -704,7 +707,7 @@ fn runner_t.restore_queued_messages(&self): [ai_types.message_t] {
     return result
 }
 
-fn runner_t.mark_queue_delivered(&self, string text) {
+pub fn runner_t.mark_queue_delivered(&self, string text) {
     self.lock.lock()
     ref<agent_types.queue_t> queues = self.agent_config.queues
     self.lock.unlock()
@@ -713,8 +716,7 @@ fn runner_t.mark_queue_delivered(&self, string text) {
     }
 }
 
-#local
-fn runner_t.emit_queue_update_for(&self, ref<agent_types.queue_t> queues) {
+pub fn runner_t.emit_queue_update_for(&self, ref<agent_types.queue_t> queues) {
     self.lock.lock()
     ref<session_stream.stream_t>? active = self.active_stream
     self.lock.unlock()
@@ -724,14 +726,12 @@ fn runner_t.emit_queue_update_for(&self, ref<agent_types.queue_t> queues) {
     }
 }
 
-#local
-fn runner_t.apply_tree_target(&self, tree_target_t target): void! {
+pub fn runner_t.apply_tree_target(&self, tree_target_t target): void! {
     self.repository.set_leaf(target.new_leaf_id)
     self.restore_repository_context()
 }
 
-#local
-fn runner_t.restore_repository_context(&self): void! {
+pub fn runner_t.restore_repository_context(&self): void! {
     var loaded = self.repository.build_context()
     string previous_provider = self.agent_config.model.provider
     string previous_key = self.agent_config.stream_options.api_key
@@ -794,26 +794,28 @@ fn run_tree_navigation_inner(ref<runner_t> runner, ref<session_stream.stream_t> 
         return
     }
     runner.repository.set_leaf(target.new_leaf_id)
-    json.value_t details = details_json(result.read_files, result.modified_files)
+    any details = details_json(result.read_files, result.modified_files)
     runner.repository.append_branch_summary(target.new_leaf_id == '' ? 'root' : target.new_leaf_id, result.summary, details, result.usage)
     runner.restore_repository_context()
     output.push(session_stream.event_t {kind: session_stream.EVENT_BRANCH_SUMMARY_END, summary: result.summary,})
     output.finish(runner.copy_active_messages())
 }
 
-#local
-fn run_prompt(ref<runner_t> runner, ref<session_stream.stream_t> output, string text): void! {
+pub fn run_prompt(ref<runner_t> runner, ref<session_stream.stream_t> output, string text): void! {
+    debug.log('agent', 'prompt coroutine started')
     run_prompt_inner(runner, output, text) catch error {
+        debug.log('agent', 'prompt coroutine failed: ' + error.msg())
         runner.end_operation()
         output.push(session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,}) catch settled_error {}
         output.fail(error.msg()) catch stream_error {}
         return
     }
     runner.end_operation()
+    debug.log('agent', 'prompt coroutine ended')
 }
 
-#local
-fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, string text): void! {
+pub fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, string text): void! {
+    debug.log('agent', 'building context and starting provider stream')
     // Pi checks the last assistant again before accepting a new prompt.  A
     // cancelled/error turn is deliberately eligible here (unlike the
     // post-turn threshold check), so the next prompt does not inherit an
@@ -887,7 +889,14 @@ fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, s
                 bool retry_completed = wait_retry(output, retry_cancellation, delay_ms)
                 runner.end_retry(retry_cancellation)
                 if !retry_completed {
+                    debug.log('agent', 'retry cancelled; publishing retry_end')
                     output.push(session_stream.event_t {kind: session_stream.EVENT_RETRY_END, retry_attempt: retry_attempt, retry_max_attempts: runner.retry_max_attempts, retry_success: false, retry_final_error: 'Retry cancelled',})
+                    debug.log('agent', 'retry_end published; leaving retry loop')
+                    // Give the RPC consumer one scheduler turn between the
+                    // retry terminal event and agent_settled. This avoids a
+                    // Nature channel handoff race when both events are
+                    // produced back-to-back after abort_retry.
+                    co.sleep(1)
                     break
                 }
                 context = runner.context_from_repository()
@@ -905,18 +914,21 @@ fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, s
         }
         break
     }
+    debug.log('agent', 'publishing agent_settled')
     var settled_event = session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,}
     output.push(settled_event)
+    debug.log('agent', 'agent_settled published; copying final context')
     var final_context = runner.copy_active_messages()
     // Release the session slot before publishing session_end.  Consumers of a
     // completed stream (notably Pi's one-shot multi-prompt mode) may submit
     // the next prompt immediately after receiving that terminal event.
     runner.end_operation()
+    debug.log('agent', 'operation ended; finishing session stream')
     output.finish(final_context)
+    debug.log('agent', 'session stream finished')
 }
 
-#local
-fn retry_delay_ms(int base_delay_ms, int attempt): int {
+pub fn retry_delay_ms(int base_delay_ms, int attempt): int {
     int delay = base_delay_ms
     if delay < 0 {delay = 0}
     for int index = 1; index < attempt && delay < 60000; index += 1 {
@@ -953,8 +965,7 @@ fn run_manual_compaction(ref<runner_t> runner, ref<session_stream.stream_t> outp
     runner.end_operation()
 }
 
-#local
-fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output, ref<agent_stream.stream_t> input, int retry_attempt): ref<ai_types.assistant_message_t>?! {
+pub fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output, ref<agent_stream.stream_t> input, int retry_attempt): ref<ai_types.assistant_message_t>?! {
     abort.abort_callback_t forward_abort = fn () {
         input.abort()
     }
@@ -962,8 +973,10 @@ fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output, ref
     ref<ai_types.assistant_message_t>? last_assistant = null
     for true {
         var event = input.recv() catch error {
+            debug.log('agent', 'provider stream recv failed: ' + error.msg())
             break
         }
+        debug.log('agent', 'provider event=' + event.kind)
         if event.kind == agent_types.EVENT_MESSAGE_END {
             var message = event.message()
             self.repository.append_message(message)
@@ -1008,20 +1021,18 @@ fn will_retry_after_agent_end(ref<runner_t> runner, agent_types.agent_event_t ag
     return false
 }
 
-#local
-fn runner_t.context_from_repository(&self): ref<agent_types.context_t>! {
+pub fn runner_t.context_from_repository(&self): ref<agent_types.context_t>! {
     return new agent_types.context_t(system_prompt = self.base_context.system_prompt, messages = self.copy_active_messages(), tools = self.base_context.tools)
 }
 
-#local
-fn runner_t.copy_active_messages(&self): [ai_types.message_t] {
+pub fn runner_t.copy_active_messages(&self): [ai_types.message_t] {
     self.lock.lock()
     var result = self.active_messages.slice(0, self.active_messages.len())
     self.lock.unlock()
     return result
 }
 
-fn runner_t.last_assistant_message(&self): ref<ai_types.assistant_message_t>? {
+pub fn runner_t.last_assistant_message(&self): ref<ai_types.assistant_message_t>? {
     self.lock.lock()
     for int index = self.active_messages.len() - 1; index >= 0; index -= 1 {
         if self.active_messages[index] is ref<ai_types.assistant_message_t> assistant {
@@ -1033,14 +1044,13 @@ fn runner_t.last_assistant_message(&self): ref<ai_types.assistant_message_t>? {
     return null
 }
 
-fn runner_t.append_active_message(&self, ai_types.message_t message) {
+pub fn runner_t.append_active_message(&self, ai_types.message_t message) {
     self.lock.lock()
     self.active_messages.push(message)
     self.lock.unlock()
 }
 
-#local
-fn runner_t.remove_last_active_error(&self, ref<ai_types.assistant_message_t> expected) {
+pub fn runner_t.remove_last_active_error(&self, ref<ai_types.assistant_message_t> expected) {
     self.lock.lock()
     if self.active_messages.len() > 0 {
         int last = self.active_messages.len() - 1
@@ -1053,8 +1063,7 @@ fn runner_t.remove_last_active_error(&self, ref<ai_types.assistant_message_t> ex
     self.lock.unlock()
 }
 
-#local
-fn runner_t.should_threshold_compact(&self, ref<ai_types.assistant_message_t> assistant): bool! {
+pub fn runner_t.should_threshold_compact(&self, ref<ai_types.assistant_message_t> assistant): bool! {
     if !self.compaction_settings.enabled {
         return false
     }
@@ -1085,8 +1094,7 @@ fn runner_t.should_threshold_compact(&self, ref<ai_types.assistant_message_t> as
     return token_estimate.should_compact(context_tokens, self.agent_config.model.context_window, self.compaction_settings)
 }
 
-#local
-fn runner_t.run_compaction(&self, ref<session_stream.stream_t> output, string reason, bool will_retry, string instructions): bool! {
+pub fn runner_t.run_compaction(&self, ref<session_stream.stream_t> output, string reason, bool will_retry, string instructions): bool! {
     self.lock.lock()
     self.compacting = true
     self.lock.unlock()
@@ -1120,7 +1128,7 @@ fn runner_t.run_compaction(&self, ref<session_stream.stream_t> output, string re
         self.lock.unlock()
         return false
     }
-    json.value_t details = details_json(result.read_files, result.modified_files)
+    any details = details_json(result.read_files, result.modified_files)
     self.repository.append_compaction(result.summary, result.first_kept_entry_id, result.tokens_before, details, result.usage)
     var compacted_messages = self.repository.build_context().messages
     self.lock.lock()
@@ -1143,17 +1151,17 @@ fn runner_t.run_compaction(&self, ref<session_stream.stream_t> output, string re
 }
 
 #local
-fn details_json([string] read_files, [string] modified_files): json.value_t {
-    [ref<json.value_t>] read_values = []
+fn details_json([string] read_files, [string] modified_files): {string:any} {
+    [any] read_values = []
     for file in read_files {
-        read_values.push(json.box_value(json.string_value(file)))
+        read_values.push(file)
     }
-    [ref<json.value_t>] modified_values = []
+    [any] modified_values = []
     for file in modified_files {
-        modified_values.push(json.box_value(json.string_value(file)))
+        modified_values.push(file)
     }
-    map<string, ref<json.value_t>> object = {}
-    object['readFiles'] = json.box_value(json.array_value(read_values))
-    object['modifiedFiles'] = json.box_value(json.array_value(modified_values))
-    return json.object_value(object)
+    {string:any} object = {}
+    object['readFiles'] = read_values
+    object['modifiedFiles'] = modified_values
+    return object
 }

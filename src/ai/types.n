@@ -1,31 +1,31 @@
 import fmt
 import json
-const EVENT_START = 'start'
-const EVENT_TEXT_START = 'text_start'
-const EVENT_TEXT_DELTA = 'text_delta'
-const EVENT_TEXT_END = 'text_end'
-const EVENT_THINKING_START = 'thinking_start'
-const EVENT_THINKING_DELTA = 'thinking_delta'
-const EVENT_THINKING_END = 'thinking_end'
-const EVENT_TOOLCALL_START = 'toolcall_start'
-const EVENT_TOOLCALL_DELTA = 'toolcall_delta'
-const EVENT_TOOLCALL_END = 'toolcall_end'
-const EVENT_DONE = 'done'
-const EVENT_ERROR = 'error'
-const STOP_PENDING = 'pending'
-const STOP_STOP = 'stop'
-const STOP_LENGTH = 'length'
-const STOP_TOOL_USE = 'toolUse'
-const STOP_ERROR = 'error'
-const STOP_ABORTED = 'aborted'
-type cost_tier_t = struct {
+pub const EVENT_START = 'start'
+pub const EVENT_TEXT_START = 'text_start'
+pub const EVENT_TEXT_DELTA = 'text_delta'
+pub const EVENT_TEXT_END = 'text_end'
+pub const EVENT_THINKING_START = 'thinking_start'
+pub const EVENT_THINKING_DELTA = 'thinking_delta'
+pub const EVENT_THINKING_END = 'thinking_end'
+pub const EVENT_TOOLCALL_START = 'toolcall_start'
+pub const EVENT_TOOLCALL_DELTA = 'toolcall_delta'
+pub const EVENT_TOOLCALL_END = 'toolcall_end'
+pub const EVENT_DONE = 'done'
+pub const EVENT_ERROR = 'error'
+pub const STOP_PENDING = 'pending'
+pub const STOP_STOP = 'stop'
+pub const STOP_LENGTH = 'length'
+pub const STOP_TOOL_USE = 'toolUse'
+pub const STOP_ERROR = 'error'
+pub const STOP_ABORTED = 'aborted'
+pub type cost_tier_t = struct {
     int input_tokens_above
     float input
     float output
     float cache_read
     float cache_write
 }
-type cost_t = struct {
+pub type cost_t = struct {
     float input
     float output
     float cache_read
@@ -33,7 +33,7 @@ type cost_t = struct {
     float total
     [cost_tier_t] tiers = []
 }
-type usage_t = struct {
+pub type usage_t = struct {
     int input
     int output
     int cache_read
@@ -43,23 +43,23 @@ type usage_t = struct {
     int total_tokens
     cost_t cost
 }
-type text_content_t = struct {
+pub type text_content_t = struct {
     string text
     string text_signature
 }
-type thinking_content_t = struct {
+pub type thinking_content_t = struct {
     string thinking
     string thinking_signature
     bool redacted
 }
-type tool_call_t = struct {
+pub type tool_call_t = struct {
     string id
     string name
-    json.value_t arguments
+    any arguments
     string partial_json
 }
-type content_t = ref<text_content_t>| ref<thinking_content_t>| ref<tool_call_t>
-type assistant_message_t = struct {
+pub type content_t = ref<text_content_t>| ref<thinking_content_t>| ref<tool_call_t>
+pub type assistant_message_t = struct {
     string role = 'assistant'
     [content_t] content = []
     string api
@@ -71,43 +71,43 @@ type assistant_message_t = struct {
     string error_message
     int timestamp
 }
-type user_message_t = struct {
+pub type user_message_t = struct {
     string role = 'user'
     string content
     int timestamp
 }
-type tool_result_message_t = struct {
+pub type tool_result_message_t = struct {
     string role = 'toolResult'
     string tool_call_id
     string tool_name
     [ref<text_content_t>] content = []
-    json.value_t details
+    any details
     usage_t usage
     [string] added_tool_names = []
     bool is_error
     int timestamp
 }
-type compaction_summary_message_t = struct {
+pub type compaction_summary_message_t = struct {
     string role = 'compactionSummary'
     string summary
     int tokens_before
     int timestamp
 }
-type branch_summary_message_t = struct {
+pub type branch_summary_message_t = struct {
     string role = 'branchSummary'
     string summary
     string from_id
     int timestamp
 }
-type custom_message_t = struct {
+pub type custom_message_t = struct {
     string role = 'custom'
     string custom_type
     string content
     bool display
-    json.value_t details
+    any details
     int timestamp
 }
-type bash_execution_message_t = struct {
+pub type bash_execution_message_t = struct {
     string role = 'bashExecution'
     string command
     string output
@@ -118,20 +118,21 @@ type bash_execution_message_t = struct {
     bool exclude_from_context
     int timestamp
 }
-type message_t = ref<user_message_t>| ref<assistant_message_t>| ref<tool_result_message_t>| ref<compaction_summary_message_t>| ref<branch_summary_message_t>| ref<custom_message_t>| ref<bash_execution_message_t>
-type tool_t = struct {
+pub type message_t = ref<user_message_t>| ref<assistant_message_t>| ref<tool_result_message_t>| ref<compaction_summary_message_t>| ref<branch_summary_message_t>| ref<custom_message_t>| ref<bash_execution_message_t>
+pub type tool_t = struct {
     string name
     string description
-    json.value_t parameters
+    any parameters
     bool sequential
 }
-type context_t = struct {
+pub type context_t = struct {
     string system_prompt
     [message_t] messages = []
     [ref<tool_t>] tools = []
 }
-type model_t = struct {
+pub type model_t = struct {
     string id
+    string name
     string api
     string provider
     string base_url
@@ -142,8 +143,24 @@ type model_t = struct {
     int context_window
     int max_tokens
     cost_t cost
+    // Pi thinkingLevelMap: pi level -> provider value; an empty value marks a
+    // level the model does not support (Pi's null).
+    {string:string} thinking_level_map = {}
+    {string:string} headers = {}
 }
-type stream_options_t = struct {
+
+// A registered provider. The openai-completions / anthropic-messages /
+// openai-responses families share one stream implementation per api, so a
+// provider definition only needs identity, endpoint and auth env vars.
+pub type provider_def_t = struct {
+    string id
+    string name
+    string api
+    string base_url
+    [string] env_vars = []
+    {string:string} headers = {}
+}
+pub type stream_options_t = struct {
     string api_key
     int timeout_ms = 120000
     int max_tokens
@@ -159,7 +176,7 @@ type stream_options_t = struct {
 }
 // assistant_event_t mirrors Pi's AssistantMessageEvent protocol. Only fields
 // meaningful for a particular event type are populated.
-type assistant_event_t = struct {
+pub type assistant_event_t = struct {
     string kind
     int content_index = -1
     string delta
@@ -171,7 +188,7 @@ type assistant_event_t = struct {
     ref<tool_call_t>? tool_call = null
 }
 
-fn bash_execution_text(ref<bash_execution_message_t> message): string {
+pub fn bash_execution_text(ref<bash_execution_message_t> message): string {
     string text = 'Ran `' + message.command + '`\n'
     if message.output != '' {
         text += '```\n' + message.output + '\n```'

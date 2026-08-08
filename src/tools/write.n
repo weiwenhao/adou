@@ -9,7 +9,7 @@ import os
 import path
 import syscall
 
-fn execute(string cwd, string input_path, string content, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
+pub fn execute(string cwd, string input_path, string content, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
     string absolute_path = path_utils.resolve_to_cwd(input_path, cwd)
     var acquired = mutation_queue.acquire(absolute_path)
     string key = acquired[0]
@@ -46,8 +46,7 @@ fn execute_locked(string absolute_path, string input_path, string content, ref<a
     return tool_types.text_result(fmt.sprintf('Successfully wrote %d bytes to %s', utf8.utf16_length(content), input_path))
 }
 
-#local
-fn throw_if_aborted(ref<abort.abort_t> cancellation): void! {
+pub fn throw_if_aborted(ref<abort.abort_t> cancellation): void! {
     if cancellation.is_aborted() {
         throw errorf('Operation aborted')
     }

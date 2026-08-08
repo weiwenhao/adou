@@ -2,7 +2,7 @@
 // OpenAI Responses an item id that cannot be replayed verbatim. Keep the
 // implementation here instead of relying on a platform hash: persisted
 // sessions must produce the same id on every run and architecture.
-fn short_hash(string value): string {
+pub fn short_hash(string value): string {
     u32 h1 = 0xdeadbeef
     u32 h2 = 0x41c6ce57
     [u8] bytes = value as [u8]
@@ -17,7 +17,7 @@ fn short_hash(string value): string {
 }
 
 // OpenAI accepts only a restricted, bounded id alphabet for Responses items.
-fn normalize_id_part(string value): string {
+pub fn normalize_id_part(string value): string {
     [u8] source = value as [u8]
     [u8] result = []
     for byte in source {
@@ -37,7 +37,7 @@ fn normalize_id_part(string value): string {
     return result as string
 }
 
-fn foreign_responses_item_id(string item_id): string {
+pub fn foreign_responses_item_id(string item_id): string {
     string normalized = 'fc_' + short_hash(item_id)
     if normalized.len() > 64 {
         return normalized.slice(0, 64)

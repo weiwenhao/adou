@@ -1,3 +1,4 @@
+import adou.src.json_util
 import adou.src.tools.path_utils
 import adou.src.config.paths
 import fs
@@ -8,9 +9,8 @@ import os
 import path
 import syscall
 
-type object_t = map<string, ref<json.value_t>>
 
-type settings_t = struct {
+pub type settings_t = struct {
     string default_provider
     string default_model
     // Pi's default thinking level is medium. Keep an explicit `off` only
@@ -27,7 +27,7 @@ type settings_t = struct {
     [string] enabled_model_ids = []
 }
 
-fn load(): settings_t {
+pub fn load(): settings_t {
     return load_file(settings_path(), settings_t{})
 }
 
@@ -35,7 +35,7 @@ fn load(): settings_t {
 // project object is a partial override: fields absent from the project file
 // retain their global values, while arrays such as enabledModels replace the
 // corresponding global array when explicitly present.
-fn load_for(string cwd): settings_t {
+pub fn load_for(string cwd): settings_t {
     var result = load_file(settings_path(), settings_t{})
     return load_file(paths.project_settings_path(cwd), result)
 }
@@ -50,9 +50,9 @@ fn load_file(string file_path, settings_t initial): settings_t {
         return result
     }
     input.close()
-    var root = json.parse(content) catch error {return result}
-    if root.kind != json.VALUE_OBJECT {return result}
-    var object = root.as_object() catch error {return result} as object_t
+    var root = json_util.parse(content) catch error {return result}
+    if !json_util.is_obj(root) {return result}
+    var object = root as {string:any}
     result.default_provider = string_value(object, 'defaultProvider', result.default_provider)
     result.default_model = string_value(object, 'defaultModel', result.default_model)
     result.default_thinking_level = thinking_level(string_value(object, 'defaultThinkingLevel', result.default_thinking_level))
@@ -63,14 +63,14 @@ fn load_file(string file_path, settings_t initial): settings_t {
     result.retry_enabled = bool_value(object, 'retryEnabled', result.retry_enabled)
     result.retry_max_attempts = positive_int(object, 'retryMaxAttempts', result.retry_max_attempts)
     result.retry_base_delay_ms = positive_int(object, 'retryBaseDelayMs', result.retry_base_delay_ms)
-    if object.contains('enabledModels') && object['enabledModels'].kind == json.VALUE_ARRAY {
+    if object.contains('enabledModels') && object['enabledModels'] is [any] {
         // An explicitly configured project array replaces the global scope;
         // it is not appended to it.
         result.enabled_model_ids = []
-        var enabled_values = object['enabledModels'].as_array() catch error {[]}
+        var enabled_values = object['enabledModels'] as [any]
         for item in enabled_values {
-            if item.kind == json.VALUE_STRING {
-                string model_id = item.as_string() catch error {''}
+            if item is string {
+                string model_id = item as string
                 if model_id != '' {result.enabled_model_ids.push(model_id)}
             }
         }
@@ -78,29 +78,29 @@ fn load_file(string file_path, settings_t initial): settings_t {
     return result
 }
 
-fn save(settings_t settings): void! {
-    object_t object = {}
-    object['defaultProvider'] = boxed_string(settings.default_provider)
-    object['defaultModel'] = boxed_string(settings.default_model)
-    object['defaultThinkingLevel'] = boxed_string(settings.default_thinking_level)
-    object['autoCompaction'] = json.box_value(json.bool_value(settings.auto_compaction))
-    object['steeringMode'] = boxed_string(queue_mode(settings.steering_mode))
-    object['followUpMode'] = boxed_string(queue_mode(settings.follow_up_mode))
-    object['hideThinkingBlock'] = json.box_value(json.bool_value(settings.hide_thinking))
-    object['retryEnabled'] = json.box_value(json.bool_value(settings.retry_enabled))
-    object['retryMaxAttempts'] = json.box_value(json.number_value(fmt.sprintf('%d', settings.retry_max_attempts)))
-    object['retryBaseDelayMs'] = json.box_value(json.number_value(fmt.sprintf('%d', settings.retry_base_delay_ms)))
+pub fn save(settings_t settings): void! {
+    {string:any} object = {}
+    object['defaultProvider'] = settings.default_provider
+    object['defaultModel'] = settings.default_model
+    object['defaultThinkingLevel'] = settings.default_thinking_level
+    object['autoCompaction'] = settings.auto_compaction
+    object['steeringMode'] = queue_mode(settings.steering_mode)
+    object['followUpMode'] = queue_mode(settings.follow_up_mode)
+    object['hideThinkingBlock'] = settings.hide_thinking
+    object['retryEnabled'] = settings.retry_enabled
+    object['retryMaxAttempts'] = settings.retry_max_attempts
+    object['retryBaseDelayMs'] = settings.retry_base_delay_ms
     if settings.enabled_model_ids.len() > 0 {
-        [ref<json.value_t>] enabled = []
+        [any] enabled = []
         for model_id in settings.enabled_model_ids {
-            enabled.push(boxed_string(model_id))
+            enabled.push(model_id)
         }
-        object['enabledModels'] = json.box_value(json.array_value(enabled))
+        object['enabledModels'] = enabled
     }
     string file_path = settings_path()
     os.mkdirs(path.dir(file_path), 0o700)
     var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
-    string content = json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+    string content = json.serialize(object)
     int written = output.write(content as [u8])
     output.close()
     if written != content.len() {throw errorf('Could not write settings')}
@@ -109,14 +109,14 @@ fn save(settings_t settings): void! {
 // Pi persists the selected model immediately.  Keep this operation shared by
 // the TUI, RPC, and headless callers instead of making it a UI-only side
 // effect.
-fn set_default_model(string provider, string model): void! {
+pub fn set_default_model(string provider, string model): void! {
     var settings = load()
     settings.default_provider = provider
     settings.default_model = model
     save(settings)
 }
 
-fn set_default_thinking(string level): void! {
+pub fn set_default_thinking(string level): void! {
     var settings = load()
     settings.default_thinking_level = thinking_level(level)
     save(settings)
@@ -125,31 +125,31 @@ fn set_default_thinking(string level): void! {
 // Pi's SettingsManager persists each mutable session preference immediately.
 // Keep the narrow setters here so RPC and TUI callers do not accidentally
 // replace unrelated settings while changing one toggle.
-fn set_auto_compaction(bool enabled): void! {
+pub fn set_auto_compaction(bool enabled): void! {
     var settings = load()
     settings.auto_compaction = enabled
     save(settings)
 }
 
-fn set_steering_mode(string mode): void! {
+pub fn set_steering_mode(string mode): void! {
     var settings = load()
     settings.steering_mode = queue_mode(mode)
     save(settings)
 }
 
-fn set_follow_up_mode(string mode): void! {
+pub fn set_follow_up_mode(string mode): void! {
     var settings = load()
     settings.follow_up_mode = queue_mode(mode)
     save(settings)
 }
 
-fn set_retry_enabled(bool enabled): void! {
+pub fn set_retry_enabled(bool enabled): void! {
     var settings = load()
     settings.retry_enabled = enabled
     save(settings)
 }
 
-fn settings_path(): string {
+pub fn settings_path(): string {
     return paths.settings_path()
 }
 
@@ -158,32 +158,27 @@ fn queue_mode(string value): string {
     return value == 'all' ? value : 'one-at-a-time'
 }
 
-#local
-fn thinking_level(string value): string {
+pub fn thinking_level(string value): string {
     if value == 'minimal' || value == 'low' || value == 'medium' || value == 'high' || value == 'xhigh' || value == 'max' {return value}
     return 'off'
 }
 
 #local
-fn string_value(object_t object, string key, string fallback): string {
-    if object.contains(key) && object[key].kind == json.VALUE_STRING {return object[key].text}
+fn string_value({string:any} object, string key, string fallback): string {
+    if object.contains(key) && object[key] is string {return object[key] as string}
     return fallback
 }
 
 #local
-fn bool_value(object_t object, string key, bool fallback): bool {
-    if object.contains(key) && object[key].kind == json.VALUE_BOOL {return object[key].boolean}
+fn bool_value({string:any} object, string key, bool fallback): bool {
+    if object.contains(key) && object[key] is bool {return object[key] as bool}
     return fallback
 }
 
 #local
-fn positive_int(object_t object, string key, int fallback): int {
-    if !object.contains(key) || object[key].kind != json.VALUE_NUMBER {return fallback}
-    int value = libc.atol(object[key].number.to_cstr()) as int
+fn positive_int({string:any} object, string key, int fallback): int {
+    if !object.contains(key) || !(object[key] is f64) {return fallback}
+    int value = object[key] as f64 as int
     return value >= 0 ? value : fallback
 }
 
-#local
-fn boxed_string(string value): ref<json.value_t> {
-    return json.box_value(json.string_value(value))
-}

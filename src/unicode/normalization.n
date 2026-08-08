@@ -1,9 +1,9 @@
 #linkid adou_icu_nfkc
-fn nfkc_raw(anyptr text, int length, anyptr output, int capacity): int
+pub fn nfkc_raw(anyptr text, int length, anyptr output, int capacity): int
 #linkid adou_icu_nfd
-fn nfd_raw(anyptr text, int length, anyptr output, int capacity): int
+pub fn nfd_raw(anyptr text, int length, anyptr output, int capacity): int
 
-fn nfkc(string text): string! {
+pub fn nfkc(string text): string! {
     if text == '' {
         return ''
     }
@@ -19,7 +19,7 @@ fn nfkc(string text): string! {
     return output.slice(0, length) as string
 }
 
-fn nfd(string text): string! {
+pub fn nfd(string text): string! {
     if text == '' {
         return ''
     }

@@ -1,4 +1,5 @@
 import adou.src.ai.types as ai_types
+import adou.src.json_util
 import adou.src.session.message_json
 import adou.src.session.repository
 import adou.src.session.types as session_types
@@ -9,21 +10,24 @@ import strings
 // readable role-separated messages, thinking/tool details, session metadata,
 // and escaped source text.  Markdown remains plain text so an export never
 // turns model output into executable HTML.
-fn render(ref<repository.manager_t> repository): string! {
+pub fn render(ref<repository.manager_t> repository): string! {
     string body = ''
     for entry in repository.get_entries() {
         if entry.kind == session_types.ENTRY_MESSAGE {
-            var object = entry.raw.as_object() catch error {continue}
+            if !json_util.is_obj(entry.raw) {continue}
+            var object = entry.raw as {string:any}
             if !object.contains('message') {continue}
             var message = message_json.decode(object['message']) catch error {continue}
             body += render_message(message)
         } else if entry.kind == session_types.ENTRY_COMPACTION {
-            var object = entry.raw.as_object() catch error {continue}
-            string summary = object.contains('summary') ? object['summary'].as_string() : ''
+            if !json_util.is_obj(entry.raw) {continue}
+            var object = entry.raw as {string:any}
+            string summary = object.contains('summary') && object['summary'] is string ? object['summary'] as string : ''
             body += '<article class="event compaction"><header>Compaction</header><pre>' + escape(summary) + '</pre></article>'
         } else if entry.kind == session_types.ENTRY_BRANCH_SUMMARY {
-            var object = entry.raw.as_object() catch error {continue}
-            string summary = object.contains('summary') ? object['summary'].as_string() : ''
+            if !json_util.is_obj(entry.raw) {continue}
+            var object = entry.raw as {string:any}
+            string summary = object.contains('summary') && object['summary'] is string ? object['summary'] as string : ''
             body += '<article class="event branch"><header>Branch summary</header><pre>' + escape(summary) + '</pre></article>'
         }
     }
@@ -45,7 +49,7 @@ fn render_message(ai_types.message_t message): string {
             } else if block is ref<ai_types.thinking_content_t> thinking {
                 content += '<details class="thinking"><summary>Thinking</summary><pre>' + escape(thinking.thinking) + '</pre></details>'
             } else if block is ref<ai_types.tool_call_t> call {
-                string arguments = call.arguments.stringify() catch error {''}
+                string arguments = json_util.stringify(call.arguments) catch error {''}
                 content += '<details class="tool"><summary>Tool: ' + escape(call.name) + '</summary><pre>' + escape(arguments) + '</pre></details>'
             }
         }
@@ -67,8 +71,7 @@ fn render_message(ai_types.message_t message): string {
     return ''
 }
 
-#local
-fn escape(string value): string {
+pub fn escape(string value): string {
     return value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&#39;')
 }
 

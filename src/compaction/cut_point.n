@@ -1,11 +1,12 @@
 import adou.src.ai.types as ai_types
+import adou.src.json_util
 import adou.src.compaction.token_estimate
 import adou.src.compaction.types
 import adou.src.session.message_json
 import adou.src.session.types as session_types
 import json
 
-fn find_turn_start_index([ref<session_types.entry_t>] entries, int entry_index, int start_index): int! {
+pub fn find_turn_start_index([ref<session_types.entry_t>] entries, int entry_index, int start_index): int! {
     for int index = entry_index; index >= start_index; index -= 1 {
         if is_turn_start_entry(entries[index]) {
             return index
@@ -14,7 +15,7 @@ fn find_turn_start_index([ref<session_types.entry_t>] entries, int entry_index, 
     return -1
 }
 
-fn find([ref<session_types.entry_t>] entries, int start_index, int end_index, int keep_recent_tokens): types.cut_point_t! {
+pub fn find([ref<session_types.entry_t>] entries, int start_index, int end_index, int keep_recent_tokens): types.cut_point_t! {
     [int] cut_points = valid_cut_points(entries, start_index, end_index)
     if cut_points.len() == 0 {
         return types.cut_point_t {first_kept_entry_index: start_index,}
@@ -55,15 +56,25 @@ fn find([ref<session_types.entry_t>] entries, int start_index, int end_index, in
     return types.cut_point_t {first_kept_entry_index: cut_index, turn_start_index: turn_start_index, is_split_turn: !starts_turn && turn_start_index != -1,}
 }
 
-fn entry_messages(ref<session_types.entry_t> entry): [ai_types.message_t]! {
-    if entry.kind != session_types.ENTRY_MESSAGE {
-        return []
+pub fn entry_messages(ref<session_types.entry_t> entry): [ai_types.message_t]! {
+    if entry.kind == session_types.ENTRY_MESSAGE {
+        var object = entry.raw as {string:any}
+        if !object.contains('message') || !json_util.is_obj(object['message']) {
+            return []
+        }
+        return [message_json.decode(object['message'])]
     }
-    var object = entry.raw.as_object()
-    if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
-        return []
+    if entry.kind == session_types.ENTRY_BRANCH_SUMMARY {
+        var object = entry.raw as {string:any}
+        if !object.contains('summary') || !(object['summary'] is string) {
+            return []
+        }
+        string from_id = object.contains('fromId') && object['fromId'] is string ? object['fromId'] as string : 'root'
+        string summary_text = object['summary'] as string
+        ai_types.message_t message = new ai_types.branch_summary_message_t(summary = summary_text, from_id = from_id, timestamp = 0)
+        return [message]
     }
-    return [message_json.decode(object['message'])]
+    return []
 }
 
 #local
@@ -71,6 +82,12 @@ fn valid_cut_points([ref<session_types.entry_t>] entries, int start_index, int e
     [int] result = []
     for int index = start_index; index < end_index; index += 1 {
         if entries[index].kind == session_types.ENTRY_COMPACTION {
+            continue
+        }
+        if entries[index].kind == session_types.ENTRY_BRANCH_SUMMARY {
+            if entry_messages(entries[index]).len() > 0 {
+                result.push(index)
+            }
             continue
         }
         var messages = entry_messages(entries[index])
@@ -92,5 +109,5 @@ fn is_turn_start_entry(ref<session_types.entry_t> entry): bool! {
         return false
     }
     var messages = entry_messages(entry)
-    return messages.len() > 0 && (messages[0] is ref<ai_types.user_message_t> || messages[0] is ref<ai_types.custom_message_t> || messages[0] is ref<ai_types.compaction_summary_message_t> || messages[0] is ref<ai_types.branch_summary_message_t>)
+    return messages.len() > 0 && (messages[0] is ref<ai_types.user_message_t> || messages[0] is ref<ai_types.custom_message_t> || messages[0] is ref<ai_types.compaction_summary_message_t> || messages[0] is ref<ai_types.branch_summary_message_t> || messages[0] is ref<ai_types.bash_execution_message_t>)
 }

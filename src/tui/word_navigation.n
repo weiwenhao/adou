@@ -1,12 +1,12 @@
 import adou.src.tui.unicode
 
-const PUNCTUATION = '(){}[]<>.,;:\'"!?+-=*/\\|&%^$#@~`'
+pub const PUNCTUATION = '(){}[]<>.,;:\'"!?+-=*/\\|&%^$#@~`'
 
-type option_t = struct {
+pub type option_t = struct {
     [string] atomic_segments = []
 }
 
-fn backward(string text, int cursor, option_t options): int! {
+pub fn backward(string text, int cursor, option_t options): int! {
     if cursor <= 0 {
         return 0
     }
@@ -48,7 +48,7 @@ fn backward(string text, int cursor, option_t options): int! {
     return result
 }
 
-fn forward(string text, int cursor, option_t options): int! {
+pub fn forward(string text, int cursor, option_t options): int! {
     if cursor >= text.len() {
         return text.len()
     }
@@ -120,8 +120,7 @@ fn atomic_starting_at(string text, int cursor, option_t options): int {
     return -1
 }
 
-#local
-fn is_whitespace(string value): bool {
+pub fn is_whitespace(string value): bool {
     if value == '' {
         return false
     }

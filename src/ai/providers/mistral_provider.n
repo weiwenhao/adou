@@ -11,9 +11,9 @@ import fmt
 import http.client as client
 import time
 
-const ERROR_BODY_LIMIT = 64 * 1024
+pub const ERROR_BODY_LIMIT = 64 * 1024
 
-type run_state_t = struct {
+pub type run_state_t = struct {
     ref<event_stream.assistant_stream_t> stream
     ref<types.model_t> model
     ref<types.context_t> context
@@ -23,14 +23,13 @@ type run_state_t = struct {
     ref<client.response_t>? response = null
 }
 
-fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
     var result = event_stream.new()
     go run(result, model, context, options)
     return result
 }
 
-#local
-fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
+pub fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
     debug.log('provider', 'mistral stream start model=' + model.id)
     var processor = mistral.processor(model, time.now().ms_timestamp())
     var state = new run_state_t(stream = stream, model = model, context = context, options = options, processor = processor,)
@@ -40,8 +39,7 @@ fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, re
     }
 }
 
-#local
-fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
+pub fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
     if stream.is_aborted() {
         throw errorf('Operation aborted')
     }
@@ -90,8 +88,7 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     debug.log('provider', 'mistral stream end')
 }
 
-#local
-fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response_t>! {
+pub fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response_t>! {
     var stream = state.stream
     if stream.is_aborted() {
         throw errorf('Request aborted')
@@ -130,8 +127,7 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
     return send_with_retry(state, retry_index + 1)
 }
 
-#local
-fn send_once(ref<run_state_t> state): ref<client.response_t>! {
+pub fn send_once(ref<run_state_t> state): ref<client.response_t>! {
     debug.log('provider', 'mistral sending request')
     var request = client.new().post(mistral_messages.endpoint(state.model)).timeout(state.options.timeout_ms).header('Authorization', mistral_messages.authorization(state.options)).header('Content-Type', 'application/json').header('Accept', 'text/event-stream').content(state.body)
     var headers = decorators.copilot_headers(state.context)
@@ -141,8 +137,7 @@ fn send_once(ref<run_state_t> state): ref<client.response_t>! {
     return request.send()
 }
 
-#local
-fn response_headers(ref<client.response_t> response): [provider_retry.header_t] {
+pub fn response_headers(ref<client.response_t> response): [provider_retry.header_t] {
     [provider_retry.header_t] result = []
     for name, value in response.headers {
         result.push(provider_retry.header_t {name: name, value: value,})
@@ -150,8 +145,7 @@ fn response_headers(ref<client.response_t> response): [provider_retry.header_t] 
     return result
 }
 
-#local
-fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
+pub fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
     debug.log('provider', 'mistral terminal failure: ' + message)
     state.processor.output.stop_reason = stream.is_aborted() ? types.STOP_ABORTED : types.STOP_ERROR
     state.processor.output.error_message = message
@@ -161,8 +155,7 @@ fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, str
     stream.end() catch error {}
 }
 
-#local
-fn read_error_body(ref<client.response_t> response): string! {
+pub fn read_error_body(ref<client.response_t> response): string! {
     [u8] result = []
     [u8] scratch = vec<u8>.new(0, 4096)
     for result.len() < ERROR_BODY_LIMIT {
@@ -182,8 +175,7 @@ fn read_error_body(ref<client.response_t> response): string! {
     return result as string
 }
 
-#local
-fn clear_streaming_scratch(ref<types.assistant_message_t> message) {
+pub fn clear_streaming_scratch(ref<types.assistant_message_t> message) {
     for block in message.content {
         if block is ref<types.tool_call_t> tool_call {
             tool_call.partial_json = ''

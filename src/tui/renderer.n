@@ -1,22 +1,25 @@
+import adou.src.debug
 import adou.src.tui.text_utils
+import fmt
 import strings
+import time
 
-const STRATEGY_NONE = 'none'
-const STRATEGY_FIRST = 'first'
-const STRATEGY_FULL = 'full'
-const STRATEGY_DIFF = 'diff'
-const SYNC_START = '\x1b[?2026h'
-const SYNC_END = '\x1b[?2026l'
-const LINE_RESET = '\x1b[0m\x1b]8;;\x07'
+pub const STRATEGY_NONE = 'none'
+pub const STRATEGY_FIRST = 'first'
+pub const STRATEGY_FULL = 'full'
+pub const STRATEGY_DIFF = 'diff'
+pub const SYNC_START = '\x1b[?2026h'
+pub const SYNC_END = '\x1b[?2026l'
+pub const LINE_RESET = '\x1b[0m\x1b]8;;\x07'
 
-type result_t = struct {
+pub type result_t = struct {
     string output
     string strategy
     int first_changed = -1
     int last_changed = -1
 }
 
-type renderer_t = struct {
+pub type renderer_t = struct {
     [string] previous_lines = []
     int previous_width
     int previous_height
@@ -24,33 +27,49 @@ type renderer_t = struct {
     int hardware_cursor_row
 }
 
-fn new(): ref<renderer_t> {
+pub fn new(): ref<renderer_t> {
     return new renderer_t(previous_lines = vec<string>.cap_of(16))
 }
 
-fn renderer_t.render(&self, [string] input_lines, int width, int height): result_t! {
+pub fn renderer_t.render(&self, [string] input_lines, int width, int height): result_t! {
     if width <= 0 || height <= 0 {
         throw errorf('terminal dimensions must be positive')
     }
     [string] lines = vec<string>.cap_of(input_lines.len())
     for input in input_lines {
         string normalized = text_utils.normalize_terminal_output(input)
-        int visible = text_utils.visible_width(normalized)
-        if visible > width {
-            throw errorf('rendered line exceeds terminal width: %d > %d', visible, width)
+        // Every renderer element represents one terminal row.  Keep this
+        // invariant even if a component accidentally returns embedded line
+        // breaks; otherwise the terminal advances while diff state does not.
+        string physical_text = normalized.replace('\r\n', '\n').replace('\r', '\n')
+        [string] physical_lines = physical_text.contains('\n') ? physical_text.split('\n') : [physical_text]
+        for physical in physical_lines {
+            int visible = text_utils.visible_width(physical)
+            if visible > width {
+                string crash_data = 'Crash at ' + fmt.sprintf('%d', time.now().ms_timestamp()) + '\n' + fmt.sprintf('Terminal width: %d\nLine %d visible width: %d\n\n', width, lines.len(), visible)
+                crash_data += '=== All rendered lines ===\n'
+                for index, rendered in lines {
+                    crash_data += fmt.sprintf('[%d] (w=%d) %s\n', index, text_utils.visible_width(rendered), rendered)
+                }
+                crash_data += fmt.sprintf('[%d] (w=%d) %s\n', lines.len(), visible, physical)
+                debug.write_crash_file(crash_data) catch error {}
+                throw errorf('rendered line exceeds terminal width: %d > %d', visible, width)
+            }
+            lines.push(physical + LINE_RESET)
         }
-        lines.push(normalized + LINE_RESET)
     }
     bool width_changed = self.previous_width != 0 && self.previous_width != width
     bool height_changed = self.previous_height != 0 && self.previous_height != height
     if self.previous_lines.len() == 0 && !width_changed && !height_changed {
+        debug.log_redraw('first render', self.previous_lines.len(), lines.len(), height)
         string output = full_output(lines, false)
-        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height))
         return result_t {output: output, strategy: STRATEGY_FIRST,}
     }
     if width_changed || height_changed {
+        debug.log_redraw(width_changed ? 'terminal width changed' : 'terminal height changed', self.previous_lines.len(), lines.len(), height)
         string output = full_output(lines, true)
-        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height))
         return result_t {output: output, strategy: STRATEGY_FULL,}
     }
     int first_changed = -1
@@ -71,24 +90,53 @@ fn renderer_t.render(&self, [string] input_lines, int width, int height): result
         self.previous_height = height
         return result_t {strategy: STRATEGY_NONE,}
     }
-    if first_changed < self.previous_viewport_top {
+    int new_last_row = lines.len() > 0 ? lines.len() - 1 : 0
+    bool deleted_viewport_prefix = first_changed >= lines.len() && new_last_row < self.previous_viewport_top
+    if first_changed < self.previous_viewport_top || deleted_viewport_prefix {
+        debug.log_redraw('changed above viewport', self.previous_lines.len(), lines.len(), height)
         string output = full_output(lines, true)
-        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height))
         return result_t {output: output, strategy: STRATEGY_FULL, first_changed: first_changed, last_changed: last_changed,}
     }
-    string output = differential_output(self.previous_lines, lines, self.hardware_cursor_row, first_changed, last_changed)
+    if first_changed >= lines.len() && self.previous_lines.len() - lines.len() > height {
+        debug.log_redraw('large deletion', self.previous_lines.len(), lines.len(), height)
+        string output = full_output(lines, true)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height))
+        return result_t {output: output, strategy: STRATEGY_FULL, first_changed: first_changed, last_changed: last_changed,}
+    }
+    int target_row = first_changed
+    bool appending = first_changed == self.previous_lines.len() && lines.len() > self.previous_lines.len() && first_changed > 0
+    if appending {
+        target_row = first_changed - 1
+    }
+    int previous_bottom = self.previous_viewport_top + height - 1
+    int next_viewport_top = self.previous_viewport_top
+    if target_row > previous_bottom {
+        next_viewport_top += target_row - previous_bottom
+    }
+    string output = differential_output(self.previous_lines, lines, self.hardware_cursor_row, self.previous_viewport_top, height, first_changed, last_changed)
+    string frame_debug = fmt.sprintf('firstChanged: %d\nviewportTop: %d\ncursorRow: %d\nheight: %d\nlineDiff: %d\nhardwareCursorRow: %d\nnewLines.length: %d\npreviousLines.length: %d\n\n=== newLines ===\n%s\n\n=== previousLines ===\n%s\n\n=== buffer ===\n%s\n', first_changed, self.previous_viewport_top, self.hardware_cursor_row, height, last_changed - first_changed + 1, self.hardware_cursor_row, lines.len(), self.previous_lines.len(), strings.join(lines, '\n'), strings.join(self.previous_lines, '\n'), output)
+    debug.log_tui_frame(frame_debug)
     int final_cursor = lines.len() > 0 ? (last_changed < lines.len() ? last_changed : lines.len() - 1) : 0
-    self.commit(lines, width, height, final_cursor)
+    if lines.len() > 0 && final_cursor - height + 1 > next_viewport_top {
+        next_viewport_top = final_cursor - height + 1
+    }
+    self.commit(lines, width, height, final_cursor, next_viewport_top)
     return result_t {output: output, strategy: STRATEGY_DIFF, first_changed: first_changed, last_changed: last_changed,}
 }
 
-#local
-fn renderer_t.commit(&self, [string] lines, int width, int height, int hardware_cursor_row) {
+pub fn renderer_t.commit(&self, [string] lines, int width, int height, int hardware_cursor_row, int viewport_top) {
     self.previous_lines = copy_strings(lines)
     self.previous_width = width
     self.previous_height = height
-    self.previous_viewport_top = lines.len() > height ? lines.len() - height : 0
+    self.previous_viewport_top = viewport_top
     self.hardware_cursor_row = hardware_cursor_row
+}
+
+#local
+fn viewport_top(int line_count, int height): int {
+    int buffer_height = line_count > height ? line_count : height
+    return buffer_height > height ? buffer_height - height : 0
 }
 
 #local
@@ -102,11 +150,51 @@ fn full_output([string] lines, bool clear): string {
 }
 
 #local
-fn differential_output([string] previous, [string] lines, int hardware_cursor_row, int first_changed, int last_changed): string {
+fn differential_output([string] previous, [string] lines, int hardware_cursor_row, int previous_viewport_top, int height, int first_changed, int last_changed): string {
     string output = SYNC_START
+    // When every changed line was deleted, there is no replacement line to
+    // render.  Pi clears the rows after the new content separately, starting
+    // one row below the new last line, then returns the cursor to that line.
+    if first_changed >= lines.len() {
+        int target = lines.len() > 0 ? lines.len() - 1 : 0
+        int difference = target - hardware_cursor_row
+        if difference > 0 {output += csi_move(difference, 'B')} else if difference < 0 {output += csi_move(-difference, 'A')}
+        output += '\r'
+        int extra = previous.len() - lines.len()
+        int clear_start = lines.len() == 0 ? 0 : 1
+        if extra > 0 && clear_start > 0 {
+            output += csi_move(clear_start, 'B')
+        }
+        for int index = 0; index < extra; index += 1 {
+            output += '\r\x1b[2K'
+            if index < extra - 1 {
+                output += csi_move(1, 'B')
+            }
+        }
+        int move_back = extra - 1 + clear_start
+        if move_back > 0 {
+            output += csi_move(move_back, 'A')
+        }
+        return output + SYNC_END
+    }
     bool append_at_end = first_changed == previous.len() && lines.len() > previous.len() && first_changed > 0
     int target = append_at_end ? first_changed - 1 : first_changed
-    int difference = target - hardware_cursor_row
+    int viewport_top = previous_viewport_top
+    int previous_bottom = viewport_top + height - 1
+    if target > previous_bottom {
+        int current_screen_row = hardware_cursor_row - viewport_top
+        if current_screen_row < 0 {current_screen_row = 0}
+        if current_screen_row >= height {current_screen_row = height - 1}
+        int move_to_bottom = height - 1 - current_screen_row
+        if move_to_bottom > 0 {
+            output += csi_move(move_to_bottom, 'B')
+        }
+        int scroll = target - previous_bottom
+        output += repeat_newlines(scroll)
+        viewport_top += scroll
+        hardware_cursor_row = target
+    }
+    int difference = (target - viewport_top) - (hardware_cursor_row - viewport_top)
     if difference > 0 {output += csi_move(difference, 'B')} else if difference < 0 {output += csi_move(-difference, 'A')}
     output += append_at_end ? '\r\n' : '\r'
     int render_end = last_changed < lines.len() ? last_changed : lines.len() - 1
@@ -122,12 +210,15 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
         }
         int extra = previous.len() - lines.len()
         if extra > 0 {
-            output += '\x1b[2K'
-        }
-        for int index = 1; index < extra; index += 1 {
+            // The cursor is on the last rendered line.  Pi clears rows
+            // after that line; clearing before moving down would erase the
+            // newly rendered content when the changed range ends at the
+            // final line (for example, a tool shrinking from running to
+            // complete).
             output += '\r\n\x1b[2K'
-        }
-        if extra > 0 {
+            for int index = 1; index < extra; index += 1 {
+                output += '\r\n\x1b[2K'
+            }
             output += csi_move(extra, 'A')
         }
     }
@@ -137,6 +228,15 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
 #local
 fn csi_move(int count, string direction): string {
     return count > 0 ? '\x1b[' + int_string(count) + direction : ''
+}
+
+#local
+fn repeat_newlines(int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += '\r\n'
+    }
+    return result
 }
 
 #local
@@ -159,8 +259,7 @@ fn int_string(int value): string {
     return ordered as string
 }
 
-#local
-fn copy_strings([string] values): [string] {
+pub fn copy_strings([string] values): [string] {
     [string] result = vec<string>.cap_of(values.len())
     for value in values {
         result.push(value)

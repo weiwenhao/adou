@@ -7,9 +7,9 @@ import fmt
 import json
 import strings
 import syscall
-const MIN_OUTPUT_TOKENS = 16
-const MAX_PROMPT_CACHE_KEY_CHARS = 64
-fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+pub const MIN_OUTPUT_TOKENS = 16
+pub const MAX_PROMPT_CACHE_KEY_CHARS = 64
+pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
     {string:any} body = {}
     body['model'] = model.id
     body['input'] = convert_messages(model, context)
@@ -51,7 +51,7 @@ fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.strea
     }
     return json.serialize(body)
 }
-fn endpoint(ref<types.model_t> model): string {
+pub fn endpoint(ref<types.model_t> model): string {
     if model.provider == 'azure-openai-responses' {
         return azure_endpoint(model)
     }
@@ -66,7 +66,7 @@ fn endpoint(ref<types.model_t> model): string {
 // The base URL resolves from AZURE_OPENAI_BASE_URL, AZURE_OPENAI_RESOURCE_NAME,
 // or the model's own base URL; the deployment defaults to the model id with
 // an optional AZURE_OPENAI_DEPLOYMENT_NAME_MAP override (model=deployment, ...).
-fn azure_endpoint(ref<types.model_t> model): string {
+pub fn azure_endpoint(ref<types.model_t> model): string {
     string base = syscall.get_env('AZURE_OPENAI_BASE_URL')
     if base == '' {
         string resource = syscall.get_env('AZURE_OPENAI_RESOURCE_NAME')
@@ -98,14 +98,13 @@ fn azure_endpoint(ref<types.model_t> model): string {
     }
     return base + '/deployments/' + deployment + '/responses?api-version=' + api_version
 }
-fn authorization(ref<types.stream_options_t> options): string! {
+pub fn authorization(ref<types.stream_options_t> options): string! {
     if options.api_key == '' {
         throw errorf('No API key for provider: openai')
     }
     return 'Bearer ' + options.api_key
 }
-#local
-fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [any]! {
+pub fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [any]! {
     [any] result = []
     if context.system_prompt != '' {
         {string:any} system = {}
@@ -264,8 +263,7 @@ fn assistant_tool_item(ref<types.model_t> model, ref<types.assistant_message_t> 
     item['arguments'] = json.serialize(tool_call.arguments)
     return item
 }
-#local
-fn tool_result_item(ref<types.tool_result_message_t> message): any {
+pub fn tool_result_item(ref<types.tool_result_message_t> message): any {
     string call_id = ids.normalize_id_part(message.tool_call_id)
     var parts = message.tool_call_id.split('|')
     if parts.len() > 0 {
@@ -302,8 +300,7 @@ fn normalize_tool_call_id(ref<types.model_t> model, ref<types.assistant_message_
     }
     return call_id + '|' + item_id
 }
-#local
-fn convert_tools([ref<types.tool_t>] tools): [any]! {
+pub fn convert_tools([ref<types.tool_t>] tools): [any]! {
     [any] result = []
     for tool in tools {
         {string:any} item = {}

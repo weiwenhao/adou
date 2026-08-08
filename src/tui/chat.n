@@ -11,7 +11,7 @@ import strings
 import syscall
 import time
 
-type tool_view_t = struct {
+pub type tool_view_t = struct {
     string id
     string name
     string detail
@@ -19,7 +19,7 @@ type tool_view_t = struct {
     bool is_error
 }
 
-type chat_t = struct {
+pub type chat_t = struct {
     [ai_types.message_t] messages = []
     ref<ai_types.assistant_message_t>? streaming_assistant = null
     [ref<tool_view_t>] active_tools = []
@@ -50,34 +50,34 @@ type chat_t = struct {
     bool context_known = true
 }
 
-fn new(string model, string cwd): ref<chat_t> {
+pub fn new(string model, string cwd): ref<chat_t> {
     return new chat_t(model = model, cwd = cwd, active_tools = vec<ref<tool_view_t>>.cap_of(4))
 }
 
-fn chat_t.configure(&self, int context_window, string thinking) {
+pub fn chat_t.configure(&self, int context_window, string thinking) {
     self.context_window = context_window
     self.thinking = thinking == '' ? 'off' : thinking
 }
 
-fn chat_t.set_auto_compaction(&self, bool enabled) {
+pub fn chat_t.set_auto_compaction(&self, bool enabled) {
     self.auto_compaction = enabled
 }
 
-fn chat_t.toggle_tool_output(&self): bool {
+pub fn chat_t.toggle_tool_output(&self): bool {
     self.tool_output_expanded = !self.tool_output_expanded
     return self.tool_output_expanded
 }
 
-fn chat_t.toggle_thinking_visibility(&self): bool {
+pub fn chat_t.toggle_thinking_visibility(&self): bool {
     self.thinking_visible = !self.thinking_visible
     return self.thinking_visible
 }
 
-fn chat_t.load_messages(&self, [ai_types.message_t] messages) {
+pub fn chat_t.load_messages(&self, [ai_types.message_t] messages) {
     self.messages = messages.slice(0, messages.len())
 }
 
-fn chat_t.set_usage_totals(&self, ai_types.usage_t usage) {
+pub fn chat_t.set_usage_totals(&self, ai_types.usage_t usage) {
     self.total_input_tokens = usage.input
     self.total_output_tokens = usage.output
     self.total_cache_read = usage.cache_read
@@ -85,19 +85,19 @@ fn chat_t.set_usage_totals(&self, ai_types.usage_t usage) {
     self.total_cost = usage.cost.total
 }
 
-fn chat_t.set_latest_cache_hit_rate(&self, float rate) {
+pub fn chat_t.set_latest_cache_hit_rate(&self, float rate) {
     self.latest_cache_hit_rate = rate
 }
 
-fn chat_t.set_context_known(&self, bool known) {
+pub fn chat_t.set_context_known(&self, bool known) {
     self.context_known = known
 }
 
-fn chat_t.set_provider_visibility(&self, bool visible) {
+pub fn chat_t.set_provider_visibility(&self, bool visible) {
     self.show_provider = visible
 }
 
-fn chat_t.apply(&self, session_stream.event_t event): void! {
+pub fn chat_t.apply(&self, session_stream.event_t event): void! {
     if event.kind == session_stream.EVENT_BASH_START {
         self.active_bash = new ai_types.bash_execution_message_t(command = event.bash_command, exclude_from_context = event.bash_exclude_from_context)
         self.running = true
@@ -264,7 +264,7 @@ fn chat_t.apply(&self, session_stream.event_t event): void! {
     }
 }
 
-fn chat_t.render(&self, int width): [string]! {
+pub fn chat_t.render(&self, int width): [string]! {
     if width <= 0 {
         throw errorf('chat width must be positive')
     }
@@ -281,11 +281,16 @@ fn chat_t.render(&self, int width): [string]! {
     for tool in self.active_tools {
         string marker = tool.done ? '✓ ' : spinner_frame(self.spinner_index) + ' '
         string color = tool.is_error ? theme.ERROR : tool.done ? theme.SUCCESS : theme.ACCENT
-        string line = color + marker + theme.TEXT + tool.name + theme.RESET
+        string line = color + marker + theme.fg(theme.TEXT, tool.name)
         if tool.detail != '' {
+            // A renderer line must never contain a physical newline.  Pi's
+            // tool component owns multiline output as separate rows; the
+            // collapsed preview remains one row so cursor accounting stays
+            // synchronized with the terminal during streaming updates.
+            string preview = tool.detail.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
             int detail_width = width - text_utils.visible_width(line) - 1
             if detail_width < 1 {detail_width = 1}
-            line += ' ' + theme.fg(theme.MUTED, text_utils.truncate_to_width(tool.detail, detail_width, '...', false))
+            line += ' ' + theme.fg(theme.MUTED, text_utils.truncate_to_width(preview, detail_width, '...', false))
         }
         string background = tool.is_error ? theme.TOOL_ERROR_BG : tool.done ? theme.TOOL_SUCCESS_BG : theme.TOOL_PENDING_BG
         result.push(colored_row(background, line, width))
@@ -367,7 +372,7 @@ fn chat_t.render(&self, int width): [string]! {
     return result
 }
 
-fn chat_t.clear(&self) {
+pub fn chat_t.clear(&self) {
     self.messages = []
     self.streaming_assistant = null
     self.active_bash = null
@@ -401,7 +406,7 @@ fn render_message_lines(ai_types.message_t message, int width, bool tool_output_
         result.append(render_assistant_lines(assistant, width, false, thinking_visible))
     } else if message is ref<ai_types.tool_result_message_t> tool {
         string color = tool.is_error ? theme.ERROR : theme.SUCCESS
-        string prefix = color + (tool.is_error ? '✗ ' : '✓ ') + theme.TEXT + tool.tool_name + theme.RESET
+        string prefix = color + (tool.is_error ? '✗ ' : '✓ ') + theme.fg(theme.TEXT, tool.tool_name)
         string body = tool_message_text(*tool)
         string preview = body.replace('\r\n', '\n').replace('\r', '\n').replace('\n', ' ')
         string line = prefix + (preview != '' ? ' ' + theme.fg(theme.MUTED, preview) : '')
@@ -707,8 +712,7 @@ fn tool_message_text(ai_types.tool_result_message_t tool): string {
     return text
 }
 
-#local
-fn chat_t.find_tool(&self, string id): ref<tool_view_t>? {
+pub fn chat_t.find_tool(&self, string id): ref<tool_view_t>? {
     for tool in self.active_tools {
         if tool.id == id {
             return tool
@@ -717,8 +721,7 @@ fn chat_t.find_tool(&self, string id): ref<tool_view_t>? {
     return null
 }
 
-#local
-fn chat_t.remove_tool(&self, string id) {
+pub fn chat_t.remove_tool(&self, string id) {
     [ref<tool_view_t>] remaining = vec<ref<tool_view_t>>.cap_of(self.active_tools.len())
     for tool in self.active_tools {
         if tool.id != id {

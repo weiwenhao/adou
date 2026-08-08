@@ -1,21 +1,20 @@
+import adou.src.json_util
 import adou.src.session.types
 import adou.src.session.identity
 import fs
 import fmt
 import json
-import libc
 import syscall
 
-type object_t = map<string, ref<json.value_t>>
 
-fn load(string file_path): ref<types.load_result_t>! {
+pub fn load(string file_path): ref<types.load_result_t>! {
     var file = fs.open(file_path, syscall.O_RDONLY, 0)
     string content = file.content()
     file.close()
     bool needs_separator = content.len() > 0 && content[content.len() - 1] != '\n'.char()
     var lines = content.split('\n')
     ref<types.header_t>? header = null
-    [json.value_t] entry_values = []
+    [any] entry_values = []
     bool recovered_tail = false
     int malformed_lines = 0
     [string] warnings = []
@@ -24,7 +23,8 @@ fn load(string file_path): ref<types.load_result_t>! {
         if line == '' {
             continue
         }
-        var value = json.parse(line) catch error {
+        any parsed = null
+        parsed = json_util.parse(line) catch error {
             malformed_lines += 1
             bool is_tail = index == lines.len() - 1 && needs_separator
             if is_tail {
@@ -33,18 +33,20 @@ fn load(string file_path): ref<types.load_result_t>! {
             } else {
                 warnings.push(fmt.sprintf('Skipped malformed session record at line %d: %s', index + 1, error.msg()))
             }
-            json.null_value()
+            {string:any} empty = {}
+            parsed = empty
         }
-        if value.kind != json.VALUE_OBJECT {
+        var value = parsed
+        if !json_util.is_obj(value) {
             continue
         }
-        var object = value.as_object() as object_t
-        if !object.contains('type') || object['type'].kind != json.VALUE_STRING {
+        var object = value as {string:any}
+        if !object.contains('type') || !(object['type'] is string) {
             malformed_lines += 1
             warnings.push(fmt.sprintf('Skipped session record without type at line %d', index + 1))
             continue
         }
-        string kind = object['type'].text
+        string kind = object['type'] as string
         if kind == 'session' {
             if header is ref<types.header_t> {
                 throw errorf('session file contains multiple headers')
@@ -78,21 +80,21 @@ fn load(string file_path): ref<types.load_result_t>! {
     return result
 }
 
-fn encode_header(ref<types.header_t> header): string! {
-    object_t object = {}
-    object['type'] = boxed_string('session')
-    object['version'] = number(header.version)
-    object['id'] = boxed_string(header.id)
-    object['timestamp'] = boxed_string(header.timestamp)
-    object['cwd'] = boxed_string(header.cwd)
+pub fn encode_header(ref<types.header_t> header): string! {
+    {string:any} object = {}
+    object['type'] = 'session'
+    object['version'] = header.version
+    object['id'] = header.id
+    object['timestamp'] = header.timestamp
+    object['cwd'] = header.cwd
     if header.parent_session != '' {
-        object['parentSession'] = boxed_string(header.parent_session)
+        object['parentSession'] = header.parent_session
     }
-    return json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
+    return json.serialize(object)
 }
 
-fn parse_header(json.value_t value): ref<types.header_t>! {
-    var object = value.as_object() as object_t
+pub fn parse_header(any value): ref<types.header_t>! {
+    var object = value as {string:any}
     int version = optional_int(object, 'version', 1)
     if version < 1 || version > types.CURRENT_VERSION {
         throw errorf('unsupported session version %d; newest supported version is %d', version, types.CURRENT_VERSION)
@@ -101,23 +103,27 @@ fn parse_header(json.value_t value): ref<types.header_t>! {
 }
 
 #local
-fn migrate_v1_to_v2([json.value_t] entries): void! {
+fn migrate_v1_to_v2([any] entries): void! {
     string previous_id = ''
     {string:bool} used = {}
     for index, value in entries {
-        var object = value.as_object() as object_t
+        var object = value as {string:any}
         string id = identity.short_id()
         for used.contains(id) {
             id = identity.short_id()
         }
         used[id] = true
-        object['id'] = boxed_string(id)
-        object['parentId'] = previous_id == '' ? json.box_value(json.null_value()) : boxed_string(previous_id)
-        entries[index] = json.object_value(object as map<string, ref<json.value_t>>)
+        object['id'] = id
+        if previous_id == '' {
+            object['parentId'] = null
+        } else {
+            object['parentId'] = previous_id
+        }
+        entries[index] = object
         previous_id = id
     }
     for index, value in entries {
-        var object = value.as_object() as object_t
+        var object = value as {string:any}
         if optional_string(object, 'type') != types.ENTRY_COMPACTION || !object.contains('firstKeptEntryIndex') {
             continue
         }
@@ -126,75 +132,62 @@ fn migrate_v1_to_v2([json.value_t] entries): void! {
         if entry_index < 0 || entry_index >= entries.len() {
             throw errorf('v1 compaction entry at index %d has invalid firstKeptEntryIndex %d', index, file_index)
         }
-        var target = entries[entry_index].as_object() as object_t
-        object['firstKeptEntryId'] = boxed_string(required_string(target, 'id'))
+        var target = entries[entry_index] as {string:any}
+        object['firstKeptEntryId'] = required_string(target, 'id')
         object.del('firstKeptEntryIndex')
-        entries[index] = json.object_value(object as map<string, ref<json.value_t>>)
+        entries[index] = object
     }
 }
 
 #local
-fn migrate_v2_to_v3([json.value_t] entries): void! {
+fn migrate_v2_to_v3([any] entries): void! {
     for index, value in entries {
-        var object = value.as_object() as object_t
-        if optional_string(object, 'type') != types.ENTRY_MESSAGE || !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+        var object = value as {string:any}
+        if optional_string(object, 'type') != types.ENTRY_MESSAGE || !object.contains('message') || !(object['message'] is {string:any}) {
             continue
         }
-        var message = object['message'].as_object() as object_t
+        var message = object['message'] as {string:any}
         if optional_string(message, 'role') == 'hookMessage' {
-            message['role'] = boxed_string('custom')
-            object['message'] = json.box_value(json.object_value(message as map<string, ref<json.value_t>>))
-            entries[index] = json.object_value(object as map<string, ref<json.value_t>>)
+            message['role'] = 'custom'
+            object['message'] = message
+            entries[index] = object
         }
     }
 }
 
-fn parse_entry(json.value_t value): ref<types.entry_t>! {
-    var object = value.as_object() as object_t
+pub fn parse_entry(any value): ref<types.entry_t>! {
+    var object = value as {string:any}
     string kind = required_string(object, 'type')
     string id = required_string(object, 'id')
     string timestamp = required_string(object, 'timestamp')
     if !object.contains('parentId') {
         throw errorf('session entry %s has no parentId', id)
     }
-    bool has_parent = object['parentId'].kind != json.VALUE_NULL
+    bool has_parent = !json_util.is_null(object['parentId'])
     string parent_id = ''
     if has_parent {
-        parent_id = object['parentId'].as_string()
+        parent_id = object['parentId'] as string
     }
     return new types.entry_t(kind = kind, id = id, has_parent = has_parent, parent_id = parent_id, timestamp = timestamp, raw = value)
 }
 
-#local
-fn required_string(object_t object, string key): string! {
+pub fn required_string({string:any} object, string key): string! {
     if !object.contains(key) {
         throw errorf('session JSON missing `%s`', key)
     }
-    return object[key].as_string()
+    return object[key] as string
 }
 
-#local
-fn optional_string(object_t object, string key): string {
-    if !object.contains(key) || object[key].kind != json.VALUE_STRING {
+pub fn optional_string({string:any} object, string key): string {
+    if !object.contains(key) || !(object[key] is string) {
         return ''
     }
-    return object[key].text
+    return object[key] as string
 }
 
-#local
-fn optional_int(object_t object, string key, int fallback): int {
-    if !object.contains(key) || object[key].kind != json.VALUE_NUMBER {
+pub fn optional_int({string:any} object, string key, int fallback): int {
+    if !object.contains(key) || !(object[key] is f64) {
         return fallback
     }
-    return libc.atol(object[key].number.to_cstr()) as int
-}
-
-#local
-fn boxed_string(string value): ref<json.value_t> {
-    return json.box_value(json.string_value(value))
-}
-
-#local
-fn number(int value): ref<json.value_t>! {
-    return json.box_value(json.number_value(fmt.sprintf('%d', value)))
+    return object[key] as f64 as int
 }

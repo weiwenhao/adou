@@ -1,48 +1,55 @@
+import adou.src.ai.providers.registry
 import adou.src.ai.types as ai_types
 import strings
 
 // A resolved --models entry.  Pi resolves scope patterns once, preserves the
 // user's pattern order, removes duplicate models, and carries an optional
 // per-entry thinking level into model cycling.
-type scoped_model_t = struct {
+pub type scoped_model_t = struct {
     ref<ai_types.model_t> model
     string thinking_level
 }
 
-fn all(): [ref<ai_types.model_t>] {
-    return [deepseek_v4_flash(), openai_default(), anthropic_default(),]
+// The full Pi-style catalog (generated from models.dev + OpenRouter + Vercel
+// AI Gateway through scripts/generate-model-catalog.py) followed by the MVP
+// defaults for ids the live catalog does not carry (e.g. gpt-5.1-codex).
+pub fn all(): [ref<ai_types.model_t>] {
+    [ref<ai_types.model_t>] result = []
+    var catalog = registry.all_models()
+    for model in catalog {
+        result.push(model)
+    }
+    for fallback in [openai_default()] {
+        if !catalog_contains(result, fallback) {
+            result.push(fallback)
+        }
+    }
+    return result
 }
 
-fn find(string reference): ref<ai_types.model_t>? {
-    string value = strip_thinking_suffix(reference.trim([' ', '\t']))
-    if value == '' {
+pub fn find(string reference): ref<ai_types.model_t>? {
+    string raw_value = reference.trim([' ', '\t'])
+    if raw_value == '' {
         return null
     }
+    string value = strip_thinking_suffix(raw_value)
     string lower_value = value.to_lower()
     [ref<ai_types.model_t>] available = all()
 
-    // Pi resolves canonical provider/model references case-insensitively. Do
-    // this before splitting on '/', because a model id may itself contain a
-    // slash (for example an OpenRouter-style id).
-    for model in available {
-        string canonical = (model.provider + '/' + model.id).to_lower()
-        if canonical == lower_value {
-            return model
-        }
-    }
-
+    // A known provider prefix wins over bare-id matching so a provider-scoped
+    // reference like `openai/gpt-5.1-codex` never resolves to an OpenRouter
+    // routing id that literally contains `openai/`. Bare ids that contain a
+    // slash (OpenRouter routing variants) still match through the unscoped
+    // id comparison below.
     string provider = ''
     string id = value
     int separator = value.find('/')
-    if separator >= 0 && known_provider(value.slice(0, separator)) {
+    if separator >= 0 && known_provider(value.slice(0, separator).to_lower()) {
         provider = value.slice(0, separator).to_lower()
         id = value.slice(separator + 1, value.len())
     }
     string lower_id = id.to_lower()
 
-    // Bare ids are accepted when they identify exactly one model. This is
-    // also what lets `--model sonnet` resolve to the configured Anthropic
-    // model instead of silently creating a custom DeepSeek id.
     ref<ai_types.model_t>? exact = null
     int exact_count = 0
     for model in available {
@@ -84,7 +91,7 @@ fn find(string reference): ref<ai_types.model_t>? {
     return null
 }
 
-fn default_for(string provider): ref<ai_types.model_t>! {
+pub fn default_for(string provider): ref<ai_types.model_t>! {
     if provider == 'deepseek' {
         return deepseek_v4_flash()
     }
@@ -101,7 +108,7 @@ fn default_for(string provider): ref<ai_types.model_t>! {
 // model catalogs to remove levels that the provider cannot honor. DeepSeek V4
 // exposes only off/high/max; unsupported levels are clamped to the nearest
 // supported level (preferring a stronger level when walking upward).
-fn clamp_thinking_level(ref<ai_types.model_t> model, string requested): string {
+pub fn clamp_thinking_level(ref<ai_types.model_t> model, string requested): string {
     [string] levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
     string value = requested.to_lower()
     int requested_index = 0
@@ -137,7 +144,7 @@ fn clamp_thinking_level(ref<ai_types.model_t> model, string requested): string {
 // Match Pi's getSupportedThinkingLevels() for the built-in MVP catalog. The
 // DeepSeek V4 models expose only off/high/max; ordinary reasoning models keep
 // the full public level sequence, while non-reasoning models expose off only.
-fn available_thinking_levels(ref<ai_types.model_t> model): [string] {
+pub fn available_thinking_levels(ref<ai_types.model_t> model): [string] {
     if !model.reasoning {
         return ['off']
     }
@@ -147,7 +154,7 @@ fn available_thinking_levels(ref<ai_types.model_t> model): [string] {
     return ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
 }
 
-fn list(): string {
+pub fn list(): string {
     [string] names = []
     for model in all() {
         names.push(model.provider + '/' + model.id)
@@ -155,7 +162,7 @@ fn list(): string {
     return strings.join(names, ', ')
 }
 
-fn list_filtered(string pattern): string {
+pub fn list_filtered(string pattern): string {
     [string] names = []
     string needle = pattern.trim([' ', '\t'])
     for model in all() {
@@ -167,7 +174,7 @@ fn list_filtered(string pattern): string {
     return strings.join(names, '\n')
 }
 
-fn allowed(string reference, [string] patterns): bool {
+pub fn allowed(string reference, [string] patterns): bool {
     if patterns.len() == 0 {return true}
     for pattern in patterns {
         if matches_reference_pattern(reference, pattern) {return true}
@@ -178,7 +185,7 @@ fn allowed(string reference, [string] patterns): bool {
 // Resolve the first model in registry order that matches a CLI --models
 // pattern. Pi uses the first scoped model as the initial selection when no
 // existing session or explicit --model is present.
-fn first_allowed([string] patterns): ref<ai_types.model_t>? {
+pub fn first_allowed([string] patterns): ref<ai_types.model_t>? {
     [scoped_model_t] resolved = resolve_scope(patterns)
     if resolved.len() > 0 {
         return resolved[0].model
@@ -190,7 +197,7 @@ fn first_allowed([string] patterns): ref<ai_types.model_t>? {
 // model (exact/partial matching follows find()), while glob patterns select
 // every matching catalog model in catalog order.  A model selected by an
 // earlier pattern is not reinserted when a later pattern also matches it.
-fn resolve_scope([string] patterns): [scoped_model_t] {
+pub fn resolve_scope([string] patterns): [scoped_model_t] {
     [scoped_model_t] result = []
     for raw_pattern in patterns {
         string pattern = raw_pattern.trim([' ', '\t'])
@@ -199,6 +206,18 @@ fn resolve_scope([string] patterns): [scoped_model_t] {
         string level = ''
         if base != pattern {
             level = pattern.slice(base.len() + 1, pattern.len()).to_lower()
+        } else if !has_glob(pattern) {
+            // Pi warns for an invalid suffix but still resolves the model
+            // prefix. There is no diagnostics channel in this MVP resolver;
+            // preserve the selection and leave its thinking level unset.
+            int separator = pattern.rfind(':')
+            if separator >= 0 {
+                string candidate = pattern.slice(0, separator)
+                ref<ai_types.model_t>? fallback = find(candidate)
+                if fallback is ref<ai_types.model_t> {
+                    base = candidate
+                }
+            }
         }
         if has_glob(base) {
             for model in all() {
@@ -226,11 +245,21 @@ fn resolve_scope([string] patterns): [scoped_model_t] {
 // model pattern that matches a reference.  A matching pattern without a
 // suffix intentionally stops the search: Pi treats the first occurrence as
 // authoritative instead of letting a later duplicate override it.
-fn thinking_for(string reference, [string] patterns): string {
+pub fn thinking_for(string reference, [string] patterns): string {
     for pattern in patterns {
         string trimmed = pattern.trim([' ', '\t'])
         if trimmed == '' {continue}
         string base = strip_thinking_suffix(trimmed)
+        if base == trimmed && !has_glob(trimmed) {
+            int separator = trimmed.rfind(':')
+            if separator >= 0 {
+                string candidate = trimmed.slice(0, separator)
+                ref<ai_types.model_t>? fallback = find(candidate)
+                if fallback is ref<ai_types.model_t> {
+                    base = candidate
+                }
+            }
+        }
         if matches_reference_pattern(reference, base) || (has_glob(base) && matches_value_pattern(reference, base)) {
             if base != trimmed {
                 string level = trimmed.slice(base.len() + 1, trimmed.len()).to_lower()
@@ -271,8 +300,7 @@ fn anthropic_default(): ref<ai_types.model_t> {
     return new ai_types.model_t(id = 'claude-sonnet-4-5', api = 'anthropic-messages', provider = 'anthropic', base_url = 'https://api.anthropic.com', reasoning = true, adaptive_thinking = true, context_window = 200000, max_tokens = 64000)
 }
 
-#local
-fn valid_thinking(string value): bool {
+pub fn valid_thinking(string value): bool {
     return value == 'off' || value == 'minimal' || value == 'low' || value == 'medium' || value == 'high' || value == 'xhigh' || value == 'max'
 }
 
@@ -285,9 +313,22 @@ fn thinking_level_supported(string value, bool deepseek_v4): bool {
 }
 
 #local
+fn catalog_contains([ref<ai_types.model_t>] values, ref<ai_types.model_t> candidate): bool {
+    for value in values {
+        if value.provider.to_lower() == candidate.provider.to_lower() && value.id.to_lower() == candidate.id.to_lower() {
+            return true
+        }
+    }
+    return false
+}
+
+#local
 fn known_provider(string value): bool {
-    string lower = value.to_lower()
-    return lower == 'deepseek' || lower == 'openai' || lower == 'anthropic'
+    var def = registry.find_def(value)
+    if def is ai_types.provider_def_t {
+        return true
+    }
+    return false
 }
 
 #local
@@ -350,8 +391,7 @@ fn matches_value_pattern(string value, string pattern): bool {
     return glob_matches(lower_pattern, lower_value)
 }
 
-#local
-fn glob_matches(string pattern, string value): bool {
+pub fn glob_matches(string pattern, string value): bool {
     int width = value.len() + 1
     [i8] memo = []
     for int index = 0; index < (pattern.len() + 1) * width; index += 1 {
@@ -360,8 +400,7 @@ fn glob_matches(string pattern, string value): bool {
     return glob_match_at(pattern, value, 0, 0, memo, width)
 }
 
-#local
-fn glob_match_at(string pattern, string value, int pattern_index, int value_index, [i8] memo, int width): bool {
+pub fn glob_match_at(string pattern, string value, int pattern_index, int value_index, [i8] memo, int width): bool {
     int memo_index = pattern_index * width + value_index
     if memo[memo_index] >= 0 {
         return memo[memo_index] == 1

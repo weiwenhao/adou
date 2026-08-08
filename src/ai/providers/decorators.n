@@ -5,7 +5,7 @@ import syscall
 // and anthropic-messages send paths. Pi spreads this logic across the API
 // layers and cloudflare-auth/stream helpers; Nature keeps it in one place.
 
-type header_t = struct {
+pub type header_t = struct {
     string name
     string value
 }
@@ -13,7 +13,7 @@ type header_t = struct {
 // Cloudflare account/gateway endpoints carry {CLOUDFLARE_ACCOUNT_ID} and
 // {CLOUDFLARE_GATEWAY_ID} placeholders that materialize from the resolved
 // provider environment before dispatch.
-fn resolve_base_url(ref<types.model_t> model): string {
+pub fn resolve_base_url(ref<types.model_t> model): string {
     string base = model.base_url
     base = base.replace('{CLOUDFLARE_ACCOUNT_ID}', syscall.get_env('CLOUDFLARE_ACCOUNT_ID'))
     base = base.replace('{CLOUDFLARE_GATEWAY_ID}', syscall.get_env('CLOUDFLARE_GATEWAY_ID'))
@@ -22,19 +22,19 @@ fn resolve_base_url(ref<types.model_t> model): string {
 
 // Cloudflare AI Gateway authenticates with cf-aig-authorization instead of
 // the standard Authorization / x-api-key headers.
-fn is_cloudflare_gateway(ref<types.model_t> model): bool {
+pub fn is_cloudflare_gateway(ref<types.model_t> model): bool {
     return model.provider == 'cloudflare-ai-gateway' || model.base_url.contains('gateway.ai.cloudflare.com')
 }
 
 // Pi's gateway auth removes Authorization and x-api-key entirely; callers
 // must skip the standard bearer header when this returns true.
-fn cloudflare_gateway_auth_header(string api_key): header_t {
+pub fn cloudflare_gateway_auth_header(string api_key): header_t {
     return header_t {name: 'cf-aig-authorization', value: 'Bearer ' + api_key,}
 }
 
 // GitHub Copilot requires X-Initiator (user- or agent-initiated) and
 // Openai-Intent; Copilot-Vision-Request is added when an image is present.
-fn copilot_headers(ref<types.context_t> context): [header_t] {
+pub fn copilot_headers(ref<types.context_t> context): [header_t] {
     [header_t] result = []
     string initiator = 'user'
     if context.messages.len() > 0 {

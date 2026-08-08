@@ -18,12 +18,12 @@ import path
 import strings
 import syscall
 
-type branch_collection_t = struct {
+pub type branch_collection_t = struct {
     [ref<types.entry_t>] entries = []
     bool has_common_ancestor
     string common_ancestor_id
 }
-type stats_t = struct {
+pub type stats_t = struct {
     int total_messages
     int user_messages
     int assistant_messages
@@ -33,7 +33,7 @@ type stats_t = struct {
     int context_tokens
     int context_window
 }
-type manager_t = struct {
+pub type manager_t = struct {
     ref<mutex.mutex_t> lock = mutex.mutex_t.new()
     string cwd
     string session_dir
@@ -50,7 +50,7 @@ type manager_t = struct {
     [string] warnings = []
 }
 
-fn default_session_dir(string cwd): string {
+pub fn default_session_dir(string cwd): string {
     string resolved = path_utils.clean(cwd)
     if resolved.starts_with('/') {
         resolved = resolved.slice(1, resolved.len())
@@ -62,13 +62,12 @@ fn default_session_dir(string cwd): string {
 // Resolve the session directory without creating it.  Startup selectors use
 // this to inspect persisted sessions while the active repository remains an
 // in-memory placeholder until the user confirms a choice.
-fn directory_for(string cwd, string requested): string! {
+pub fn directory_for(string cwd, string requested): string! {
     string resolved_cwd = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
     return requested == '' ? default_session_dir(resolved_cwd) : path_utils.resolve_to_cwd(requested, platform_cwd.current())
 }
 
-#local
-fn valid_session_id(string value): bool {
+pub fn valid_session_id(string value): bool {
     if value == '' {return false}
     if !is_session_id_char(value[0]) || !is_session_id_char(value[value.len() - 1]) {return false}
     for int index = 0; index < value.len(); index += 1 {
@@ -82,35 +81,35 @@ fn is_session_id_char(u8 value): bool {
     return (value >= 'a'.char() && value <= 'z'.char()) || (value >= 'A'.char() && value <= 'Z'.char()) || (value >= '0'.char() && value <= '9'.char()) || value == '-'.char() || value == '_'.char() || value == '.'.char()
 }
 
-fn in_memory(string cwd): ref<manager_t>! {
+pub fn in_memory(string cwd): ref<manager_t>! {
     return in_memory_with_parent(cwd, '')
 }
 
 // Pi's in-memory session manager still accepts a parentSession option.  It
 // does not write a file, but retaining the lineage in the header keeps the
 // session state identical until a caller chooses to persist it.
-fn in_memory_with_parent(string cwd, string parent_session): ref<manager_t>! {
+pub fn in_memory_with_parent(string cwd, string parent_session): ref<manager_t>! {
     string resolved = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
     string timestamp = identity.iso_now()
     var header = new types.header_t(version = types.CURRENT_VERSION, id = identity.uuid_v7(), timestamp = timestamp, cwd = resolved, parent_session = parent_session, raw = null)
     return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = '', persisted = false, header = header)
 }
 
-fn create(string cwd, string session_dir): ref<manager_t>! {
+pub fn create(string cwd, string session_dir): ref<manager_t>! {
     return create_with_parent(cwd, session_dir, '')
 }
 
-fn create_with_parent(string cwd, string session_dir, string parent_session): ref<manager_t>! {
+pub fn create_with_parent(string cwd, string session_dir, string parent_session): ref<manager_t>! {
     return create_with_id_and_parent(cwd, session_dir, identity.uuid_v7(), parent_session)
 }
 
 // Create a new Pi v3 session while preserving a caller-supplied id.  Pi's
 // --session-id uses this path when the requested project id does not exist.
-fn create_with_id(string cwd, string session_dir, string session_id): ref<manager_t>! {
+pub fn create_with_id(string cwd, string session_dir, string session_id): ref<manager_t>! {
     return create_with_id_and_parent(cwd, session_dir, session_id, '')
 }
 
-fn create_with_id_and_parent(string cwd, string session_dir, string session_id, string parent_session): ref<manager_t>! {
+pub fn create_with_id_and_parent(string cwd, string session_dir, string session_id, string parent_session): ref<manager_t>! {
     if !valid_session_id(session_id) {
         throw errorf('Invalid session id: %s', session_id)
     }
@@ -133,7 +132,7 @@ fn create_with_id_and_parent(string cwd, string session_dir, string session_id, 
 // Pi creates an explicit --session path when it does not exist yet.  Keep
 // repository.open strict for imports and id lookups, and use this helper only
 // for path-based startup/session switching.
-fn open_or_create(string file_path, string cwd): ref<manager_t>! {
+pub fn open_or_create(string file_path, string cwd): ref<manager_t>! {
     string resolved_file = path_utils.resolve_to_cwd(file_path, platform_cwd.current())
     if path_utils.exists(resolved_file) {
         return open(resolved_file)
@@ -151,7 +150,7 @@ fn open_or_create(string file_path, string cwd): ref<manager_t>! {
 // Pi's /import copies an external JSONL into the active session directory
 // before opening it.  Keep the source untouched and make the imported record
 // part of the same local session search space.
-fn manager_t.import_file(&self, string source_path): ref<manager_t>! {
+pub fn manager_t.import_file(&self, string source_path): ref<manager_t>! {
     string resolved_source = path_utils.resolve_to_cwd(source_path, platform_cwd.current())
     var source = fs.open(resolved_source, syscall.O_RDONLY, 0)
     string content = source.content() catch error {
@@ -177,7 +176,7 @@ fn manager_t.import_file(&self, string source_path): ref<manager_t>! {
     return open(destination)
 }
 
-fn open(string file_path): ref<manager_t>! {
+pub fn open(string file_path): ref<manager_t>! {
     string resolved_file = path_utils.resolve_to_cwd(file_path, platform_cwd.current())
     var loaded = jsonl.load(resolved_file)
     if loaded.migrated {
@@ -192,7 +191,7 @@ fn open(string file_path): ref<manager_t>! {
     return manager
 }
 
-fn continue_recent(string cwd, string session_dir): ref<manager_t>! {
+pub fn continue_recent(string cwd, string session_dir): ref<manager_t>! {
     string resolved = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
     string directory = session_dir
     if directory == '' {
@@ -234,7 +233,7 @@ fn continue_recent(string cwd, string session_dir): ref<manager_t>! {
 // and a unique prefix when selecting a session from the command line.  Keep
 // the lookup constrained to the current project so an id from another cwd is
 // never opened accidentally.
-fn open_by_id(string cwd, string session_dir, string requested): ref<manager_t>! {
+pub fn open_by_id(string cwd, string session_dir, string requested): ref<manager_t>! {
     string resolved = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
     string directory = session_dir == '' ? default_session_dir(resolved) : path_utils.resolve_to_cwd(session_dir, platform_cwd.current())
     if !path_utils.exists(directory) {
@@ -261,7 +260,7 @@ fn open_by_id(string cwd, string session_dir, string requested): ref<manager_t>!
     return open(matches[0])
 }
 
-fn open_by_id_or_create(string cwd, string session_dir, string requested): ref<manager_t>! {
+pub fn open_by_id_or_create(string cwd, string session_dir, string requested): ref<manager_t>! {
     var existing = open_by_id(cwd, session_dir, requested) catch error {
         // Pi's --session-id creates a new session only for a genuine miss;
         // malformed/ambiguous lookup errors remain visible to the caller.
@@ -276,7 +275,7 @@ fn open_by_id_or_create(string cwd, string session_dir, string requested): ref<m
 // Resolve the Pi --session/--fork spelling: values containing a path
 // separator (or ending in .jsonl) are files, everything else is an exact or
 // unique session-id prefix in the current project.
-fn open_reference(string cwd, string session_dir, string reference): ref<manager_t>! {
+pub fn open_reference(string cwd, string session_dir, string reference): ref<manager_t>! {
     if reference.find('/') >= 0 || reference.find('\\') >= 0 || reference.to_lower().ends_with('.jsonl') || reference.starts_with('~') {
         return open(reference)
     }
@@ -337,7 +336,7 @@ fn append_reference_file(ptr<[string]> matches, string file_path, string referen
     }
 }
 
-fn manager_t.rebuild_index(&self) {
+pub fn manager_t.rebuild_index(&self) {
     self.by_id = {}
     self.labels_by_id = {}
     self.label_timestamps_by_id = {}
@@ -365,7 +364,7 @@ fn manager_t.rebuild_index(&self) {
     }
 }
 
-fn manager_t.set_leaf(&self, string entry_id): void! {
+pub fn manager_t.set_leaf(&self, string entry_id): void! {
     if entry_id == '' {
         self.has_leaf = false
         self.leaf_id = ''
@@ -378,25 +377,25 @@ fn manager_t.set_leaf(&self, string entry_id): void! {
     self.leaf_id = entry_id
 }
 
-fn manager_t.get_leaf_id(&self): string {
+pub fn manager_t.get_leaf_id(&self): string {
     return self.leaf_id
 }
 
-fn manager_t.get_entry(&self, string entry_id): ref<types.entry_t>?! {
+pub fn manager_t.get_entry(&self, string entry_id): ref<types.entry_t>?! {
     if !self.by_id.contains(entry_id) {
         return null
     }
     return self.by_id[entry_id]
 }
 
-fn manager_t.get_branch(&self, string entry_id): [ref<types.entry_t>]! {
+pub fn manager_t.get_branch(&self, string entry_id): [ref<types.entry_t>]! {
     if entry_id == '' {
         return []
     }
     return self.path_to(entry_id)
 }
 
-fn manager_t.collect_branch_entries(&self, string old_leaf_id, string target_id): branch_collection_t! {
+pub fn manager_t.collect_branch_entries(&self, string old_leaf_id, string target_id): branch_collection_t! {
     if !self.by_id.contains(target_id) {
         throw errorf('Session entry %s not found', target_id)
     }
@@ -444,7 +443,7 @@ fn manager_t.collect_branch_entries(&self, string old_leaf_id, string target_id)
     return branch_collection_t {entries: entries, has_common_ancestor: has_common, common_ancestor_id: common_id,}
 }
 
-fn manager_t.active_entries(&self): [ref<types.entry_t>] {
+pub fn manager_t.active_entries(&self): [ref<types.entry_t>] {
     if !self.has_leaf || !self.by_id.contains(self.leaf_id) {
         return []
     }
@@ -475,7 +474,7 @@ fn manager_t.active_entries(&self): [ref<types.entry_t>] {
     return result
 }
 
-fn manager_t.append_message(&self, ai_types.message_t message): string! {
+pub fn manager_t.append_message(&self, ai_types.message_t message): string! {
     self.lock.lock()
     {string:any} object = self.entry_base(types.ENTRY_MESSAGE)
     object['message'] = message_json.encode(message)
@@ -487,7 +486,7 @@ fn manager_t.append_message(&self, ai_types.message_t message): string! {
     return entry.id
 }
 
-fn manager_t.append_compaction(&self, string summary, string first_kept_entry_id, int tokens_before, any details, ai_types.usage_t usage): string! {
+pub fn manager_t.append_compaction(&self, string summary, string first_kept_entry_id, int tokens_before, any details, ai_types.usage_t usage): string! {
     self.lock.lock()
     if !self.by_id.contains(first_kept_entry_id) {
         self.lock.unlock()
@@ -511,7 +510,7 @@ fn manager_t.append_compaction(&self, string summary, string first_kept_entry_id
     return entry.id
 }
 
-fn manager_t.append_branch_summary(&self, string from_id, string summary, any details, ai_types.usage_t usage): string! {
+pub fn manager_t.append_branch_summary(&self, string from_id, string summary, any details, ai_types.usage_t usage): string! {
     self.lock.lock()
     if from_id != 'root' && !self.by_id.contains(from_id) {
         self.lock.unlock()
@@ -534,7 +533,7 @@ fn manager_t.append_branch_summary(&self, string from_id, string summary, any de
     return entry.id
 }
 
-fn manager_t.append_model_change(&self, string provider, string model_id): string! {
+pub fn manager_t.append_model_change(&self, string provider, string model_id): string! {
     self.lock.lock()
     {string:any} object = self.entry_base(types.ENTRY_MODEL_CHANGE)
     object['provider'] = provider
@@ -547,7 +546,7 @@ fn manager_t.append_model_change(&self, string provider, string model_id): strin
     return entry.id
 }
 
-fn manager_t.append_thinking_change(&self, string level): string! {
+pub fn manager_t.append_thinking_change(&self, string level): string! {
     self.lock.lock()
     {string:any} object = self.entry_base(types.ENTRY_THINKING_CHANGE)
     object['thinkingLevel'] = level
@@ -559,7 +558,7 @@ fn manager_t.append_thinking_change(&self, string level): string! {
     return entry.id
 }
 
-fn manager_t.append_session_info(&self, string name): string! {
+pub fn manager_t.append_session_info(&self, string name): string! {
     self.lock.lock()
     {string:any} object = self.entry_base(types.ENTRY_SESSION_INFO)
     string sanitized = name.replace('\r', ' ').replace('\n', ' ').trim([' ', '\t'])
@@ -576,7 +575,7 @@ fn manager_t.append_session_info(&self, string name): string! {
     return entry.id
 }
 
-fn manager_t.append_label_change(&self, string target_id, string label): string! {
+pub fn manager_t.append_label_change(&self, string target_id, string label): string! {
     self.lock.lock()
     if !self.by_id.contains(target_id) {
         self.lock.unlock()
@@ -605,21 +604,21 @@ fn manager_t.append_label_change(&self, string target_id, string label): string!
     return entry.id
 }
 
-fn manager_t.get_label(&self, string entry_id): string {
+pub fn manager_t.get_label(&self, string entry_id): string {
     if self.labels_by_id.contains(entry_id) {
         return self.labels_by_id[entry_id]
     }
     return ''
 }
 
-fn manager_t.get_label_timestamp(&self, string entry_id): string {
+pub fn manager_t.get_label_timestamp(&self, string entry_id): string {
     if self.label_timestamps_by_id.contains(entry_id) {
         return self.label_timestamps_by_id[entry_id]
     }
     return ''
 }
 
-fn manager_t.get_session_name(&self): string! {
+pub fn manager_t.get_session_name(&self): string! {
     string result = ''
     // Pi treats the display name as session metadata, so branch navigation must
     // not reveal an older name from the selected path.
@@ -632,7 +631,7 @@ fn manager_t.get_session_name(&self): string! {
     return result
 }
 
-fn manager_t.clone_active(&self): ref<manager_t>! {
+pub fn manager_t.clone_active(&self): ref<manager_t>! {
     return self.clone_path(self.has_leaf, self.leaf_id)
 }
 
@@ -640,7 +639,7 @@ fn manager_t.clone_active(&self): ref<manager_t>! {
 // source JSONL history into the target project's session directory.  Keep the
 // target cwd/dir explicit so a session selected from another project is never
 // written back beside its source file.
-fn manager_t.fork_to(&self, string target_cwd, string target_session_dir, string requested_id): ref<manager_t>! {
+pub fn manager_t.fork_to(&self, string target_cwd, string target_session_dir, string requested_id): ref<manager_t>! {
     string resolved_cwd = path_utils.resolve_to_cwd(target_cwd, platform_cwd.current())
     string directory = target_session_dir
     if directory == '' {
@@ -676,7 +675,7 @@ fn manager_t.fork_to(&self, string target_cwd, string target_session_dir, string
     return open(file_path)
 }
 
-fn manager_t.fork_before(&self, string entry_id): ref<manager_t>! {
+pub fn manager_t.fork_before(&self, string entry_id): ref<manager_t>! {
     if !self.by_id.contains(entry_id) {
         throw errorf('Session entry %s not found', entry_id)
     }
@@ -695,13 +694,11 @@ fn manager_t.fork_before(&self, string entry_id): ref<manager_t>! {
     return self.clone_path(selected.has_parent, selected.parent_id)
 }
 
-#local
-fn manager_t.clone_path(&self, bool has_target, string target_id): ref<manager_t>! {
+pub fn manager_t.clone_path(&self, bool has_target, string target_id): ref<manager_t>! {
     return self.clone_path_to(has_target, target_id, self.cwd, self.session_dir, '')
 }
 
-#local
-fn manager_t.clone_path_to(&self, bool has_target, string target_id, string target_cwd, string target_session_dir, string requested_id): ref<manager_t>! {
+pub fn manager_t.clone_path_to(&self, bool has_target, string target_id, string target_cwd, string target_session_dir, string requested_id): ref<manager_t>! {
     [ref<types.entry_t>] retained = []
     if has_target {
         retained = self.path_to(target_id)
@@ -738,8 +735,7 @@ fn manager_t.clone_path_to(&self, bool has_target, string target_id, string targ
     return open(file_path)
 }
 
-#local
-fn manager_t.rechain_with_labels(&self, [ref<types.entry_t>] source): [ref<types.entry_t>]! {
+pub fn manager_t.rechain_with_labels(&self, [ref<types.entry_t>] source): [ref<types.entry_t>]! {
     [ref<types.entry_t>] result = []
     bool has_parent = false
     string parent_id = ''
@@ -786,8 +782,7 @@ fn manager_t.rechain_with_labels(&self, [ref<types.entry_t>] source): [ref<types
     return result
 }
 
-#local
-fn manager_t.path_to(&self, string entry_id): [ref<types.entry_t>]! {
+pub fn manager_t.path_to(&self, string entry_id): [ref<types.entry_t>]! {
     if !self.by_id.contains(entry_id) {
         throw errorf('Session entry %s not found', entry_id)
     }
@@ -819,7 +814,7 @@ fn manager_t.path_to(&self, string entry_id): [ref<types.entry_t>]! {
     return result
 }
 
-fn manager_t.build_context(&self): types.context_t! {
+pub fn manager_t.build_context(&self): types.context_t! {
     var result = types.context_t{}
     var active = self.active_entries()
     int compaction_index = -1
@@ -898,11 +893,11 @@ fn manager_t.build_context(&self): types.context_t! {
     return result
 }
 
-fn manager_t.get_entries(&self): [ref<types.entry_t>] {
+pub fn manager_t.get_entries(&self): [ref<types.entry_t>] {
     return self.entries.slice(0, self.entries.len())
 }
 
-fn manager_t.get_warnings(&self): [string] {
+pub fn manager_t.get_warnings(&self): [string] {
     return self.warnings.slice(0, self.warnings.len())
 }
 
@@ -910,7 +905,7 @@ fn manager_t.get_warnings(&self): [string] {
 // currently active (possibly post-compaction) context.  Keep this calculation
 // on the repository so resumed sessions and branch navigation use the same
 // source of truth as the JSONL writer.
-fn manager_t.usage_totals(&self): ai_types.usage_t {
+pub fn manager_t.usage_totals(&self): ai_types.usage_t {
     ai_types.usage_t total = ai_types.usage_t{}
     for entry in self.entries {
         if entry.kind == types.ENTRY_MESSAGE {
@@ -940,7 +935,7 @@ fn manager_t.usage_totals(&self): ai_types.usage_t {
 // Pi shows the cache hit rate for the most recent assistant request.  Keep
 // this separate from usage_totals(): the latter is cumulative, while this
 // value is intentionally a snapshot of the latest prompt window.
-fn manager_t.latest_cache_hit_rate(&self): float {
+pub fn manager_t.latest_cache_hit_rate(&self): float {
     float result = -1.0
     for entry in self.entries {
         if entry.kind != types.ENTRY_MESSAGE {
@@ -966,7 +961,7 @@ fn manager_t.latest_cache_hit_rate(&self): float {
 // assistant response reports usage for the new context. Re-estimating the
 // summary and retained messages would suggest a precision the provider has
 // not supplied yet, and can make the footer disagree with the next request.
-fn manager_t.context_usage_known(&self): bool {
+pub fn manager_t.context_usage_known(&self): bool {
     var active = self.active_entries()
     int compaction_index = -1
     for index, entry in active {
@@ -1000,7 +995,7 @@ fn manager_t.context_usage_known(&self): bool {
     return false
 }
 
-fn manager_t.stats(&self, int context_window): stats_t! {
+pub fn manager_t.stats(&self, int context_window): stats_t! {
     stats_t result = stats_t{context_window: context_window}
     result.usage = self.usage_totals()
     for entry in self.entries {
@@ -1026,19 +1021,19 @@ fn manager_t.stats(&self, int context_window): stats_t! {
     return result
 }
 
-fn manager_t.get_session_file(&self): string {
+pub fn manager_t.get_session_file(&self): string {
     return self.session_file
 }
 
-fn manager_t.header_json(&self): string! {
+pub fn manager_t.header_json(&self): string! {
     return jsonl.encode_header(self.header)
 }
 
-fn manager_t.get_session_id(&self): string {
+pub fn manager_t.get_session_id(&self): string {
     return self.header.id
 }
 
-fn manager_t.latest_compaction(&self): ref<types.entry_t>? {
+pub fn manager_t.latest_compaction(&self): ref<types.entry_t>? {
     var active = self.active_entries()
     for int index = active.len() - 1; index >= 0; index -= 1 {
         if active[index].kind == types.ENTRY_COMPACTION {
@@ -1048,7 +1043,7 @@ fn manager_t.latest_compaction(&self): ref<types.entry_t>? {
     return null
 }
 
-fn timestamp_ms(string value): int {
+pub fn timestamp_ms(string value): int {
     return iso_to_ms(value)
 }
 
@@ -1068,8 +1063,7 @@ fn add_usage(ptr<ai_types.usage_t> total, ai_types.usage_t value) {
     total.cost.total += value.cost.total
 }
 
-#local
-fn manager_t.entry_base(&self, string kind): {string:any}! {
+pub fn manager_t.entry_base(&self, string kind): {string:any}! {
     {string:any} object = {}
     object['type'] = kind
     object['id'] = self.unique_short_id()
@@ -1082,8 +1076,7 @@ fn manager_t.entry_base(&self, string kind): {string:any}! {
     return object
 }
 
-#local
-fn manager_t.unique_short_id(&self): string! {
+pub fn manager_t.unique_short_id(&self): string! {
     for int attempt = 0; attempt < 100; attempt += 1 {
         string id = identity.short_id()
         if !self.by_id.contains(id) {
@@ -1093,8 +1086,7 @@ fn manager_t.unique_short_id(&self): string! {
     return identity.uuid_v7()
 }
 
-#local
-fn manager_t.append_object_locked(&self, {string:any} object): ref<types.entry_t>! {
+pub fn manager_t.append_object_locked(&self, {string:any} object): ref<types.entry_t>! {
     string line = json.serialize(object)
     var entry = jsonl.parse_entry(json_util.parse(line))
     self.persist_line(line) catch error {
@@ -1107,8 +1099,7 @@ fn manager_t.append_object_locked(&self, {string:any} object): ref<types.entry_t
     return entry
 }
 
-#local
-fn manager_t.persist_line(&self, string line): void! {
+pub fn manager_t.persist_line(&self, string line): void! {
     if !self.persisted {
         return
     }
@@ -1182,8 +1173,7 @@ fn iso_to_ms(string value): int {
     return (libc.timegm(&parsed) as int) * 1000
 }
 
-#local
-fn has_usage(ai_types.usage_t usage): bool {
+pub fn has_usage(ai_types.usage_t usage): bool {
     return usage.input != 0 || usage.output != 0 || usage.cache_read != 0 || usage.cache_write != 0 || usage.total_tokens != 0 || usage.cost.total != 0.0
 }
 

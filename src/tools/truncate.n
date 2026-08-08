@@ -2,10 +2,10 @@ import fmt
 import strings
 import adou.src.unicode.utf8
 
-const DEFAULT_MAX_LINES = 2000
-const DEFAULT_MAX_BYTES = 50 * 1024
+pub const DEFAULT_MAX_LINES = 2000
+pub const DEFAULT_MAX_BYTES = 50 * 1024
 
-type result_t = struct {
+pub type result_t = struct {
     string content
     bool truncated
     string truncated_by
@@ -19,15 +19,15 @@ type result_t = struct {
     int max_bytes
 }
 
-fn head(string content): result_t {
+pub fn head(string content): result_t {
     return head_with_limits(content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES)
 }
 
-fn tail(string content): result_t {
+pub fn tail(string content): result_t {
     return tail_with_limits(content, DEFAULT_MAX_LINES, DEFAULT_MAX_BYTES)
 }
 
-fn head_with_limits(string content, int max_lines, int max_bytes): result_t {
+pub fn head_with_limits(string content, int max_lines, int max_bytes): result_t {
     [string] lines = split_lines_for_counting(content)
     int total_lines = lines.len()
     int total_bytes = content.len()
@@ -59,7 +59,7 @@ fn head_with_limits(string content, int max_lines, int max_bytes): result_t {
     return result_t {content: output_content, truncated: true, truncated_by: reason, total_lines: total_lines, total_bytes: total_bytes, output_lines: output.len(), output_bytes: output_content.len(), max_lines: max_lines, max_bytes: max_bytes,}
 }
 
-fn tail_with_limits(string content, int max_lines, int max_bytes): result_t {
+pub fn tail_with_limits(string content, int max_lines, int max_bytes): result_t {
     [string] lines = split_lines_for_counting(content)
     int total_lines = lines.len()
     int total_bytes = content.len()
@@ -110,7 +110,7 @@ fn utf8_boundary_start(string value, int start): int {
     return cursor
 }
 
-fn format_size(int bytes): string {
+pub fn format_size(int bytes): string {
     if bytes < 1024 {
         return fmt.sprintf('%dB', bytes)
     }
@@ -120,7 +120,7 @@ fn format_size(int bytes): string {
     return fmt.sprintf('%.1fMB', bytes as float / (1024.0 * 1024.0))
 }
 
-fn split_all_lines(string content): [string] {
+pub fn split_all_lines(string content): [string] {
     [string] result = []
     int start = 0
     for int i = 0; i <= content.len(); i += 1 {

@@ -2,14 +2,14 @@ import adou.src.ai.models
 import adou.src.ai.sse
 import adou.src.ai.streaming_json
 import adou.src.ai.types
-import json
+import adou.src.json_util
 import strings
 
-const SLOT_TEXT = 'text'
-const SLOT_THINKING = 'thinking'
-const SLOT_TOOL_CALL = 'toolCall'
+pub const SLOT_TEXT = 'text'
+pub const SLOT_THINKING = 'thinking'
+pub const SLOT_TOOL_CALL = 'toolCall'
 
-type slot_t = struct {
+pub type slot_t = struct {
     string kind
     int content_index
     ref<types.text_content_t> text = new types.text_content_t()
@@ -17,7 +17,7 @@ type slot_t = struct {
     ref<types.tool_call_t> tool_call = new types.tool_call_t()
 }
 
-type processor_t = struct {
+pub type processor_t = struct {
     ref<types.model_t> model
     ref<types.assistant_message_t> output
     map<int, slot_t> slots = {}
@@ -28,12 +28,12 @@ type processor_t = struct {
     bool saw_terminal
 }
 
-fn processor(ref<types.model_t> model, int timestamp): ref<processor_t> {
+pub fn processor(ref<types.model_t> model, int timestamp): ref<processor_t> {
     var output = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, timestamp = timestamp,)
     return new processor_t(model = model, output = output)
 }
 
-fn processor_t.start(&self): types.assistant_event_t! {
+pub fn processor_t.start(&self): types.assistant_event_t! {
     if self.started {
         throw errorf('OpenAI Completions stream already started')
     }
@@ -41,7 +41,7 @@ fn processor_t.start(&self): types.assistant_event_t! {
     return types.assistant_event_t {kind: types.EVENT_START, partial: self.output,}
 }
 
-fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
+pub fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
     if !self.started {
         throw errorf('OpenAI Completions stream has not started')
     }
@@ -51,40 +51,43 @@ fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
     if frame.data == '[DONE]' {
         return []
     }
-    var root = json.box_value(json.parse(frame.data))
-    if root.kind != json.VALUE_OBJECT {
+    var root = json_util.parse(frame.data)
+    if !json_util.is_obj(root) {
         return []
     }
-    var root_object = root.as_object()
-    if root_object.contains('error') && !root_object['error'].is_null() {
+    var root_object = root as {string:any}
+    if root_object.contains('error') && !json_util.is_null(root_object['error']) {
         throw errorf('%s', error_value(root_object['error']))
     }
     [types.assistant_event_t] events = []
-    if root_object.contains('id') && !root_object['id'].is_null() {
-        self.output.response_id = root_object['id'].as_string()
+    if root_object.contains('id') && !json_util.is_null(root_object['id']) {
+        // Store through an intermediate: the current Nature runtime crashes on
+        // direct `ref.field = (any as string)` stores from a fresh parse.
+        string id = root_object['id'] as string
+        self.output.response_id = id
     }
-    if root_object.contains('usage') && !root_object['usage'].is_null() {
+    if root_object.contains('usage') && !json_util.is_null(root_object['usage']) {
         self.update_usage(root_object['usage'])
     }
-    if !root_object.contains('choices') || root_object['choices'].is_null() {
+    if !root_object.contains('choices') || json_util.is_null(root_object['choices']) {
         return events
     }
-    var choices = root_object['choices'].as_array()
+    var choices = root_object['choices'] as [any]
     if choices.len() == 0 {
         return events
     }
     var choice = choices[0]
-    var choice_object = choice.as_object()
-    if choice_object.contains('finish_reason') && !choice_object['finish_reason'].is_null() {
-        self.apply_finish_reason(choice_object['finish_reason'].as_string())
+    var choice_object = choice as {string:any}
+    if choice_object.contains('finish_reason') && !json_util.is_null(choice_object['finish_reason']) {
+        self.apply_finish_reason(choice_object['finish_reason'] as string)
     }
-    if !choice_object.contains('delta') || choice_object['delta'].is_null() {
+    if !choice_object.contains('delta') || json_util.is_null(choice_object['delta']) {
         return events
     }
     var delta = choice_object['delta']
-    var delta_object = delta.as_object()
-    if delta_object.contains('content') && !delta_object['content'].is_null() {
-        string text = delta_object['content'].as_string()
+    var delta_object = delta as {string:any}
+    if delta_object.contains('content') && !json_util.is_null(delta_object['content']) {
+        string text = delta_object['content'] as string
         if text != '' {
             events = self.append_text(text, events)
         }
@@ -93,15 +96,15 @@ fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
     if reasoning != '' {
         events = self.append_thinking(reasoning, events)
     }
-    if delta_object.contains('tool_calls') && !delta_object['tool_calls'].is_null() {
-        for call in delta_object['tool_calls'].as_array() {
+    if delta_object.contains('tool_calls') && !json_util.is_null(delta_object['tool_calls']) {
+        for call in delta_object['tool_calls'] as [any] {
             events = self.append_tool_call(call, events)
         }
     }
     return events
 }
 
-fn processor_t.finish(&self): [types.assistant_event_t]! {
+pub fn processor_t.finish(&self): [types.assistant_event_t]! {
     if self.saw_terminal {
         throw errorf('OpenAI Completions stream already finished')
     }
@@ -130,8 +133,7 @@ fn processor_t.finish(&self): [types.assistant_event_t]! {
     return events
 }
 
-#local
-fn processor_t.append_text(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
+pub fn processor_t.append_text(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
     ref<types.text_content_t>? text = self.find_text()
     int index = -1
     if text is ref<types.text_content_t> existing {
@@ -149,8 +151,7 @@ fn processor_t.append_text(&self, string value, [types.assistant_event_t] events
     return events
 }
 
-#local
-fn processor_t.append_thinking(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
+pub fn processor_t.append_thinking(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
     ref<types.thinking_content_t>? thinking = self.find_thinking()
     int index = -1
     if thinking is ref<types.thinking_content_t> existing {
@@ -168,14 +169,13 @@ fn processor_t.append_thinking(&self, string value, [types.assistant_event_t] ev
     return events
 }
 
-#local
-fn processor_t.append_tool_call(&self, ref<json.value_t> value, [types.assistant_event_t] events): [types.assistant_event_t]! {
-    var object = value.as_object()
+pub fn processor_t.append_tool_call(&self, any value, [types.assistant_event_t] events): [types.assistant_event_t]! {
+    var object = value as {string:any}
     int index = -1
-    if object.contains('index') && !object['index'].is_null() {
-        index = object['index'].as_number().to_int()
-    } else if object.contains('id') && !object['id'].is_null() {
-        string id = object['id'].as_string()
+    if object.contains('index') && !json_util.is_null(object['index']) {
+        index = (object['index'] as f64) as int
+    } else if object.contains('id') && !json_util.is_null(object['id']) {
+        string id = object['id'] as string
         for existing_index, existing_slot in self.slots {
             if existing_slot.tool_call.id == id {
                 index = existing_index
@@ -195,16 +195,20 @@ fn processor_t.append_tool_call(&self, ref<json.value_t> value, [types.assistant
         events.push(update_event(types.EVENT_TOOLCALL_START, content_index, '', '', self.output))
     }
     var slot = self.slots[index]
-    if object.contains('id') && !object['id'].is_null() {
-        slot.tool_call.id = object['id'].as_string()
+    if object.contains('id') && !json_util.is_null(object['id']) {
+        // Intermediate locals avoid a runtime heap corruption on direct
+        // `ref.field = (any as string)` stores (see docs/nature-issues.md).
+        string id = object['id'] as string
+        slot.tool_call.id = id
     }
-    if object.contains('function') && !object['function'].is_null() {
-        var function = object['function'].as_object()
-        if function.contains('name') && !function['name'].is_null() {
-            slot.tool_call.name = function['name'].as_string()
+    if object.contains('function') && !json_util.is_null(object['function']) {
+        var function = object['function'] as {string:any}
+        if function.contains('name') && !json_util.is_null(function['name']) {
+            string name = function['name'] as string
+            slot.tool_call.name = name
         }
-        if function.contains('arguments') && !function['arguments'].is_null() {
-            string delta = function['arguments'].as_string()
+        if function.contains('arguments') && !json_util.is_null(function['arguments']) {
+            string delta = function['arguments'] as string
             slot.tool_call.partial_json += delta
             slot.tool_call.arguments = streaming_json.parse(slot.tool_call.partial_json)
             events.push(update_event(types.EVENT_TOOLCALL_DELTA, slot.content_index, delta, '', self.output))
@@ -213,8 +217,7 @@ fn processor_t.append_tool_call(&self, ref<json.value_t> value, [types.assistant
     return events
 }
 
-#local
-fn processor_t.finish_slot(&self, int index, [types.assistant_event_t] events): [types.assistant_event_t]! {
+pub fn processor_t.finish_slot(&self, int index, [types.assistant_event_t] events): [types.assistant_event_t]! {
     if !self.slots.contains(index) {
         return events
     }
@@ -240,8 +243,7 @@ fn processor_t.finish_slot(&self, int index, [types.assistant_event_t] events): 
     return events
 }
 
-#local
-fn processor_t.slot_for_content_index(&self, int content_index): int {
+pub fn processor_t.slot_for_content_index(&self, int content_index): int {
     for index, slot in self.slots {
         if slot.content_index == content_index {
             return index
@@ -250,9 +252,8 @@ fn processor_t.slot_for_content_index(&self, int content_index): int {
     return -1
 }
 
-#local
-fn processor_t.update_usage(&self, ref<json.value_t> value): void! {
-    var object = value.as_object()
+pub fn processor_t.update_usage(&self, any value): void! {
+    var object = value as {string:any}
     int input = optional_int(object, 'prompt_tokens', 0)
     int output = optional_int(object, 'completion_tokens', 0)
     int cache_read = 0
@@ -261,13 +262,13 @@ fn processor_t.update_usage(&self, ref<json.value_t> value): void! {
     if object.contains('prompt_cache_hit_tokens') {
         cache_read = optional_int(object, 'prompt_cache_hit_tokens', 0)
     }
-    if object.contains('prompt_tokens_details') && !object['prompt_tokens_details'].is_null() {
-        var details = object['prompt_tokens_details'].as_object()
+    if object.contains('prompt_tokens_details') && !json_util.is_null(object['prompt_tokens_details']) {
+        var details = object['prompt_tokens_details'] as {string:any}
         cache_read = optional_int(details, 'cached_tokens', cache_read)
         cache_write = optional_int(details, 'cache_write_tokens', cache_write)
     }
-    if object.contains('completion_tokens_details') && !object['completion_tokens_details'].is_null() {
-        reasoning = optional_int(object['completion_tokens_details'].as_object(), 'reasoning_tokens', 0)
+    if object.contains('completion_tokens_details') && !json_util.is_null(object['completion_tokens_details']) {
+        reasoning = optional_int(object['completion_tokens_details'] as {string:any}, 'reasoning_tokens', 0)
     }
     int uncached = input - cache_read - cache_write
     if uncached < 0 {
@@ -281,8 +282,7 @@ fn processor_t.update_usage(&self, ref<json.value_t> value): void! {
     self.output.usage.total_tokens = uncached + cache_read + cache_write + output
 }
 
-#local
-fn processor_t.apply_finish_reason(&self, string reason): void! {
+pub fn processor_t.apply_finish_reason(&self, string reason): void! {
     self.saw_finish_reason = true
     if reason == 'stop' || reason == 'end' {
         self.output.stop_reason = types.STOP_STOP
@@ -296,8 +296,7 @@ fn processor_t.apply_finish_reason(&self, string reason): void! {
     }
 }
 
-#local
-fn processor_t.has_tool_call(&self): bool {
+pub fn processor_t.has_tool_call(&self): bool {
     for block in self.output.content {
         if block is ref<types.tool_call_t> {
             return true
@@ -306,8 +305,7 @@ fn processor_t.has_tool_call(&self): bool {
     return false
 }
 
-#local
-fn processor_t.find_text(&self): ref<types.text_content_t>? {
+pub fn processor_t.find_text(&self): ref<types.text_content_t>? {
     for block in self.output.content {
         if block is ref<types.text_content_t> text {
             return text
@@ -316,8 +314,7 @@ fn processor_t.find_text(&self): ref<types.text_content_t>? {
     return null
 }
 
-#local
-fn processor_t.find_thinking(&self): ref<types.thinking_content_t>? {
+pub fn processor_t.find_thinking(&self): ref<types.thinking_content_t>? {
     for block in self.output.content {
         if block is ref<types.thinking_content_t> thinking {
             return thinking
@@ -326,8 +323,7 @@ fn processor_t.find_thinking(&self): ref<types.thinking_content_t>? {
     return null
 }
 
-#local
-fn processor_t.content_index(&self, ref<types.text_content_t> target): int {
+pub fn processor_t.content_index(&self, ref<types.text_content_t> target): int {
     for index, block in self.output.content {
         if block is ref<types.text_content_t> {
             return index
@@ -336,8 +332,7 @@ fn processor_t.content_index(&self, ref<types.text_content_t> target): int {
     return -1
 }
 
-#local
-fn processor_t.content_index_thinking(&self, ref<types.thinking_content_t> target): int {
+pub fn processor_t.content_index_thinking(&self, ref<types.thinking_content_t> target): int {
     for index, block in self.output.content {
         if block is ref<types.thinking_content_t> {
             return index
@@ -347,11 +342,11 @@ fn processor_t.content_index_thinking(&self, ref<types.thinking_content_t> targe
 }
 
 #local
-fn reasoning_delta(map<string, ref<json.value_t>> object): string! {
+fn reasoning_delta({string:any} object): string! {
     [string] keys = ['reasoning_content', 'reasoning', 'reasoning_text']
     for key in keys {
-        if object.contains(key) && !object[key].is_null() {
-            string value = object[key].as_string()
+        if object.contains(key) && !json_util.is_null(object[key]) {
+            string value = object[key] as string
             if value != '' {
                 return value
             }
@@ -361,28 +356,26 @@ fn reasoning_delta(map<string, ref<json.value_t>> object): string! {
 }
 
 #local
-fn error_value(ref<json.value_t> value): string! {
-    if value.kind == json.VALUE_STRING {
-        return value.as_string()
+fn error_value(any value): string! {
+    if value is string {
+        return value as string
     }
-    if value.kind == json.VALUE_OBJECT {
-        var object = value.as_object()
-        if object.contains('message') && !object['message'].is_null() {
-            return object['message'].as_string()
+    if json_util.is_obj(value) {
+        var object = value as {string:any}
+        if object.contains('message') && !json_util.is_null(object['message']) {
+            return object['message'] as string
         }
     }
-    return json.stringify(*value)
+    return json_util.stringify(value)
 }
 
-#local
-fn optional_int(map<string, ref<json.value_t>> object, string key, int fallback): int! {
-    if !object.contains(key) || object[key].is_null() {
+pub fn optional_int({string:any} object, string key, int fallback): int! {
+    if !object.contains(key) || json_util.is_null(object[key]) {
         return fallback
     }
-    return object[key].as_number().to_int()
+    return (object[key] as f64) as int
 }
 
-#local
-fn update_event(string event_type, int content_index, string delta, string content, ref<types.assistant_message_t> partial): types.assistant_event_t {
+pub fn update_event(string event_type, int content_index, string delta, string content, ref<types.assistant_message_t> partial): types.assistant_event_t {
     return types.assistant_event_t {kind: event_type, content_index: content_index, delta: delta, content: content, partial: partial,}
 }

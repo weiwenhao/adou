@@ -1,83 +1,84 @@
 import adou.src.tui.text_utils
 
 // Pi's built-in dark theme, kept as terminal-native ANSI styling.
-const RESET = '\x1b[0m'
-const BOLD = '\x1b[1m'
-const DIM = '\x1b[2m'
-const ITALIC = '\x1b[3m'
-const UNDERLINE = '\x1b[4m'
-const STRIKETHROUGH = '\x1b[9m'
-const INVERSE = '\x1b[7m'
+pub const RESET = '\x1b[0m'
+pub const BOLD = '\x1b[1m'
+pub const DIM = '\x1b[2m'
+pub const ITALIC = '\x1b[3m'
+pub const UNDERLINE = '\x1b[4m'
+pub const STRIKETHROUGH = '\x1b[9m'
+pub const INVERSE = '\x1b[7m'
 
-const ACCENT = '\x1b[38;2;138;190;183m'
-const BORDER = '\x1b[38;2;95;135;255m'
-const BORDER_ACCENT = '\x1b[38;2;0;215;255m'
-const SUCCESS = '\x1b[38;2;181;189;104m'
-const ERROR = '\x1b[38;2;204;102;102m'
-const WARNING = '\x1b[38;2;255;255;0m'
-const MUTED = '\x1b[38;2;128;128;128m'
-const DIM_COLOR = '\x1b[38;2;102;102;102m'
-const TEXT = '\x1b[38;2;212;212;212m'
-const THINKING = '\x1b[38;2;128;128;128m'
-const HEADING = '\x1b[38;2;240;198;116m'
-const LINK = '\x1b[38;2;129;162;190m'
-const CODE = '\x1b[38;2;138;190;183m'
-const CODE_BLOCK = '\x1b[38;2;181;189;104m'
-const CODE_BLOCK_BORDER = '\x1b[38;2;102;102;102m'
-const USER_BG = '\x1b[48;2;52;53;65m'
-const SELECTED_BG = '\x1b[48;2;58;58;74m'
-const TOOL_PENDING_BG = '\x1b[48;2;40;40;50m'
-const TOOL_SUCCESS_BG = '\x1b[48;2;40;50;40m'
-const TOOL_ERROR_BG = '\x1b[48;2;60;40;40m'
-const THINKING_OFF = '\x1b[38;2;80;80;80m'
-const THINKING_MINIMAL = '\x1b[38;2;110;110;110m'
-const THINKING_LOW = '\x1b[38;2;95;135;175m'
-const THINKING_MEDIUM = '\x1b[38;2;129;162;190m'
-const THINKING_HIGH = '\x1b[38;2;178;148;187m'
-const THINKING_XHIGH = '\x1b[38;2;209;131;232m'
-const THINKING_MAX = '\x1b[38;2;255;95;255m'
+pub const ACCENT = '\x1b[38;2;138;190;183m'
+pub const BORDER = '\x1b[38;2;95;135;255m'
+pub const BORDER_ACCENT = '\x1b[38;2;0;215;255m'
+pub const SUCCESS = '\x1b[38;2;181;189;104m'
+pub const ERROR = '\x1b[38;2;204;102;102m'
+pub const WARNING = '\x1b[38;2;255;255;0m'
+pub const MUTED = '\x1b[38;2;128;128;128m'
+pub const DIM_COLOR = '\x1b[38;2;102;102;102m'
+pub const TEXT = '\x1b[38;2;212;212;212m'
+pub const THINKING = '\x1b[38;2;128;128;128m'
+pub const HEADING = '\x1b[38;2;240;198;116m'
+pub const LINK = '\x1b[38;2;129;162;190m'
+pub const CODE = '\x1b[38;2;138;190;183m'
+pub const CODE_BLOCK = '\x1b[38;2;181;189;104m'
+pub const CODE_BLOCK_BORDER = '\x1b[38;2;102;102;102m'
+pub const USER_BG = '\x1b[48;2;52;53;65m'
+pub const SELECTED_BG = '\x1b[48;2;58;58;74m'
+pub const TOOL_PENDING_BG = '\x1b[48;2;40;40;50m'
+pub const TOOL_SUCCESS_BG = '\x1b[48;2;40;50;40m'
+pub const TOOL_ERROR_BG = '\x1b[48;2;60;40;40m'
+pub const THINKING_OFF = '\x1b[38;2;80;80;80m'
+pub const THINKING_MINIMAL = '\x1b[38;2;110;110;110m'
+pub const THINKING_LOW = '\x1b[38;2;95;135;175m'
+pub const THINKING_MEDIUM = '\x1b[38;2;129;162;190m'
+pub const THINKING_HIGH = '\x1b[38;2;178;148;187m'
+pub const THINKING_XHIGH = '\x1b[38;2;209;131;232m'
+pub const THINKING_MAX = '\x1b[38;2;255;95;255m'
 
-fn fg(string color, string value): string {
-    return color + value + RESET
+pub fn fg(string color, string value): string {
+    // Restore only the foreground so an enclosing row background survives.
+    return color + value + '\x1b[39m'
 }
 
-fn bg(string color, string value): string {
-    return color + value + RESET
+pub fn bg(string color, string value): string {
+    return color + value + '\x1b[49m'
 }
 
-fn bold(string value): string {
-    return BOLD + value + RESET
+pub fn bold(string value): string {
+    return BOLD + value + '\x1b[22m'
 }
 
-fn dim(string value): string {
-    return DIM_COLOR + value + RESET
+pub fn dim(string value): string {
+    return DIM_COLOR + value + '\x1b[39m'
 }
 
-fn muted(string value): string {
-    return MUTED + value + RESET
+pub fn muted(string value): string {
+    return MUTED + value + '\x1b[39m'
 }
 
-fn italic(string value): string {
-    return ITALIC + value + RESET
+pub fn italic(string value): string {
+    return ITALIC + value + '\x1b[23m'
 }
 
-fn underline(string value): string {
-    return UNDERLINE + value + RESET
+pub fn underline(string value): string {
+    return UNDERLINE + value + '\x1b[24m'
 }
 
-fn strikethrough(string value): string {
-    return STRIKETHROUGH + value + RESET
+pub fn strikethrough(string value): string {
+    return STRIKETHROUGH + value + '\x1b[29m'
 }
 
-fn cursor(string value): string {
-    return INVERSE + value + RESET
+pub fn cursor(string value): string {
+    return INVERSE + value + '\x1b[27m'
 }
 
-fn border_line(int width): string {
+pub fn border_line(int width): string {
     return fg(BORDER, repeat('─', width))
 }
 
-fn editor_border_line(string thinking, bool bash_mode, int width): string {
+pub fn editor_border_line(string thinking, bool bash_mode, int width): string {
     string color = THINKING_OFF
     if bash_mode {
         color = SUCCESS
@@ -97,7 +98,7 @@ fn editor_border_line(string thinking, bool bash_mode, int width): string {
     return fg(color, repeat('─', width))
 }
 
-fn background_line(string color, string value, int width): string {
+pub fn background_line(string color, string value, int width): string {
     int remaining = width - visible_width(value)
     if remaining < 0 {
         remaining = 0
@@ -105,7 +106,7 @@ fn background_line(string color, string value, int width): string {
     return color + value + repeat(' ', remaining) + RESET
 }
 
-fn visible_width(string value): int {
+pub fn visible_width(string value): int {
     return text_utils.visible_width(value) catch error {
         return 0
     }

@@ -2,20 +2,20 @@ import adou.src.ai.models
 import adou.src.ai.sse
 import adou.src.ai.streaming_json
 import adou.src.ai.types
-import json
+import adou.src.json_util
 
-const SLOT_TEXT = 'text'
-const SLOT_THINKING = 'thinking'
-const SLOT_TOOL_CALL = 'toolCall'
-type slot_t = struct {
+pub const SLOT_TEXT = 'text'
+pub const SLOT_THINKING = 'thinking'
+pub const SLOT_TOOL_CALL = 'toolCall'
+pub type slot_t = struct {
     string kind
     int content_index
     ref<types.text_content_t> text = new types.text_content_t()
     ref<types.thinking_content_t> thinking = new types.thinking_content_t()
     ref<types.tool_call_t> tool_call = new types.tool_call_t()
 }
-type slot_map_t = map<int, slot_t>
-type processor_t = struct {
+pub type slot_map_t = map<int, slot_t>
+pub type processor_t = struct {
     ref<types.model_t> model
     ref<types.assistant_message_t> output
     slot_map_t slots = {}
@@ -24,12 +24,12 @@ type processor_t = struct {
     bool saw_message_stop
 }
 
-fn processor(ref<types.model_t> model, int timestamp): ref<processor_t> {
+pub fn processor(ref<types.model_t> model, int timestamp): ref<processor_t> {
     var output = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, timestamp = timestamp,)
     return new processor_t(model = model, output = output)
 }
 
-fn processor_t.start(&self): types.assistant_event_t! {
+pub fn processor_t.start(&self): types.assistant_event_t! {
     if self.started {
         throw errorf('Anthropic Messages stream already started')
     }
@@ -37,7 +37,7 @@ fn processor_t.start(&self): types.assistant_event_t! {
     return types.assistant_event_t {kind: types.EVENT_START, partial: self.output,}
 }
 
-fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
+pub fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
     if !self.started {
         throw errorf('Anthropic Messages stream has not started')
     }
@@ -56,31 +56,36 @@ fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
     if !is_message_event(frame.event) {
         return []
     }
-    var root = json.box_value(json.parse(frame.data))
+    // Anthropic's SDK repairs malformed JSON in SSE envelopes before it
+    // dispatches the decoded event. Providers occasionally emit an invalid
+    // escape or raw control character inside input_json_delta.partial_json;
+    // strict parsing here would turn that recoverable tool stream into an
+    // error before the incremental argument repairer can run.
+    var root = streaming_json.parse_with_repair(frame.data)
     string event_type = required_string(root, 'type')
     [types.assistant_event_t] events = []
     if event_type == 'message_start' {
         self.saw_message_start = true
-        var message = root.get('message')
+        var message = (root as {string:any})['message']
         self.output.response_id = optional_string(message, 'id', '')
-        var object = message.as_object()
-        if object.contains('usage') && !object['usage'].is_null() {
+        var object = message as {string:any}
+        if object.contains('usage') && !json_util.is_null(object['usage']) {
             self.update_usage(object['usage'], true)
         }
     } else if event_type == 'content_block_start' {
-        events = self.start_block(required_int(root, 'index'), root.get('content_block'), events)
+        events = self.start_block(required_int(root, 'index'), (root as {string:any})['content_block'], events)
     } else if event_type == 'content_block_delta' {
-        events = self.update_block(required_int(root, 'index'), root.get('delta'), events)
+        events = self.update_block(required_int(root, 'index'), (root as {string:any})['delta'], events)
     } else if event_type == 'content_block_stop' {
         events = self.stop_block(required_int(root, 'index'), events)
     } else if event_type == 'message_delta' {
-        var delta = root.get('delta')
+        var delta = (root as {string:any})['delta']
         string stop_reason = optional_string(delta, 'stop_reason', '')
         if stop_reason != '' {
             self.apply_stop_reason(stop_reason, delta)
         }
-        var object = root.as_object()
-        if object.contains('usage') && !object['usage'].is_null() {
+        var object = root as {string:any}
+        if object.contains('usage') && !json_util.is_null(object['usage']) {
             self.update_usage(object['usage'], false)
         }
     } else if event_type == 'message_stop' {
@@ -89,7 +94,7 @@ fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
     return events
 }
 
-fn processor_t.finish(&self): types.assistant_event_t! {
+pub fn processor_t.finish(&self): types.assistant_event_t! {
     if self.saw_message_start && !self.saw_message_stop {
         throw errorf('Anthropic stream ended before message_stop')
     }
@@ -106,12 +111,11 @@ fn processor_t.finish(&self): types.assistant_event_t! {
     return types.assistant_event_t {kind: types.EVENT_DONE, reason: self.output.stop_reason, message: self.output,}
 }
 
-#local
-fn processor_t.start_block(&self, int provider_index, ref<json.value_t> block, [types.assistant_event_t] events): [types.assistant_event_t]! {
+pub fn processor_t.start_block(&self, int provider_index, any block, [types.assistant_event_t] events): [types.assistant_event_t]! {
     if self.slots.contains(provider_index) {
         throw errorf('Anthropic content block index %d already exists', provider_index)
     }
-    var block_object = block.as_object()
+    var block_object = block as {string:any}
     string block_type = required_string(block, 'type')
     if block_type == 'text' {
         var content = new types.text_content_t(text = optional_string(block, 'text', ''))
@@ -140,10 +144,11 @@ fn processor_t.start_block(&self, int provider_index, ref<json.value_t> block, [
         // keeps it on the tool call until input_json_delta events arrive.
         // Clone the value so the streamed output owns its arguments rather
         // than retaining a reference into the parsed SSE frame.
-        if block_object.contains('input') && !block_object['input'].is_null() {
-            content.arguments = json.parse(json.stringify(*block_object['input']))
+        if block_object.contains('input') && !json_util.is_null(block_object['input']) {
+            content.arguments = json_util.clone(block_object['input'])
         } else {
-            content.arguments = json.parse('{}')
+            {string:any} empty_args = {}
+            content.arguments = empty_args
         }
         types.content_t item = content
         self.output.content.push(item)
@@ -154,8 +159,7 @@ fn processor_t.start_block(&self, int provider_index, ref<json.value_t> block, [
     return events
 }
 
-#local
-fn processor_t.update_block(&self, int provider_index, ref<json.value_t> delta, [types.assistant_event_t] events): [types.assistant_event_t]! {
+pub fn processor_t.update_block(&self, int provider_index, any delta, [types.assistant_event_t] events): [types.assistant_event_t]! {
     if !self.slots.contains(provider_index) {
         return events
     }
@@ -180,8 +184,7 @@ fn processor_t.update_block(&self, int provider_index, ref<json.value_t> delta, 
     return events
 }
 
-#local
-fn processor_t.stop_block(&self, int provider_index, [types.assistant_event_t] events): [types.assistant_event_t]! {
+pub fn processor_t.stop_block(&self, int provider_index, [types.assistant_event_t] events): [types.assistant_event_t]! {
     if !self.slots.contains(provider_index) {
         return events
     }
@@ -207,33 +210,31 @@ fn processor_t.stop_block(&self, int provider_index, [types.assistant_event_t] e
     return events
 }
 
-#local
-fn processor_t.update_usage(&self, ref<json.value_t> usage, bool initial): void! {
-    var object = usage.as_object()
-    if object.contains('input_tokens') && !object['input_tokens'].is_null() {
-        self.output.usage.input = object['input_tokens'].as_number().to_int()
+pub fn processor_t.update_usage(&self, any usage, bool initial): void! {
+    var object = usage as {string:any}
+    if object.contains('input_tokens') && !json_util.is_null(object['input_tokens']) {
+        self.output.usage.input = (object['input_tokens'] as f64) as int
     }
-    if object.contains('output_tokens') && !object['output_tokens'].is_null() {
-        self.output.usage.output = object['output_tokens'].as_number().to_int()
+    if object.contains('output_tokens') && !json_util.is_null(object['output_tokens']) {
+        self.output.usage.output = (object['output_tokens'] as f64) as int
     }
-    if object.contains('cache_read_input_tokens') && !object['cache_read_input_tokens'].is_null() {
-        self.output.usage.cache_read = object['cache_read_input_tokens'].as_number().to_int()
+    if object.contains('cache_read_input_tokens') && !json_util.is_null(object['cache_read_input_tokens']) {
+        self.output.usage.cache_read = (object['cache_read_input_tokens'] as f64) as int
     }
-    if object.contains('cache_creation_input_tokens') && !object['cache_creation_input_tokens'].is_null() {
-        self.output.usage.cache_write = object['cache_creation_input_tokens'].as_number().to_int()
+    if object.contains('cache_creation_input_tokens') && !json_util.is_null(object['cache_creation_input_tokens']) {
+        self.output.usage.cache_write = (object['cache_creation_input_tokens'] as f64) as int
     }
-    if initial && object.contains('cache_creation') && !object['cache_creation'].is_null() {
+    if initial && object.contains('cache_creation') && !json_util.is_null(object['cache_creation']) {
         self.output.usage.cache_write_1h = optional_int(object['cache_creation'], 'ephemeral_1h_input_tokens', 0)
     }
-    if object.contains('output_tokens_details') && !object['output_tokens_details'].is_null() {
+    if object.contains('output_tokens_details') && !json_util.is_null(object['output_tokens_details']) {
         self.output.usage.reasoning = optional_int(object['output_tokens_details'], 'thinking_tokens', self.output.usage.reasoning)
     }
     self.output.usage.total_tokens = self.output.usage.input + self.output.usage.output + self.output.usage.cache_read + self.output.usage.cache_write
     self.output.usage = models.calculate_cost(self.model, self.output.usage)
 }
 
-#local
-fn processor_t.apply_stop_reason(&self, string reason, ref<json.value_t> delta): void! {
+pub fn processor_t.apply_stop_reason(&self, string reason, any delta): void! {
     if reason == 'end_turn' || reason == 'pause_turn' || reason == 'stop_sequence' {
         self.output.stop_reason = types.STOP_STOP
     } else if reason == 'max_tokens' {
@@ -242,8 +243,8 @@ fn processor_t.apply_stop_reason(&self, string reason, ref<json.value_t> delta):
         self.output.stop_reason = types.STOP_TOOL_USE
     } else if reason == 'refusal' {
         self.output.stop_reason = types.STOP_ERROR
-        var object = delta.as_object()
-        if object.contains('stop_details') && !object['stop_details'].is_null() {
+        var object = delta as {string:any}
+        if object.contains('stop_details') && !json_util.is_null(object['stop_details']) {
             self.output.error_message = optional_string(object['stop_details'], 'explanation', 'The model refused to complete the request')
         } else {
             self.output.error_message = 'The model refused to complete the request'
@@ -256,8 +257,7 @@ fn processor_t.apply_stop_reason(&self, string reason, ref<json.value_t> delta):
     }
 }
 
-#local
-fn update_event(string event_type, int content_index, string delta, string content, ref<types.assistant_message_t> partial): types.assistant_event_t {
+pub fn update_event(string event_type, int content_index, string delta, string content, ref<types.assistant_message_t> partial): types.assistant_event_t {
     return types.assistant_event_t {kind: event_type, content_index: content_index, delta: delta, content: content, partial: partial,}
 }
 
@@ -266,15 +266,15 @@ fn is_message_event(string event): bool {
     return event == 'message_start' || event == 'message_delta' || event == 'message_stop' || event == 'content_block_start' || event == 'content_block_delta' || event == 'content_block_stop'
 }
 
-#local
-fn stream_error(string data): string {
-    var root = json.box_value(json.parse(data)) catch e {
+pub fn stream_error(string data): string {
+    var root = json_util.parse(data) catch e {
         return data
     }
-    var object = root.as_object() catch e {
+    if !json_util.is_obj(root) {
         return data
     }
-    if object.contains('error') && !object['error'].is_null() {
+    var object = root as {string:any}
+    if object.contains('error') && !json_util.is_null(object['error']) {
         var detail = object['error']
         string error_type = optional_string(detail, 'type', 'error') catch e {
             'error'
@@ -287,30 +287,26 @@ fn stream_error(string data): string {
     return data
 }
 
-#local
-fn required_string(ref<json.value_t> value, string key): string! {
-    return value.get(key).as_string()
+pub fn required_string(any value, string key): string! {
+    return (value as {string:any})[key] as string
 }
 
-#local
-fn optional_string(ref<json.value_t> value, string key, string fallback): string! {
-    var object = value.as_object()
-    if !object.contains(key) || object[key].is_null() {
+pub fn optional_string(any value, string key, string fallback): string! {
+    var object = value as {string:any}
+    if !object.contains(key) || json_util.is_null(object[key]) {
         return fallback
     }
-    return object[key].as_string()
+    return object[key] as string
 }
 
-#local
-fn required_int(ref<json.value_t> value, string key): int! {
-    return value.get(key).as_number().to_int()
+pub fn required_int(any value, string key): int! {
+    return ((value as {string:any})[key] as f64) as int
 }
 
-#local
-fn optional_int(ref<json.value_t> value, string key, int fallback): int! {
-    var object = value.as_object()
-    if !object.contains(key) || object[key].is_null() {
+pub fn optional_int(any value, string key, int fallback): int! {
+    var object = value as {string:any}
+    if !object.contains(key) || json_util.is_null(object[key]) {
         return fallback
     }
-    return object[key].as_number().to_int()
+    return (object[key] as f64) as int
 }

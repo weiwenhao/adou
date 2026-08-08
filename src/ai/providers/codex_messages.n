@@ -2,6 +2,7 @@ import adou.src.ai.providers.decorators
 import adou.src.ai.providers.replay
 import adou.src.ai.types
 import adou.src.json_util
+import base64
 import json
 import strings
 
@@ -10,90 +11,139 @@ pub fn endpoint(ref<types.model_t> model): string {
     for base.ends_with('/') {
         base = base.slice(0, base.len() - 1)
     }
-    return base + '/v1/chat/completions'
+    if base.ends_with('/codex/responses') {
+        return base
+    }
+    if base.ends_with('/codex') {
+        return base + '/responses'
+    }
+    return base + '/codex/responses'
 }
 
 pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
     {string:any} body = {}
     body['model'] = model.id
+    body['store'] = false
     body['stream'] = true
-    [any] messages = convert_messages(context)
-    if context.system_prompt != '' {
-        [any] with_system = []
-        {string:any} system = {}
-        system['role'] = 'system'
-        system['content'] = context.system_prompt
-        with_system.push(system)
-        for message in messages {
-            with_system.push(message)
-        }
-        messages = with_system
+    string instructions = context.system_prompt
+    if instructions == '' {
+        instructions = 'You are a helpful assistant.'
     }
-    body['messages'] = messages
+    body['instructions'] = instructions
+    body['input'] = convert_messages(model, context)
+    {string:any} text_config = {}
+    text_config['verbosity'] = 'low'
+    body['text'] = text_config
+    [any] include = []
+    include.push('reasoning.encrypted_content')
+    body['include'] = include
+    if options.session_id != '' {
+        body['prompt_cache_key'] = clamp_cache_key(options.session_id)
+    }
+    body['tool_choice'] = 'auto'
+    body['parallel_tool_calls'] = true
+    if context.tools.len() > 0 {
+        body['tools'] = convert_tools(context.tools)
+    }
     int max_tokens = options.max_tokens
     if max_tokens <= 0 {
         max_tokens = model.max_tokens
     }
     if max_tokens > 0 {
-        body['max_tokens'] = max_tokens
+        body['max_output_tokens'] = max_tokens
     }
-    if context.tools.len() > 0 {
-        body['tools'] = convert_tools(context.tools)
-    }
-    if options.reasoning_effort != '' {
-        body['reasoning_effort'] = options.reasoning_effort
+    if options.reasoning_effort != '' && options.reasoning_effort != 'off' {
+        {string:any} reasoning = {}
+        reasoning['effort'] = options.reasoning_effort
+        reasoning['summary'] = options.reasoning_summary
+        body['reasoning'] = reasoning
     }
     return json.serialize(body)
 }
 
-pub fn authorization(ref<types.stream_options_t> options): string! {
-    if options.api_key == '' {
-        throw errorf('No API key for provider: mistral')
+// The Codex backend requires the ChatGPT account id, extracted from the
+// access token JWT payload claim chatgpt_account_id.
+pub fn account_id(string token): string! {
+    [string] parts = token.split('.')
+    if parts.len() != 3 {
+        throw errorf('Invalid Codex access token')
     }
-    return 'Bearer ' + options.api_key
+    string payload = parts[1]
+    payload = payload.replace('-', '+')
+    payload = payload.replace('_', '/')
+    int padding_needed = payload.len()
+    padding_needed = padding_needed % 4
+    if padding_needed > 0 {
+        padding_needed = 4 - padding_needed
+    }
+    for padding_needed > 0 {
+        payload += '='
+        padding_needed = padding_needed - 1
+    }
+    var decoded = base64.decode(payload as [u8]) catch error {
+        throw errorf('Failed to decode Codex token payload')
+    }
+    var root = json_util.parse(decoded as string)
+    if !json_util.is_obj(root) {
+        throw errorf('Failed to parse Codex token payload')
+    }
+    var object = root as {string:any}
+    if !object.contains('https://api.openai.com/auth') {
+        throw errorf('Codex token has no account claim')
+    }
+    var claim = object['https://api.openai.com/auth']
+    if !(claim is {string:any}) {
+        throw errorf('Codex token has no account claim')
+    }
+    var claim_object = claim as {string:any}
+    if !claim_object.contains('chatgpt_account_id') || !(claim_object['chatgpt_account_id'] is string) {
+        throw errorf('Codex token has no account id')
+    }
+    return claim_object['chatgpt_account_id'] as string
 }
 
-pub fn convert_messages(ref<types.context_t> context): [any] {
+#local
+fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [any]! {
     [any] result = []
     var replay = replay.tracker()
     for message in context.messages {
         if message is ref<types.user_message_t> user {
             for missing in replay.before_other() {
-                result.push(tool_result_item(missing))
+                result.push(tool_result_item(model, missing))
             }
             result.push(message_item('user', user.content))
         } else if message is ref<types.assistant_message_t> assistant {
             for missing in replay.before_assistant(assistant) {
-                result.push(tool_result_item(missing))
+                result.push(tool_result_item(model, missing))
             }
             if assistant.stop_reason == types.STOP_ERROR || assistant.stop_reason == types.STOP_ABORTED {
                 continue
             }
-            var item = assistant_item(assistant)
+            var item = assistant_item(model, assistant)
             if !json_util.is_null(item) {
                 result.push(item)
             }
         } else if message is ref<types.tool_result_message_t> tool_result {
             replay.observe_tool_result(tool_result.tool_call_id)
-            result.push(tool_result_item(tool_result))
+            result.push(tool_result_item(model, tool_result))
         } else if message is ref<types.compaction_summary_message_t> summary {
             for missing in replay.before_other() {
-                result.push(tool_result_item(missing))
+                result.push(tool_result_item(model, missing))
             }
             result.push(message_item('user', 'The conversation history before this point was compacted into the following summary:\n\n<summary>\n' + summary.summary + '\n</summary>'))
         } else if message is ref<types.branch_summary_message_t> summary {
             for missing in replay.before_other() {
-                result.push(tool_result_item(missing))
+                result.push(tool_result_item(model, missing))
             }
             result.push(message_item('user', 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\n' + summary.summary + '</summary>'))
         } else if message is ref<types.custom_message_t> custom {
             for missing in replay.before_other() {
-                result.push(tool_result_item(missing))
+                result.push(tool_result_item(model, missing))
             }
             result.push(message_item('user', custom.content))
         } else if message is ref<types.bash_execution_message_t> bash {
             for missing in replay.before_other() {
-                result.push(tool_result_item(missing))
+                result.push(tool_result_item(model, missing))
             }
             if !bash.exclude_from_context {
                 result.push(message_item('user', types.bash_execution_text(bash)))
@@ -101,28 +151,26 @@ pub fn convert_messages(ref<types.context_t> context): [any] {
         }
     }
     for missing in replay.finish() {
-        result.push(tool_result_item(missing))
+        result.push(tool_result_item(model, missing))
     }
     return result
 }
 
-pub fn message_item(string role, string content): any {
+#local
+fn message_item(string role, string content): any {
     {string:any} item = {}
     item['role'] = role
     item['content'] = content
     return item
 }
 
-pub fn assistant_item(ref<types.assistant_message_t> message): any {
-    [any] content_parts = []
-    [any] tool_calls = []
+#local
+fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> message): any! {
     string text = ''
-    string reasoning = ''
+    [any] calls = []
     for block in message.content {
         if block is ref<types.text_content_t> text_block {
             text += text_block.text
-        } else if block is ref<types.thinking_content_t> thinking_block {
-            reasoning += thinking_block.thinking
         } else if block is ref<types.tool_call_t> tool_call {
             {string:any} function = {}
             function['name'] = tool_call.name
@@ -134,40 +182,27 @@ pub fn assistant_item(ref<types.assistant_message_t> message): any {
             call['id'] = tool_call.id
             call['type'] = 'function'
             call['function'] = function
-            tool_calls.push(call)
+            calls.push(call)
         }
     }
-    if text != '' {
-        content_parts.push(text)
-    }
-    if reasoning != '' {
-        {string:any} thinking_block = {}
-        thinking_block['type'] = 'thinking'
-        [any] thinking_parts = []
-        {string:any} part = {}
-        part['type'] = 'text'
-        part['text'] = reasoning
-        thinking_parts.push(part)
-        thinking_block['thinking'] = thinking_parts
-        content_parts.push(thinking_block)
-    }
-    if content_parts.len() == 0 && tool_calls.len() == 0 {
+    if text == '' && calls.len() == 0 {
         return null
     }
     {string:any} item = {}
     item['role'] = 'assistant'
-    if content_parts.len() > 0 {
-        item['content'] = content_parts
+    if text != '' {
+        item['content'] = text
     } else {
         item['content'] = null
     }
-    if tool_calls.len() > 0 {
-        item['tool_calls'] = tool_calls
+    if calls.len() > 0 {
+        item['tool_calls'] = calls
     }
     return item
 }
 
-pub fn tool_result_item(ref<types.tool_result_message_t> message): any {
+#local
+fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_t> message): any {
     [string] lines = []
     for block in message.content {
         lines.push(block.text)
@@ -183,7 +218,8 @@ pub fn tool_result_item(ref<types.tool_result_message_t> message): any {
     return item
 }
 
-pub fn convert_tools([ref<types.tool_t>] tools): [any]! {
+#local
+fn convert_tools([ref<types.tool_t>] tools): [any]! {
     [any] result = []
     for tool in tools {
         {string:any} function = {}
@@ -197,4 +233,12 @@ pub fn convert_tools([ref<types.tool_t>] tools): [any]! {
         result.push(item)
     }
     return result
+}
+
+#local
+fn clamp_cache_key(string value): string {
+    if value.len() > 64 {
+        return value.slice(0, 64)
+    }
+    return value
 }
