@@ -1,0 +1,108 @@
+import adou.src.ai.providers.registry
+import adou.src.tools.path_utils
+import adou.src.ai.types
+import syscall
+
+// Mirrors Pi's env-api-keys: report which known environment variables can
+// provide a credential for a provider, and resolve the first one. Ambient
+// credential sources (AWS IAM, Google ADC, OAuth) are reported as configured
+// through the same markers Pi uses.
+
+pub const ANTHROPIC_AUTH_TOKEN_ENV = 'ANTHROPIC_AUTH_TOKEN'
+pub const ANTHROPIC_OAUTH_TOKEN_ENV = 'ANTHROPIC_OAUTH_TOKEN'
+pub const ANTHROPIC_API_KEY_ENV = 'ANTHROPIC_API_KEY'
+
+// The registry carries each provider's primary env var names; this function
+// mirrors Pi's provider table including the non-primary fallbacks.
+pub fn env_var_names(string provider): [string] {
+    if provider == 'github-copilot' {
+        return ['COPILOT_GITHUB_TOKEN']
+    }
+    if provider == 'anthropic' {
+        return [ANTHROPIC_AUTH_TOKEN_ENV, ANTHROPIC_OAUTH_TOKEN_ENV, ANTHROPIC_API_KEY_ENV]
+    }
+    var def = registry.find_def(provider)
+    if def is types.provider_def_t found {
+        return found.env_vars
+    }
+    [string] empty = []
+    return empty
+}
+
+pub fn find_env_keys(string provider): [string] {
+    [string] found = []
+    for env_var in env_var_names(provider) {
+        if syscall.get_env(env_var) != '' {
+            found.push(env_var)
+        }
+    }
+    return found
+}
+
+// Returns an API key from the known environment variables. OAuth-style
+// providers (anthropic auth token) are skipped for the plain key lookup.
+pub fn get_env_api_key(string provider): string {
+    [string] keys = find_env_keys(provider)
+    if keys.len() > 0 {
+        string first_key = keys[0]
+        if provider == 'anthropic' {
+            for key in keys {
+                if key != ANTHROPIC_AUTH_TOKEN_ENV {
+                    first_key = key
+                    break
+                }
+            }
+        }
+        if first_key != '' {
+            return syscall.get_env(first_key)
+        }
+    }
+    if provider == 'google-vertex' {
+        // Vertex AI: explicit API key, or Application Default Credentials.
+        if has_vertex_adc_credentials() && (syscall.get_env('GOOGLE_CLOUD_PROJECT') != '' || syscall.get_env('GCLOUD_PROJECT') != '') && syscall.get_env('GOOGLE_CLOUD_LOCATION') != '' {
+            return '<authenticated>'
+        }
+    }
+    if provider == 'amazon-bedrock' {
+        if bedrock_credentials_configured() {
+            return '<authenticated>'
+        }
+    }
+    return ''
+}
+
+// GOOGLE_APPLICATION_CREDENTIALS points at a service-account file, or the
+// default gcloud ADC path exists.
+pub fn has_vertex_adc_credentials(): bool {
+    string path = syscall.get_env('GOOGLE_APPLICATION_CREDENTIALS')
+    if path != '' {
+        return path_utils.exists(path)
+    }
+    string home = syscall.get_env('HOME')
+    if home != '' {
+        return path_utils.exists(home + '/.config/gcloud/application_default_credentials.json')
+    }
+    return false
+}
+
+pub fn bedrock_credentials_configured(): bool {
+    if syscall.get_env('AWS_PROFILE') != '' {
+        return true
+    }
+    if syscall.get_env('AWS_ACCESS_KEY_ID') != '' && syscall.get_env('AWS_SECRET_ACCESS_KEY') != '' {
+        return true
+    }
+    if syscall.get_env('AWS_BEARER_TOKEN_BEDROCK') != '' {
+        return true
+    }
+    if syscall.get_env('AWS_CONTAINER_CREDENTIALS_RELATIVE_URI') != '' {
+        return true
+    }
+    if syscall.get_env('AWS_CONTAINER_CREDENTIALS_FULL_URI') != '' {
+        return true
+    }
+    if syscall.get_env('AWS_WEB_IDENTITY_TOKEN_FILE') != '' {
+        return true
+    }
+    return false
+}

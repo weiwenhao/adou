@@ -1,0 +1,53 @@
+import adou.src.ai.env_api_keys
+import adou.src.config.auth as credential_store
+import syscall
+
+// Pi's auth resolution contract: a stored credential wins, then the known
+// environment variables, then ambient sources (ADC, AWS, OAuth). Adou's
+// credential store persists api_key entries in auth.json; env keys and
+// ambient markers come from env_api_keys.
+
+// Whether any credential source can authenticate this provider.
+pub fn is_configured(string provider): bool {
+    if credential_store.read(provider) != '' {
+        return true
+    }
+    if env_api_keys.get_env_api_key(provider) != '' {
+        return true
+    }
+    return false
+}
+
+// The effective API key for requests: stored credential, then environment.
+pub fn api_key(string provider): string {
+    string stored = credential_store.read(provider)
+    if stored != '' {
+        return stored
+    }
+    string env_key = env_api_keys.get_env_api_key(provider)
+    if env_key != '' && env_key != '<authenticated>' {
+        return env_key
+    }
+    return ''
+}
+
+// Which env var (if any) currently provides the key, mirroring Pi's source.
+pub fn env_source(string provider): string {
+    var keys = env_api_keys.find_env_keys(provider)
+    if keys.len() > 0 {
+        return keys[0]
+    }
+    return ''
+}
+
+// Pi's ANTHROPIC_AUTH_TOKEN is passed as Authorization: Bearer instead of
+// x-api-key; the anthropic provider decides based on which source resolved.
+pub fn uses_bearer_token(string provider): bool {
+    if provider != 'anthropic' {
+        return false
+    }
+    if credential_store.read(provider) != '' {
+        return false
+    }
+    return syscall.get_env('ANTHROPIC_AUTH_TOKEN') != ''
+}

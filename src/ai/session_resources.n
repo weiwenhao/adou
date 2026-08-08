@@ -1,0 +1,31 @@
+// Pi registers per-session resource cleanups (process trees, temp files)
+// that run when a session ends. Nature's callbacks are fn references.
+pub type session_cleanup_fn = fn(string session_id)
+
+pub type session_resources_t = struct {
+    [session_cleanup_fn] cleanups = []
+}
+
+pub fn new(): ref<session_resources_t> {
+    return new session_resources_t()
+}
+
+pub fn session_resources_t.register(&self, session_cleanup_fn cleanup) {
+    self.cleanups.push(cleanup)
+}
+
+pub fn session_resources_t.unregister(&self, session_cleanup_fn cleanup) {
+    [session_cleanup_fn] remaining = []
+    for existing in self.cleanups {
+        if existing != cleanup {
+            remaining.push(existing)
+        }
+    }
+    self.cleanups = remaining
+}
+
+pub fn session_resources_t.cleanup(&self, string session_id): void! {
+    for cleanup in self.cleanups {
+        cleanup(session_id)
+    }
+}

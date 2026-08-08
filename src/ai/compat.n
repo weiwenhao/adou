@@ -1,0 +1,45 @@
+import adou.src.ai.event_stream
+import adou.src.ai.provider
+import adou.src.ai.types
+import adou.src.config.auth as credential_store
+import adou.src.ai.env_api_keys
+import syscall
+
+// Pi's compat entrypoint: the old global `stream()` / `complete()` API with
+// env API key injection, plus legacy per-api aliases. New code calls
+// provider.stream() through the api dispatch; these stay for compatibility.
+
+// Stream with ambient credential resolution: the stored credential or the
+// provider's known env var is injected when the caller left api_key empty.
+pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    var resolved = options
+    if resolved.api_key == '' {
+        string stored = credential_store.read(model.provider)
+        if stored != '' {
+            resolved.api_key = stored
+        } else {
+            resolved.api_key = env_api_keys.get_env_api_key(model.provider)
+        }
+    }
+    return provider.stream(model, context, resolved)
+}
+
+// Synchronous completion: collect the streamed events into the final text.
+pub fn complete(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+    var stream = stream(model, context, options)
+    string text = ''
+    for true {
+        var event = stream.recv() catch error {break}
+        if event.kind == types.EVENT_TEXT_DELTA {
+            text += event.delta
+        }
+        if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
+            break
+        }
+    }
+    var result = stream.result()
+    if result.stop_reason == types.STOP_ERROR {
+        throw errorf('%s', result.error_message)
+    }
+    return text
+}

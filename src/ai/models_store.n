@@ -1,0 +1,34 @@
+import adou.src.ai.types
+
+// Pi's InMemoryModelsStore: persistent model catalogs keyed by provider id.
+// Models are stored as their serialized cost/shape so refreshes can replace
+// them wholesale; Nature keeps the same read/write/delete contract.
+pub type models_store_entry_t = struct {
+    [ref<types.model_t>] models = []
+    int checked_at
+}
+
+pub type models_store_t = struct {
+    {string:ref<models_store_entry_t>} entries = {}
+}
+
+pub fn new_store(): ref<models_store_t> {
+    return new models_store_t()
+}
+
+pub fn models_store_t.read(&self, string provider_id): ref<models_store_entry_t>? {
+    if !self.entries.contains(provider_id) {
+        return null
+    }
+    return self.entries[provider_id]
+}
+
+pub fn models_store_t.write(&self, string provider_id, models_store_entry_t entry) {
+    self.entries[provider_id] = new models_store_entry_t(models = entry.models, checked_at = entry.checked_at)
+}
+
+pub fn models_store_t.delete(&self, string provider_id) {
+    if self.entries.contains(provider_id) {
+        self.entries.del(provider_id)
+    }
+}
