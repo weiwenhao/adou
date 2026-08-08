@@ -1,0 +1,305 @@
+import adou.src.ai.types
+import adou.src.json_util
+import adou.src.tools.path_utils
+import fs
+import syscall
+
+// Port of the models.json layer of vendors/pi/packages/coding-agent/src/core/
+// provider-composer.ts.  User-configured providers/overrides from
+// <agentDir>/models.json compose over the built-in catalog: provider-level
+// baseUrl/headers apply to every model, models[] add or replace entries, and
+// modelOverrides patch fields on existing catalog models.
+
+pub type models_json_provider_t = struct {
+    string name
+    string base_url
+    string api_key
+    string api
+    {string:string} headers = {}
+    bool auth_header
+    {string:any} models = {}
+    {string:any} model_overrides = {}
+}
+
+pub fn load_models_json(string file_path): {string:models_json_provider_t} {
+    {string:models_json_provider_t} providers = {}
+    if !path_utils.exists(file_path) {
+        return providers
+    }
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        return providers
+    }
+    string content = input.content() catch error {
+        input.close()
+        return providers
+    }
+    input.close()
+    any parsed = json_util.parse(content) catch error {
+        return providers
+    }
+    if !json_util.is_obj(parsed) {
+        return providers
+    }
+    var root = parsed as {string:any}
+    if !root.contains('providers') || !json_util.is_obj(root['providers']) {
+        return providers
+    }
+    var provider_objects = root['providers'] as {string:any}
+    for provider_id, value in provider_objects {
+        if !json_util.is_obj(value) {
+            continue
+        }
+        var object = value as {string:any}
+        models_json_provider_t provider = models_json_provider_t {}
+        provider.name = json_util.opt_string(object, 'name')
+        provider.base_url = json_util.opt_string(object, 'baseUrl')
+        provider.api_key = json_util.opt_string(object, 'apiKey')
+        provider.api = json_util.opt_string(object, 'api')
+        provider.auth_header = json_util.opt_bool(object, 'authHeader')
+        var headers = json_util.opt_obj(object, 'headers')
+        for name, header_value in headers {
+            if header_value is string {
+                // Intermediate locals avoid a runtime heap corruption on
+                // direct map stores of `any as string` values; the Nature
+                // json deserializer also pads nested map keys with a leading
+                // space, so trim the key first.
+                string stored = header_value as string
+                provider.headers[trim_chars(name, [32, 9])] = stored
+            }
+        }
+        var models = json_util.opt_arr(object, 'models')
+        for model_value in models {
+            if json_util.is_obj(model_value) {
+                var model_object = model_value as {string:any}
+                string model_id = json_util.opt_string(model_object, 'id')
+                if model_id != '' {
+                    provider.models[model_id] = model_object
+                }
+            }
+        }
+        var overrides = json_util.opt_obj(object, 'modelOverrides')
+        for model_id, override_value in overrides {
+            if json_util.is_obj(override_value) {
+                provider.model_overrides[trim_chars(model_id, [32, 9])] = override_value
+            }
+        }
+        providers[provider_id] = provider
+    }
+    return providers
+}
+
+// Compose a provider's catalog with its models.json configuration.  Throws
+// the same validation errors as Pi (missing api/baseUrl, empty config).
+pub fn compose_provider_models(string provider_id, [ref<types.model_t>] base_models, ref<models_json_provider_t> config): [ref<types.model_t>]! {
+    if config.name == '' && config.base_url == '' && config.headers.len() == 0 && config.models.len() == 0 && config.model_overrides.len() == 0 && config.api_key == '' && !config.auth_header {
+        throw errorf('Provider %s: must specify "baseUrl", "headers", "compat", "modelOverrides", or "models".', provider_id)
+    }
+    [ref<types.model_t>] models = []
+    for model in base_models {
+        var copy = copy_model(model)
+        if config.base_url != '' {
+            copy.base_url = config.base_url
+        }
+        models.push(copy)
+    }
+    for model_id, definition in config.models {
+        var definition_object = definition as {string:any}
+        int existing_index = -1
+        for index, model in models {
+            if model.id == model_id {
+                existing_index = index
+                break
+            }
+        }
+        ref<types.model_t>? defaults = null
+        if existing_index >= 0 {
+            defaults = models[existing_index]
+        } else if models.len() > 0 {
+            defaults = models[0]
+        }
+        var created = model_from_json(provider_id, model_id, definition_object, config, defaults)
+        if existing_index >= 0 {
+            models[existing_index] = created
+        } else {
+            models.push(created)
+        }
+    }
+    for model_id, override in config.model_overrides {
+        for index, model in models {
+            if model.id == model_id {
+                models[index] = apply_model_override(models[index], override as {string:any}) catch error { throw error }
+                break
+            }
+        }
+    }
+    return models
+}
+
+pub fn model_from_json(string provider_id, string model_id, {string:any} definition, ref<models_json_provider_t> provider_config, ref<types.model_t>? defaults): ref<types.model_t>! {
+    string api = json_util.opt_string(definition, 'api')
+    if api == '' {
+        api = provider_config.api
+    }
+    if api == '' && defaults is ref<types.model_t> default_model {
+        api = default_model.api
+    }
+    if api == '' {
+        throw errorf('Provider %s, model %s: no "api" specified. Set at provider or model level.', provider_id, model_id)
+    }
+    string base_url = json_util.opt_string(definition, 'baseUrl')
+    if base_url == '' {
+        base_url = provider_config.base_url
+    }
+    if base_url == '' && defaults is ref<types.model_t> default_model {
+        base_url = default_model.base_url
+    }
+    if base_url == '' {
+        throw errorf('Provider %s: "baseUrl" is required when defining custom models.', provider_id)
+    }
+    int context_window = optional_positive_int(definition, 'contextWindow') catch error { throw error }
+    int max_tokens = optional_positive_int(definition, 'maxTokens') catch error { throw error }
+    var model = new types.model_t(id = model_id, api = api, provider = provider_id, base_url = base_url, reasoning = json_util.opt_bool(definition, 'reasoning'), context_window = context_window > 0 ? context_window : 128000, max_tokens = max_tokens > 0 ? max_tokens : 16384)
+    string name = json_util.opt_string(definition, 'name')
+    if name == '' {
+        name = model_id
+    }
+    model.name = name
+    var cost = trimmed_map(json_util.opt_obj(definition, 'cost'))
+    if cost.len() > 0 {
+        model.cost.input = optional_float(cost, 'input')
+        model.cost.output = optional_float(cost, 'output')
+        model.cost.cache_read = optional_float(cost, 'cacheRead')
+        model.cost.cache_write = optional_float(cost, 'cacheWrite')
+    }
+    var level_map = trimmed_map(json_util.opt_obj(definition, 'thinkingLevelMap'))
+    for level, value in level_map {
+        if value is string {
+            model.thinking_level_map[level] = value as string
+        } else {
+            model.thinking_level_map[level] = ''
+        }
+    }
+    var headers = trimmed_map(json_util.opt_obj(definition, 'headers'))
+    for name, value in headers {
+        if value is string {
+            model.headers[name] = value as string
+        }
+    }
+    return model
+}
+
+pub fn apply_model_override(ref<types.model_t> model, {string:any} override): ref<types.model_t>! {
+    var copy = copy_model(model)
+    string name = json_util.opt_string(override, 'name')
+    if name != '' {
+        copy.name = name
+    }
+    if override.contains('reasoning') && override['reasoning'] is bool {
+        copy.reasoning = override['reasoning'] as bool
+    }
+    var cost = trimmed_map(json_util.opt_obj(override, 'cost'))
+    if cost.len() > 0 {
+        copy.cost.input = optional_float(cost, 'input')
+        copy.cost.output = optional_float(cost, 'output')
+        copy.cost.cache_read = optional_float(cost, 'cacheRead')
+        copy.cost.cache_write = optional_float(cost, 'cacheWrite')
+    }
+    int context_window = optional_positive_int(override, 'contextWindow') catch error { throw error }
+    if context_window > 0 {
+        copy.context_window = context_window
+    }
+    int max_tokens = optional_positive_int(override, 'maxTokens') catch error { throw error }
+    if max_tokens > 0 {
+        copy.max_tokens = max_tokens
+    }
+    var level_map = trimmed_map(json_util.opt_obj(override, 'thinkingLevelMap'))
+    for level, value in level_map {
+        if value is string {
+            copy.thinking_level_map[level] = value as string
+        } else {
+            copy.thinking_level_map[level] = ''
+        }
+    }
+    var headers = trimmed_map(json_util.opt_obj(override, 'headers'))
+    for name, value in headers {
+        if value is string {
+            copy.headers[name] = value as string
+        }
+    }
+    return copy
+}
+
+pub fn copy_model(ref<types.model_t> source): ref<types.model_t> {
+    var copy = new types.model_t(id = source.id, name = source.name, api = source.api, provider = source.provider, base_url = source.base_url, reasoning = source.reasoning, adaptive_thinking = source.adaptive_thinking, supports_long_cache_retention = source.supports_long_cache_retention, supports_eager_tool_streaming = source.supports_eager_tool_streaming, context_window = source.context_window, max_tokens = source.max_tokens,)
+    copy.cost = source.cost
+    for level, value in source.thinking_level_map {
+        copy.thinking_level_map[level] = value
+    }
+    for name, value in source.headers {
+        copy.headers[name] = value
+    }
+    return copy
+}
+
+fn optional_positive_int({string:any} object, string key): int! {
+    if !object.contains(key) || object[key] is null {
+        return 0
+    }
+    if object[key] is f64 {
+        int value = (object[key] as f64) as int
+        if value <= 0 {
+            throw errorf('Invalid %s', key)
+        }
+        return value
+    }
+    if object[key] is int {
+        int value = object[key] as int
+        if value <= 0 {
+            throw errorf('Invalid %s', key)
+        }
+        return value
+    }
+    return 0
+}
+
+fn optional_float({string:any} object, string key): float {
+    if object.contains(key) && object[key] is f64 {
+        return object[key] as f64
+    }
+    if object.contains(key) && object[key] is int {
+        return (object[key] as int) as float
+    }
+    return 0.0
+}
+
+// The Nature json deserializer pads nested map keys with a leading space;
+// rebuild nested maps with trimmed keys before field lookups.  std
+// strings.trim is unreliable in the current toolchain, so trim bytes here.
+fn trimmed_map({string:any} source): {string:any} {
+    {string:any} result = {}
+    for key, value in source {
+        result[trim_chars(key, [32, 9])] = value
+    }
+    return result
+}
+
+fn trim_chars(string value, [u8] chars): string {
+    int start = 0
+    for start < value.len() && contains_byte(chars, value[start]) {
+        start += 1
+    }
+    int end = value.len()
+    for end > start && contains_byte(chars, value[end - 1]) {
+        end -= 1
+    }
+    return value.slice(start, end)
+}
+
+fn contains_byte([u8] chars, u8 target): bool {
+    for byte in chars {
+        if byte == target {
+            return true
+        }
+    }
+    return false
+}

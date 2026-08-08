@@ -1,0 +1,109 @@
+import adou.src.ai.types
+import adou.src.config.models_json
+import adou.src.json_util
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+pub fn write_file(string file_path, string content): void! {
+    var parent = path.dir(file_path)
+    os.mkdirs(parent, 0o700)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644) catch error {
+        throw error
+    }
+    file.write(content as [u8])
+    file.close()
+}
+
+pub fn base_models(): [ref<types.model_t>] {
+    [ref<types.model_t>] models = []
+    models.push(new types.model_t(id = 'default-a', name = 'Default A', api = 'openai-completions', provider = 'custom', base_url = 'https://default.example.com', reasoning = false, context_window = 1000, max_tokens = 1000))
+    return models
+}
+
+test 'loads providers from a models.json file like Pi' {
+    string dir = path.join('/tmp', 'adou-models-json-' + suffix())
+    string file_path = path.join(dir, 'models.json')
+    write_file(file_path, '{"providers":{"custom":{"baseUrl":"https://gateway.example.com","headers":{"X-Custom":"yes"},"models":[{"id":"extra","name":"Extra","reasoning":true,"cost":{"input":1.0,"output":2.0},"contextWindow":64000,"maxTokens":8192}]}}}')
+    var providers = models_json.load_models_json(file_path)
+    assert(providers.contains('custom'))
+    var provider = providers['custom']
+    assert(provider.base_url == 'https://gateway.example.com')
+    string custom = provider.headers['X-Custom'] catch error {'missing'}
+    println('DEBUG custom header=', custom)
+    assert(custom == 'yes')
+    assert(provider.models.contains('extra'))
+    os.rmdir(dir, true)
+}
+
+test 'compose adds custom models and keeps catalog entries like Pi' {
+    var provider = new models_json.models_json_provider_t(base_url = 'https://gateway.example.com')
+    {string:any} definition = {}
+    definition['name'] = 'Extra'
+    definition['reasoning'] = true
+    {string:any} cost = {}
+    cost['input'] = 1.0
+    cost['output'] = 2.0
+    definition['cost'] = cost
+    definition['contextWindow'] = 64000
+    definition['maxTokens'] = 8192
+    provider.models['extra'] = definition
+    var composed = models_json.compose_provider_models('custom', base_models(), provider) catch error {
+        assert(false)
+        []
+    }
+    assert(composed.len() == 2)
+    assert(composed[0].id == 'default-a')
+    assert(composed[0].base_url == 'https://gateway.example.com')
+    assert(composed[1].id == 'extra')
+    assert(composed[1].api == 'openai-completions')
+    assert(composed[1].reasoning)
+    assert(composed[1].context_window == 64000)
+    assert(composed[1].cost.input == 1.0)
+}
+
+test 'model overrides patch existing catalog models like Pi' {
+    var provider = new models_json.models_json_provider_t()
+    {string:any} override = {}
+    override['name'] = 'Renamed'
+    override['contextWindow'] = 32000
+    provider.model_overrides['default-a'] = override
+    var composed = models_json.compose_provider_models('custom', base_models(), provider) catch error {
+        assert(false)
+        []
+    }
+    assert(composed.len() == 1)
+    assert(composed[0].name == 'Renamed')
+    assert(composed[0].context_window == 32000)
+    assert(composed[0].base_url == 'https://default.example.com')
+}
+
+test 'empty provider config is rejected like Pi' {
+    var provider = new models_json.models_json_provider_t()
+    bool failed = false
+    try {
+        var composed = models_json.compose_provider_models('custom', base_models(), provider)
+    } catch e {
+        failed = true
+    }
+    assert(failed)
+}
+
+test 'model_from_json requires baseUrl for custom models like Pi' {
+    var provider = new models_json.models_json_provider_t()
+    {string:any} definition = {}
+    bool failed = false
+    try {
+        var model = models_json.model_from_json('custom', 'm', definition, provider, null)
+    } catch e {
+        failed = true
+    }
+    assert(failed)
+}
+
+fn suffix(): string {
+    return fmt.sprintf('%d', time.now().ms_timestamp())
+}
