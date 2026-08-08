@@ -1,0 +1,160 @@
+import adou.src.ai.providers.registry
+import adou.src.ai.types as ai_types
+import adou.src.session.message_json
+import adou.src.session.types as session_types
+import adou.src.json_util
+
+// Port of vendors/pi/packages/coding-agent/src/core/cache-stats.ts.
+// Prompt-cache waste accounting across a session: per-turn misses above the
+// noise floor, cost delta vs. a full cache hit, and idle/model-change
+// attribution.
+
+pub const CACHE_TTL_MS = 5 * 60 * 1000
+pub const NOISE_FLOOR_TOKENS = 1024
+
+pub type cache_miss_t = struct {
+    int missed_tokens
+    float missed_cost
+    int idle_ms
+    bool model_changed
+}
+
+pub type cache_waste_totals_t = struct {
+    int missed_tokens
+    float missed_cost
+    int miss_count
+}
+
+pub type previous_request_t = struct {
+    int prompt_tokens
+    string model_key
+    int timestamp
+    bool reported_cache
+}
+
+pub type scan_result_t = struct {
+    ref<previous_request_t>? prev = null
+    cache_waste_totals_t totals
+    [cache_miss_t] misses = []
+}
+
+pub fn scan_entries([ref<session_types.entry_t>] entries): scan_result_t {
+    scan_result_t result = scan_result_t {}
+    ref<previous_request_t>? prev = null
+    for entry in entries {
+        if entry.kind == session_types.ENTRY_COMPACTION || entry.kind == session_types.ENTRY_BRANCH_SUMMARY {
+            prev = null
+            continue
+        }
+        if entry.kind != session_types.ENTRY_MESSAGE {
+            continue
+        }
+        if !json_util.is_obj(entry.raw) {
+            continue
+        }
+        var object = entry.raw as {string:any}
+        if !object.contains('message') || !(object['message'] is {string:any}) {
+            continue
+        }
+        var message = message_json.decode(object['message']) catch error {
+            continue
+        }
+        if !(message is ref<ai_types.assistant_message_t>) {
+            continue
+        }
+        var assistant = message as ref<ai_types.assistant_message_t>
+        var miss = detect_miss(prev, assistant)
+        if miss is ref<cache_miss_t> miss_value {
+            result.totals.missed_tokens += miss_value.missed_tokens
+            result.totals.missed_cost += miss_value.missed_cost
+            result.totals.miss_count += 1
+            cache_miss_t copy = cache_miss_t {missed_tokens: miss_value.missed_tokens, missed_cost: miss_value.missed_cost, idle_ms: miss_value.idle_ms, model_changed: miss_value.model_changed,}
+            result.misses.push(copy)
+        }
+        bool prior_reported = false
+        if prev is ref<previous_request_t> prev_value {
+            prior_reported = prev_value.reported_cache
+        }
+        prev = as_previous_request(assistant, prior_reported)
+        if prev is ref<previous_request_t> request {
+            if request.prompt_tokens <= 0 {
+                prev = null
+            }
+        }
+    }
+    result.prev = prev
+    return result
+}
+
+pub fn detect_miss(ref<previous_request_t>? prev, ref<ai_types.assistant_message_t> message): ref<cache_miss_t>? {
+    if prev is null {
+        return null
+    }
+    if prev is ref<previous_request_t> previous {
+        return detect_miss_inner(previous, message)
+    }
+    return null
+}
+
+fn detect_miss_inner(ref<previous_request_t> previous, ref<ai_types.assistant_message_t> message): ref<cache_miss_t>? {
+    int prompt_tokens = message.usage.input + message.usage.cache_read + message.usage.cache_write
+    if prompt_tokens <= 0 {
+        return null
+    }
+    bool cache_activity = message.usage.cache_read + message.usage.cache_write > 0
+    if !cache_activity && !previous.reported_cache {
+        return null
+    }
+    int missed_tokens = min_int(previous.prompt_tokens, prompt_tokens) - message.usage.cache_read
+    if missed_tokens <= NOISE_FLOOR_TOKENS {
+        return null
+    }
+    int paid_tokens = message.usage.input + message.usage.cache_write
+    float paid_per_token = 0.0
+    if paid_tokens > 0 {
+        paid_per_token = (message.usage.cost.input + message.usage.cost.cache_write) / (paid_tokens as float)
+    }
+    float read_per_token = 0.0
+    if message.usage.cache_read > 0 {
+        read_per_token = message.usage.cost.cache_read / (message.usage.cache_read as float)
+    } else {
+        var model = registry.find_model(message.provider, message.model)
+        if model is ref<ai_types.model_t> model_value {
+            read_per_token = model_value.cost.cache_read / 1000000.0
+        }
+    }
+    float extra = paid_per_token - read_per_token
+    if extra < 0.0 {
+        extra = 0.0
+    }
+    int idle_ms = message.timestamp - previous.timestamp
+    if idle_ms < 0 {
+        idle_ms = 0
+    }
+    var miss = new cache_miss_t(missed_tokens = missed_tokens, idle_ms = idle_ms, model_changed = message.provider + '/' + message.model != previous.model_key)
+    miss.missed_cost = (missed_tokens as float) * extra
+    return miss
+}
+
+fn as_previous_request(ref<ai_types.assistant_message_t> message, bool prior_reported): ref<previous_request_t> {
+    int prompt_tokens = message.usage.input + message.usage.cache_read + message.usage.cache_write
+    var request = new previous_request_t(prompt_tokens = prompt_tokens, model_key = message.provider + '/' + message.model, timestamp = message.timestamp, reported_cache = prior_reported || message.usage.cache_read + message.usage.cache_write > 0)
+    return request
+}
+
+pub fn compute_cache_waste([ref<session_types.entry_t>] entries): cache_waste_totals_t {
+    return scan_entries(entries).totals
+}
+
+pub fn collect_cache_misses([ref<session_types.entry_t>] entries): [cache_miss_t] {
+    return scan_entries(entries).misses
+}
+
+pub fn detect_cache_miss([ref<session_types.entry_t>] entries, ref<ai_types.assistant_message_t> message): ref<cache_miss_t>? {
+    var scan = scan_entries(entries)
+    return detect_miss(scan.prev, message)
+}
+
+fn min_int(int a, int b): int {
+    return a < b ? a : b
+}

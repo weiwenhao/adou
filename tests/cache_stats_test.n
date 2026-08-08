@@ -1,0 +1,87 @@
+import adou.src.ai.types as ai_types
+import adou.src.session.cache_stats
+import adou.src.session.repository
+import adou.src.session.types as session_types
+
+test 'computes cache waste across turns like Pi' {
+    var manager = repository.in_memory('/tmp')
+    // First turn: 1000 prompt tokens, no cache activity reported.
+    var first = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'deepseek-v4-flash', timestamp = 1000)
+    first.usage.input = 1000
+    first.usage.total_tokens = 1050
+    ai_types.message_t first_message = first
+    manager.append_message(first_message)
+    // Second turn: same 1000 prompt tokens but 0 cache reads -> total miss.
+    var second = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'deepseek-v4-flash', timestamp = 400000)
+    second.usage.input = 1000
+    second.usage.total_tokens = 1050
+    ai_types.message_t second_message = second
+    manager.append_message(second_message)
+    var totals = cache_stats.compute_cache_waste(manager.active_entries())
+    assert(totals.miss_count == 0)
+}
+
+test 'counts a cache miss above the noise floor' {
+    var manager = repository.in_memory('/tmp')
+    var first = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'deepseek-v4-flash', timestamp = 1000)
+    first.usage.input = 3000
+    first.usage.cache_read = 2000
+    first.usage.total_tokens = 5050
+    ai_types.message_t first_message = first
+    manager.append_message(first_message)
+    var second = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'deepseek-v4-flash', timestamp = 400000)
+    second.usage.input = 3000
+    second.usage.cache_read = 1500
+    second.usage.total_tokens = 4550
+    ai_types.message_t second_message = second
+    manager.append_message(second_message)
+    var totals = cache_stats.compute_cache_waste(manager.active_entries())
+    assert(totals.miss_count == 1)
+    // min(5000, 4500) - 1500 = 3000 missed tokens, above the 1024 floor.
+    assert(totals.missed_tokens == 3000)
+}
+
+test 'misses below the noise floor are not counted' {
+    var manager = repository.in_memory('/tmp')
+    var first = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'deepseek-v4-flash', timestamp = 1000)
+    first.usage.input = 1000
+    first.usage.cache_read = 500
+    first.usage.total_tokens = 1550
+    ai_types.message_t first_message = first
+    manager.append_message(first_message)
+    var second = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'deepseek-v4-flash', timestamp = 400000)
+    second.usage.input = 1000
+    second.usage.cache_read = 480
+    second.usage.total_tokens = 1530
+    ai_types.message_t second_message = second
+    manager.append_message(second_message)
+    var totals = cache_stats.compute_cache_waste(manager.active_entries())
+    // min(1500, 1480) - 480 = 1000 missed tokens, below the 1024 floor.
+    assert(totals.miss_count == 0)
+}
+
+test 'detect_cache_miss reports idle and model change like Pi' {
+    var manager = repository.in_memory('/tmp')
+    var first = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'deepseek-v4-flash', timestamp = 1000)
+    first.usage.input = 10000
+    first.usage.cache_read = 8000
+    first.usage.total_tokens = 18050
+    ai_types.message_t first_message = first
+    manager.append_message(first_message)
+    var second = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'deepseek-v4-pro', timestamp = 310000)
+    second.usage.input = 9000
+    second.usage.cache_read = 1000
+    second.usage.total_tokens = 10050
+    var before = manager.active_entries()
+    ai_types.message_t second_message = second
+    manager.append_message(second_message)
+    var miss = cache_stats.detect_cache_miss(before, second)
+    if miss is ref<cache_stats.cache_miss_t> miss_value {
+        assert(miss_value.model_changed)
+        assert(miss_value.idle_ms == 309000)
+        // min(18000, 10000) - 1000 = 9000 missed tokens.
+        assert(miss_value.missed_tokens == 9000)
+    } else {
+        assert(false)
+    }
+}
