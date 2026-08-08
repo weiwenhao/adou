@@ -655,10 +655,15 @@ pub fn view_t.start_prompt(&self, string text): ref<session_stream.stream_t>? {
         return stream
     }
     if text.starts_with('/') {
-        var expanded = prompt_templates.expand_prompt_template(text, self.prompt_templates)
-        if expanded != text {
+        var skill_expanded = self.expand_skill_command(text)
+        var expanded = prompt_templates.expand_prompt_template(skill_expanded, self.prompt_templates)
+        if expanded != skill_expanded {
             self.editor.clear()
             return self.start_prompt(expanded)
+        }
+        if skill_expanded != text {
+            self.editor.clear()
+            return self.start_prompt(skill_expanded)
         }
         var command_stream = self.run_command(text)
         // Selecting a slash-command from completion does not go through
@@ -1931,8 +1936,50 @@ pub fn view_t.show_help_overlay(&self) {
     self.overlay = new overlay_t(kind = OVERLAY_HELP, title = 'Commands', options = options)
 }
 
-pub fn view_t.show_skills(&self, string text, [string] parts) {
+// Pi's /skill:name command expands to the skill body wrapped in a skill
+// block with its location and relative-path guidance.
+pub fn view_t.expand_skill_command(&self, string text): string {
+    if !text.starts_with('/skill:') {
+        return text
+    }
+    int space = text.find(' ')
+    string skill_name = ''
+    string args = ''
+    if space < 0 {
+        skill_name = text.slice(7, text.len())
+    } else {
+        skill_name = text.slice(7, space)
+        args = text.slice(space + 1, text.len()).trim([' ', '\t'])
+    }
     var loaded = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), [], true) catch error {
+        return text
+    }
+    for skill in loaded.skills {
+        if skill.name == skill_name {
+            string content = read_skill_file(skill.file_path) catch error {
+                return text
+            }
+            string body = skills.strip_frontmatter(content).trim([' ', '\t', '\n', '\r'])
+            string block = '<skill name="' + skills.escape_xml(skill.name) + '" location="' + skills.escape_xml(skill.file_path) + '">\nReferences are relative to ' + skill.base_dir + '.\n\n' + body + '\n</skill>'
+            if args != '' {
+                return block + '\n\n' + args
+            }
+            return block
+        }
+    }
+    return text
+}
+
+fn read_skill_file(string file_path): string! {
+    var file = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        throw error
+    }
+    string content = file.content()
+    file.close()
+    return content
+}
+
+pub fn view_t.show_skills(&self, string text, [string] parts) {    var loaded = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), [], true) catch error {
         self.chat.error_message = error.msg()
         self.redraw()
         return

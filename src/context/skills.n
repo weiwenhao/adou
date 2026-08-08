@@ -113,6 +113,11 @@ fn parse_scalar(string raw): any {
     return number
 }
 
+pub fn strip_frontmatter(string content): string {
+    var parsed = parse_frontmatter(content)
+    return parsed[1]
+}
+
 pub fn validate_skill_name(string name): [string] {
     [string] errors = []
     if name.len() > MAX_NAME_LENGTH {
