@@ -1,0 +1,75 @@
+import adou.src.ai.attribution
+import adou.src.ai.types
+import syscall
+
+pub fn model_with(string provider, string base_url): ref<types.model_t> {
+    return new types.model_t(id = 'm', api = 'openai-completions', provider = provider, base_url = base_url, context_window = 1000, max_tokens = 1000)
+}
+
+pub fn has_header([attribution.header_t] headers, string name): bool {
+    for header in headers {
+        if header.name == name {
+            return true
+        }
+    }
+    return false
+}
+
+test 'telemetry env flag accepts truthy values like Pi' {
+    syscall.set_env('PI_TELEMETRY', '1')
+    assert(attribution.is_install_telemetry_enabled())
+    syscall.set_env('PI_TELEMETRY', 'true')
+    assert(attribution.is_install_telemetry_enabled())
+    syscall.set_env('PI_TELEMETRY', 'yes')
+    assert(attribution.is_install_telemetry_enabled())
+    syscall.set_env('PI_TELEMETRY', '0')
+    assert(!attribution.is_install_telemetry_enabled())
+    syscall.set_env('PI_TELEMETRY', '')
+    assert(!attribution.is_install_telemetry_enabled())
+}
+
+test 'openrouter attribution headers follow the Pi values' {
+    syscall.set_env('PI_TELEMETRY', '1')
+    var headers = attribution.provider_attribution_headers(model_with('openrouter', 'https://openrouter.ai/api/v1'), '')
+    assert(has_header(headers, 'HTTP-Referer'))
+    assert(has_header(headers, 'X-OpenRouter-Title'))
+    assert(has_header(headers, 'X-OpenRouter-Categories'))
+    string referer = header_value(headers, 'HTTP-Referer')
+    assert(referer == 'https://pi.dev')
+}
+
+test 'nvidia and cloudflare attribution headers' {
+    syscall.set_env('PI_TELEMETRY', '1')
+    var nvidia = attribution.provider_attribution_headers(model_with('nvidia', 'https://integrate.api.nvidia.com/v1'), '')
+    assert(has_header(nvidia, 'X-BILLING-INVOKE-ORIGIN'))
+    var cloudflare = attribution.provider_attribution_headers(model_with('cloudflare-workers-ai', 'https://api.cloudflare.com/client/v4'), '')
+    assert(has_header(cloudflare, 'User-Agent'))
+    string user_agent = header_value(cloudflare, 'User-Agent')
+    assert(user_agent == 'pi-coding-agent')
+}
+
+test 'attribution is gated behind telemetry like Pi' {
+    syscall.set_env('PI_TELEMETRY', '')
+    var headers = attribution.provider_attribution_headers(model_with('openrouter', 'https://openrouter.ai/api/v1'), '')
+    assert(!has_header(headers, 'HTTP-Referer'))
+}
+
+test 'opencode session headers are not telemetry-gated' {
+    syscall.set_env('PI_TELEMETRY', '')
+    var headers = attribution.provider_attribution_headers(model_with('opencode', 'https://opencode.ai'), 'session-1')
+    assert(has_header(headers, 'x-opencode-session'))
+    assert(has_header(headers, 'x-opencode-client'))
+    var no_session = attribution.provider_attribution_headers(model_with('opencode', 'https://opencode.ai'), '')
+    assert(!has_header(no_session, 'x-opencode-session'))
+    var other = attribution.provider_attribution_headers(model_with('deepseek', 'https://api.deepseek.com'), 'session-1')
+    assert(!has_header(other, 'x-opencode-session'))
+}
+
+pub fn header_value([attribution.header_t] headers, string name): string {
+    for header in headers {
+        if header.name == name {
+            return header.value
+        }
+    }
+    return ''
+}

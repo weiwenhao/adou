@@ -1,4 +1,5 @@
 import adou.src.ai.abort
+import adou.src.ai.attribution
 import adou.src.ai.event_stream
 import adou.src.ai.provider_retry
 import adou.src.ai.providers.anthropic_messages
@@ -139,6 +140,10 @@ pub fn send_once(ref<run_state_t> state): ref<client.response_t>! {
     }
     var headers = decorators.copilot_headers(state.context)
     for header in headers {
+        request.header(header.name, header.value)
+    }
+    var attribution_headers = attribution.provider_attribution_headers(state.model, state.options.session_id)
+    for header in attribution_headers {
         request.header(header.name, header.value)
     }
     return request.send()

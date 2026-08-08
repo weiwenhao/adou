@@ -1,0 +1,85 @@
+import adou.src.ai.types
+import syscall
+
+// Port of vendors/pi/packages/coding-agent/src/core/telemetry.ts and
+// provider-attribution.ts.  Attribution headers are gated behind install
+// telemetry, which the PI_TELEMETRY env var enables explicitly.
+
+pub fn is_install_telemetry_enabled(): bool {
+    string value = syscall.get_env('PI_TELEMETRY')
+    if value == '' {
+        return false
+    }
+    string normalized = value.to_lower()
+    return normalized == '1' || normalized == 'true' || normalized == 'yes'
+}
+
+pub const OPENROUTER_HOST = 'openrouter.ai'
+pub const NVIDIA_NIM_HOST = 'integrate.api.nvidia.com'
+pub const CLOUDFLARE_API_HOST = 'api.cloudflare.com'
+pub const CLOUDFLARE_AI_GATEWAY_HOST = 'gateway.ai.cloudflare.com'
+pub const OPENCODE_HOST = 'opencode.ai'
+
+pub fn matches_host(string base_url, string expected_host): bool {
+    string host = hostname_of(base_url)
+    return host == expected_host
+}
+
+fn hostname_of(string base_url): string {
+    string value = base_url
+    int scheme = value.find('://')
+    if scheme >= 0 {
+        value = value.slice(scheme + 3, value.len())
+    }
+    int slash = value.find('/')
+    if slash >= 0 {
+        value = value.slice(0, slash)
+    }
+    int colon = value.find(':')
+    if colon >= 0 {
+        value = value.slice(0, colon)
+    }
+    return value
+}
+
+fn is_openrouter_model(ref<types.model_t> model): bool {
+    return model.provider == 'openrouter' || model.base_url.contains(OPENROUTER_HOST)
+}
+
+fn is_nvidia_nim_model(ref<types.model_t> model): bool {
+    return model.provider == 'nvidia' || matches_host(model.base_url, NVIDIA_NIM_HOST)
+}
+
+fn is_cloudflare_model(ref<types.model_t> model): bool {
+    return model.provider == 'cloudflare-workers-ai' || model.provider == 'cloudflare-ai-gateway' || matches_host(model.base_url, CLOUDFLARE_API_HOST) || matches_host(model.base_url, CLOUDFLARE_AI_GATEWAY_HOST)
+}
+
+fn is_opencode_model(ref<types.model_t> model): bool {
+    return model.provider == 'opencode' || model.provider == 'opencode-go' || matches_host(model.base_url, OPENCODE_HOST)
+}
+
+pub type header_t = struct {
+    string name
+    string value
+}
+
+pub fn provider_attribution_headers(ref<types.model_t> model, string session_id): [header_t] {
+    [header_t] result = []
+    if is_opencode_model(model) && session_id != '' {
+        result.push(header_t {name: 'x-opencode-session', value: session_id,})
+        result.push(header_t {name: 'x-opencode-client', value: 'pi',})
+    }
+    if !is_install_telemetry_enabled() {
+        return result
+    }
+    if is_openrouter_model(model) {
+        result.push(header_t {name: 'HTTP-Referer', value: 'https://pi.dev',})
+        result.push(header_t {name: 'X-OpenRouter-Title', value: 'pi',})
+        result.push(header_t {name: 'X-OpenRouter-Categories', value: 'cli-agent',})
+    } else if is_nvidia_nim_model(model) {
+        result.push(header_t {name: 'X-BILLING-INVOKE-ORIGIN', value: 'Pi',})
+    } else if is_cloudflare_model(model) {
+        result.push(header_t {name: 'User-Agent', value: 'pi-coding-agent',})
+    }
+    return result
+}
