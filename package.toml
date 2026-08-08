@@ -7,5 +7,6 @@ type = "bin"
 
 [links]
 unicode_icu = { darwin_arm64 = 'native/unicode_icu.o', darwin_amd64 = 'native/unicode_icu.o', linux_amd64 = 'native/unicode_icu.o' }
+term = { darwin_arm64 = 'native/term.o', darwin_amd64 = 'native/term.o', linux_amd64 = 'native/term.o' }
 
 [dependencies]

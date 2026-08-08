@@ -13,6 +13,7 @@ ADOU_BIN := $(BIN_DIR)/adou
 PROCESS_GROUP_HELPER := $(BIN_DIR)/adou-process-group
 SAFE_NATURE := $(CURDIR)/scripts/nature-build-safe.sh
 NATIVE_OBJ := native/unicode_icu.o
+TERM_OBJ := native/term.o
 
 ICU_INCLUDE ?= $(firstword $(wildcard /opt/homebrew/opt/icu4c/include /usr/local/opt/icu4c/include))
 ICU_CFLAGS := $(if $(ICU_INCLUDE),-I$(ICU_INCLUDE),)
@@ -35,7 +36,11 @@ $(NATIVE_OBJ): native/unicode_icu.c
 	@mkdir -p "$(dir $@)"
 	@$(CC) -std=c11 -O2 $(ICU_CFLAGS) -c "$<" -o "$@"
 
-$(ADOU_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(SAFE_NATURE)
+$(TERM_OBJ): native/term.c
+	@mkdir -p "$(dir $@)"
+	@$(CC) -std=c11 -O2 -c "$<" -o "$@"
+
+$(ADOU_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(SAFE_NATURE)
 	@mkdir -p "$(BIN_DIR)"
 	@NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" build -o "$(ADOU_BIN)" "$(CURDIR)/main.n"
 
@@ -45,7 +50,7 @@ run: build
 # Nature's own test runner is the test framework.  Run tests one at a time so
 # each invocation gets the same stale-compiler cleanup and no two Nature
 # processes can overlap.
-test: $(SAFE_NATURE) $(NATIVE_OBJ) $(PROCESS_GROUP_HELPER)
+test: $(SAFE_NATURE) $(NATIVE_OBJ) $(TERM_OBJ) $(PROCESS_GROUP_HELPER)
 	@set -e; for test_file in $(TEST_SOURCES); do \
 		echo "==> $$test_file"; \
 		ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" test "$(CURDIR)/$$test_file"; \
@@ -71,7 +76,7 @@ install: build
 
 clean:
 	@rm -rf "$(BUILD_DIR)"
-	@rm -f "$(NATIVE_OBJ)"
+	@rm -f "$(NATIVE_OBJ)" "$(TERM_OBJ)"
 
 help:
 	@printf '%s\n' \

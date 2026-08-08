@@ -679,7 +679,7 @@ adou [--provider deepseek|openai|anthropic]
      [--no-session]
 ```
 
-默认模型为 `deepseek/deepseek-v4-flash`，密钥按已保存的 `~/.pi/agent/auth.json`、环境变量 `DEEPSEEK_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 解析。全局设置位于 `~/.pi/agent/settings.json`；启动时还会读取当前 session cwd 下的 `.pi/settings.json`，项目字段覆盖全局字段，未出现的字段继续继承全局值。项目 `.pi/SYSTEM.md` 覆盖 `~/.pi/agent/SYSTEM.md`，`.pi/APPEND_SYSTEM.md` 覆盖全局追加提示。`PI_CODING_AGENT_DIR` 可覆盖 `~/.pi/agent`（`ADOU_CODING_AGENT_DIR` 为兼容别名）。MVP 不加载 `.pi/extensions`、`.pi/skills` 和 `.pi/prompts` 动态扩展资源。`--api-key` MAY 支持，但帮助文本必须提示命令行参数可能进入 shell history。
+默认模型为 `deepseek/deepseek-v4-flash`，密钥按已保存的 `~/.pi/agent/auth.json`、环境变量 `DEEPSEEK_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 解析。全局设置位于 `~/.pi/agent/settings.json`；启动时还会读取当前 session cwd 下的 `.pi/settings.json`，项目字段覆盖全局字段，未出现的字段继续继承全局值。项目 `.pi/SYSTEM.md` 覆盖 `~/.pi/agent/SYSTEM.md`，`.pi/APPEND_SYSTEM.md` 覆盖全局追加提示。`PI_CODING_AGENT_DIR` 可覆盖 `~/.pi/agent`（`ADOU_CODING_AGENT_DIR` 为兼容别名）。MVP 不加载 `.pi/extensions`、`.pi/skills` 和 `.pi/prompts` 动态扩展资源。`--debug` 或 `ADOU_DEBUG=1` 将启动、session、TUI、agent、provider 和 event-stream 生命周期日志写到 stderr；建议用 `adou --debug 2>adou-debug.log` 捕获崩溃前最后一步，日志不包含 API key 或请求正文。交互模式的 `/debug` 按 Pi 格式覆盖写入 `$PI_CODING_AGENT_DIR/pi-debug.log`（默认 `~/.pi/agent/pi-debug.log`），包括终端尺寸、所有渲染行的可见宽度和当前 agent 消息 JSONL。`PI_TUI_WRITE_LOG` 可指定原始终端输出文件或目录；`PI_DEBUG_REDRAW=1` 将差分重绘原因追加到 `pi-debug.log`；`PI_TUI_DEBUG=1` 将帧快照写入 `/tmp/tui/`；超宽渲染行会在抛错前写入 `pi-crash.log`。这些调试产物均为显式 opt-in。`--api-key` MAY 支持，但帮助文本必须提示命令行参数可能进入 shell history。
 
 配置必须包含模型 `contextWindow` 和 `maxTokens`。未知 context window 时不得凭空触发 threshold compaction；overflow error recovery 仍可依据 provider error pattern 执行。
 
@@ -698,6 +698,7 @@ MVP 内置 TUI 命令：
 - `/session`
 - `/settings`
 - `/copy`
+- `/debug`
 - `/hotkeys`
 - `/resume`、`/reload`（恢复保存 session / 重载项目说明）
 - `/help`

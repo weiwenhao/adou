@@ -1,5 +1,7 @@
 # AGENTS.md
 
+- Do not preserve backward compatibility.
+
 ## Project overview
 
 This is a small project written in the Nature programming language.
@@ -28,6 +30,13 @@ make e2e
 artifacts. Do not introduce a second build system or an external test
 harness for this project.
 
+Nature compiler and test invocations must never run concurrently. This rule
+applies across all agents and command sessions: do not use `Promise.all`,
+background jobs, `xargs -P`, `make -j`, or multiple agents to invoke `nature`
+at the same time. Run Nature work serially through the Make workflow (or one
+guarded invocation at a time) because the compiler is memory-heavy and
+concurrent invocations can corrupt generated artifacts and exhaust the host.
+
 ## Working guidelines
 
 - Keep changes focused on the requested task.
@@ -36,5 +45,9 @@ harness for this project.
 - Prefer editing Nature source files (`*.n`) instead of generated binaries.
 - After changing Nature source code, run `make build` (or the relevant
   `make test` target) for the affected entry point.
+- Do not run the full `make test` suite unless the task explicitly requires
+  it: a full run takes ~2 hours and can exhaust the machine. Prefer targeted
+  single-file tests, e.g.
+  `NATURE_EXECUTABLE=/usr/local/nature/bin/nature ./scripts/nature-build-safe.sh test <absolute path to tests/xxx_test.n>`.
 - When practical, run the generated executable and verify its observable output.
 - Do not modify files under `vendors/` unless the task explicitly requires it.

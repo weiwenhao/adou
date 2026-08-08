@@ -1,0 +1,51 @@
+# Pi Core Module Map
+
+状态：MVP 核心路径已完成逐模块核对（Pi 基线 `0.82.1`, commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`）；导出/诊断保留部分实现。
+
+本文把 `vendors/pi` 中必须翻译到 Nature 的核心边界固定下来。判断标准是 Pi 的可观察 coding-agent 行为，而不是 TypeScript 文件是否已经有一个同名 Nature 文件。每个模块只有在完成源码差分、单元测试和至少一个跨模块集成测试后，才可标记为完成。
+
+## 核心模块
+
+| 模块 | Pi 行为来源 | Nature 当前边界 | 当前测试 | 状态 |
+|---|---|---|---|---|
+| AI 数据模型与流协议 | `packages/ai/src/types.ts`, `api/openai-responses.ts`, `api/openai-completions.ts`, `api/anthropic-messages.ts`, `utils/event-stream.ts`, `utils/json-parse.ts`, `utils/retry.ts` | `src/ai/types.n`, `src/ai/event_stream.n`, `src/ai/sse.n`, `src/ai/streaming_json.n`, `src/ai/providers/*` | request tests；OpenAI HTTP 8/8；Anthropic HTTP 6/6；SSE 8/8；streaming JSON 3/3 | MVP 已通过：DeepSeek/OpenAI Responses/Anthropic 流式、重试、取消和 malformed JSON 覆盖 |
+| Agent loop | `packages/agent/src/agent-loop.ts`, `agent.ts`, `types.ts`, `stream-fn.ts`, `harness/messages.ts` | `src/agent/loop.n`, `types.n`, `schema.n`, `event_stream.n`, `session_stream.n` | agent loop 17/17；agent types 1/1；event stream 5/5；session 集成覆盖生命周期与工具结果 | MVP 已通过：并发/顺序工具、队列、取消、prepare arguments、added tool names 已对齐 |
+| 内置工具 | `packages/coding-agent/src/core/tools/{read,write,edit,bash,grep,find,ls,truncate,path-utils,file-mutation-queue}.ts`, `packages/agent/src/harness/tools/*` | `src/tools/{read,write,shell_tools,command,truncate,path_utils,mutation_queue,builtins}.n` | tools 20/20；builtins 3/3；tool-edge/tool-stream-repair e2e | MVP 已通过：读写、编辑、bash、grep/find/ls 边界和 UTF-16 截断语义覆盖 |
+| Session 与 JSONL | `packages/coding-agent/src/core/session-manager.ts`, `core/session-cwd.ts`, `packages/agent/src/harness/session/{session,jsonl-repo,jsonl-storage}.ts` | `src/session/{repository,jsonl,message_json,types,identity,export_html}.n` | session 27/27；RPC clone/new/tree/import/export 场景通过 | MVP 已通过：Pi v3 append-only 链、分支、恢复、fork/clone 和跨 cwd 语义覆盖 |
+| 自动压缩与分支摘要 | `packages/coding-agent/src/core/compaction/{compaction,branch-summarization,utils}.ts`, `packages/agent/src/harness/compaction/*` | `src/compaction/*.n`, `src/agent/session.n` | compaction 15/15；RPC compaction abort/retry/preprompt e2e | MVP 已通过：cut point、retained tail、previous summary/file details、取消和重试覆盖 |
+| 配置、认证、模型与项目上下文 | `packages/coding-agent/src/{config,core/auth-storage,core/model-{config,registry,resolver,runtime},core/settings-manager,core/resource-loader,core/system-prompt,core/project-trust}.ts`, `cli/args.ts` | `src/config/*.n`, `src/context/*.n`, `src/platform/cwd.n` | config context 22/22；model/settings/auth 全部通过；CLI validation/project-config/model-selection e2e | MVP 已通过：`.pi` 优先级、API key、模型 scope/thinking、session cwd 和启动错误语义覆盖 |
+| TUI、输入与终端渲染 | `packages/tui/src/{terminal,tui,stdin-buffer,keys,keybindings,editor-component,autocomplete,word-navigation,terminal-colors}.ts`, `packages/tui/src/components/*`, `packages/coding-agent/src/modes/interactive/components/{assistant-message,tool-execution,footer,loader,login-dialog,model-selector}.ts` | `src/tui/*.n` | input buffer 7/7；renderer 12/12；keys 4/4；term 2/2；text/unicode/markdown/component tests；TUI auth PTY e2e | MVP 已通过：差分渲染、Pi 配色、输入序列、认证/模型 overlay、终端恢复和退出覆盖；图片/扩展 UI 排除 |
+| CLI、print mode 与 RPC | `packages/coding-agent/src/{main,cli/args,modes/print-mode,modes/rpc/{rpc-mode,rpc-types,jsonl}}.ts` | `src/app.n`, `src/config/args.n`, `src/agent/event_json.n`, `src/app.n` RPC 分支 | 当前 `tests/e2e` 有 28 个脚本；event JSON 9/9；debug/config resolver 通过 | MVP 已通过：one-shot、JSON/RPC、abort/queue/retry/compact/session 命令和事件顺序覆盖 |
+| 导出与可观测性 | `packages/coding-agent/src/core/export-html/*`, `core/diagnostics.ts`, `core/timings.ts`, `core/output-guard.ts` | `src/session/export_html.n`, `src/debug.n`, `src/timings.n`, `src/output_guard.n`, `src/tui/virtual_terminal.n` | debug/observability 3/3；session/export assertions；`rpc-debug-stderr`、TUI/logging e2e | MVP 核心链路已覆盖：JSONL/静态 HTML 导出、诊断、启动计时和 RPC 输出隔离；Pi 的交互式导出模板、主题解析和扩展工具渲染器仍明确排除 |
+
+## 明确不翻译
+
+以下目录不是核心移植目标，不能被“已有文件数”计入完成度：
+
+- `packages/coding-agent/src/core/extensions/**`、`src/extensions/**`：TypeScript extension ABI、加载器、事件总线和扩展 UI。
+- `packages/coding-agent/src/extensions/**`：Llama 等扩展 provider。
+- 动态 `.pi/extensions`、`.pi/skills`、`.pi/prompts` 资源加载；核心只保留项目/用户 system prompt 规则。
+- `packages/server/**`、`packages/evals/**`、OAuth/account 登录、远程分享、npm/Bun 发布和安装器。
+- Pi 的图片读取、图片渲染和 image processing；MVP 的 `read` 仅承诺 UTF-8 文本分支。
+
+## 验收规则
+
+每个核心模块必须有：
+
+1. 固定的 Pi 源码文件和测试 fixture 引用。
+2. Nature 实现的逐项行为差分记录。
+3. Nature 单元测试，覆盖正常、错误、取消、边界和顺序语义。
+4. 至少一个跨模块集成测试；provider/agent/session/TUI 不得只用孤立 mock 证明完成。
+5. `make build`、相关 `make test` 或 Nature feature test，以及受影响的 `make e2e` 通过。
+
+“有同名文件”或“已有一条 happy-path 测试”不满足完成条件。
+
+## 本轮验收证据
+
+- `NATURE_ROOT=/Users/liulianfuren/Code/nature make clean && NATURE_ROOT=/Users/liulianfuren/Code/nature make build`：通过；二进制明确链接源码树的新 runtime。
+- `NATURE_ROOT=/Users/liulianfuren/Code/nature make test`：全部 Nature 单元测试通过，包含 8 项 OpenAI HTTP、6 项 Anthropic HTTP、所有 session/compaction/TUI/工具测试。
+- `tests/e2e` 当前包含 28 个 CLI/RPC/工具/会话/TUI 脚本；旧记录中的“全部 26 个通过”对应脚本数量尚为 26 时的历史运行，不作为当前 28 个脚本的全量通过证明。完整 e2e 需要在允许本地 loopback/PTY 的环境中串行重跑。
+- 若 `nature --version` 已更新但 `/usr/local/nature/lib/darwin_arm64/libruntime.a` 仍是旧文件，Adou 仍会链接旧 runtime；需用管理员权限覆盖该静态库后再重新 `make clean && make build`。
+- TUI 退出路径使用 Nature 标准输入接口；输入读取在独立协程中阻塞等待 `fs/libuv` 数据，解析协程通过 Nature channel 接收字节并用定时协程处理 ESC 超时，不修改 stdin fd flags。退出时先恢复终端再结束 CLI，避免后台监听协程拖住进程。
+
+表中“已通过”只表示 MVP 范围内的核心行为已经有源码差分和测试证据，不表示 Pi 的扩展机制、图片能力、OAuth 或其他第 4.2 节排除项已经移植。
