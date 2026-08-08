@@ -1,0 +1,100 @@
+import adou.src.ai.providers.openai_provider
+import adou.src.ai.providers.openai_request
+import adou.src.ai.types
+import co
+import fmt
+import http
+import syscall
+
+const AZURE_PORT = 18921
+
+type capture_t = struct {
+    string path
+    string query
+    string api_key_header
+    string authorization_header
+}
+
+fn serve_fixture(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+fn fixture_model(int port): ref<types.model_t> {
+    return new types.model_t(id = 'gpt-5-mini', api = 'azure-openai-responses', provider = 'azure-openai-responses', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
+}
+
+fn fixture_context(): ref<types.context_t> {
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    return context
+}
+
+fn success_sse(): string {
+    string body = ''
+    body += 'data: {"type":"response.created","response":{"id":"resp_azure"}}\n\n'
+    body += 'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_azure","content":[]}}\n\n'
+    body += 'data: {"type":"response.output_text.delta","output_index":0,"delta":"你好"}\n\n'
+    body += 'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_azure","content":[{"type":"output_text","text":"你好"}]}}\n\n'
+    body += 'data: {"type":"response.completed","response":{"id":"resp_azure","status":"completed","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}\n\n'
+    return body
+}
+
+test 'streams a real Azure OpenAI Responses HTTP response' {
+    syscall.set_env('AZURE_OPENAI_API_VERSION', 'v1')
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = AZURE_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.path = request.path
+        capture.query = request.query
+        capture.api_key_header = request.headers['api-key'] catch e {''}
+        capture.authorization_header = request.headers['Authorization'] catch e {''}
+        response.content_type = 'text/event-stream'
+        response.send(success_sse())
+        server.close()
+    }
+    server.post('/deployments/gpt-5-mini/responses', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'azure-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = openai_provider.stream(fixture_model(AZURE_PORT), fixture_context(), options)
+    [string] kinds = []
+    for true {
+        var event = stream.recv()
+        kinds.push(event.kind)
+        if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
+            break
+        }
+    }
+    var result = stream.result()
+    assert(kinds[0] == types.EVENT_START)
+    assert(kinds_has(kinds, types.EVENT_TEXT_DELTA))
+    assert(kinds[kinds.len() - 1] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    // Azure endpoint shape: /openai/deployments/<deployment>/responses?api-version=v1
+    assert(capture.path.find('/deployments/gpt-5-mini/responses') >= 0)
+    assert(capture.query.find('api-version=v1') >= 0)
+    // Azure authenticates with api-key; no bearer Authorization header.
+    assert(capture.api_key_header == 'azure-key')
+    assert(capture.authorization_header == '')
+}
+
+test 'azure endpoint resolves resource name and deployment map' {
+    syscall.set_env('AZURE_OPENAI_BASE_URL', '')
+    syscall.set_env('AZURE_OPENAI_RESOURCE_NAME', 'my-resource')
+    syscall.set_env('AZURE_OPENAI_DEPLOYMENT_NAME_MAP', 'gpt-5-mini=my-deployment,other=other-dep')
+    syscall.set_env('AZURE_OPENAI_API_VERSION', '2025-01-01')
+    var model = new types.model_t(id = 'gpt-5-mini', api = 'azure-openai-responses', provider = 'azure-openai-responses', base_url = '')
+    string endpoint = openai_request.endpoint(model)
+    assert(endpoint == 'https://my-resource.openai.azure.com/openai/v1/deployments/my-deployment/responses?api-version=2025-01-01')
+}
+
+fn kinds_has([string] kinds, string kind): bool {
+    for existing in kinds {
+        if existing == kind {
+            return true
+        }
+    }
+    return false
+}

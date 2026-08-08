@@ -6,6 +6,7 @@ import adou.src.json_util
 import fmt
 import json
 import strings
+import syscall
 const MIN_OUTPUT_TOKENS = 16
 const MAX_PROMPT_CACHE_KEY_CHARS = 64
 fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
@@ -51,11 +52,51 @@ fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.strea
     return json.serialize(body)
 }
 fn endpoint(ref<types.model_t> model): string {
+    if model.provider == 'azure-openai-responses' {
+        return azure_endpoint(model)
+    }
     string base = decorators.resolve_base_url(model)
     for base.ends_with('/') {
         base = base.slice(0, base.len() - 1)
     }
     return base + '/responses'
+}
+
+// Azure OpenAI Responses: https://<resource>.openai.azure.com/openai/deployments/<deployment>/responses?api-version=v1
+// The base URL resolves from AZURE_OPENAI_BASE_URL, AZURE_OPENAI_RESOURCE_NAME,
+// or the model's own base URL; the deployment defaults to the model id with
+// an optional AZURE_OPENAI_DEPLOYMENT_NAME_MAP override (model=deployment, ...).
+fn azure_endpoint(ref<types.model_t> model): string {
+    string base = syscall.get_env('AZURE_OPENAI_BASE_URL')
+    if base == '' {
+        string resource = syscall.get_env('AZURE_OPENAI_RESOURCE_NAME')
+        if resource != '' {
+            base = 'https://' + resource + '.openai.azure.com/openai/v1'
+        }
+    }
+    if base == '' {
+        base = model.base_url
+    }
+    for base.ends_with('/') {
+        base = base.slice(0, base.len() - 1)
+    }
+    string deployment = model.id
+    string mapping = syscall.get_env('AZURE_OPENAI_DEPLOYMENT_NAME_MAP')
+    if mapping != '' {
+        for pair in mapping.split(',') {
+            string trimmed = pair.trim([' ', '\t'])
+            int separator = trimmed.find('=')
+            if separator > 0 && trimmed.slice(0, separator).trim([' ', '\t']) == model.id {
+                deployment = trimmed.slice(separator + 1, trimmed.len()).trim([' ', '\t'])
+                break
+            }
+        }
+    }
+    string api_version = syscall.get_env('AZURE_OPENAI_API_VERSION')
+    if api_version == '' {
+        api_version = 'v1'
+    }
+    return base + '/deployments/' + deployment + '/responses?api-version=' + api_version
 }
 fn authorization(ref<types.stream_options_t> options): string! {
     if options.api_key == '' {

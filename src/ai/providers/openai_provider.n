@@ -139,6 +139,9 @@ fn send_once(ref<run_state_t> state): ref < client.response_t > ! {
     .content(state.body)
     if decorators.is_cloudflare_gateway(state.model) {
         request.header(decorators.cloudflare_gateway_auth_header(state.options.api_key).name, decorators.cloudflare_gateway_auth_header(state.options.api_key).value)
+    } else if state.model.provider == 'azure-openai-responses' {
+        // Azure OpenAI authenticates with the api-key header, not Bearer.
+        request.header('api-key', state.options.api_key)
     } else {
         request.header('Authorization', openai_request.authorization(state.options))
     }
