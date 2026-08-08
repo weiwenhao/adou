@@ -1,0 +1,200 @@
+import adou.src.ai.models_store
+import adou.src.ai.types
+import adou.src.json_util
+import http.client
+import time
+
+// Port of vendors/pi/packages/coding-agent/src/core/remote-catalog-provider.ts.
+// A persisted pi.dev catalog overlay for static built-in providers: models
+// merge over the baseline, refreshes honor a 4h window plus etag
+// revalidation, and 404/501 clear the remote overlay.
+
+pub const REMOTE_CATALOG_REFRESH_INTERVAL_MS = 4 * 60 * 60 * 1000
+pub const DEFAULT_CATALOG_BASE_URL = 'https://pi.dev'
+
+pub fn merge_models([ref<types.model_t>] baseline, [ref<types.model_t>] dynamic): [ref<types.model_t>] {
+    [ref<types.model_t>] merged = []
+    for model in baseline {
+        merged.push(model)
+    }
+    for model in dynamic {
+        int index = -1
+        for existing_index, entry in merged {
+            if entry.id == model.id {
+                index = existing_index
+                break
+            }
+        }
+        if index >= 0 {
+            merged[index] = model
+        } else {
+            merged.push(model)
+        }
+    }
+    return merged
+}
+
+pub fn parse_catalog(string provider_id, any value): [ref<types.model_t>]! {
+    [any] entries = []
+    if json_util.is_arr(value) {
+        entries = value as [any]
+    } else if json_util.is_obj(value) {
+        var object = value as {string:any}
+        if object.contains('models') && json_util.is_arr(object['models']) {
+            entries = object['models'] as [any]
+        } else {
+            for key, model_value in object {
+                entries.push(model_value)
+            }
+        }
+    }
+    if entries.len() == 0 && !json_util.is_arr(value) && !json_util.is_obj(value) {
+        throw errorf('Invalid model catalog for provider "%s"', provider_id)
+    }
+    [ref<types.model_t>] models = []
+    for entry in entries {
+        if !json_util.is_obj(entry) {
+            continue
+        }
+        var object = entry as {string:any}
+        if !object.contains('id') || !(object['id'] is string) {
+            continue
+        }
+        string id = object['id'] as string
+        var model = new types.model_t(id = id, provider = provider_id)
+        string api = json_util.opt_string(object, 'api')
+        if api != '' {
+            model.api = api
+        }
+        string base_url = json_util.opt_string(object, 'baseUrl')
+        if base_url != '' {
+            model.base_url = base_url
+        }
+        string name = json_util.opt_string(object, 'name')
+        if name != '' {
+            model.name = name
+        }
+        if object.contains('reasoning') && object['reasoning'] is bool {
+            model.reasoning = object['reasoning'] as bool
+        }
+        int context_window = json_util.opt_int(object, 'contextWindow')
+        if context_window > 0 {
+            model.context_window = context_window
+        }
+        int max_tokens = json_util.opt_int(object, 'maxTokens')
+        if max_tokens > 0 {
+            model.max_tokens = max_tokens
+        }
+        var cost = json_util.opt_obj(object, 'cost')
+        if cost.len() > 0 {
+            model.cost.input = optional_float(cost, 'input')
+            model.cost.output = optional_float(cost, 'output')
+            model.cost.cache_read = optional_float(cost, 'cacheRead')
+            model.cost.cache_write = optional_float(cost, 'cacheWrite')
+        }
+        models.push(model)
+    }
+    return models
+}
+
+fn remote_models(ref<models_store.models_store_entry_t>? entry, int local_generated_at): [ref<types.model_t>] {
+    [ref<types.model_t>] empty = []
+    if entry is null {
+        return empty
+    }
+    var stored = entry as ref<models_store.models_store_entry_t>
+    if local_generated_at > 0 && (stored.last_modified == 0 || stored.last_modified <= local_generated_at) {
+        return empty
+    }
+    return stored.models
+}
+
+// Refresh a provider's remote catalog overlay.  Returns the models that
+// should overlay the static catalog (stored overlay or freshly fetched).
+pub fn refresh_remote_catalog(string provider_id, ref<models_store.models_store_t> store, string catalog_base_url, int local_generated_at, int now_ms, bool allow_network): [ref<types.model_t>]! {
+    var stored = store.read(provider_id)
+    var dynamic = remote_models(stored, local_generated_at)
+    if !allow_network {
+        return dynamic
+    }
+    if stored is ref<models_store.models_store_entry_t> cached {
+        if cached.checked_at > 0 && cached.last_modified > 0 && now_ms - cached.checked_at < REMOTE_CATALOG_REFRESH_INTERVAL_MS {
+            return dynamic
+        }
+    }
+    var request = client.new().get(catalog_base_url + '/api/models/providers/' + provider_id).timeout(30000)
+    request.header('Accept', 'application/json')
+    request.header('User-Agent', 'pi-coding-agent')
+    string validator = ''
+    if stored is ref<models_store.models_store_entry_t> cached {
+        if cached.models.len() > 0 {
+            validator = cached.etag
+        }
+    }
+    if validator != '' {
+        request.header('If-None-Match', validator)
+    }
+    var response = request.send()
+    if response.status == 304 && stored is ref<models_store.models_store_entry_t> cached {
+        models_store.models_store_entry_t refreshed = models_store.models_store_entry_t {}
+        refreshed.models = cached.models
+        refreshed.checked_at = now_ms
+        refreshed.last_modified = cached.last_modified
+        refreshed.etag = cached.etag
+        store.write(provider_id, refreshed)
+        return dynamic
+    }
+    if response.status == 404 || response.status == 501 {
+        models_store.models_store_entry_t cleared = models_store.models_store_entry_t {}
+        cleared.checked_at = now_ms
+        cleared.last_modified = 0
+        store.write(provider_id, cleared)
+        return []
+    }
+    if response.status < 200 || response.status >= 300 {
+        if stored is ref<models_store.models_store_entry_t> cached {
+            models_store.models_store_entry_t refreshed = models_store.models_store_entry_t {}
+            refreshed.models = cached.models
+            refreshed.checked_at = now_ms
+            refreshed.last_modified = cached.last_modified
+            refreshed.etag = cached.etag
+            store.write(provider_id, refreshed)
+        }
+        throw errorf('Model catalog request failed for %s: %d', provider_id, response.status)
+    }
+    string etag = response.headers['etag'] catch error {''}
+    [u8] scratch = vec<u8>.new(0, 65536)
+    [u8] bytes = []
+    for true {
+        int n = response.read(scratch) catch error {
+            break
+        }
+        if n == 0 {
+            break
+        }
+        bytes.append(scratch.slice(0, n))
+    }
+    response.close()
+    any parsed = json_util.parse(bytes as string) catch error {
+        throw errorf('Invalid model catalog for provider "%s"', provider_id)
+    }
+    var refreshed = parse_catalog(provider_id, parsed)
+    models_store.models_store_entry_t entry = models_store.models_store_entry_t {}
+    entry.models = refreshed
+    entry.checked_at = now_ms
+    entry.last_modified = 0
+    entry.etag = etag
+    store.write(provider_id, entry)
+    ref<models_store.models_store_entry_t> entry_ref = new models_store.models_store_entry_t(models = entry.models, checked_at = entry.checked_at, last_modified = entry.last_modified, etag = entry.etag)
+    return remote_models(entry_ref, local_generated_at)
+}
+
+fn optional_float({string:any} object, string key): float {
+    if object.contains(key) && object[key] is f64 {
+        return object[key] as f64
+    }
+    if object.contains(key) && object[key] is int {
+        return (object[key] as int) as float
+    }
+    return 0.0
+}

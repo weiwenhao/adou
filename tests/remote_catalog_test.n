@@ -1,0 +1,149 @@
+import adou.src.ai.models_store
+import adou.src.ai.remote_catalog
+import adou.src.ai.types
+import adou.src.json_util
+import co
+import fmt
+import http
+import net.tcp
+
+pub const CATALOG_PORT = 18982
+
+pub fn serve_fixture(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+pub fn baseline_models(): [ref<types.model_t>] {
+    [ref<types.model_t>] models = []
+    models.push(new types.model_t(id = 'static-a', name = 'Static A', api = 'openai-completions', provider = 'demo', base_url = 'https://static.example.com', reasoning = false, context_window = 1000, max_tokens = 1000))
+    return models
+}
+
+test 'merge_models replaces same ids and appends new ones like Pi' {
+    [ref<types.model_t>] dynamic = []
+    dynamic.push(new types.model_t(id = 'static-a', name = 'Replaced', api = 'openai-completions', provider = 'demo', base_url = 'https://remote.example.com', reasoning = true, context_window = 2000, max_tokens = 2000))
+    dynamic.push(new types.model_t(id = 'remote-b', name = 'Remote B', api = 'openai-completions', provider = 'demo', base_url = 'https://remote.example.com'))
+    var merged = remote_catalog.merge_models(baseline_models(), dynamic)
+    assert(merged.len() == 2)
+    assert(merged[0].name == 'Replaced')
+    assert(merged[1].id == 'remote-b')
+}
+
+test 'parse_catalog accepts arrays and models objects like Pi' {
+    string array_json = '[{"id":"m1","name":"M1","reasoning":true,"contextWindow":64000,"maxTokens":8192,"cost":{"input":1.0,"output":2.0}}]'
+    any parsed = null
+    try {
+        parsed = json_util.parse(array_json)
+    } catch e {
+        assert(false)
+    }
+    [ref<types.model_t>] models = []
+    try {
+        models = remote_catalog.parse_catalog('demo', parsed)
+    } catch e {
+        assert(false)
+    }
+    assert(models.len() == 1)
+    assert(models[0].id == 'm1')
+    assert(models[0].provider == 'demo')
+    assert(models[0].reasoning)
+    assert(models[0].context_window == 64000)
+    assert(models[0].cost.input == 1.0)
+}
+
+test 'refresh fetches a fresh catalog and persists it' {
+    var server = http.server()
+    server.port = CATALOG_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        response.content_type = 'application/json'
+        response.headers['etag'] = '"v2"'
+        response.send('[{"id":"remote-x","name":"Remote X","api":"openai-completions","baseUrl":"https://remote.example.com"}]')
+        server.close()
+    }
+    server.get('/api/models/providers/demo', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var store = models_store.new_store()
+    var dynamic = remote_catalog.refresh_remote_catalog('demo', store, fmt.sprintf('http://127.0.0.1:%d', CATALOG_PORT), 0, 1000, true) catch error {
+        assert(false)
+        []
+    }
+    assert(dynamic.len() == 1)
+    assert(dynamic[0].id == 'remote-x')
+    var entry = store.read('demo')
+    if entry is ref<models_store.models_store_entry_t> stored {
+        assert(stored.checked_at == 1000)
+        assert(stored.etag == '"v2"')
+        assert(stored.models.len() == 1)
+    } else {
+        assert(false)
+    }
+}
+
+test 'a 304 keeps the stored overlay and refreshes only the window' {
+    var store = models_store.new_store()
+    models_store.models_store_entry_t entry = models_store.models_store_entry_t {}
+    entry.models = []
+    entry.models.push(new types.model_t(id = 'stored-x', name = 'Stored X', api = 'openai-completions', provider = 'demo', base_url = 'https://remote.example.com'))
+    entry.checked_at = 0
+    entry.last_modified = 2000
+    entry.etag = '"v1"'
+    store.write('demo', entry)
+    var server = http.server()
+    server.port = CATALOG_PORT + 1
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        string not_match = request.headers['If-None-Match'] catch error {''}
+        assert(not_match == '"v1"')
+        response.status = 304
+        response.send('')
+        server.close()
+    }
+    server.get('/api/models/providers/demo', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var dynamic = remote_catalog.refresh_remote_catalog('demo', store, fmt.sprintf('http://127.0.0.1:%d', CATALOG_PORT + 1), 0, 5000, true) catch error {
+        assert(false)
+        []
+    }
+    assert(dynamic.len() == 1)
+    assert(dynamic[0].id == 'stored-x')
+}
+
+test 'a 404 clears the remote overlay like Pi' {
+    var server = http.server()
+    server.port = CATALOG_PORT + 2
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        response.status = 404
+        response.send('{}')
+        server.close()
+    }
+    server.get('/api/models/providers/demo', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var store = models_store.new_store()
+    var dynamic = remote_catalog.refresh_remote_catalog('demo', store, fmt.sprintf('http://127.0.0.1:%d', CATALOG_PORT + 2), 0, 1000, true) catch error {
+        assert(false)
+        []
+    }
+    assert(dynamic.len() == 0)
+    var entry = store.read('demo')
+    if entry is ref<models_store.models_store_entry_t> stored {
+        assert(stored.models.len() == 0)
+    } else {
+        assert(false)
+    }
+}
+
+test 'stale local catalogs suppress older remote overlays like Pi' {
+    var store = models_store.new_store()
+    models_store.models_store_entry_t entry = models_store.models_store_entry_t {}
+    entry.models = []
+    entry.models.push(new types.model_t(id = 'old-x', name = 'Old X', api = 'openai-completions', provider = 'demo', base_url = 'https://remote.example.com'))
+    entry.checked_at = 0
+    entry.last_modified = 1000
+    store.write('demo', entry)
+    // local_generated_at=2000 means the local catalog is newer than the
+    // stored overlay, so the overlay must not apply.
+    var dynamic = remote_catalog.refresh_remote_catalog('demo', store, 'http://127.0.0.1:1', 2000, 1000, false)
+    assert(dynamic.len() == 0)
+}

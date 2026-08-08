@@ -6,6 +6,8 @@ import adou.src.ai.types
 pub type models_store_entry_t = struct {
     [ref<types.model_t>] models = []
     int checked_at
+    int last_modified
+    string etag
 }
 
 pub type models_store_t = struct {
@@ -24,7 +26,7 @@ pub fn models_store_t.read(&self, string provider_id): ref<models_store_entry_t>
 }
 
 pub fn models_store_t.write(&self, string provider_id, models_store_entry_t entry) {
-    self.entries[provider_id] = new models_store_entry_t(models = entry.models, checked_at = entry.checked_at)
+    self.entries[provider_id] = new models_store_entry_t(models = entry.models, checked_at = entry.checked_at, last_modified = entry.last_modified, etag = entry.etag)
 }
 
 pub fn models_store_t.delete(&self, string provider_id) {
