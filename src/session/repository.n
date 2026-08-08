@@ -932,6 +932,80 @@ pub fn manager_t.usage_totals(&self): ai_types.usage_t {
     return total
 }
 
+pub type breakdown_entry_t = struct {
+    string key
+    float cost
+    int tokens
+}
+
+// Pi's getUsageCostBreakdown: assistant usage is attributed to
+// provider/responseModel, everything else (tool results, compaction and
+// branch summaries) lands in a shared "Tools/summaries" bucket, sorted by
+// cost descending.
+pub fn manager_t.usage_cost_breakdown(&self): [breakdown_entry_t] {
+    {string:ai_types.usage_t} totals_by_key = {}
+    [string] order = []
+    for entry in self.entries {
+        string key = ''
+        ai_types.usage_t usage = ai_types.usage_t{}
+        bool has_usage = false
+        if entry.kind == types.ENTRY_MESSAGE {
+            if !json_util.is_obj(entry.raw) {continue}
+            var object = entry.raw as {string:any}
+            if !object.contains('message') || !(object['message'] is {string:any}) {
+                continue
+            }
+            var message = message_json.decode(object['message']) catch error {continue}
+            if message is ref<ai_types.assistant_message_t> assistant {
+                key = assistant.provider + '/' + assistant.model
+                usage = assistant.usage
+                has_usage = true
+            } else if message is ref<ai_types.tool_result_message_t> tool {
+                key = 'Tools/summaries'
+                usage = tool.usage
+                has_usage = true
+            }
+        } else if entry.kind == types.ENTRY_COMPACTION || entry.kind == types.ENTRY_BRANCH_SUMMARY {
+            if !json_util.is_obj(entry.raw) {continue}
+            var object = entry.raw as {string:any}
+            if object.contains('usage') && object['usage'] is {string:any} {
+                usage = message_json.decode_usage(object['usage']) catch error {continue}
+                key = 'Tools/summaries'
+                has_usage = true
+            }
+        }
+        if key == '' || !has_usage {
+            continue
+        }
+        if !totals_by_key.contains(key) {
+            totals_by_key[key] = ai_types.usage_t{}
+            order.push(key)
+        }
+        var current = totals_by_key[key]
+        add_usage(&current, usage)
+        totals_by_key[key] = current
+    }
+    [breakdown_entry_t] result = []
+    for key in order {
+        var total = totals_by_key[key]
+        int tokens = total.input + total.output + total.cache_read + total.cache_write
+        if total.cost.total > 0.0 || tokens > 0 {
+            result.push(breakdown_entry_t {key: key, cost: total.cost.total, tokens: tokens,})
+        }
+    }
+    // Sort by cost descending; equal costs keep insertion order.
+    for int index = 1; index < result.len(); index += 1 {
+        var current = result[index]
+        int cursor = index - 1
+        for cursor >= 0 && result[cursor].cost < current.cost {
+            result[cursor + 1] = result[cursor]
+            cursor -= 1
+        }
+        result[cursor + 1] = current
+    }
+    return result
+}
+
 // Pi shows the cache hit rate for the most recent assistant request.  Keep
 // this separate from usage_totals(): the latter is cumulative, while this
 // value is intentionally a snapshot of the latest prompt window.

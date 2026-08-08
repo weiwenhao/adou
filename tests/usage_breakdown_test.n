@@ -1,0 +1,43 @@
+import adou.src.ai.types as ai_types
+import adou.src.session.repository
+import adou.src.session.types as session_types
+
+test 'usage cost breakdown groups by model and tools like Pi' {
+    var manager = repository.in_memory('/tmp')
+    // Two assistant turns from different models plus a compaction summary.
+    var first = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'deepseek-v4-flash', timestamp = 1)
+    first.usage.input = 100
+    first.usage.output = 50
+    first.usage.cache_read = 10
+    first.usage.cache_write = 0
+    first.usage.total_tokens = 160
+    first.usage.cost.total = 1.0
+    ai_types.message_t first_message = first
+    manager.append_message(first_message)
+    var second = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'deepseek-v4-flash', timestamp = 2)
+    second.usage.input = 200
+    second.usage.output = 100
+    second.usage.total_tokens = 300
+    second.usage.cost.total = 2.0
+    ai_types.message_t second_message = second
+    string kept_id = manager.append_message(second_message)
+    manager.append_compaction('summary', kept_id, 10, null, ai_types.usage_t {input: 50, output: 20, total_tokens: 70, cost: ai_types.cost_t {total: 0.5}})
+    var breakdown = manager.usage_cost_breakdown()
+    assert(breakdown.len() == 2)
+    // deepseek cost 3.0 > tools/summaries 0.5, so it sorts first.
+    assert(breakdown[0].key == 'deepseek/deepseek-v4-flash')
+    assert(breakdown[0].cost == 3.0)
+    assert(breakdown[0].tokens == 460)
+    assert(breakdown[1].key == 'Tools/summaries')
+    assert(breakdown[1].cost == 0.5)
+    assert(breakdown[1].tokens == 70)
+}
+
+test 'usage cost breakdown drops zero-usage buckets like Pi' {
+    var manager = repository.in_memory('/tmp')
+    var message = new ai_types.assistant_message_t(api = 'anthropic-messages', provider = 'anthropic', model = 'claude-sonnet-4-5', timestamp = 1)
+    ai_types.message_t wrapped = message
+    manager.append_message(wrapped)
+    var breakdown = manager.usage_cost_breakdown()
+    assert(breakdown.len() == 0)
+}
