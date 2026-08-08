@@ -1,0 +1,555 @@
+import adou.src.json_util
+import adou.src.tools.path_utils
+import fs
+import fmt
+import os
+import path
+import strings
+import syscall
+
+// Port of vendors/pi/packages/coding-agent/src/core/skills.ts plus the
+// frontmatter/ignore helpers it depends on.  .pi/skills discovery follows the
+// Agent Skills spec: SKILL.md roots, direct .md children, ignore rules,
+// validation diagnostics and XML prompt formatting.
+
+pub type source_info_t = struct {
+    string source
+    string scope
+    string origin
+    string base_dir
+}
+
+pub type skill_t = struct {
+    string name
+    string description
+    string file_path
+    string base_dir
+    source_info_t source_info
+    bool disable_model_invocation
+}
+
+pub type skill_diagnostic_t = struct {
+    string kind
+    string message
+    string file_path
+    string collision_name
+    string collision_winner
+    string collision_loser
+}
+
+pub type load_skills_result_t = struct {
+    [ref<skill_t>] skills = []
+    [skill_diagnostic_t] diagnostics = []
+}
+
+pub const MAX_NAME_LENGTH = 64
+pub const MAX_DESCRIPTION_LENGTH = 1024
+pub const CONFIG_DIR_NAME = '.pi'
+
+// Parse a minimal YAML frontmatter block of `key: value` scalar lines.
+// Covers the Agent Skills fields (name/description/disable-model-invocation)
+// plus arbitrary string/bool/number values with optional quotes.
+pub fn parse_frontmatter(string content): ({string:any}, string) {
+    string normalized = content.replace('\r\n', '\n').replace('\r', '\n')
+    if !normalized.starts_with('---') {
+        {string:any} empty = {}
+        return (empty, normalized)
+    }
+    int end_index = normalized.find('\n---')
+    if end_index < 0 {
+        {string:any} empty = {}
+        return (empty, normalized)
+    }
+    string yaml_string = ''
+    if end_index >= 4 {
+        yaml_string = normalized.slice(4, end_index)
+    }
+    string body = normalized.slice(end_index + 4, normalized.len()).trim([' ', '\t', '\n', '\r'])
+    {string:any} frontmatter = {}
+    for raw_line in yaml_string.split('\n') {
+        string line = raw_line.trim([' ', '\t'])
+        if line == '' || line.starts_with('#') {
+            continue
+        }
+        int colon = line.find(':')
+        if colon <= 0 {
+            continue
+        }
+        string key = line.slice(0, colon).trim([' ', '\t'])
+        string raw_value = line.slice(colon + 1, line.len()).trim([' ', '\t'])
+        if key == '' {
+            continue
+        }
+        frontmatter[key] = parse_scalar(raw_value)
+    }
+    return (frontmatter, body)
+}
+
+fn parse_scalar(string raw): any {
+    if raw == '' {
+        return ''
+    }
+    if raw == 'true' {
+        return true
+    }
+    if raw == 'false' {
+        return false
+    }
+    if raw == 'null' {
+        return null
+    }
+    if raw.starts_with('"') && raw.ends_with('"') && raw.len() >= 2 {
+        return raw.slice(1, raw.len() - 1)
+    }
+    if raw.starts_with("'") && raw.ends_with("'") && raw.len() >= 2 {
+        return raw.slice(1, raw.len() - 1)
+    }
+    if raw.find('"') >= 0 || raw.find("'") >= 0 || raw.find(':') >= 0 {
+        return raw
+    }
+    int number = raw.to_int() catch error {
+        return raw
+    }
+    return number
+}
+
+pub fn validate_skill_name(string name): [string] {
+    [string] errors = []
+    if name.len() > MAX_NAME_LENGTH {
+        errors.push('name exceeds 64 characters (' + fmt.sprintf('%d', name.len()) + ')')
+    }
+    if !lower_hyphen_only(name) {
+        errors.push('name contains invalid characters (must be lowercase a-z, 0-9, hyphens only)')
+    }
+    if name.starts_with('-') || name.ends_with('-') {
+        errors.push('name must not start or end with a hyphen')
+    }
+    if name.contains('--') {
+        errors.push('name must not contain consecutive hyphens')
+    }
+    return errors
+}
+
+pub fn validate_skill_description(string description): [string] {
+    [string] errors = []
+    if description.trim([' ', '\t', '\n', '\r']) == '' {
+        errors.push('description is required')
+    } else if description.len() > MAX_DESCRIPTION_LENGTH {
+        errors.push('description exceeds 1024 characters (' + fmt.sprintf('%d', description.len()) + ')')
+    }
+    return errors
+}
+
+pub fn load_skills_from_dir(string dir, string source): load_skills_result_t {
+    return load_skills_from_dir_internal(dir, source, true, [], dir)
+}
+
+fn load_skills_from_dir_internal(string dir, string source, bool include_root_files, [string] parent_patterns, string root_dir): load_skills_result_t {
+    load_skills_result_t result = load_skills_result_t {}
+    if !path_utils.exists(dir) {
+        return result
+    }
+    var patterns = append_ignore_rules(parent_patterns, dir, root_dir)
+    [string] names = os.listdir(dir) catch error {
+        return result
+    }
+    // A SKILL.md in this directory makes it a skill root; do not recurse.
+    bool has_skill_md = false
+    for name in names {
+        if name == 'SKILL.md' {
+            has_skill_md = true
+            break
+        }
+    }
+    if has_skill_md {
+        string full_path = path.join(dir, 'SKILL.md')
+        if !ignored(patterns, relative_posix(root_dir, full_path), false) {
+            var loaded = load_skill_from_file(full_path, source)
+            if loaded.skill is ref<skill_t> skill_value {
+                result.skills.push(skill_value)
+            }
+            for diagnostic in loaded.diagnostics {
+                result.diagnostics.push(diagnostic)
+            }
+        }
+        return result
+    }
+    for name in names {
+        if name.starts_with('.') || name == 'node_modules' {
+            continue
+        }
+        string full_path = path.join(dir, name)
+        if !path_utils.exists(full_path) {
+            continue
+        }
+        if is_directory(full_path) {
+            if ignored(patterns, relative_posix(root_dir, full_path), true) {
+                continue
+            }
+            var sub = load_skills_from_dir_internal(full_path, source, false, patterns, root_dir)
+            for skill in sub.skills {
+                result.skills.push(skill)
+            }
+            for diagnostic in sub.diagnostics {
+                result.diagnostics.push(diagnostic)
+            }
+            continue
+        }
+        if !include_root_files || !name.ends_with('.md') {
+            continue
+        }
+        if ignored(patterns, relative_posix(root_dir, full_path), false) {
+            continue
+        }
+        var loaded = load_skill_from_file(full_path, source)
+        if loaded.skill is ref<skill_t> skill_value {
+            result.skills.push(skill_value)
+        }
+        for diagnostic in loaded.diagnostics {
+            result.diagnostics.push(diagnostic)
+        }
+    }
+    return result
+}
+
+pub type loaded_skill_t = struct {
+    ref<skill_t>? skill = null
+    [skill_diagnostic_t] diagnostics = []
+}
+
+pub fn load_skill_from_file(string file_path, string source): loaded_skill_t {
+    loaded_skill_t result = loaded_skill_t {}
+    string content = read_utf8(file_path) catch error {
+        result.diagnostics.push(skill_diagnostic_t {kind: 'warning', message: error.msg(), file_path: file_path,})
+        return result
+    }
+    var (frontmatter, _body) = parse_frontmatter(content) catch error {
+        result.diagnostics.push(skill_diagnostic_t {kind: 'warning', message: error.msg(), file_path: file_path,})
+        return result
+    }
+    string description = json_util.opt_string(frontmatter, 'description')
+    for error_message in validate_skill_description(description) {
+        result.diagnostics.push(skill_diagnostic_t {kind: 'warning', message: error_message, file_path: file_path,})
+    }
+    string parent_dir_name = path.base(path.dir(file_path))
+    string name = json_util.opt_string(frontmatter, 'name')
+    if name == '' {
+        name = parent_dir_name
+    }
+    for error_message in validate_skill_name(name) {
+        result.diagnostics.push(skill_diagnostic_t {kind: 'warning', message: error_message, file_path: file_path,})
+    }
+    if description.trim([' ', '\t', '\n', '\r']) == '' {
+        return result
+    }
+    bool disable = false
+    if frontmatter.contains('disable-model-invocation') && frontmatter['disable-model-invocation'] is bool {
+        disable = frontmatter['disable-model-invocation'] as bool
+    }
+    string skill_dir = path.dir(file_path)
+    var skill = new skill_t(name = name, description = description, file_path = file_path, base_dir = skill_dir, disable_model_invocation = disable)
+    skill.source_info = skill_source_info(skill_dir, source)
+    result.skill = skill
+    return result
+}
+
+fn skill_source_info(string base_dir, string source): source_info_t {
+    if source == 'user' {
+        return source_info_t {source: 'local', scope: 'user', origin: 'top-level', base_dir: base_dir,}
+    }
+    if source == 'project' {
+        return source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: base_dir,}
+    }
+    return source_info_t {source: source, scope: 'temporary', origin: 'top-level', base_dir: base_dir,}
+}
+
+pub fn load_skills(string cwd, string agent_dir, [string] skill_paths, bool include_defaults): load_skills_result_t {
+    load_skills_result_t result = load_skills_result_t {}
+    {string:ref<skill_t>} skill_map = {}
+    {string:bool} real_path_set = {}
+    [skill_diagnostic_t] all_diagnostics = []
+    [skill_diagnostic_t] collision_diagnostics = []
+
+    var add_skills = fn(load_skills_result_t incoming) {
+        for diagnostic in incoming.diagnostics {
+            all_diagnostics.push(diagnostic)
+        }
+        for skill in incoming.skills {
+            string real_path = canonicalize(skill.file_path)
+            if real_path_set.contains(real_path) {
+                continue
+            }
+            if skill_map.contains(skill.name) {
+                var existing = skill_map[skill.name]
+                collision_diagnostics.push(skill_diagnostic_t {kind: 'collision', message: 'name "' + skill.name + '" collision', file_path: skill.file_path, collision_name: skill.name, collision_winner: existing.file_path, collision_loser: skill.file_path,})
+            } else {
+                skill_map[skill.name] = skill
+                real_path_set[real_path] = true
+            }
+        }
+    }
+
+    if include_defaults {
+        add_skills(load_skills_from_dir_internal(path.join(agent_dir, 'skills'), 'user', true, [], path.join(agent_dir, 'skills')))
+        add_skills(load_skills_from_dir_internal(path.join(cwd, CONFIG_DIR_NAME, 'skills'), 'project', true, [], path.join(cwd, CONFIG_DIR_NAME, 'skills')))
+    }
+    for raw_path in skill_paths {
+        string resolved = path_utils.resolve_to_cwd(raw_path, cwd)
+        if !path_utils.exists(resolved) {
+            all_diagnostics.push(skill_diagnostic_t {kind: 'warning', message: 'skill path does not exist', file_path: resolved,})
+            continue
+        }
+        if is_directory(resolved) {
+            add_skills(load_skills_from_dir_internal(resolved, 'path', true, [], resolved))
+        } else if resolved.ends_with('.md') {
+            var loaded = load_skill_from_file(resolved, 'path')
+            if loaded.skill is ref<skill_t> skill_value {
+                load_skills_result_t single = load_skills_result_t {}
+                single.skills.push(skill_value)
+                for diagnostic in loaded.diagnostics {
+                    single.diagnostics.push(diagnostic)
+                }
+                add_skills(single)
+            } else {
+                for diagnostic in loaded.diagnostics {
+                    all_diagnostics.push(diagnostic)
+                }
+            }
+        } else {
+            all_diagnostics.push(skill_diagnostic_t {kind: 'warning', message: 'skill path is not a markdown file', file_path: resolved,})
+        }
+    }
+    for name, skill in skill_map {
+        result.skills.push(skill)
+    }
+    for diagnostic in all_diagnostics {
+        result.diagnostics.push(diagnostic)
+    }
+    for diagnostic in collision_diagnostics {
+        result.diagnostics.push(diagnostic)
+    }
+    return result
+}
+
+pub fn format_skills_for_prompt([ref<skill_t>] skills): string {
+    int visible_count = 0
+    for skill in skills {
+        if !skill.disable_model_invocation {
+            visible_count += 1
+        }
+    }
+    if visible_count == 0 {
+        return ''
+    }
+    [string] lines = []
+    lines.push('')
+    lines.push('')
+    lines.push('The following skills provide specialized instructions for specific tasks.')
+    lines.push('Use the read tool to load a skill\'s file when the task matches its description.')
+    lines.push('When a skill file references a relative path, resolve it against the skill directory (parent of SKILL.md / dirname of the path) and use that absolute path in tool commands.')
+    lines.push('')
+    lines.push('<available_skills>')
+    for skill in skills {
+        if skill.disable_model_invocation {
+            continue
+        }
+        lines.push('  <skill>')
+        lines.push('    <name>' + escape_xml(skill.name) + '</name>')
+        lines.push('    <description>' + escape_xml(skill.description) + '</description>')
+        lines.push('    <location>' + escape_xml(skill.file_path) + '</location>')
+        lines.push('  </skill>')
+    }
+    lines.push('</available_skills>')
+    return strings.join(lines, '\n')
+}
+
+pub fn escape_xml(string value): string {
+    string result = value
+    result = result.replace('&', '&amp;')
+    result = result.replace('<', '&lt;')
+    result = result.replace('>', '&gt;')
+    result = result.replace('"', '&quot;')
+    result = result.replace("'", '&apos;')
+    return result
+}
+
+fn canonicalize(string file_path): string {
+    string real = path_utils.canonicalize_existing(file_path) catch error {
+        return file_path
+    }
+    return real
+}
+
+fn read_utf8(string file_path): string! {
+    var file = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        throw error
+    }
+    string content = file.content()
+    file.close()
+    return content
+}
+
+fn append_ignore_rules([string] patterns, string dir, string root_dir): [string] {
+    [string] result = patterns
+    for file_name in ['.gitignore', '.ignore', '.fdignore'] {
+        string ignore_path = path.join(dir, file_name)
+        if !path_utils.exists(ignore_path) {
+            continue
+        }
+        string content = read_utf8(ignore_path) catch error {
+            continue
+        }
+        string relative_dir = relative_posix(root_dir, dir)
+        string prefix = relative_dir != '' && relative_dir != '.' ? relative_dir + '/' : ''
+        for raw_line in content.split('\n') {
+            string line = raw_line.trim([' ', '\t', '\r'])
+            if line == '' || line.starts_with('#') {
+                continue
+            }
+            if line.starts_with("\\#") {
+                line = line.slice(1, line.len())
+            }
+            string pattern = line
+            bool negated = false
+            if pattern.starts_with('!') {
+                negated = true
+                pattern = pattern.slice(1, pattern.len())
+            } else if pattern.starts_with("\\!") {
+                pattern = pattern.slice(1, pattern.len())
+            }
+            if pattern.starts_with('/') {
+                pattern = pattern.slice(1, pattern.len())
+            }
+            string prefixed = prefix != '' ? prefix + pattern : pattern
+            if negated {
+                result.push('!' + prefixed)
+            } else {
+                result.push(prefixed)
+            }
+        }
+    }
+    return result
+}
+
+fn ignored([string] patterns, string rel_path, bool is_dir): bool {
+    bool ignored_status = false
+    for pattern in patterns {
+        string candidate = pattern
+        bool negated = false
+        if candidate.starts_with('!') {
+            negated = true
+            candidate = candidate.slice(1, candidate.len())
+        }
+        if match_pattern(candidate, rel_path, is_dir) {
+            ignored_status = !negated
+        }
+    }
+    return ignored_status
+}
+
+// Gitignore-style match: '*' crosses no '/', '**' crosses any, trailing '/'
+// targets directories, and patterns without '/' match any basename level.
+fn match_pattern(string pattern, string rel_path, bool is_dir): bool {
+    string normalized = pattern
+    bool dir_only = false
+    if normalized.ends_with('/') {
+        dir_only = true
+        normalized = normalized.slice(0, normalized.len() - 1)
+    }
+    if normalized == '' {
+        return false
+    }
+    if dir_only && !is_dir {
+        return false
+    }
+    if normalized.find('/') >= 0 {
+        return glob_match(normalized, rel_path)
+    }
+    if glob_match(normalized, rel_path) {
+        return true
+    }
+    // A bare pattern matches any basename segment too.
+    for int start = 1; start < rel_path.len(); start += 1 {
+        if rel_path[start - 1] == '/'.char() {
+            if glob_match(normalized, rel_path.slice(start, rel_path.len())) {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+pub fn glob_match(string pattern, string value): bool {
+    return glob_match_at(pattern, value, 0, 0)
+}
+
+fn glob_match_at(string pattern, string value, int pattern_index, int value_index): bool {
+    if pattern_index == pattern.len() {
+        return value_index == value.len()
+    }
+    if pattern[pattern_index] == '*'.char() {
+        bool double_star = pattern_index + 1 < pattern.len() && pattern[pattern_index + 1] == '*'.char()
+        if double_star {
+            int next = pattern_index + 2
+            if next < pattern.len() && pattern[next] == '/'.char() {
+                next += 1
+            }
+            // ** crosses '/' boundaries.
+            for int cursor = value_index; cursor <= value.len(); cursor += 1 {
+                if glob_match_at(pattern, value, next, cursor) {
+                    return true
+                }
+            }
+            return false
+        }
+        // A single star never crosses a '/' boundary.
+        for int cursor = value_index; cursor <= value.len(); cursor += 1 {
+            if glob_match_at(pattern, value, pattern_index + 1, cursor) {
+                return true
+            }
+            if cursor < value.len() && value[cursor] == '/'.char() {
+                break
+            }
+        }
+        return false
+    }
+    if pattern[pattern_index] == '?'.char() {
+        return value_index < value.len() && value[value_index] != '/'.char() && glob_match_at(pattern, value, pattern_index + 1, value_index + 1)
+    }
+    return value_index < value.len() && pattern[pattern_index] == value[value_index] && glob_match_at(pattern, value, pattern_index + 1, value_index + 1)
+}
+
+fn lower_hyphen_only(string value): bool {
+    if value == '' {
+        return false
+    }
+    for byte in value as [u8] {
+        bool ok = byte >= 'a'.char() && byte <= 'z'.char()
+        ok = ok || byte >= '0'.char() && byte <= '9'.char()
+        ok = ok || byte == '-'.char()
+        if !ok {
+            return false
+        }
+    }
+    return true
+}
+
+fn relative_posix(string root, string target): string {
+    string cleaned_root = path_utils.clean(root)
+    string cleaned_target = path_utils.clean(target)
+    if cleaned_target == cleaned_root {
+        return ''
+    }
+    string prefix = cleaned_root.ends_with('/') ? cleaned_root : cleaned_root + '/'
+    if cleaned_target.starts_with(prefix) {
+        return cleaned_target.slice(prefix.len(), cleaned_target.len())
+    }
+    return cleaned_target
+}
+
+fn is_directory(string full_path): bool {
+    var stat = syscall.stat(full_path) catch error {
+        return false
+    }
+    return syscall.stat_is_dir(stat.mode)
+}

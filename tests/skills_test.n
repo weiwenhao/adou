@@ -1,0 +1,144 @@
+import adou.src.context.skills
+import adou.src.json_util
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+pub fn write_file(string file_path, string content): void! {
+    var parent = path.dir(file_path)
+    os.mkdirs(parent, 0o700)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644) catch error {
+        throw error
+    }
+    file.write(content as [u8])
+    file.close()
+}
+
+test 'frontmatter parses scalars like Pi' {
+    string content = '---\nname: my-skill\ndescription: "Does things"\ndisable-model-invocation: true\n---\n\nBody text'
+    var parsed = skills.parse_frontmatter(content)
+    var frontmatter = parsed[0]
+    var body = parsed[1]
+    assert(json_util.opt_string(frontmatter, 'name') == 'my-skill')
+    assert(json_util.opt_string(frontmatter, 'description') == 'Does things')
+    assert(json_util.opt_bool(frontmatter, 'disable-model-invocation'))
+    assert(body == 'Body text')
+}
+
+test 'frontmatter without a block keeps the whole body' {
+    string content = 'plain markdown without frontmatter'
+    var parsed = skills.parse_frontmatter(content)
+    var frontmatter = parsed[0]
+    var body = parsed[1]
+    assert(json_util.opt_string(frontmatter, 'name') == '')
+    assert(body == content)
+}
+
+test 'skill name validation follows the Agent Skills spec' {
+    assert(skills.validate_skill_name('good-skill').len() == 0)
+    assert(skills.validate_skill_name('-leading').len() > 0)
+    assert(skills.validate_skill_name('trailing-').len() > 0)
+    assert(skills.validate_skill_name('double--hyphen').len() > 0)
+    assert(skills.validate_skill_name('Upper-Case').len() > 0)
+    assert(skills.validate_skill_name('with_underscore').len() > 0)
+}
+
+test 'skill description is required' {
+    assert(skills.validate_skill_description('').len() > 0)
+    assert(skills.validate_skill_description('valid description').len() == 0)
+}
+
+test 'loads a skill from a directory root SKILL.md' {
+    string dir = path.join('/tmp', 'adou-skills-test-' + random_suffix())
+    write_file(path.join(dir, 'SKILL.md'), '---\nname: demo\ndescription: A demo skill\n---\n\nInstructions')
+    var result = skills.load_skills_from_dir(dir, 'path')
+    assert(result.skills.len() == 1)
+    assert(result.skills[0].name == 'demo')
+    assert(result.skills[0].description == 'A demo skill')
+    assert(result.skills[0].base_dir == dir)
+    assert(result.skills[0].source_info.scope == 'temporary')
+    assert(result.diagnostics.len() == 0)
+    os.rmdir(dir, true)
+}
+
+test 'falls back to the parent directory name and warns on missing description' {
+    string dir = path.join('/tmp', 'adou-skills-test-' + random_suffix())
+    write_file(path.join(dir, 'SKILL.md'), '---\n---\n\nInstructions without description')
+    var result = skills.load_skills_from_dir(dir, 'path')
+    assert(result.skills.len() == 0)
+    assert(result.diagnostics.len() > 0)
+    os.rmdir(dir, true)
+}
+
+test 'recurses into subdirectories for SKILL.md and loads root md files' {
+    string root = path.join('/tmp', 'adou-skills-test-' + random_suffix())
+    write_file(path.join(root, 'solo.md'), '---\nname: solo\ndescription: Solo skill\n---\n\nx')
+    write_file(path.join(root, 'nested', 'SKILL.md'), '---\nname: nested-skill\ndescription: Nested skill\n---\n\nx')
+    var result = skills.load_skills_from_dir(root, 'path')
+    assert(result.skills.len() == 2)
+    os.rmdir(root, true)
+}
+
+test 'a SKILL.md root stops recursion like Pi' {
+    string root = path.join('/tmp', 'adou-skills-test-' + random_suffix())
+    write_file(path.join(root, 'SKILL.md'), '---\nname: root-skill\ndescription: Root skill\n---\n\nx')
+    write_file(path.join(root, 'nested', 'SKILL.md'), '---\nname: nested-skill\ndescription: Nested skill\n---\n\nx')
+    var result = skills.load_skills_from_dir(root, 'path')
+    assert(result.skills.len() == 1)
+    assert(result.skills[0].name == 'root-skill')
+    os.rmdir(root, true)
+}
+
+test 'honors ignore rules from .gitignore' {
+    string root = path.join('/tmp', 'adou-skills-test-' + random_suffix())
+    write_file(path.join(root, 'ignored', 'SKILL.md'), '---\nname: hidden\ndescription: Ignored skill\n---\n\nx')
+    write_file(path.join(root, '.gitignore'), 'ignored/\n')
+    var result = skills.load_skills_from_dir(root, 'path')
+    assert(result.skills.len() == 0)
+    os.rmdir(root, true)
+}
+
+test 'collision diagnostics report name conflicts across sources' {
+    string user_dir = path.join('/tmp', 'adou-skills-user-' + random_suffix())
+    string project_dir = path.join('/tmp', 'adou-skills-project-' + random_suffix())
+    write_file(path.join(user_dir, 'skills', 'SKILL.md'), '---\nname: shared\ndescription: User version\n---\n\nx')
+    write_file(path.join(project_dir, '.pi', 'skills', 'SKILL.md'), '---\nname: shared\ndescription: Project version\n---\n\nx')
+    [string] extra = []
+    var result = skills.load_skills(project_dir, user_dir, extra, true)
+    assert(result.skills.len() == 1)
+    assert(result.skills[0].description == 'User version')
+    assert(result.skills[0].source_info.scope == 'user')
+    assert(result.diagnostics.len() == 1)
+    assert(result.diagnostics[0].kind == 'collision')
+    os.rmdir(user_dir, true)
+    os.rmdir(project_dir, true)
+}
+
+test 'format_skills_for_prompt emits Agent Skills XML and skips disabled skills' {
+    var visible = new skills.skill_t(name = 'demo', description = 'A <demo> skill', file_path = '/tmp/x/SKILL.md', base_dir = '/tmp/x', disable_model_invocation = false)
+    var hidden = new skills.skill_t(name = 'manual', description = 'Manual only', file_path = '/tmp/y/SKILL.md', base_dir = '/tmp/y', disable_model_invocation = true)
+    [ref<skills.skill_t>] list = [visible, hidden]
+    string formatted = skills.format_skills_for_prompt(list)
+    assert(formatted.find('<available_skills>') >= 0)
+    assert(formatted.find('<name>demo</name>') >= 0)
+    assert(formatted.find('A &lt;demo&gt; skill') >= 0)
+    assert(formatted.find('<name>manual</name>') < 0)
+    [ref<skills.skill_t>] none = []
+    assert(skills.format_skills_for_prompt(none) == '')
+}
+
+test 'glob matching covers gitignore star and double-star semantics' {
+    assert(skills.glob_match('*.md', 'notes.md'))
+    assert(!skills.glob_match('*.md', 'sub/notes.md'))
+    assert(skills.glob_match('**/*.md', 'sub/notes.md'))
+    assert(skills.glob_match('**', 'sub'))
+    assert(!skills.glob_match('a/*/c', 'a/b/d/c'))
+    assert(skills.glob_match('a/*/c', 'a/b/c'))
+}
+
+fn random_suffix(): string {
+    return fmt.sprintf('%d', time.now().ms_timestamp())
+}

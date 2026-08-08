@@ -15,7 +15,9 @@ import adou.src.debug
 import adou.src.timings
 import adou.src.config.settings
 import adou.src.config.types as config_types
+import adou.src.config.paths as config_paths
 import adou.src.context.project
+import adou.src.context.skills
 import adou.src.context.system_prompt
 import adou.src.json_util
 import adou.src.platform.cwd as platform_cwd
@@ -256,6 +258,15 @@ pub fn run(): void! {
         }
     }
     string append_prompt = strings.join(resolved_append_prompts, '\n\n')
+    [string] extra_skill_paths = []
+    var skills_result = skills.load_skills(session_cwd, config_paths.agent_dir(), extra_skill_paths, true)
+    string skills_prompt = skills.format_skills_for_prompt(skills_result.skills)
+    if skills_prompt != '' {
+        if append_prompt != '' {
+            append_prompt += '\n\n'
+        }
+        append_prompt += skills_prompt
+    }
     var tools = builtins.select_tools(session_cwd, config.tool_names, config.exclude_tool_names, config.no_tools || config.no_builtin_tools)
     [string] tool_names = []
     for tool in tools {

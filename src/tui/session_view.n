@@ -11,6 +11,7 @@ import adou.src.config.settings as config_settings
 import adou.src.config.trust as trust
 import adou.src.config.types
 import adou.src.context.project
+import adou.src.context.skills
 import adou.src.context.system_prompt
 import adou.src.debug
 import adou.src.json_util
@@ -708,6 +709,11 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
     }
     if command == '/help' {
         self.show_help_overlay()
+        self.redraw()
+        return null
+    }
+    if command == '/skill' {
+        self.show_skills(text, parts)
         self.redraw()
         return null
     }
@@ -1907,12 +1913,42 @@ pub fn view_t.show_help_overlay(&self) {
         '/copy         Copy the last response',
         '/settings     Open settings',
         '/hotkeys      Show keyboard commands',
-        '/reload       Reload project instructions at startup',
+        '/skill        List skills or show one skill',
+        '/reload       Reload project instructions and skills',
         '/share        Create a shareable local session artifact',
         '/trust        Save project trust decision',
         '/quit         Exit Adou',
     ]
     self.overlay = new overlay_t(kind = OVERLAY_HELP, title = 'Commands', options = options)
+}
+
+pub fn view_t.show_skills(&self, string text, [string] parts) {
+    var loaded = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), [], true) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    if loaded.skills.len() == 0 {
+        self.chat.status = 'No skills found in user or project skills directories'
+        return
+    }
+    if parts.len() == 1 {
+        [string] lines = []
+        for skill in loaded.skills {
+            string marker = skill.disable_model_invocation ? ' (manual only)' : ''
+            lines.push(skill.name + marker + ' - ' + skill.description)
+        }
+        self.overlay = new overlay_t(kind = OVERLAY_HELP, title = 'Skills', options = lines)
+        return
+    }
+    string requested = parts[1]
+    for skill in loaded.skills {
+        if skill.name == requested {
+            self.chat.status = skill.name + ' - ' + skill.description + '\n' + skill.file_path + '\n\nUse the read tool to load the skill file when the task matches.'
+            return
+        }
+    }
+    self.chat.status = 'Skill not found: ' + requested
 }
 
 pub fn view_t.show_hotkeys_overlay(&self) {
