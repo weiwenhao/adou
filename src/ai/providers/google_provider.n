@@ -135,6 +135,12 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
 fn send_once(ref<run_state_t> state): ref<client.response_t>! {
     debug.log('provider', 'google sending request')
     var request = client.new().post(google_messages.endpoint(state.model) + google_messages.query_key(state.options)).timeout(state.options.timeout_ms).header('Content-Type', 'application/json').header('Accept', 'text/event-stream').content(state.body)
+    if state.model.provider == 'google-vertex' {
+        string auth = google_messages.vertex_auth_header(state.options)
+        if auth != '' {
+            request.header('Authorization', auth)
+        }
+    }
     return request.send()
 }
 

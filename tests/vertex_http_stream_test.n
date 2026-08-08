@@ -1,0 +1,73 @@
+import adou.src.ai.providers.google_messages
+import adou.src.ai.providers.google_provider
+import adou.src.ai.types
+import co
+import fmt
+import http
+import fmt
+import syscall
+
+const VERTEX_PORT = 18925
+
+type capture_t = struct {
+    string path
+    string authorization
+}
+
+fn serve_fixture(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+fn fixture_model(int port): ref<types.model_t> {
+    return new types.model_t(id = 'gemini-2.5-flash', api = 'google-vertex', provider = 'google-vertex', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
+}
+
+test 'vertex endpoint resolves location and project and streams' {
+    syscall.set_env('VERTEX_LOCATION', 'us-east4')
+    syscall.set_env('GOOGLE_CLOUD_PROJECT', 'my-project')
+    syscall.set_env('GOOGLE_VERTEX_ACCESS_TOKEN', '')
+    var model = new types.model_t(id = 'gemini-2.5-flash', api = 'google-vertex', provider = 'google-vertex', base_url = '')
+    string endpoint = google_messages.endpoint(model)
+    assert(endpoint == 'https://us-east4-aiplatform.googleapis.com/v1beta1/projects/my-project/locations/us-east4/publishers/google/models/gemini-2.5-flash:streamGenerateContent?alt=sse')
+}
+
+test 'vertex stream authenticates with bearer token' {
+    syscall.set_env('VERTEX_LOCATION', '')
+    syscall.set_env('GOOGLE_CLOUD_PROJECT', '')
+    syscall.set_env('GOOGLE_VERTEX_ACCESS_TOKEN', 'vertex-token-abc')
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = VERTEX_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.path = request.path
+        capture.authorization = request.headers['Authorization'] catch e {''}
+        string body = ''
+        body += 'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"vertex ok"}]},"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":1,"candidatesTokenCount":1,"totalTokenCount":2}}\n\n'
+        response.content_type = 'text/event-stream'
+        response.send(body)
+        server.close()
+    }
+    server.post('/models/gemini-2.5-flash:streamGenerateContent', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = '', timeout_ms = 5000, max_retries = 0,)
+    var stream = google_provider.stream(fixture_model(VERTEX_PORT), fixture_context(), options)
+    co.sleep(800)
+    [string] kinds = []
+    for true {
+        var event = stream.recv() catch error {break}
+        kinds.push(event.kind)
+    }
+    var result = stream.result()
+    assert(kinds[kinds.len() - 1] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    assert(capture.path.find(':streamGenerateContent') >= 0)
+    assert(capture.authorization == 'Bearer vertex-token-abc')
+}
+
+fn fixture_context(): ref<types.context_t> {
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    return context
+}

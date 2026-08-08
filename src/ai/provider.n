@@ -19,7 +19,7 @@ fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stre
     if model.api == 'mistral-conversations' {
         return mistral_provider.stream(model, context, options)
     }
-    if model.api == 'google-generative-ai' {
+    if model.api == 'google-generative-ai' || model.api == 'google-vertex' {
         return google_provider.stream(model, context, options)
     }
     var result = event_stream.new()

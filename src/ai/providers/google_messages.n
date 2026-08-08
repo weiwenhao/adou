@@ -4,8 +4,12 @@ import adou.src.ai.types
 import adou.src.json_util
 import json
 import strings
+import syscall
 
 fn endpoint(ref<types.model_t> model): string {
+    if model.provider == 'google-vertex' {
+        return vertex_endpoint(model)
+    }
     string base = decorators.resolve_base_url(model)
     for base.ends_with('/') {
         base = base.slice(0, base.len() - 1)
@@ -15,6 +19,52 @@ fn endpoint(ref<types.model_t> model): string {
 
 fn query_key(ref<types.stream_options_t> options): string {
     return '&key=' + options.api_key
+}
+
+// Vertex AI: https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project}/locations/{location}/publishers/google/models/{model}:streamGenerateContent
+// The location and project resolve from the environment with Pi-compatible
+// defaults; the stream protocol and chunk shape match Google Generative AI.
+fn vertex_endpoint(ref<types.model_t> model): string {
+    string location = syscall.get_env('VERTEX_LOCATION')
+    if location == '' {
+        location = syscall.get_env('GOOGLE_VERTEX_LOCATION')
+    }
+    if location == '' {
+        location = 'us-central1'
+    }
+    string project = syscall.get_env('GOOGLE_CLOUD_PROJECT')
+    if project == '' {
+        project = syscall.get_env('VERTEX_PROJECT')
+    }
+    if project == '' {
+        project = syscall.get_env('GOOGLE_VERTEX_PROJECT')
+    }
+    string base = model.base_url
+    if base == '' {
+        base = 'https://' + location + '-aiplatform.googleapis.com/v1beta1'
+    }
+    for base.ends_with('/') {
+        base = base.slice(0, base.len() - 1)
+    }
+    if model.base_url != '' {
+        // Custom base URLs (tests, proxies) carry the full location path.
+        return base + '/models/' + model.id + ':streamGenerateContent?alt=sse'
+    }
+    return base + '/projects/' + project + '/locations/' + location + '/publishers/google/models/' + model.id + ':streamGenerateContent?alt=sse'
+}
+
+// Vertex authenticates either with a bearer access token (ADC/OAuth flow,
+// provided through GOOGLE_VERTEX_ACCESS_TOKEN) or with a Vertex API key
+// passed as the query key like the Generative AI API.
+fn vertex_auth_header(ref<types.stream_options_t> options): string! {
+    if options.api_key != '' {
+        return ''
+    }
+    string token = syscall.get_env('GOOGLE_VERTEX_ACCESS_TOKEN')
+    if token == '' {
+        throw errorf('No API key for provider: google-vertex. Set a Vertex API key or GOOGLE_VERTEX_ACCESS_TOKEN.')
+    }
+    return 'Bearer ' + token
 }
 
 fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
