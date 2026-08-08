@@ -1,0 +1,95 @@
+import adou.src.ai.providers.vercel_ai_gateway
+import adou.src.ai.providers.anthropic_provider
+import adou.src.ai.types
+import co
+import fmt
+import http
+import net.tcp
+
+pub const PORT = 18867
+
+pub type capture_t = struct {
+    string body
+    string api_key
+    string endpoint
+}
+
+pub fn serve_fixture(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+pub fn fixture_model(int port): ref<types.model_t> {
+    var model = new types.model_t(id = 'alibaba/qwen-3-14b', api = 'anthropic-messages', provider = 'vercel-ai-gateway', base_url = fmt.sprintf('http://127.0.0.1:%d/v1', port), max_tokens = 128)
+    return model
+}
+
+pub fn fixture_context(): ref<types.context_t> {
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    return context
+}
+
+pub fn kinds_has([string] kinds, string kind): bool {
+    for existing in kinds {
+        if existing == kind {
+            return true
+        }
+    }
+    return false
+}
+
+pub fn success_sse(): string {
+    string body = ''
+    body += 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_x","usage":{"input_tokens":3,"output_tokens":0}}}\n\n'
+    body += 'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+    body += 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"你好"}}\n\n'
+    body += 'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
+    body += 'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}\n\n'
+    body += 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    return body
+}
+
+test 'streams a real HTTP response through the vercel-ai-gateway provider' {
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.endpoint = request.path
+        capture.body = request.body
+        capture.api_key = request.headers['x-api-key'] catch e {''}
+        response.content_type = 'text/event-stream'
+        response.send(success_sse())
+        server.close()
+    }
+    server.post('/v1/messages', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'test-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = anthropic_provider.stream(fixture_model(PORT), fixture_context(), options)
+    co.sleep(800)
+    [string] kinds = []
+    for true {
+        var event = stream.recv() catch error {break}
+        kinds.push(event.kind)
+    }
+    var result = stream.result()
+    assert(kinds[0] == types.EVENT_START)
+    assert(kinds_has(kinds, types.EVENT_TEXT_DELTA))
+    assert(kinds_has(kinds, types.EVENT_TEXT_END))
+    assert(kinds[kinds.len() - 1] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    assert(capture.endpoint == '/v1/messages')
+    assert(capture.api_key == 'test-key')
+    assert(capture.body.find('"model":"alibaba/qwen-3-14b"') >= 0)
+    assert(result.usage.total_tokens == 5)
+}
+
+test 'vercel-ai-gateway provider metadata matches Pi' {
+    var def = vercel_ai_gateway.def()
+    assert(def.id == 'vercel-ai-gateway')
+    assert(def.api == 'anthropic-messages')
+    var models = vercel_ai_gateway.models()
+    assert(models.len() > 0)
+    assert(models[0].id == 'alibaba/qwen-3-14b')
+}

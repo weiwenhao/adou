@@ -1,0 +1,217 @@
+import adou.src.ai.providers.pi_messages_provider
+import adou.src.ai.providers.radius
+import adou.src.ai.providers.radius_config
+import adou.src.ai.types
+import co
+import fmt
+import http
+import net.tcp
+
+pub const PI_MESSAGES_PORT = 18810
+
+pub type capture_t = struct {
+    string body
+    string authorization
+    string endpoint
+}
+
+pub fn serve_fixture(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+pub fn fixture_model(int port): ref<types.model_t> {
+    var model = new types.model_t(id = 'radius-model', api = 'pi-messages', provider = 'radius', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
+    return model
+}
+
+pub fn fixture_context(): ref<types.context_t> {
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    return context
+}
+
+pub fn kinds_has([string] kinds, string kind): bool {
+    for existing in kinds {
+        if existing == kind {
+            return true
+        }
+    }
+    return false
+}
+
+pub fn success_sse(): string {
+    string body = ''
+    body += 'data: {"type":"start"}\n\n'
+    body += 'data: {"type":"thinking_start","contentIndex":0}\n\n'
+    body += 'data: {"type":"thinking_delta","contentIndex":0,"delta":"thinking..."}\n\n'
+    body += 'data: {"type":"thinking_end","contentIndex":0,"content":"thinking..."}\n\n'
+    body += 'data: {"type":"text_start","contentIndex":1}\n\n'
+    body += 'data: {"type":"text_delta","contentIndex":1,"delta":"你好"}\n\n'
+    body += 'data: {"type":"text_delta","contentIndex":1,"delta":"!"}\n\n'
+    body += 'data: {"type":"text_end","contentIndex":1,"content":"你好!"}\n\n'
+    body += 'data: {"type":"toolcall_start","contentIndex":2,"id":"call_1","toolName":"echo"}\n\n'
+    body += 'data: {"type":"toolcall_delta","contentIndex":2,"delta":"{\\"text\\":\\"ok"}\n\n'
+    body += 'data: {"type":"toolcall_end","contentIndex":2,"toolCall":{"id":"call_1","name":"echo","arguments":{"text":"ok"}}}\n\n'
+    body += 'data: {"type":"done","reason":"toolUse","responseId":"resp_1","usage":{"input":5,"output":9,"cacheRead":0,"cacheWrite":0,"totalTokens":14}}\n\n'
+    return body
+}
+
+test 'streams a real pi-messages HTTP response through the provider' {
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = PI_MESSAGES_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.endpoint = request.path
+        capture.body = request.body
+        capture.authorization = request.headers['Authorization'] catch e {''}
+        response.content_type = 'text/event-stream'
+        response.send(success_sse())
+        server.close()
+    }
+    server.post('/messages', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'radius-test-key', timeout_ms = 5000, max_retries = 0, thinking_enabled = true, max_tokens = 128,)
+    var stream = pi_messages_provider.stream(fixture_model(PI_MESSAGES_PORT), fixture_context(), options)
+    co.sleep(800)
+    [string] kinds = []
+    for true {
+        var event = stream.recv() catch error {break}
+        kinds.push(event.kind)
+    }
+    var result = stream.result()
+    assert(kinds[0] == types.EVENT_START)
+    assert(kinds_has(kinds, types.EVENT_THINKING_DELTA))
+    assert(kinds_has(kinds, types.EVENT_THINKING_END))
+    assert(kinds_has(kinds, types.EVENT_TEXT_DELTA))
+    assert(kinds_has(kinds, types.EVENT_TEXT_END))
+    assert(kinds_has(kinds, types.EVENT_TOOLCALL_START))
+    assert(kinds_has(kinds, types.EVENT_TOOLCALL_DELTA))
+    assert(kinds_has(kinds, types.EVENT_TOOLCALL_END))
+    assert(kinds[kinds.len() - 1] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_TOOL_USE)
+    assert(capture.endpoint == '/messages')
+    assert(capture.authorization == 'Bearer radius-test-key')
+    assert(capture.body.find('"model":"radius-model"') >= 0)
+    assert(capture.body.find('"maxTokens":128') >= 0)
+    var text = text_block(result)
+    assert(text.text == '你好!')
+    assert(result.usage.total_tokens == 14)
+    assert(result.usage.input == 5)
+    assert(result.usage.output == 9)
+    assert(result.response_id == 'resp_1')
+}
+
+pub fn text_block(ref<types.assistant_message_t> message): ref<types.text_content_t> {
+    for block in message.content {
+        if block is ref<types.text_content_t> text {
+            return text
+        }
+    }
+    return new types.text_content_t()
+}
+
+test 'pi-messages provider reports a terminal error event' {
+    var server = http.server()
+    server.port = PI_MESSAGES_PORT + 1
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        response.content_type = 'text/event-stream'
+        response.send('data: {"type":"error","reason":"error","errorMessage":"model overloaded","usage":{"input":1,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":1}}\n\n')
+        server.close()
+    }
+    server.post('/messages', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var model = fixture_model(PI_MESSAGES_PORT + 1)
+    var options = new types.stream_options_t(api_key = 'radius-test-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = pi_messages_provider.stream(model, fixture_context(), options)
+    co.sleep(800)
+    [string] kinds = []
+    for true {
+        var event = stream.recv() catch error {break}
+        kinds.push(event.kind)
+    }
+    var result = stream.result()
+    assert(kinds_has(kinds, types.EVENT_ERROR))
+    assert(result.stop_reason == types.STOP_ERROR)
+    assert(result.error_message == 'model overloaded')
+}
+
+test 'radius gateway config loads and sanitizes over http' {
+    var server = http.server()
+    server.port = PI_MESSAGES_PORT + 2
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        response.content_type = 'application/json'
+        response.send('{"baseUrl":"https://gateway.example.com","models":[{"id":"m1","name":"M1","reasoning":true,"input":["text"],"cost":{"input":1.0,"output":2.0,"cacheRead":0.1,"cacheWrite":0.2},"contextWindow":1000,"maxTokens":2000},{"id":"bad","name":"Bad","reasoning":"nope","input":"x","cost":{},"contextWindow":1,"maxTokens":2}]}')
+        server.close()
+    }
+    server.get('/v1/config', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var config = radius_config.load_radius_gateway_config(fmt.sprintf('http://127.0.0.1:%d', PI_MESSAGES_PORT + 2), 'radius-key') catch error {
+        {string:any} empty = {}
+        empty
+    }
+    assert(config.contains('baseUrl'))
+    var models = config['models'] as [any]
+    assert(models.len() == 1)
+}
+
+test 'radius provider metadata matches Pi' {
+    var def = radius.def()
+    assert(def.id == 'radius')
+    assert(def.name == 'Radius')
+    assert(def.api == 'pi-messages')
+    assert(def.base_url == 'https://radius.pi.dev')
+    assert(def.env_vars.len() == 1 && def.env_vars[0] == 'RADIUS_API_KEY')
+}
+
+test 'radius gateway url normalization matches Pi' {
+    assert(radius_config.normalize_radius_gateway_url('radius.pi.dev') == 'https://radius.pi.dev')
+    assert(radius_config.normalize_radius_gateway_url('https://radius.pi.dev/') == 'https://radius.pi.dev')
+    assert(radius_config.normalize_radius_gateway_url('https://radius.pi.dev') == 'https://radius.pi.dev')
+}
+
+test 'radius gateway config sanitization keeps valid models only' {
+    {string:any} good = {}
+    good['id'] = 'm1'
+    good['name'] = 'M1'
+    good['reasoning'] = true
+    good['input'] = ['text']
+    {string:any} cost = {}
+    cost['input'] = 1.0
+    cost['output'] = 2.0
+    cost['cacheRead'] = 0.1
+    cost['cacheWrite'] = 0.2
+    good['cost'] = cost
+    good['contextWindow'] = 1000
+    good['maxTokens'] = 2000
+    {string:any} bad = {}
+    bad['id'] = 'm2'
+    bad['name'] = 'M2'
+    bad['reasoning'] = 'not-a-bool'
+    bad['input'] = 'text'
+    bad['cost'] = {}
+    bad['contextWindow'] = 'nope'
+    bad['maxTokens'] = 2000
+    {string:any} config = {}
+    config['baseUrl'] = 'https://gateway.example.com'
+    config['models'] = [good, bad]
+    var sanitized = radius_config.sanitize_radius_gateway_config(config)
+    assert(!(sanitized is null))
+    if !(sanitized is null) {
+        var clean = sanitized as {string:any}
+        var models = clean['models'] as [any]
+        assert(models.len() == 1)
+        var radius_models = radius_config.radius_models_from_config('radius', clean)
+        assert(radius_models.len() == 1)
+        assert(radius_models[0].id == 'm1')
+        assert(radius_models[0].api == 'pi-messages')
+        assert(radius_models[0].provider == 'radius')
+        assert(radius_models[0].base_url == 'https://gateway.example.com')
+        assert(radius_models[0].cost.input == 1.0)
+        assert(radius_models[0].context_window == 1000)
+        assert(radius_models[0].max_tokens == 2000)
+    }
+}

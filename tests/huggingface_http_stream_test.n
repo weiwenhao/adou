@@ -1,0 +1,94 @@
+import adou.src.ai.providers.huggingface
+import adou.src.ai.providers.openai_completions_provider
+import adou.src.ai.types
+import co
+import fmt
+import http
+import net.tcp
+
+pub const PORT = 18847
+
+pub type capture_t = struct {
+    string body
+    string authorization
+    string endpoint
+}
+
+pub fn serve_fixture(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+pub fn fixture_model(int port): ref<types.model_t> {
+    var model = new types.model_t(id = 'MiniMaxAI/MiniMax-M2', api = 'openai-completions', provider = 'huggingface', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
+    return model
+}
+
+pub fn fixture_context(): ref<types.context_t> {
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    return context
+}
+
+pub fn kinds_has([string] kinds, string kind): bool {
+    for existing in kinds {
+        if existing == kind {
+            return true
+        }
+    }
+    return false
+}
+
+pub fn success_sse(): string {
+    string body = ''
+    body += 'data: {"id":"chatcmpl_x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}\n\n'
+    body += 'data: {"id":"chatcmpl_x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"你好"}}]}\n\n'
+    body += 'data: {"id":"chatcmpl_x","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+    body += 'data: {"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}}\n\n'
+    body += 'data: [DONE]\n\n'
+    return body
+}
+
+test 'streams a real HTTP response through the huggingface provider' {
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.endpoint = request.path
+        capture.body = request.body
+        capture.authorization = request.headers['Authorization'] catch e {''}
+        response.content_type = 'text/event-stream'
+        response.send(success_sse())
+        server.close()
+    }
+    server.post('/chat/completions', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'test-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = openai_completions_provider.stream(fixture_model(PORT), fixture_context(), options)
+    co.sleep(800)
+    [string] kinds = []
+    for true {
+        var event = stream.recv() catch error {break}
+        kinds.push(event.kind)
+    }
+    var result = stream.result()
+    assert(kinds[0] == types.EVENT_START)
+    assert(kinds_has(kinds, types.EVENT_TEXT_DELTA))
+    assert(kinds_has(kinds, types.EVENT_TEXT_END))
+    assert(kinds[kinds.len() - 1] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    assert(capture.endpoint == '/chat/completions')
+    assert(capture.authorization == 'Bearer test-key')
+    assert(capture.body.find('"model":"MiniMaxAI/MiniMax-M2"') >= 0)
+    assert(result.usage.total_tokens == 5)
+}
+
+test 'huggingface provider metadata matches Pi' {
+    var def = huggingface.def()
+    assert(def.id == 'huggingface')
+    assert(def.api == 'openai-completions')
+    var models = huggingface.models()
+    assert(models.len() > 0)
+    assert(models[0].id == 'MiniMaxAI/MiniMax-M2')
+}
