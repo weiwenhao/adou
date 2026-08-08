@@ -1,0 +1,30 @@
+import adou.src.config.auth
+import adou.src.config.auth_guidance
+
+test 'login help mentions the provider docs like Pi' {
+    string help = auth_guidance.get_provider_login_help()
+    assert(help.find('/login') >= 0)
+    assert(help.find('providers.md') >= 0)
+    assert(help.find('models.md') >= 0)
+}
+
+test 'formatted messages follow the Pi shapes' {
+    assert(auth_guidance.format_no_models_available_message().starts_with('No models available.'))
+    assert(auth_guidance.format_no_model_selected_message().starts_with('No model selected.'))
+    assert(auth_guidance.format_no_model_selected_message().find('/model') >= 0)
+    string unknown = auth_guidance.format_no_api_key_found_message(auth_guidance.UNKNOWN_PROVIDER)
+    assert(unknown.find('the selected model') >= 0)
+    string named = auth_guidance.format_no_api_key_found_message('deepseek')
+    assert(named.find('deepseek') >= 0)
+}
+
+test 'runtime api keys overlay the persisted store without writing' {
+    auth.save('deepseek', 'persisted-key') catch error {}
+    auth.set_runtime_api_key('deepseek', 'runtime-key')
+    assert(auth.has_runtime_api_key('deepseek'))
+    assert(auth.effective('deepseek') == 'runtime-key')
+    auth.remove_runtime_api_key('deepseek')
+    assert(!auth.has_runtime_api_key('deepseek'))
+    assert(auth.effective('deepseek') == 'persisted-key')
+    auth.remove('deepseek')
+}

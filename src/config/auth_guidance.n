@@ -1,0 +1,31 @@
+import adou.src.config.paths
+import path
+import strings
+
+// Port of vendors/pi/packages/coding-agent/src/core/auth-guidance.ts.
+// Centralized login guidance shared by startup errors and the /login flow.
+
+pub const UNKNOWN_PROVIDER = 'unknown'
+
+pub fn get_provider_login_help(): string {
+    string docs = paths.agent_dir()
+    [string] lines = []
+    lines.push('Use /login to log into a provider via OAuth or API key. See:')
+    lines.push('  ' + path.join(docs, 'providers.md'))
+    lines.push('  ' + path.join(docs, 'models.md'))
+    return strings.join(lines, '\n')
+}
+
+pub fn format_no_models_available_message(): string {
+    return 'No models available. ' + get_provider_login_help()
+}
+
+pub fn format_no_model_selected_message(): string {
+    return 'No model selected.\n\n' + get_provider_login_help() + '\n\nThen use /model to select a model.'
+}
+
+pub fn format_no_api_key_found_message(string provider): string {
+    string display = provider == UNKNOWN_PROVIDER ? 'the selected model' : provider
+    return 'No API key found for ' + display + '.\n\n' + get_provider_login_help()
+}
+

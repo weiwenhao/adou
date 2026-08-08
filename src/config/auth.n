@@ -9,8 +9,28 @@ import os
 import path
 import syscall
 
+// Pi's RuntimeCredentials overlay: non-persistent API keys win over the
+// persisted auth.json store without writing to disk.
+{string:string} runtime_api_keys = {}
+
+pub fn set_runtime_api_key(string provider, string key) {
+    runtime_api_keys[provider] = key
+}
+
+pub fn remove_runtime_api_key(string provider) {
+    if runtime_api_keys.contains(provider) {
+        runtime_api_keys.del(provider)
+    }
+}
+
+pub fn has_runtime_api_key(string provider): bool {
+    return runtime_api_keys.contains(provider)
+}
 
 pub fn effective(string provider): string {
+    if runtime_api_keys.contains(provider) {
+        return runtime_api_keys[provider]
+    }
     string stored = read(provider)
     if stored != '' {
         return stored
