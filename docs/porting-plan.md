@@ -67,15 +67,22 @@ shell-output 语义（tail 截断、full_output_path、退出码/footer、二进
   diagnostics 全量、footer-data-provider、prompt-templates
 - 验收：每项行为差分单测；skills/slash-commands 有 e2e
 
-Phase 3 状态（2026-08-09）：已完成 skills 资源层——`src/context/skills.n`
-（frontmatter 解析、Agent Skills 名称/描述校验、SKILL.md 根/递归发现、gitignore
+Phase 3 状态（2026-08-09）：已完成 skills 资源层（`src/context/skills.n`，
+frontmatter 解析、Agent Skills 名称/描述校验、SKILL.md 根/递归发现、gitignore
 规则、collision 诊断、XML prompt 格式化、source_info 内联模型，12/12 单测），
 注入 system prompt（app 启动 + TUI `/reload`），TUI 新增 `/skill` 命令，
 `tests/e2e/skills-loading.sh` 验证系统提示注入（e2e 通过）。
-进行中：prompt-templates（.pi/prompts + frontmatter + 参数替换）、
-telemetry/provider-attribution、usage-totals/cache-stats、provider-composer、
-trust-manager、footer-data-provider、export-html 全量、package-manager、sdk；
-event-bus 与 http-dispatcher 按架构性差异处理（无扩展单消费者流 + libc 直连）。
+已完成 prompt-templates（`src/context/prompt_templates.n`：参数解析、占位符替换、
+.prompts 目录发现、TUI `/name` 展开，7/7 单测）、provider attribution 与
+telemetry（`src/ai/attribution.n`，5/5）、usage cost breakdown（`src/session/
+repository.n`，2/2）、assistant diagnostics（`src/ai/diagnostics.n`，4/4）、
+auth guidance 与 runtime credential overlay（`src/config/auth_guidance.n` +
+auth.n runtime keys，3/3）、cache waste accounting（`src/session/cache_stats.n`，
+4/4）、models.json provider 组合（`src/config/models_json.n`，5/5）、
+trust-manager 补全（`src/config/trust.n` set_many/clear/资源门控，5/5）。
+进行中：footer-data-provider、export-html 交互式模板、sdk、package-manager、
+remote-catalog-provider、slash-commands 动态命令来源；event-bus 与
+http-dispatcher 按架构性差异处理（无扩展单消费者流 + libc 直连）。
 
 ### Phase 4｜TUI 补全
 - autocomplete、fuzzy、kill-ring、native-modifiers、terminal-image、undo-stack、
