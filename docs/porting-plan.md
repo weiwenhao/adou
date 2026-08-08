@@ -85,10 +85,13 @@ trust-manager 补全（`src/config/trust.n` set_many/clear/资源门控，5/5）
 git 元数据检测（`src/context/git_paths.n`：.git 目录/worktree/commondir/HEAD 解析，
 4/4）、ansi-to-html（`src/session/ansi_to_html.n`：SGR 全量支持，7/7，已接入
 export_html 的 bash/tool 输出渲染）。
-进行中：sdk、package-manager；export-html 的交互式模板（template.html/css/js +
-marked/highlight vendor 资产）按排除项处理——无前端资产分发机制，保留静态 HTML
-导出 + ANSI 渲染增强；footer 的 fs.watch 变更通知同样排除（无 fs.watch）；
-event-bus 与 http-dispatcher 按架构性差异处理（无扩展单消费者流 + libc 直连）。
+按架构性差异排除（记录理由）：sdk（createAgentSession 是外部编程 API，Adou 为
+CLI 应用，其模型解析/session/工具装配由 app.n + runner_t 内部等价实现）、
+package-manager（npm/git 包安装依赖 Node 生态与扩展包机制，Adou 无包资源层，
+skills/prompts 为本地目录）、export-html 交互式模板（template.html/css/js +
+marked/highlight vendor 资产无分发机制，保留静态 HTML + ANSI 渲染）、
+footer 的 fs.watch 变更通知（无 fs.watch）、event-bus（无扩展单消费者流）、
+http-dispatcher（libc 直连无全局 dispatcher）。
 
 ### Phase 4｜TUI 补全
 - autocomplete、fuzzy、kill-ring、native-modifiers、terminal-image、undo-stack、
