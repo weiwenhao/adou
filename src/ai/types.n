@@ -124,6 +124,7 @@ pub type tool_t = struct {
     string description
     any parameters
     bool sequential
+    any constrained_sampling = false
 }
 pub type context_t = struct {
     string system_prompt

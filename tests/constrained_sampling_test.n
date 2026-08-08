@@ -1,0 +1,164 @@
+import adou.src.ai.constrained_sampling
+import adou.src.ai.types
+
+test 'get_grammar_tool_input returns the string argument' {
+    {string:any} arguments = {}
+    arguments['input'] = 'hello'
+    string input = constrained_sampling.get_grammar_tool_input('write', arguments, 'input') catch error {''}
+    assert(input == 'hello')
+}
+
+test 'get_grammar_tool_input rejects missing and non-string arguments' {
+    {string:any} empty = {}
+    string missing = constrained_sampling.get_grammar_tool_input('write', empty, 'input') catch error {''}
+    assert(missing == '')
+    {string:any} wrong_type = {}
+    wrong_type['input'] = 42
+    string non_string = constrained_sampling.get_grammar_tool_input('write', wrong_type, 'input') catch error {''}
+    assert(non_string == '')
+}
+
+test 'append_grammar_tool_input_delta emits a delimited json delta and closes' {
+    var buffer = new constrained_sampling.grammar_input_buffer_t()
+    string first = buffer.append('input', 'ab', false) catch error {''}
+    assert(first == '{"input":"ab')
+    string second = buffer.append('input', 'abc', false) catch error {''}
+    assert(second == 'c')
+    string closed = buffer.append('input', 'abc', true) catch error {''}
+    assert(closed == '"}')
+    assert(buffer.closed)
+}
+
+test 'append_grammar_tool_input_delta escapes quotes and skips empty deltas' {
+    var buffer = new constrained_sampling.grammar_input_buffer_t()
+    string quoted = buffer.append('input', 'a"b', false) catch error {''}
+    assert(quoted == '{"input":"a\\"b')
+    string none = buffer.append('input', 'a"b', false) catch error {''}
+    assert(none == '')
+}
+
+test 'append_grammar_tool_input_delta rejects closed and non-monotonic changes' {
+    var buffer = new constrained_sampling.grammar_input_buffer_t()
+    buffer.append('input', 'ab', true) catch error {}
+    string changed = buffer.append('input', 'abc', false) catch error {'ok'}
+    assert(changed == 'ok')
+    var other = new constrained_sampling.grammar_input_buffer_t()
+    other.append('input', 'ab', false) catch error {}
+    string non_monotonic = other.append('input', 'ac', false) catch error {'ok'}
+    assert(non_monotonic == 'ok')
+}
+
+test 'resolve_json_schema_strict_sampling honors require and strict support' {
+    {string:any} config = {}
+    config['type'] = 'json_schema'
+    config['strict'] = 'require'
+    bool strict = constrained_sampling.resolve_json_schema_strict_sampling(config, true) catch error {false}
+    assert(strict)
+    bool unsupported = constrained_sampling.resolve_json_schema_strict_sampling(config, false) catch error {true}
+    assert(unsupported)
+    {string:any} non_schema = {}
+    non_schema['type'] = 'grammar'
+    bool skipped = constrained_sampling.resolve_json_schema_strict_sampling(non_schema, false) catch error {true}
+    assert(!skipped)
+}
+
+test 'resolve_grammar_sampling picks lark over regex and validates schema' {
+    {string:any} variants = {}
+    variants['openai_lark'] = 'lark-grammar'
+    variants['openai_regex'] = 'regex-grammar'
+    {string:any} config = {}
+    config['type'] = 'grammar'
+    config['variants'] = variants
+    {string:any} properties = {}
+    {string:any} input_schema = {}
+    input_schema['type'] = 'string'
+    properties['input'] = input_schema
+    {string:any} parameters = {}
+    parameters['type'] = 'object'
+    parameters['required'] = ['input']
+    parameters['properties'] = properties
+    var grammar = constrained_sampling.resolve_grammar_sampling('write', parameters, config, true)
+    assert(grammar is ref<constrained_sampling.grammar_sampling_t>)
+    if grammar is ref<constrained_sampling.grammar_sampling_t> grammar_value {
+        assert(grammar_value.format == 'lark')
+        assert(grammar_value.definition == 'lark-grammar')
+        assert(grammar_value.input_property == 'input')
+    }
+}
+
+test 'resolve_grammar_sampling returns null without support and throws without variants' {
+    {string:any} variants = {}
+    variants['openai_lark'] = 'lark-grammar'
+    {string:any} config = {}
+    config['type'] = 'grammar'
+    config['variants'] = variants
+    {string:any} parameters = {}
+    parameters['type'] = 'object'
+    var unsupported = constrained_sampling.resolve_grammar_sampling('write', parameters, config, false)
+    assert(unsupported is null)
+    {string:any} no_variants = {}
+    no_variants['type'] = 'grammar'
+    no_variants['variants'] = {}
+    bool threw = false
+    try {
+        var attempt = constrained_sampling.resolve_grammar_sampling('write', parameters, no_variants, true)
+    } catch e {
+        threw = true
+    }
+    assert(threw)
+}
+
+test 'resolve_grammar_sampling rejects invalid parameter schemas' {
+    {string:any} variants = {}
+    variants['openai_regex'] = 'regex-grammar'
+    {string:any} config = {}
+    config['type'] = 'grammar'
+    config['variants'] = variants
+    {string:any} no_required = {}
+    no_required['type'] = 'object'
+    no_required['properties'] = {}
+    bool threw = false
+    try {
+        var attempt = constrained_sampling.resolve_grammar_sampling('write', no_required, config, true)
+    } catch e {
+        threw = true
+    }
+    assert(threw)
+    {string:any} wrong_required = {}
+    wrong_required['type'] = 'object'
+    wrong_required['required'] = ['a', 'b']
+    wrong_required['properties'] = {}
+    bool multi_required_threw = false
+    try {
+        var attempt = constrained_sampling.resolve_grammar_sampling('write', wrong_required, config, true)
+    } catch e {
+        multi_required_threw = true
+    }
+    assert(multi_required_threw)
+}
+
+test 'create_grammar_tool_input_properties maps only grammar-enabled tools' {
+    {string:any} variants = {}
+    variants['openai_lark'] = 'lark-grammar'
+    {string:any} config = {}
+    config['type'] = 'grammar'
+    config['variants'] = variants
+    {string:any} properties = {}
+    {string:any} input_schema = {}
+    input_schema['type'] = 'string'
+    properties['input'] = input_schema
+    {string:any} parameters = {}
+    parameters['type'] = 'object'
+    parameters['required'] = ['input']
+    parameters['properties'] = properties
+    var write = new types.tool_t(name = 'write', description = '', parameters = parameters, sequential = false, constrained_sampling = config)
+    var read = new types.tool_t(name = 'read', description = '', parameters = parameters, sequential = false)
+    [ref<types.tool_t>] tools = [write, read]
+    var props = constrained_sampling.create_grammar_tool_input_properties(tools, true) catch error {
+        {string:string} empty = {}
+        empty
+    }
+    assert(props.contains('write'))
+    assert(props['write'] == 'input')
+    assert(!props.contains('read'))
+}

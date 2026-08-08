@@ -1,0 +1,169 @@
+import adou.src.ai.types
+import adou.src.json_util
+
+// Port of vendors/pi/packages/ai/src/api/constrained-sampling.ts.
+// Grammar constrained sampling is declared by extension tools (out of Adou's
+// scope); the wire logic stays faithful and unit-tested so the
+// openai-responses custom_tool_call path remains portable.
+
+pub type grammar_sampling_t = struct {
+    string format
+    string definition
+    string input_property
+}
+
+pub type grammar_input_buffer_t = struct {
+    string input = ''
+    bool started = false
+    bool closed = false
+}
+
+pub fn get_grammar_tool_input(string tool_name, {string:any} arguments, string input_property): string! {
+    if !arguments.contains(input_property) {
+        throw errorf('Grammar tool call "%s" requires argument "%s" to be a string.', tool_name, input_property)
+    }
+    any input = arguments[input_property]
+    if !(input is string) {
+        throw errorf('Grammar tool call "%s" requires argument "%s" to be a string.', tool_name, input_property)
+    }
+    return input as string
+}
+
+pub fn grammar_input_buffer_t.append(&self, string input_property, string next_input, bool close): string! {
+    if self.closed {
+        if close && next_input == self.input {
+            return ''
+        }
+        throw errorf('grammar tool input for property "%s" changed after it was closed', input_property)
+    }
+    if !next_input.starts_with(self.input) {
+        throw errorf('grammar tool input for property "%s" changed non-monotonically', input_property)
+    }
+    string input_delta = next_input.slice(self.input.len(), next_input.len())
+    if !close && input_delta.len() == 0 {
+        return ''
+    }
+    string delta = ''
+    if !self.started {
+        string prop_json = json_util.stringify(input_property)
+        delta += '{' + prop_json + ':"'
+        self.started = true
+    }
+    string delta_json = json_util.stringify(input_delta)
+    delta += delta_json.slice(1, delta_json.len() - 1)
+    self.input = next_input
+    if close {
+        delta += '"}'
+        self.closed = true
+    }
+    return delta
+}
+
+fn infer_grammar_input_property({string:any} schema): string! {
+    any type_value = null
+    if schema.contains('type') {
+        type_value = schema['type']
+    }
+    if !(type_value is string) || (type_value as string) != 'object' {
+        throw errorf('grammar constrained sampling requires an object parameter schema')
+    }
+    var required = json_util.opt_arr(schema, 'required')
+    if required.len() != 1 || !(required[0] is string) {
+        throw errorf('grammar constrained sampling requires exactly one required string property')
+    }
+    string input_property = required[0] as string
+    var properties = json_util.opt_obj(schema, 'properties')
+    if !properties.contains(input_property) {
+        throw errorf('grammar constrained sampling requires a properties entry for %s', input_property)
+    }
+    any property_schema = properties[input_property]
+    if !json_util.is_obj(property_schema) {
+        throw errorf('grammar constrained sampling property %s must have type string', input_property)
+    }
+    var property_object = json_util.as_obj(property_schema) catch error {
+        throw errorf('grammar constrained sampling property %s must have type string', input_property)
+    }
+    any prop_type = null
+    if property_object.contains('type') {
+        prop_type = property_object['type']
+    }
+    if !(prop_type is string) || (prop_type as string) != 'string' {
+        throw errorf('grammar constrained sampling property %s must have type string', input_property)
+    }
+    return input_property
+}
+
+pub fn resolve_json_schema_strict_sampling({string:any} config, bool supports_strict_mode): bool! {
+    any config_type = null
+    if config.contains('type') {
+        config_type = config['type']
+    }
+    if !(config_type is string) || (config_type as string) != 'json_schema' {
+        return false
+    }
+    if supports_strict_mode {
+        return true
+    }
+    if json_util.opt_string(config, 'strict') == 'require' {
+        throw errorf('Tool requires JSON-schema constrained sampling, but strict tools are unsupported.')
+    }
+    return false
+}
+
+pub fn resolve_grammar_sampling(string tool_name, {string:any} parameters, {string:any} config, bool supports_openai_grammar_tools): ref<grammar_sampling_t>?! {
+    any config_type = null
+    if config.contains('type') {
+        config_type = config['type']
+    }
+    if !(config_type is string) || (config_type as string) != 'grammar' {
+        return null
+    }
+    if !supports_openai_grammar_tools {
+        return null
+    }
+    var variants = json_util.opt_obj(config, 'variants')
+    string lark_definition = json_util.opt_string(variants, 'openai_lark')
+    string regex_definition = json_util.opt_string(variants, 'openai_regex')
+    bool has_lark = lark_definition.trim([' ', '\t', '\n', '\r']).len() > 0
+    bool has_regex = regex_definition.trim([' ', '\t', '\n', '\r']).len() > 0
+    if !has_lark && !has_regex {
+        throw errorf('Tool "%s" cannot use grammar constrained sampling: no supported grammar variant was provided.', tool_name)
+    }
+    string format = 'lark'
+    string definition = lark_definition
+    if !has_lark {
+        format = 'regex'
+        definition = regex_definition
+    }
+    string input_property = infer_grammar_input_property(parameters) catch error {
+        throw errorf('Tool "%s" cannot use grammar constrained sampling: %s', tool_name, error.msg())
+    }
+    return new grammar_sampling_t(format = format, definition = definition, input_property = input_property)
+}
+
+pub fn create_grammar_tool_input_properties([ref<types.tool_t>] tools, bool supports): {string:string}! {
+    {string:string} properties = {}
+    for tool in tools {
+        any sampling = tool.constrained_sampling
+        if !json_util.is_obj(sampling) {
+            continue
+        }
+        var config = json_util.as_obj(sampling) catch error {
+            continue
+        }
+        any parameters = tool.parameters
+        if !json_util.is_obj(parameters) {
+            continue
+        }
+        var parameter_object = json_util.as_obj(parameters) catch error {
+            continue
+        }
+        var grammar = resolve_grammar_sampling(tool.name, parameter_object, config, supports) catch error {
+            continue
+        }
+        if grammar is ref<grammar_sampling_t> grammar_value {
+            properties[tool.name] = grammar_value.input_property
+        }
+    }
+    return properties
+}
