@@ -1,0 +1,170 @@
+import adou.src.json_util
+
+// Port of vendors/pi/packages/agent/src/harness/tools/image.ts.
+// Image input detection stays available for tools even though Adou's read
+// tool only promises the UTF-8 text branch; the mime detection and base64
+// helpers keep the same byte-level acceptance rules as Pi.
+
+pub fn detect_supported_image_mime_type([u8] buffer): string {
+    if starts_with(buffer, [0xff, 0xd8, 0xff]) {
+        if buffer.len() > 3 && buffer[3] == 0xf7 {
+            return ''
+        }
+        return 'image/jpeg'
+    }
+    if starts_with(buffer, png_signature()) {
+        if is_png(buffer) && !is_animated_png(buffer) {
+            return 'image/png'
+        }
+        return ''
+    }
+    if starts_with_ascii(buffer, 0, 'GIF') {
+        return 'image/gif'
+    }
+    if starts_with_ascii(buffer, 0, 'RIFF') && starts_with_ascii(buffer, 8, 'WEBP') {
+        return 'image/webp'
+    }
+    if starts_with_ascii(buffer, 0, 'BM') && is_bmp(buffer) {
+        return 'image/bmp'
+    }
+    return ''
+}
+
+pub fn encode_base64([u8] bytes): string {
+    string alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+    string output = ''
+    int index = 0
+    for index < bytes.len() {
+        int first = bytes[index] as int
+        int second = index + 1 < bytes.len() ? bytes[index + 1] as int : 0
+        int third = index + 2 < bytes.len() ? bytes[index + 2] as int : 0
+        output += alphabet.slice(first >> 2, (first >> 2) + 1)
+        output += alphabet.slice(((first & 0x03) << 4) | (second >> 4), (((first & 0x03) << 4) | (second >> 4)) + 1)
+        if index + 1 < bytes.len() {
+            output += alphabet.slice(((second & 0x0f) << 2) | (third >> 6), (((second & 0x0f) << 2) | (third >> 6)) + 1)
+        } else {
+            output += '='
+        }
+        if index + 2 < bytes.len() {
+            output += alphabet.slice(third & 0x3f, (third & 0x3f) + 1)
+        } else {
+            output += '='
+        }
+        index += 3
+    }
+    return output
+}
+
+pub fn png_signature(): [u8] {
+    return [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]
+}
+
+fn is_png([u8] buffer): bool {
+    return buffer.len() >= 16 && read_uint32_be(buffer, 8) == 13 && starts_with_ascii(buffer, 12, 'IHDR')
+}
+
+fn is_animated_png([u8] buffer): bool {
+    int offset = 8
+    for offset + 8 <= buffer.len() {
+        int chunk_length = read_uint32_be(buffer, offset)
+        int chunk_type_offset = offset + 4
+        if starts_with_ascii(buffer, chunk_type_offset, 'acTL') {
+            return true
+        }
+        if starts_with_ascii(buffer, chunk_type_offset, 'IDAT') {
+            return false
+        }
+        int next_offset = offset + 8 + chunk_length + 4
+        if next_offset <= offset || next_offset > buffer.len() {
+            return false
+        }
+        offset = next_offset
+    }
+    return false
+}
+
+fn is_bmp([u8] buffer): bool {
+    if buffer.len() < 26 {
+        return false
+    }
+    int declared_file_size = read_uint32_le(buffer, 2)
+    int pixel_data_offset = read_uint32_le(buffer, 10)
+    int dib_header_size = read_uint32_le(buffer, 14)
+    if declared_file_size != 0 && declared_file_size < 26 {
+        return false
+    }
+    if pixel_data_offset < 14 + dib_header_size {
+        return false
+    }
+    if declared_file_size != 0 && pixel_data_offset >= declared_file_size {
+        return false
+    }
+    int color_planes = 0
+    int bits_per_pixel = 0
+    if dib_header_size == 12 {
+        color_planes = read_uint16_le(buffer, 22)
+        bits_per_pixel = read_uint16_le(buffer, 24)
+    } else if dib_header_size >= 40 && dib_header_size <= 124 {
+        if buffer.len() < 30 {
+            return false
+        }
+        color_planes = read_uint16_le(buffer, 26)
+        bits_per_pixel = read_uint16_le(buffer, 28)
+    } else {
+        return false
+    }
+    if color_planes != 1 {
+        return false
+    }
+    if bits_per_pixel == 1 || bits_per_pixel == 4 || bits_per_pixel == 8 || bits_per_pixel == 16 || bits_per_pixel == 24 || bits_per_pixel == 32 {
+        return true
+    }
+    return false
+}
+
+fn read_uint16_le([u8] buffer, int offset): int {
+    int low = offset < buffer.len() ? buffer[offset] as int : 0
+    int high = offset + 1 < buffer.len() ? buffer[offset + 1] as int : 0
+    return low + (high << 8)
+}
+
+fn read_uint32_be([u8] buffer, int offset): int {
+    int b0 = offset < buffer.len() ? buffer[offset] as int : 0
+    int b1 = offset + 1 < buffer.len() ? buffer[offset + 1] as int : 0
+    int b2 = offset + 2 < buffer.len() ? buffer[offset + 2] as int : 0
+    int b3 = offset + 3 < buffer.len() ? buffer[offset + 3] as int : 0
+    return b0 * 0x1000000 + (b1 << 16) + (b2 << 8) + b3
+}
+
+fn read_uint32_le([u8] buffer, int offset): int {
+    int b0 = offset < buffer.len() ? buffer[offset] as int : 0
+    int b1 = offset + 1 < buffer.len() ? buffer[offset + 1] as int : 0
+    int b2 = offset + 2 < buffer.len() ? buffer[offset + 2] as int : 0
+    int b3 = offset + 3 < buffer.len() ? buffer[offset + 3] as int : 0
+    return b0 + (b1 << 8) + (b2 << 16) + (b3 * 0x1000000)
+}
+
+fn starts_with([u8] buffer, [u8] bytes): bool {
+    if buffer.len() < bytes.len() {
+        return false
+    }
+    for index, byte in bytes {
+        if buffer[index] != byte {
+            return false
+        }
+    }
+    return true
+}
+
+fn starts_with_ascii([u8] buffer, int offset, string text): bool {
+    if buffer.len() < offset + text.len() {
+        return false
+    }
+    var text_bytes = text as [u8]
+    for index, byte in text_bytes {
+        if buffer[offset + index] != byte {
+            return false
+        }
+    }
+    return true
+}

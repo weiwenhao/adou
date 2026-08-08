@@ -1,0 +1,97 @@
+import adou.src.tools.image_detect
+import base64
+
+pub fn png_bytes(): [u8] {
+    [u8] bytes = []
+    for byte in image_detect.png_signature() {
+        bytes.push(byte)
+    }
+    // Complete IHDR chunk: length(13) + type + 13 data bytes + CRC(4).
+    bytes.append([0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52])
+    for int index = 0; index < 13; index += 1 {
+        bytes.push(0)
+    }
+    bytes.append([0, 0, 0, 0])
+    return bytes
+}
+
+pub fn jpeg_bytes(bool progressive): [u8] {
+    [u8] bytes = []
+    bytes.append([0xff, 0xd8, 0xff])
+    if progressive {
+        bytes.push(0xf7)
+    } else {
+        bytes.push(0xe0)
+    }
+    return bytes
+}
+
+test 'detects supported image mime types like Pi' {
+    assert(image_detect.detect_supported_image_mime_type(png_bytes()) == 'image/png')
+    assert(image_detect.detect_supported_image_mime_type(jpeg_bytes(false)) == 'image/jpeg')
+    assert(image_detect.detect_supported_image_mime_type(jpeg_bytes(true)) == '')
+    assert(image_detect.detect_supported_image_mime_type('GIF89a' as [u8]) == 'image/gif')
+    assert(image_detect.detect_supported_image_mime_type(('RIFF' + 'xxxx' + 'WEBP') as [u8]) == 'image/webp')
+    assert(image_detect.detect_supported_image_mime_type([]) == '')
+    assert(image_detect.detect_supported_image_mime_type('hello' as [u8]) == '')
+}
+
+test 'rejects animated png like Pi' {
+    var bytes = png_bytes()
+    // acTL chunk before any IDAT chunk marks an animation.
+    bytes.append([0, 0, 0, 4, 0x61, 0x63, 0x54, 0x4c, 0, 0, 0, 0])
+    assert(image_detect.detect_supported_image_mime_type(bytes) == '')
+    var idat = png_bytes()
+    idat.append([0, 0, 0, 8, 0x49, 0x44, 0x41, 0x54, 0, 0, 0, 0, 0, 0, 0, 0])
+    assert(image_detect.detect_supported_image_mime_type(idat) == 'image/png')
+}
+
+test 'rejects malformed png like Pi' {
+    var bytes = png_bytes()
+    bytes[8] = 14
+    assert(image_detect.detect_supported_image_mime_type(bytes) == '')
+}
+
+test 'encodes base64 like Pi' {
+    string encoded = image_detect.encode_base64('hello' as [u8])
+    assert(encoded == 'aGVsbG8=')
+    assert(image_detect.encode_base64('adou' as [u8]) == 'YWRvdQ==')
+    assert(image_detect.encode_base64('a' as [u8]) == 'YQ==')
+    assert(image_detect.encode_base64([]) == '')
+    // Round-trip through the standard library decoder.
+    var decoded = base64.decode(encoded as [u8]) catch error {[]}
+    assert(decoded as string == 'hello')
+}
+
+test 'bmp detection accepts valid bit depths and rejects bad headers like Pi' {
+    [u8] bmp = []
+    bmp.append([0x42, 0x4d])
+    // fileSize=30, reserved, pixelDataOffset=26, dibHeaderSize=12 (BITMAPCOREHEADER)
+    bmp.append([30, 0, 0, 0])
+    bmp.append([0, 0, 0, 0])
+    bmp.append([26, 0, 0, 0])
+    bmp.append([12, 0, 0, 0])
+    bmp.append([0, 0, 0, 0])
+    // BITMAPCOREHEADER reads colorPlanes at 22 and bitsPerPixel at 24.
+    bmp.append([1, 0])
+    bmp.append([24, 0])
+    for int index = bmp.len(); index < 26; index += 1 {
+        bmp.push(0)
+    }
+    assert(image_detect.detect_supported_image_mime_type(bmp) == 'image/bmp')
+    [u8] bad = []
+    bad.append([0x42, 0x4d])
+    // fileSize=0, reserved, pixelDataOffset=54, dibHeaderSize=40,
+    // colorPlanes=2 (at 26), bits=8 (at 28): plane count must be 1.
+    bad.append([0, 0, 0, 0])
+    bad.append([0, 0, 0, 0])
+    bad.append([54, 0, 0, 0])
+    bad.append([40, 0, 0, 0])
+    bad.append([0, 0, 0, 0, 0, 0, 0, 0])
+    bad.append([2, 0])
+    bad.append([8, 0])
+    for int index = bad.len(); index < 30; index += 1 {
+        bad.push(0)
+    }
+    assert(image_detect.detect_supported_image_mime_type(bad) == '')
+}

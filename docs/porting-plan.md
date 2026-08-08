@@ -50,6 +50,15 @@ OAuth（credential-store/oauth 子目录）与 lazy 加载器按排除项处理�
 - memory-repo/memory-storage、env/nodejs、tool-context、image tool、shell-output
 - 验收：memory session 单测 + 集成
 
+Phase 2 状态（2026-08-09）：memory session 已由 `src/session/repository.n` 的
+`in_memory`/`in_memory_with_parent` 覆盖（Pi InMemorySessionRepo 等价物），session
+单测 27/27 与 agent 集成测试（agent_session_test 中 30+ 处 in-memory 场景）通过；
+shell-output 语义（tail 截断、full_output_path、退出码/footer、二进制与控制字符
+清洗 `command.n sanitizer_t`）已覆盖；env/nodejs 的 ExecutionEnv 由 libc 直连的
+`src/tools/command.n`/`shell_tools.n` 等价实现，不引入接口抽象；新增
+`src/tools/image_detect.n`（Pi harness/tools/image.ts 的 mime 检测 + base64，
+5/5 单测）。图片读取/渲染仍按排除项处理，image 模块保持纯逻辑不接入 read。
+
 ### Phase 3｜coding-agent core 补全
 - skills（.pi/skills 加载）、slash-commands、event-bus、telemetry、usage-totals、
   cache-stats、source-info、http-dispatcher、package-manager、sdk、
