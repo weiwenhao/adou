@@ -1,11 +1,12 @@
 import adou.src.ai.providers.openai_responses
 import adou.src.ai.sse
 import adou.src.ai.types
+import adou.src.json_util
 import json
-fn frame(string data): string {
+pub fn frame(string data): string {
     return 'data: ' + data + '\n\n'
 }
-fn test_model(): ref<types.model_t> {
+pub fn test_model(): ref<types.model_t> {
     var model = new types.model_t(id = 'gpt-5-mini', api = 'openai-responses', provider = 'openai',)
     model.cost.input = 1000000.0
     model.cost.output = 2000000.0
@@ -13,7 +14,7 @@ fn test_model(): ref<types.model_t> {
     model.cost.cache_write = 1500000.0
     return model
 }
-fn run_fixture(string fixture): (ref<openai_responses.processor_t>, [types.assistant_event_t])! {
+pub fn run_fixture(string fixture): (ref<openai_responses.processor_t>, [types.assistant_event_t])! {
     var decoder = sse.parser()
     var processor = openai_responses.processor(test_model(), 123)
     [types.assistant_event_t] events = [processor.start()]
@@ -72,7 +73,7 @@ test 'converts Pi OpenAI Responses text tool and usage events' {
     assert(tool.id == 'call_read|fc_read')
     assert(tool.name == 'read')
     assert(tool.partial_json == '')
-    assert(tool.arguments.get('path').as_string() == 'README.md')
+    assert((tool.arguments as {string:any})['path'] as string == 'README.md')
 }
 test 'converts reasoning and incomplete terminal status' {
     string fixture = ''
@@ -106,7 +107,7 @@ test 'parses Responses tool arguments on every delta' {
     assert(events.len() == 1 && events[0].kind == types.EVENT_TOOLCALL_DELTA)
     var partial = events[0].partial as ref<types.assistant_message_t>
     var call = partial.content[0] as ref<types.tool_call_t>
-    assert(call.arguments.get('path').as_string() == '')
+    assert((call.arguments as {string:any})['path'] as string == '')
 }
 test 'tracks final answer message phases in partial events' {
     string fixture = ''
@@ -195,9 +196,22 @@ test 'repairs incomplete final function arguments like Pi' {
     var done = processor.feed(sse.event_t {event: 'message', data: '{"type":"response.output_item.done","output_index":0,"item":{"type":"function_call","id":"fc_partial","call_id":"call_partial","name":"read","arguments":"{\\"path\\":\\"README"}}',})
     assert(done.len() == 1 && done[0].kind == types.EVENT_TOOLCALL_END)
     if done[0].tool_call is ref<types.tool_call_t> tool_call {
-        assert(tool_call.arguments.kind == json.VALUE_OBJECT)
-        assert(tool_call.arguments.get('path').as_string() == 'README')
+        assert(json_util.is_obj(tool_call.arguments))
+        assert((tool_call.arguments as {string:any})['path'] as string == 'README')
     } else {
         assert(false)
     }
+}
+
+test 'backfills encrypted reasoning signatures from the terminal response' {
+    var processor = openai_responses.processor(test_model(), 1)
+    processor.start()
+    processor.feed(sse.event_t {event: 'message', data: '{"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_missing","summary":[]}}',})
+    processor.feed(sse.event_t {event: 'message', data: '{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_missing","summary":[]}}',})
+    var terminal = processor.feed(sse.event_t {event: 'message', data: '{"type":"response.completed","response":{"id":"resp_reasoning","status":"completed","output":[{"type":"reasoning","id":"rs_missing","summary":[],"encrypted_content":"from-response-completed"}]}}',})
+    assert(terminal.len() == 1 && terminal[0].kind == types.EVENT_DONE)
+    var thinking = processor.output.content[0] as ref<types.thinking_content_t>
+    var signature = json_util.parse(thinking.thinking_signature) as {string:any}
+    assert(signature['id'] as string == 'rs_missing')
+    assert(signature['encrypted_content'] as string == 'from-response-completed')
 }

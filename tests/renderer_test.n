@@ -39,6 +39,55 @@ test 'width height and changes above viewport force full redraw' {
     assert(redraw.strategy == renderer.STRATEGY_FULL && redraw.output.contains('\x1b[2J\x1b[H\x1b[3J'))
 }
 
+test 'scrolling content keeps the visible tail aligned while appending' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    [string] initial = ['pre 0', 'pre 1', 'pre 2', 'pre 3', 'pre 4', 'pre 5', 'pre 6', 'pre 7']
+    terminal.write(value.render(initial, 20, 5).output)
+    [string] next = initial.slice(0, initial.len())
+    next.push('tool 0')
+    next.push('tool 1')
+    next.push('post 0')
+    terminal.write(value.render(next, 20, 5).output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'pre 6' && screen[1] == 'pre 7' && screen[2] == 'tool 0' && screen[3] == 'tool 1' && screen[4] == 'post 0')
+}
+
+test 'viewport moves upward with Pi full redraw when a tail is deleted' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    [string] initial = ['line 0', 'line 1', 'line 2', 'line 3', 'line 4', 'line 5', 'line 6', 'line 7', 'line 8', 'line 9', 'line 10', 'line 11']
+    terminal.write(value.render(initial, 20, 5).output)
+    [string] shortened = initial.slice(0, 7)
+    var result = value.render(shortened, 20, 5)
+    assert(result.strategy == renderer.STRATEGY_FULL && result.output.contains('\x1b[2J\x1b[H\x1b[3J'))
+    terminal.write(result.output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'line 2' && screen[1] == 'line 3' && screen[2] == 'line 4' && screen[3] == 'line 5' && screen[4] == 'line 6')
+}
+
+test 'deleting all scrolled content uses a full redraw' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    terminal.write(value.render(['line 0', 'line 1', 'line 2', 'line 3', 'line 4', 'line 5', 'line 6', 'line 7'], 20, 5).output)
+    var result = value.render([], 20, 5)
+    assert(result.strategy == renderer.STRATEGY_FULL && result.output.contains('\x1b[2J\x1b[H\x1b[3J'))
+    terminal.write(result.output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == '' && screen[1] == '' && screen[2] == '' && screen[3] == '' && screen[4] == '')
+}
+
+test 'deleting more than one viewport clears with a full redraw' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    terminal.write(value.render(['line 0', 'line 1', 'line 2', 'line 3', 'line 4', 'line 5', 'line 6', 'line 7'], 20, 5).output)
+    var result = value.render(['line 0'], 20, 5)
+    assert(result.strategy == renderer.STRATEGY_FULL && result.output.contains('\x1b[2J\x1b[H\x1b[3J'))
+    terminal.write(result.output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'line 0' && screen[1] == '' && screen[2] == '' && screen[3] == '' && screen[4] == '')
+}
+
 test 'shrink clears deleted rows through differential output' {
     var value = renderer.new()
     var terminal = virtual_terminal.new(20, 5)
@@ -48,6 +97,24 @@ test 'shrink clears deleted rows through differential output' {
     terminal.write(shrink.output)
     var screen = terminal.snapshot()
     assert(screen[0] == 'one' && screen[1] == '' && screen[2] == '')
+}
+
+test 'shrink after a changed first line preserves the replacement line' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    terminal.write(value.render(['old', 'two', 'three'], 20, 5).output)
+    terminal.write(value.render(['NEW'], 20, 5).output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'NEW' && screen[1] == '' && screen[2] == '')
+}
+
+test 'shrink after a changed prefix clears only the deleted tail' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    terminal.write(value.render(['old', 'two', 'three', 'four'], 20, 5).output)
+    terminal.write(value.render(['NEW', 'tail'], 20, 5).output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'NEW' && screen[1] == 'tail' && screen[2] == '' && screen[3] == '')
 }
 
 test 'no changes emit nothing and oversized lines are rejected' {
@@ -62,4 +129,12 @@ test 'no changes emit nothing and oversized lines are rejected' {
         failed = e.msg().contains('exceeds terminal width')
     }
     assert(failed)
+}
+
+test 'embedded line breaks are expanded before differential rendering' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    terminal.write(value.render(['alpha\nbeta'], 20, 5).output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'alpha' && screen[1] == 'beta')
 }

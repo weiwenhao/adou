@@ -1,9 +1,10 @@
 import adou.src.ai.providers.anthropic_messages
 import adou.src.ai.sse
 import adou.src.ai.types
+import adou.src.json_util
 import json
 
-fn anthropic_model(): ref<types.model_t> {
+pub fn anthropic_model(): ref<types.model_t> {
     var model = new types.model_t(id = 'claude-sonnet-4-5', api = 'anthropic-messages', provider = 'anthropic')
     model.cost.input = 1000000.0
     model.cost.output = 2000000.0
@@ -12,11 +13,11 @@ fn anthropic_model(): ref<types.model_t> {
     return model
 }
 
-fn frame(string event, string data): string {
+pub fn frame(string event, string data): string {
     return 'event: ' + event + '\n' + 'data: ' + data + '\n\n'
 }
 
-fn run_fixture(string fixture): (ref<anthropic_messages.processor_t>, [types.assistant_event_t])! {
+pub fn run_fixture(string fixture): (ref<anthropic_messages.processor_t>, [types.assistant_event_t])! {
     var decoder = sse.parser()
     var processor = anthropic_messages.processor(anthropic_model(), 123)
     [types.assistant_event_t] events = [processor.start()]
@@ -73,8 +74,8 @@ test 'converts Anthropic thinking redaction text multiple tools usage and stop r
     assert(text.text == '你好')
     var read_call = output.content[3] as ref<types.tool_call_t>
     var write_call = output.content[4] as ref<types.tool_call_t>
-    assert(read_call.arguments.get('path').as_string() == 'README.md')
-    assert(write_call.arguments.get('content').as_string() == 'ok')
+    assert((read_call.arguments as {string:any})['path'] as string == 'README.md')
+    assert((write_call.arguments as {string:any})['content'] as string == 'ok')
     assert(read_call.partial_json == '')
     assert(output.usage.input == 20)
     assert(output.usage.output == 10)
@@ -146,8 +147,8 @@ test 'repairs incomplete final tool input like Pi' {
     var done = processor.feed(sse.event_t {event: 'content_block_stop', data: '{"type":"content_block_stop","index":0}',})
     assert(done.len() == 1 && done[0].kind == types.EVENT_TOOLCALL_END)
     if done[0].tool_call is ref<types.tool_call_t> tool_call {
-        assert(tool_call.arguments.kind == json.VALUE_OBJECT)
-        assert(tool_call.arguments.get('path').as_string() == 'README')
+        assert(json_util.is_obj(tool_call.arguments))
+        assert((tool_call.arguments as {string:any})['path'] as string == 'README')
     } else {
         assert(false)
     }
@@ -161,5 +162,21 @@ test 'keeps initial tool input from the content block start like Pi' {
     var partial = start[0].partial as ref<types.assistant_message_t>
     var call = partial.content[0] as ref<types.tool_call_t>
     assert(call.id == 'tool_initial')
-    assert(call.arguments.get('path').as_string() == 'main.n')
+    assert((call.arguments as {string:any})['path'] as string == 'main.n')
+}
+
+test 'repairs malformed SSE JSON envelopes like Pi' {
+    var processor = anthropic_messages.processor(anthropic_model(), 1)
+    processor.start()
+    var start = processor.feed(sse.event_t {event: 'message_start', data: '{"type":"message_start","message":{"id":"msg_malformed","usage":{"input_tokens":1,"output_tokens":0}}}',})
+    assert(start.len() == 0)
+    processor.feed(sse.event_t {event: 'content_block_start', data: '{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"tool_malformed","name":"edit","input":{}}}',})
+    // The outer event JSON contains an invalid escape and a raw tab inside
+    // partial_json. Pi repairs both before parsing the event envelope.
+    string delta = '{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\\"path\\":\\"A\\H\\",\\"text\\":\\"col1\tcol2\\"}"}}'
+    var updates = processor.feed(sse.event_t {event: 'content_block_delta', data: delta,})
+    assert(updates.len() == 1 && updates[0].kind == types.EVENT_TOOLCALL_DELTA)
+    var call = processor.output.content[0] as ref<types.tool_call_t>
+    assert((call.arguments as {string:any})['path'] as string == 'A\\H')
+    assert((call.arguments as {string:any})['text'] as string == 'col1\tcol2')
 }

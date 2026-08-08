@@ -1,35 +1,36 @@
 import adou.src.ai.streaming_json
+import adou.src.json_util
 import json
 
 test 'parses complete and incomplete object arguments during streaming' {
     var complete = streaming_json.parse('{"path":"README.md","line":12}')
-    assert(complete.get('path').as_string() == 'README.md')
-    assert(complete.get('line').as_number().to_int() == 12)
+    assert((complete as {string:any})['path'] as string == 'README.md')
+    assert((complete as {string:any})['line'] as f64 as int == 12)
 
     var partial_value = streaming_json.parse('{"path":"README')
-    assert(partial_value.get('path').as_string() == 'README')
+    assert((partial_value as {string:any})['path'] as string == 'README')
 
     var partial_key = streaming_json.parse('{"path"')
-    assert(partial_key.get('path').is_null())
+    assert(json_util.is_null((partial_key as {string:any})['path']))
 }
 
 test 'repairs incomplete arrays literals numbers and malformed escapes' {
     var array_value = streaming_json.parse('{"items":[1,')
-    assert(array_value.get('items').as_array().len() == 1)
-    assert(array_value.get('items').at(0).as_number().to_int() == 1)
+    assert(((array_value as {string:any})['items'] as [any]).len() == 1)
+    assert((((array_value as {string:any})['items']) as [any])[0] as f64 as int == 1)
 
     var literal = streaming_json.parse('{"enabled":tru')
-    assert(literal.get('enabled').as_bool())
+    assert((literal as {string:any})['enabled'] as bool)
 
     var number = streaming_json.parse('{"ratio":1e')
-    assert(number.get('ratio').as_number() == '1e0')
+    assert(json_util.num_token(((number) as {string:any})['ratio']) == '1')
 
     var malformed = streaming_json.parse('{"path":"A\\H","text":"col1\tcol2"}')
-    assert(malformed.get('path').as_string() == 'A\\H')
-    assert(malformed.get('text').as_string() == 'col1\tcol2')
+    assert((malformed as {string:any})['path'] as string == 'A\\H')
+    assert((malformed as {string:any})['text'] as string == 'col1\tcol2')
 }
 
 test 'empty or unrecoverable input remains a JSON object' {
-    assert(streaming_json.parse('').kind == json.VALUE_OBJECT)
-    assert(streaming_json.parse('{"unterminated').kind == json.VALUE_OBJECT)
+    assert(json_util.is_obj(streaming_json.parse('')))
+    assert(json_util.is_obj(streaming_json.parse('{"unterminated')))
 }

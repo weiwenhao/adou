@@ -1,25 +1,26 @@
 import adou.src.ai.providers.openai_completions_request
 import adou.src.ai.types
+import adou.src.json_util
 import json
 
-fn model(): ref<types.model_t> {
+pub fn model(): ref<types.model_t> {
     return new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = 'https://api.deepseek.com', reasoning = true, context_window = 1000000, max_tokens = 384000)
 }
 
 test 'builds DeepSeek OpenAI Completions request with reasoning and tools' {
-    json.value_t parameters = json.parse('{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}')
+    any parameters = json_util.parse('{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}')
     var tool = new types.tool_t(name = 'read', description = 'Read a file', parameters = parameters)
     var context = new types.context_t(system_prompt = 'Be concise', tools = [tool,])
     context.messages.push(new types.user_message_t(content = 'Read README.md'))
     var options = new types.stream_options_t(api_key = 'secret', thinking_enabled = true, reasoning_effort = 'high', max_tokens = 256)
-    var body = json.parse(openai_completions_request.build(model(), context, options))
-    assert(body.get('model').as_string() == 'deepseek-v4-flash')
-    assert(body.get('stream').as_bool())
-    assert(body.get('messages').as_array().len() == 2)
-    assert(body.get('thinking').get('type').as_string() == 'enabled')
-    assert(body.get('reasoning_effort').as_string() == 'high')
-    assert(body.get('tools').as_array().len() == 1)
-    assert(body.get('tools').as_array()[0].get('function').get('name').as_string() == 'read')
+    var body = json_util.parse(openai_completions_request.build(model(), context, options))
+    assert((body as {string:any})['model'] as string == 'deepseek-v4-flash')
+    assert((body as {string:any})['stream'] as bool)
+    assert(((body as {string:any})['messages'] as [any]).len() == 2)
+assert(((body as {string:any})['thinking'] as {string:any})['type'] as string == 'enabled')
+    assert((body as {string:any})['reasoning_effort'] as string == 'high')
+    assert(((body as {string:any})['tools'] as [any]).len() == 1)
+    assert(((((body as {string:any})['tools'] as [any])[0] as {string:any})['function'] as {string:any})['name'] as string == 'read')
     assert(openai_completions_request.endpoint(model()) == 'https://api.deepseek.com/chat/completions')
     assert(openai_completions_request.authorization(options) == 'Bearer secret')
 }
@@ -28,34 +29,91 @@ test 'includes reasoning_content and tool history in assistant replay' {
     var context = new types.context_t()
     var thinking = new types.thinking_content_t(thinking = 'plan', thinking_signature = 'reasoning_content')
     var text = new types.text_content_t(text = 'done')
-    var call = new types.tool_call_t(id = 'call|item', name = 'read', arguments = json.parse('{"path":"README.md"}'))
+    var call = new types.tool_call_t(id = 'call|item', name = 'read', arguments = json_util.parse('{"path":"README.md"}'))
     types.content_t thinking_block = thinking
     types.content_t text_block = text
     types.content_t call_block = call
     context.messages.push(new types.assistant_message_t(content = [thinking_block, text_block, call_block]))
     context.messages.push(new types.tool_result_message_t(tool_call_id = call.id, tool_name = 'read', content = [new types.text_content_t(text = 'contents'),]))
     var options = new types.stream_options_t(thinking_enabled = false)
-    var body = json.parse(openai_completions_request.build(model(), context, options))
-    var assistant = body.get('messages').as_array()[0]
-    assert(assistant.get('role').as_string() == 'assistant')
-    assert(assistant.get('reasoning_content').as_string() == 'plan')
-    assert(assistant.get('tool_calls').as_array()[0].get('id').as_string() == 'call_item')
-    assert(body.get('messages').as_array()[1].get('role').as_string() == 'tool')
+    var body = json_util.parse(openai_completions_request.build(model(), context, options))
+    var assistant = ((body as {string:any})['messages'] as [any])[0]
+    assert(((assistant) as {string:any})['role'] as string == 'assistant')
+    assert(((assistant) as {string:any})['reasoning_content'] as string == 'plan')
+    assert(((((assistant) as {string:any})['tool_calls'] as [any])[0] as {string:any})['id'] as string == 'call_item')
+    assert((((body as {string:any})['messages'] as [any])[1] as {string:any})['role'] as string == 'tool')
 }
 
 test 'maps branch summaries into Pi user context' {
     var context = new types.context_t()
     context.messages.push(new types.branch_summary_message_t(summary = 'abandoned work', from_id = 'entry-1', timestamp = 1))
-    var body = json.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
-    assert(body.get('messages').at(0).get('content').as_string() == 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\nabandoned work</summary>')
+    var body = json_util.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
+    assert((((body as {string:any})['messages'] as [any])[0] as {string:any})['content'] as string == 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\nabandoned work</summary>')
 }
 
 test 'preserves an empty tools field when replaying tool history' {
     var context = new types.context_t()
-    var call = new types.tool_call_t(id = 'call-1', name = 'read', arguments = json.parse('{}'))
+    var call = new types.tool_call_t(id = 'call-1', name = 'read', arguments = json_util.parse('{}'))
     types.content_t call_content = call
     context.messages.push(new types.assistant_message_t(content = [call_content,]))
     context.messages.push(new types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'read', content = [new types.text_content_t(text = 'done'),]))
-    var body = json.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
-    assert(body.get('tools').as_array().len() == 0)
+    var body = json_util.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
+    assert(((body as {string:any})['tools'] as [any]).len() == 0)
+}
+
+test 'bounds pipe-separated Responses tool ids to the Chat Completions limit' {
+    var context = new types.context_t()
+    string original_id = 'call_'
+    for int index = 0; index < 80; index += 1 {
+        original_id += 'a'
+    }
+    original_id += '|fc_'
+    for int index = 0; index < 80; index += 1 {
+        original_id += 'b'
+    }
+    var call = new types.tool_call_t(id = original_id, name = 'read', arguments = json_util.parse('{}'))
+    types.content_t call_content = call
+    context.messages.push(new types.assistant_message_t(content = [call_content,]))
+    context.messages.push(new types.tool_result_message_t(tool_call_id = original_id, tool_name = 'read', content = [new types.text_content_t(text = 'done'),]))
+    var body = json_util.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
+    string tool_id = (((((body as {string:any})['messages'] as [any])[0] as {string:any})['tool_calls'] as [any])[0] as {string:any})['id'] as string
+    string result_id = (((body as {string:any})['messages'] as [any])[1] as {string:any})['tool_call_id'] as string
+    assert(tool_id.len() == 40)
+    assert(tool_id == result_id)
+}
+
+test 'preserves native DeepSeek tool ids without a Responses pipe' {
+    var context = new types.context_t()
+    string original_id = 'deepseek-native-id-with-more-than-forty-characters-should-remain'
+    var call = new types.tool_call_t(id = original_id, name = 'read', arguments = json_util.parse('{}'))
+    types.content_t call_content = call
+    context.messages.push(new types.assistant_message_t(content = [call_content,]))
+    context.messages.push(new types.tool_result_message_t(tool_call_id = original_id, tool_name = 'read', content = [new types.text_content_t(text = 'done'),]))
+    var body = json_util.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
+    assert((((((body as {string:any})['messages'] as [any])[0] as {string:any})['tool_calls'] as [any])[0] as {string:any})['id'] as string == original_id)
+    assert((((body as {string:any})['messages'] as [any])[1] as {string:any})['tool_call_id'] as string == original_id)
+}
+
+test 'does not replay an aborted assistant turn' {
+    var context = new types.context_t()
+    var assistant = new types.assistant_message_t(content = [new types.text_content_t(text = 'unfinished'),], stop_reason = types.STOP_ABORTED)
+    types.message_t assistant_message = assistant
+    context.messages.push(assistant_message)
+    context.messages.push(new types.user_message_t(content = 'continue'))
+    var body = json_util.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
+    assert(((body as {string:any})['messages'] as [any]).len() == 1)
+    assert((((body as {string:any})['messages'] as [any])[0] as {string:any})['role'] as string == 'user')
+}
+
+test 'inserts an error tool result for an orphaned Chat Completions tool call' {
+    var context = new types.context_t()
+    var call = new types.tool_call_t(id = 'call-orphan', name = 'read', arguments = json_util.parse('{}'))
+    types.content_t call_content = call
+    context.messages.push(new types.assistant_message_t(content = [call_content,], stop_reason = types.STOP_TOOL_USE))
+    context.messages.push(new types.user_message_t(content = 'continue'))
+    var body = json_util.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
+    assert(((body as {string:any})['messages'] as [any]).len() == 3)
+    var tool_item = (((body as {string:any})['messages'] as [any])[1] as {string:any})
+    assert(tool_item['role'] as string == 'tool')
+    assert(tool_item['content'] as string == 'No result provided')
 }

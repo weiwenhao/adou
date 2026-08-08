@@ -3,11 +3,14 @@ import adou.src.agent.session_stream
 import adou.src.agent.types as agent_types
 import adou.src.ai.abort
 import adou.src.ai.event_stream
+import adou.src.ai.types
 import adou.src.ai.types as ai_types
+import adou.src.json_util
 import adou.src.compaction.serialize
 import adou.src.compaction.types as compaction_types
 import adou.src.session.repository
 import adou.src.session.types as session_types
+import adou.src.tools.types as tool_types
 import co
 import co.mutex
 import fs
@@ -17,7 +20,7 @@ import path
 import syscall
 import time
 
-type provider_fixture_t = struct {
+pub type provider_fixture_t = struct {
     ref<mutex.mutex_t> lock = mutex.mutex_t.new()
     [ref<ai_types.assistant_message_t>] agent_responses = []
     int agent_index
@@ -28,11 +31,11 @@ type provider_fixture_t = struct {
     [string] summary_prompts = []
 }
 
-fn model(int context_window): ref<ai_types.model_t> {
+pub fn model(int context_window): ref<ai_types.model_t> {
     return new ai_types.model_t(id = 'mock', api = 'mock', provider = 'mock', base_url = 'http://example.invalid', reasoning = true, context_window = context_window, max_tokens = 100)
 }
 
-fn assistant(string text, string stop_reason, string error_message, int input_tokens, int total_tokens): ref<ai_types.assistant_message_t> {
+pub fn assistant(string text, string stop_reason, string error_message, int input_tokens, int total_tokens): ref<ai_types.assistant_message_t> {
     [ai_types.content_t] content = []
     if text != '' {
         ai_types.content_t block = new ai_types.text_content_t(text = text)
@@ -41,12 +44,31 @@ fn assistant(string text, string stop_reason, string error_message, int input_to
     return new ai_types.assistant_message_t(content = content, api = 'mock', provider = 'mock', model = 'mock', usage = ai_types.usage_t {input: input_tokens, total_tokens: total_tokens,}, stop_reason = stop_reason, error_message = error_message, timestamp = time.now().ms_timestamp())
 }
 
-fn user(string text): ai_types.message_t {
+pub fn assistant_tool(string call_id): ref<ai_types.assistant_message_t>! {
+    var message = assistant('', ai_types.STOP_TOOL_USE, '', 1, 1)
+    ai_types.content_t call = new ai_types.tool_call_t(id = call_id, name = 'session_echo', arguments = json_util.parse('{"value":"hello"}'))
+    message.content.push(call)
+    return message
+}
+
+pub type session_echo_executor_t: agent_types.tool_executor_t = struct {}
+
+pub fn session_echo_executor_t.execute(&self, string tool_call_id, any arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    return tool_types.text_result('echoed from tool')
+}
+
+pub fn session_echo_tool(): ref<agent_types.agent_tool_t>! {
+    var parameters = json_util.parse('{"type":"object","properties":{"value":{"type":"string"}},"required":["value"]}')
+    agent_types.tool_executor_t executor = session_echo_executor_t{}
+    return new agent_types.agent_tool_t(name = 'session_echo', label = 'session_echo', description = 'session_echo', parameters = parameters, executor = executor)
+}
+
+pub fn user(string text): ai_types.message_t {
     ai_types.message_t message = new ai_types.user_message_t(content = text, timestamp = time.now().ms_timestamp())
     return message
 }
 
-fn provider_fn(ref<provider_fixture_t> fixture): agent_types.stream_fn {
+pub fn provider_fn(ref<provider_fixture_t> fixture): agent_types.stream_fn {
     agent_types.stream_fn result = fn(ref<ai_types.model_t> current_model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
         fixture.lock.lock()
         ref<ai_types.assistant_message_t> response = assistant('', ai_types.STOP_ERROR, 'fixture response missing', 0, 0)
@@ -82,14 +104,14 @@ fn provider_fn(ref<provider_fixture_t> fixture): agent_types.stream_fn {
     return result
 }
 
-fn make_runner(ref<repository.manager_t> manager, ref<provider_fixture_t> fixture, int context_window, int reserve_tokens, int keep_recent_tokens): ref<session.runner_t>! {
+pub fn make_runner(ref<repository.manager_t> manager, ref<provider_fixture_t> fixture, int context_window, int reserve_tokens, int keep_recent_tokens): ref<session.runner_t>! {
     var context = new agent_types.context_t(system_prompt = 'coding agent')
     var config = new agent_types.config_t(model = model(context_window), stream_options = new ai_types.stream_options_t(api_key = 'fixture-key', max_retries = 0))
     var settings = compaction_types.settings_t {reserve_tokens: reserve_tokens, keep_recent_tokens: keep_recent_tokens,}
     return session.new(manager, context, config, provider_fn(fixture), settings)
 }
 
-fn write_settings_file(string file_path, string content): void! {
+pub fn write_settings_file(string file_path, string content): void! {
     os.mkdirs(path.dir(file_path), 0o700)
     var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
     int written = output.write(content as [u8])
@@ -97,14 +119,14 @@ fn write_settings_file(string file_path, string content): void! {
     assert(written == content.len())
 }
 
-fn prompt_error(ref<session.runner_t> runner, string text): string {
+pub fn prompt_error(ref<session.runner_t> runner, string text): string {
     runner.prompt(text) catch error {
         return error.msg()
     }
     return ''
 }
 
-fn consume(ref<session_stream.stream_t> stream): ([session_stream.event_t], [ai_types.message_t])! {
+pub fn consume(ref<session_stream.stream_t> stream): ([session_stream.event_t], [ai_types.message_t])! {
     [session_stream.event_t] events = []
     for true {
         var event = stream.recv() catch error {break}
@@ -113,7 +135,12 @@ fn consume(ref<session_stream.stream_t> stream): ([session_stream.event_t], [ai_
     return (events, stream.result())
 }
 
-fn count_kind([session_stream.event_t] events, string kind): int {
+pub fn wait_stream_result(ref<session_stream.stream_t> stream, chan<u8> completed): void! {
+    var ignored = stream.result()
+    completed.send(1)
+}
+
+pub fn count_kind([session_stream.event_t] events, string kind): int {
     int count = 0
     for event in events {
         if event.kind == kind {
@@ -123,7 +150,7 @@ fn count_kind([session_stream.event_t] events, string kind): int {
     return count
 }
 
-fn last_compaction_error([session_stream.event_t] events): string {
+pub fn last_compaction_error([session_stream.event_t] events): string {
     string result = ''
     for event in events {
         if event.kind == session_stream.EVENT_COMPACTION_END && event.error_message != '' {
@@ -133,13 +160,13 @@ fn last_compaction_error([session_stream.event_t] events): string {
     return result
 }
 
-fn seed_history(ref<repository.manager_t> manager): void! {
+pub fn seed_history(ref<repository.manager_t> manager): void! {
     manager.append_message(user('old request with enough text to summarize'))
     ai_types.message_t old_assistant = assistant('old response with enough text to keep near the cut', ai_types.STOP_STOP, '', 20, 20)
     manager.append_message(old_assistant)
 }
 
-fn release_after_abort(ref<session.runner_t> runner, ref<session_stream.stream_t> stream): void! {
+pub fn release_after_abort(ref<session.runner_t> runner, ref<session_stream.stream_t> stream): void! {
     for !stream.cancellation.is_aborted() {
         co.sleep(1)
     }
@@ -156,6 +183,30 @@ test 'session forwards lifecycle and persists each completed message' {
     assert(count_kind(result[0], agent_types.EVENT_MESSAGE_END) == 2)
     assert(count_kind(result[0], session_stream.EVENT_AGENT_SETTLED) == 1)
     assert(count_kind(result[0], session_stream.EVENT_SESSION_END) == 1)
+}
+
+test 'tool prompt forwards complete agent and session lifecycle in Pi order' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant_tool('session-call'), assistant('final answer', ai_types.STOP_STOP, '', 2, 3)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    runner.base_context.tools.push(session_echo_tool())
+    var result = consume(runner.prompt('use the tool'))
+    int agent_end = -1
+    int settled = -1
+    int session_end = -1
+    int tool_start = -1
+    int tool_message_end = -1
+    for index, event in result[0] {
+        if event.kind == agent_types.EVENT_TOOL_START && tool_start < 0 {tool_start = index}
+        if event.kind == agent_types.EVENT_MESSAGE_END && event.has_agent_event && event.agent_event.tool_message is ref<ai_types.tool_result_message_t> tool_message && tool_message_end < 0 {tool_message_end = index}
+        if event.kind == agent_types.EVENT_AGENT_END && agent_end < 0 {agent_end = index}
+        if event.kind == session_stream.EVENT_AGENT_SETTLED && settled < 0 {settled = index}
+        if event.kind == session_stream.EVENT_SESSION_END && session_end < 0 {session_end = index}
+    }
+    assert(fixture.agent_calls == 2)
+    assert(result[1].len() == 4 && manager.get_entries().len() == 4)
+    assert(tool_start >= 0 && tool_message_end > tool_start)
+    assert(agent_end >= 0 && settled > agent_end && session_end > settled)
 }
 
 test 'sequential prompts can start after the previous session_end' {
@@ -460,8 +511,8 @@ test 'tree branch summary captures the abandoned branch and attaches at target p
     var summary_entry = entries[entries.len() - 1]
     assert(summary_entry.kind == session_types.ENTRY_BRANCH_SUMMARY)
     assert(summary_entry.has_parent && summary_entry.parent_id == common)
-    var summary_object = summary_entry.raw.as_object()
-    assert(summary_object['fromId'].as_string() == common)
+    var summary_object = summary_entry.raw as {string:any}
+    assert(summary_object['fromId'] as string == common)
     assert(result[1].len() == 3)
     assert(result[1][2] is ref<ai_types.branch_summary_message_t>)
 }
@@ -525,6 +576,26 @@ test 'transient provider errors retry with the failed message removed from activ
     }
 }
 
+test 'Nature TLS read failures retry after provider retries are exhausted' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant('', ai_types.STOP_ERROR, 'TLS read failed: end of file', 0, 0), assistant('recovered after TLS retry', ai_types.STOP_STOP, '', 4, 5)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    runner.retry_base_delay_ms = 1
+    var result = consume(runner.prompt('retry the interrupted TLS request'))
+    assert(fixture.agent_calls == 2)
+    assert(count_kind(result[0], session_stream.EVENT_RETRY_START) == 1)
+    assert(count_kind(result[0], session_stream.EVENT_RETRY_END) == 1)
+    assert(result[1].len() == 2)
+    assert(manager.get_entries().len() == 3)
+    assert(manager.build_context().messages.len() == 3)
+    if result[1][1] is ref<ai_types.assistant_message_t> recovered {
+        assert(recovered.error_message == '')
+        assert(recovered.content.len() == 1)
+    } else {
+        assert(false)
+    }
+}
+
 test 'abort_retry cancels only the retry backoff' {
     var manager = repository.in_memory('/tmp')
     var fixture = new provider_fixture_t(agent_responses = [assistant('', ai_types.STOP_ERROR, '503 service unavailable', 0, 0)])
@@ -569,6 +640,19 @@ test 'rpc prompt keeps terminal delivery alive until the worker acknowledges it'
     assert(count_kind(events, session_stream.EVENT_AGENT_SETTLED) == 1)
     assert(count_kind(events, session_stream.EVENT_SESSION_END) == 1)
     assert(!runner.busy)
+}
+
+test 'rpc stream result wakes at terminal before delivery acknowledgement' {
+    var stream = session_stream.new()
+    stream.require_delivery()
+    var completed = chan<u8>.new(1)
+    go wait_stream_result(stream, completed)
+    co.sleep(10)
+    stream.finish([])
+    completed.recv()
+    assert(stream.is_terminal())
+    assert(stream.recv().kind == session_stream.EVENT_SESSION_END)
+    stream.mark_delivery_done()
 }
 
 test 'abort_bash only cancels the active bash stream' {

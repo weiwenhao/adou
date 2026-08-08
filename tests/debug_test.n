@@ -1,0 +1,58 @@
+import adou.src.debug
+import fs
+import os
+import path
+import syscall
+
+test 'Pi debug artifacts follow the configured agent directory' {
+    string root = '/tmp/adou-debug-artifacts-test'
+    os.rmdir(root, true) catch error {}
+    os.mkdirs(root, 0o700)
+    string previous_agent_dir = syscall.get_env('PI_CODING_AGENT_DIR')
+    string previous_write_log = syscall.get_env('PI_TUI_WRITE_LOG')
+    syscall.set_env('PI_CODING_AGENT_DIR', path.join(root, 'agent'))
+    syscall.set_env('PI_TUI_WRITE_LOG', root)
+
+    string target = debug.write_debug_file('debug fixture\n')
+    assert(target == path.join(root, 'agent/adou-debug.log'))
+    var debug_file = fs.open(target, syscall.O_RDONLY, 0)
+    assert(debug_file.content() == 'debug fixture\n')
+    debug_file.close()
+
+    debug.log_terminal_output('terminal fixture\n')
+    debug.log_terminal_output('second terminal fixture\n')
+    [string] names = os.listdir(root)
+    bool found_terminal_log = false
+    for name in names {
+        if name.starts_with('tui-') && name.ends_with('.log') {
+            found_terminal_log = true
+            var terminal_file = fs.open(path.join(root, name), syscall.O_RDONLY, 0)
+            assert(terminal_file.content() == 'terminal fixture\nsecond terminal fixture\n')
+            terminal_file.close()
+        }
+    }
+    assert(found_terminal_log)
+
+    string file_target = path.join(root, 'terminal.log')
+    syscall.set_env('PI_TUI_WRITE_LOG', file_target)
+    debug.log_terminal_output('file terminal fixture\n')
+    var file_log = fs.open(file_target, syscall.O_RDONLY, 0)
+    assert(file_log.content() == 'file terminal fixture\n')
+    file_log.close()
+
+    syscall.set_env('PI_CODING_AGENT_DIR', previous_agent_dir)
+    syscall.set_env('PI_TUI_WRITE_LOG', previous_write_log)
+    os.rmdir(root, true)
+}
+
+test 'Pi resource diagnostics preserve severity paths and collisions' {
+    var warning = debug.diagnostic_with_path(debug.warning_diagnostic('duplicate skill'), '/tmp/skill.md')
+    assert(debug.format_diagnostic(warning) == 'Warning: duplicate skill [/tmp/skill.md]')
+
+    var collision = debug.resource_collision_t {resource_type: 'skill', name: 'review', winner_path: '/project/review.md', loser_path: '/user/review.md', winner_source: 'local', loser_source: 'global',}
+    var diagnostic = debug.collision_diagnostic('resource collision', collision)
+    string formatted = debug.format_diagnostics([warning, diagnostic])
+    assert(formatted.contains('Warning: duplicate skill [/tmp/skill.md]'))
+    assert(formatted.contains('resource=skill name=review winner=/project/review.md loser=/user/review.md'))
+    assert(formatted.contains('winnerSource=local') && formatted.contains('loserSource=global'))
+}

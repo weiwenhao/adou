@@ -1,4 +1,6 @@
+import adou.src.ai.types
 import adou.src.ai.types as ai_types
+import adou.src.json_util
 import adou.src.ai.abort
 import adou.src.ai.event_stream
 import adou.src.compaction.compact
@@ -10,7 +12,7 @@ import adou.src.compaction.types
 import adou.src.session.repository
 import json
 
-type summary_fixture_t = struct {
+pub type summary_fixture_t = struct {
     [ref<ai_types.assistant_message_t>] responses = []
     int index
     [int] max_tokens = []
@@ -19,7 +21,7 @@ type summary_fixture_t = struct {
     [string] prompts = []
 }
 
-fn summary_response(string text, string stop_reason, string error_message, int input, int output): ref<ai_types.assistant_message_t> {
+pub fn summary_response(string text, string stop_reason, string error_message, int input, int output): ref<ai_types.assistant_message_t> {
     [ai_types.content_t] content = []
     if text != '' {
         ai_types.content_t block = new ai_types.text_content_t(text = text)
@@ -28,7 +30,7 @@ fn summary_response(string text, string stop_reason, string error_message, int i
     return new ai_types.assistant_message_t(content = content, stop_reason = stop_reason, error_message = error_message, usage = ai_types.usage_t {input: input, output: output, total_tokens: input + output,})
 }
 
-fn fixture_stream(ref<summary_fixture_t> fixture): compact.stream_fn {
+pub fn fixture_stream(ref<summary_fixture_t> fixture): compact.stream_fn {
     compact.stream_fn result = fn(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
         fixture.max_tokens.push(options.max_tokens)
         fixture.cache_retention.push(options.cache_retention)
@@ -50,7 +52,7 @@ fn fixture_stream(ref<summary_fixture_t> fixture): compact.stream_fn {
     return result
 }
 
-fn repeat(string value, int count): string {
+pub fn repeat(string value, int count): string {
     string result = ''
     for int index = 0; index < count; index += 1 {
         result += value
@@ -58,25 +60,30 @@ fn repeat(string value, int count): string {
     return result
 }
 
-fn user(string text): ai_types.message_t {
+pub fn user(string text): ai_types.message_t {
     ai_types.message_t result = new ai_types.user_message_t(content = text)
     return result
 }
 
-fn assistant(string text, int usage_tokens): ai_types.message_t {
+pub fn custom(string text): ai_types.message_t {
+    ai_types.message_t result = new ai_types.custom_message_t(custom_type = 'test', content = text, display = true)
+    return result
+}
+
+pub fn assistant(string text, int usage_tokens): ai_types.message_t {
     ai_types.content_t content = new ai_types.text_content_t(text = text)
     ai_types.usage_t usage = ai_types.usage_t {total_tokens: usage_tokens,}
     ai_types.message_t result = new ai_types.assistant_message_t(content = [content], usage = usage, stop_reason = ai_types.STOP_STOP)
     return result
 }
 
-fn tool_result(string text): ai_types.message_t {
+pub fn tool_result(string text): ai_types.message_t {
     ai_types.message_t result = new ai_types.tool_result_message_t(content = [new ai_types.text_content_t(text = text)])
     return result
 }
 
-fn tool_assistant(string name, string file_path): ai_types.message_t! {
-    ai_types.content_t call = new ai_types.tool_call_t(id = 'call', name = name, arguments = json.parse('{"path":"' + file_path + '"}'))
+pub fn tool_assistant(string name, string file_path): ai_types.message_t! {
+    ai_types.content_t call = new ai_types.tool_call_t(id = 'call', name = name, arguments = json_util.parse('{"path":"' + file_path + '"}'))
     ai_types.message_t result = new ai_types.assistant_message_t(content = [call], stop_reason = ai_types.STOP_TOOL_USE)
     return result
 }
@@ -118,6 +125,27 @@ test 'cut point prefers a user boundary and never starts at a tool result' {
     assert(split_cut.turn_start_index == 0 && split_cut.is_split_turn)
 }
 
+test 'cut point treats bash execution as the start of a turn' {
+    var session = repository.in_memory('/tmp')
+    ai_types.message_t bash = new ai_types.bash_execution_message_t(command = 'pwd', output = 'project', exit_code = 0)
+    session.append_message(bash)
+    session.append_message(assistant('follow-up', 0))
+    var cut = cut_point.find(session.get_entries(), 0, 2, 1)
+    assert(cut.first_kept_entry_index == 1)
+    assert(cut.turn_start_index == 0 && cut.is_split_turn)
+}
+
+test 'cut point treats custom messages as the start of a turn' {
+    var session = repository.in_memory('/tmp')
+    session.append_message(user('request'))
+    session.append_message(assistant('earlier', 0))
+    session.append_message(custom('extension context'))
+    session.append_message(assistant('follow-up', 0))
+    var cut = cut_point.find(session.get_entries(), 0, 4, 1)
+    assert(cut.first_kept_entry_index == 3)
+    assert(cut.turn_start_index == 2 && cut.is_split_turn)
+}
+
 test 'preparation separates split turn prefix and extracts cumulative file operations' {
     var session = repository.in_memory('/tmp')
     session.append_message(user('request'))
@@ -137,10 +165,69 @@ test 'preparation separates split turn prefix and extracts cumulative file opera
     assert(modified_files.len() == 1 && modified_files[0] == 'new.n')
 }
 
+test 'preparation keeps Pi branch summaries as turn boundaries and retains the tail' {
+    var session = repository.in_memory('/tmp')
+    session.append_message(user('old history'))
+    session.append_branch_summary('root', 'abandoned branch', null, ai_types.usage_t{})
+    string kept_id = session.append_message(user('keep this'))
+    session.append_message(assistant('tail', 0))
+    var context = session.build_context()
+    types.settings_t settings = types.settings_t {keep_recent_tokens: 4,}
+    var prepared = prepare.prepare(session.get_entries(), context.messages, settings)
+    assert(prepared is ref<types.preparation_t>)
+    var value = prepared as ref<types.preparation_t>
+    assert(value.first_kept_entry_id == kept_id)
+    assert(value.messages_to_summarize.len() == 2)
+    assert(value.messages_to_summarize[1] is ref<ai_types.branch_summary_message_t>)
+    assert(value.retained_tail.len() == 2)
+    assert(value.retained_tail[0] is ref<ai_types.user_message_t>)
+}
+
+test 'preparation carries previous compaction summary and file details' {
+    var session = repository.in_memory('/tmp')
+    string first_id = session.append_message(user('old context'))
+    any details = json_util.parse('{"readFiles":["old-read.n"],"modifiedFiles":["old-write.n"]}')
+    session.append_compaction('previous summary', first_id, 20, details, ai_types.usage_t{})
+    session.append_message(user('new context'))
+    var prepared = prepare.prepare(session.get_entries(), session.build_context().messages, types.settings_t {keep_recent_tokens: 1,})
+    assert(prepared is ref<types.preparation_t>)
+    var value = prepared as ref<types.preparation_t>
+    assert(value.has_previous_summary && value.previous_summary == 'previous summary')
+    var (read_files, modified_files) = prepare.file_lists(value.file_ops)
+    assert(read_files.len() == 1 && read_files[0] == 'old-read.n')
+    assert(modified_files.len() == 1 && modified_files[0] == 'old-write.n')
+}
+
+test 'preparation treats an empty previous summary as absent' {
+    var session = repository.in_memory('/tmp')
+    string first_id = session.append_message(user('old context'))
+    session.append_compaction('', first_id, 20, null, ai_types.usage_t{})
+    session.append_message(user('new context'))
+    var prepared = prepare.prepare(session.get_entries(), session.build_context().messages, types.settings_t {keep_recent_tokens: 1,})
+    assert(prepared is ref<types.preparation_t>)
+    var value = prepared as ref<types.preparation_t>
+    assert(!value.has_previous_summary && value.previous_summary == '')
+}
+
+test 'preparation ignores file details from hook-generated compaction' {
+    var session = repository.in_memory('/tmp')
+    string first_id = session.append_message(user('old context'))
+    any details = json_util.parse('{"readFiles":["hook-read.n"],"modifiedFiles":["hook-write.n"]}')
+    session.append_compaction('hook summary', first_id, 20, details, ai_types.usage_t{})
+    var entry = session.get_entries()[1]
+    (entry.raw as {string:any})['fromHook'] = true
+    session.append_message(user('new context'))
+    var prepared = prepare.prepare(session.get_entries(), session.build_context().messages, types.settings_t {keep_recent_tokens: 1,})
+    assert(prepared is ref<types.preparation_t>)
+    var value = prepared as ref<types.preparation_t>
+    var (read_files, modified_files) = prepare.file_lists(value.file_ops)
+    assert(read_files.len() == 0 && modified_files.len() == 0)
+}
+
 test 'conversation serialization matches Pi labels and truncates tool output at 2000 UTF-16 units' {
     ai_types.content_t thinking = new ai_types.thinking_content_t(thinking = 'plan')
     ai_types.content_t text = new ai_types.text_content_t(text = 'answer')
-    ai_types.content_t call = new ai_types.tool_call_t(id = '1', name = 'read', arguments = json.parse('{"path":"foo.n"}'))
+    ai_types.content_t call = new ai_types.tool_call_t(id = '1', name = 'read', arguments = json_util.parse('{"path":"foo.n"}'))
     ai_types.message_t response = new ai_types.assistant_message_t(content = [thinking, text, call])
     string output = serialize.conversation([user('hello'), response, tool_result(repeat('x', 3000))])
     assert(output.contains('[User]: hello'))
@@ -154,7 +241,7 @@ test 'summary generation uses Pi prompt cache isolation token cap previous summa
     var fixture = new summary_fixture_t(responses = [summary_response('## Goal\nupdated', ai_types.STOP_STOP, '', 10, 5)])
     types.file_ops_t file_ops = types.file_ops_t {read: ['read.n'], written: ['write.n'],}
     types.settings_t settings = types.settings_t {reserve_tokens: 100, keep_recent_tokens: 20,}
-    var preparation = new types.preparation_t(first_kept_entry_id = 'keep0001', messages_to_summarize = [user('new work')], tokens_before = 999, has_previous_summary = true, previous_summary = 'old summary', file_ops = file_ops, settings = settings)
+    var preparation = new types.preparation_t(first_kept_entry_id = 'keep0001', messages_to_summarize = [user('new work')], retained_tail = [user('kept tail')], tokens_before = 999, has_previous_summary = true, previous_summary = 'old summary', file_ops = file_ops, settings = settings)
     var model = new ai_types.model_t(id = 'model', api = 'fixture', provider = 'fixture', context_window = 1000, max_tokens = 70)
     var options = new ai_types.stream_options_t(max_retries = 0, cache_retention = 'long')
     var result = compact.run(preparation, model, options, fixture_stream(fixture), abort.new(), 'focus', 'off')
@@ -166,6 +253,7 @@ test 'summary generation uses Pi prompt cache isolation token cap previous summa
     assert(fixture.prompts[0].contains('<previous-summary>\nold summary\n</previous-summary>'))
     assert(fixture.prompts[0].contains('Additional focus: focus'))
     assert(result.usage.input == 10 && result.usage.output == 5)
+    assert(result.retained_tail.len() == 1 && result.retained_tail[0] is ref<ai_types.user_message_t>)
 }
 
 test 'split turn makes separate history and prefix requests with combined usage' {
@@ -194,4 +282,17 @@ test 'summarization retries transient errors but not deterministic errors' {
         types.summary_result_t{}
     }
     assert(failed && deterministic.index == 1)
+}
+
+test 'summarization abort uses Pi fallback error text' {
+    types.settings_t settings = types.settings_t {reserve_tokens: 100,}
+    var preparation = new types.preparation_t(first_kept_entry_id = 'keep0004', messages_to_summarize = [user('history')], settings = settings)
+    var model = new ai_types.model_t(id = 'model', api = 'fixture', provider = 'fixture', context_window = 1000, max_tokens = 1000)
+    var fixture = new summary_fixture_t(responses = [summary_response('', ai_types.STOP_ABORTED, '', 0, 0)])
+    bool failed = false
+    compact.run(preparation, model, new ai_types.stream_options_t(max_retries = 0), fixture_stream(fixture), abort.new(), '', 'off') catch error {
+        failed = error.msg() == 'Summarization aborted'
+        types.summary_result_t{}
+    }
+    assert(failed && fixture.index == 1)
 }

@@ -1,5 +1,5 @@
 import adou.src.ai.sse
-fn feed_one_byte(string input): [sse.event_t]! {
+pub fn feed_one_byte(string input): [sse.event_t]! {
     var parser = sse.parser()
     [sse.event_t] events = []
     for byte in input as[u8]{

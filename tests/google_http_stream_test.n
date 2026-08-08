@@ -4,30 +4,30 @@ import co
 import fmt
 import http
 
-const GOOGLE_PORT = 18924
+pub const GOOGLE_PORT = 18924
 
-type capture_t = struct {
+pub type capture_t = struct {
     string path
     string query
     string body
 }
 
-fn serve_fixture(ref<http.server_t> server): void! {
+pub fn serve_fixture(ref<http.server_t> server): void! {
     server.listen(server.port)
 }
 
-fn fixture_model(int port): ref<types.model_t> {
+pub fn fixture_model(int port): ref<types.model_t> {
     return new types.model_t(id = 'gemini-2.5-flash', api = 'google-generative-ai', provider = 'google', base_url = fmt.sprintf('http://127.0.0.1:%d/v1beta', port), reasoning = true, max_tokens = 128)
 }
 
-fn fixture_context(): ref<types.context_t> {
+pub fn fixture_context(): ref<types.context_t> {
     var context = new types.context_t()
     types.message_t user = new types.user_message_t(content = 'hello')
     context.messages.push(user)
     return context
 }
 
-fn success_sse(): string {
+pub fn success_sse(): string {
     string body = ''
     body += 'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"thinking...","thought":true,"thoughtSignature":"sig-1"}]}}],"usageMetadata":{"promptTokenCount":3,"cachedContentTokenCount":1,"candidatesTokenCount":2,"thoughtsTokenCount":3,"totalTokenCount":9}}\n\n'
     body += 'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"你好"}]}}]}\n\n'
@@ -110,7 +110,7 @@ test 'google function call parts become tool calls' {
     assert(arguments['path'] as string == 'README.md')
 }
 
-fn kinds_has([string] kinds, string kind): bool {
+pub fn kinds_has([string] kinds, string kind): bool {
     for existing in kinds {
         if existing == kind {
             return true

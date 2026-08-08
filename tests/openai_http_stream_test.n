@@ -4,32 +4,33 @@ import co
 import fmt
 import http
 import net.tcp
-const FIXTURE_PORT = 18765
-const RETRY_PORT = 18766
-const ERROR_PORT = 18767
-const ABORT_PORT = 18768
-const CHUNKED_PORT = 18769
-const TIMEOUT_PORT = 18770
-const ABORT_STREAM_PORT = 18771
-type server_capture_t = struct {
+pub const FIXTURE_PORT = 18765
+pub const RETRY_PORT = 18766
+pub const ERROR_PORT = 18767
+pub const ABORT_PORT = 18768
+pub const CHUNKED_PORT = 18769
+pub const TIMEOUT_PORT = 18770
+pub const ABORT_STREAM_PORT = 18771
+pub const REASONING_PORT = 18778
+pub type server_capture_t = struct {
     string body
     string authorization
     string session_id
     int attempts
 }
-fn serve_fixture(ref<http.server_t> server): void! {
+pub fn serve_fixture(ref<http.server_t> server): void! {
     server.listen(server.port)
 }
-fn fixture_model(int port): ref<types.model_t> {
+pub fn fixture_model(int port): ref<types.model_t> {
     return new types.model_t(id = 'gpt-5-mini', api = 'openai-responses', provider = 'openai', base_url = fmt.sprintf('http://127.0.0.1:%d/v1', port), max_tokens = 128,)
 }
-fn fixture_context(): ref<types.context_t> {
+pub fn fixture_context(): ref<types.context_t> {
     var context = new types.context_t()
     types.message_t user = new types.user_message_t(content = 'hello')
     context.messages.push(user)
     return context
 }
-fn success_sse(): string {
+pub fn success_sse(): string {
     string body = ''
     body += 'data: {"type":"response.created","response":{"id":"resp_http"}}\n\n'
     body += 'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_http","content":[]}}\n\n'
@@ -38,7 +39,14 @@ fn success_sse(): string {
     body += 'data: {"type":"response.completed","response":{"id":"resp_http","status":"completed","usage":{"input_tokens":3,"output_tokens":2,"total_tokens":5}}}\n\n'
     return body
 }
-fn serve_chunked_fixture(): void! {
+pub fn reasoning_sse(): string {
+    string body = ''
+    body += 'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"rs_http","summary":[]}}\n\n'
+    body += 'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"rs_http","summary":[]}}\n\n'
+    body += 'data: {"type":"response.completed","response":{"id":"resp_reasoning_http","status":"completed","output":[{"type":"reasoning","id":"rs_http","summary":[],"encrypted_content":"opaque-http"}]}}\n\n'
+    return body
+}
+pub fn serve_chunked_fixture(): void! {
     var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', CHUNKED_PORT))
     var conn = server.accept()
     var request = vec<u8>.new(0, 4096)
@@ -63,7 +71,7 @@ fn serve_chunked_fixture(): void! {
     co.sleep(20)
     server.close()
 }
-fn serve_timeout_fixture(): void! {
+pub fn serve_timeout_fixture(): void! {
     var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', TIMEOUT_PORT))
     var conn = server.accept()
     var request = vec<u8>.new(0, 4096)
@@ -73,7 +81,7 @@ fn serve_timeout_fixture(): void! {
     co.sleep(20)
     server.close()
 }
-fn serve_abort_stream_fixture(): void! {
+pub fn serve_abort_stream_fixture(): void! {
     var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', ABORT_STREAM_PORT))
     var conn = server.accept()
     var request = vec<u8>.new(0, 4096)
@@ -129,6 +137,41 @@ test 'streams a real HTTP response through Nature HTTP and SSE' {
     assert(capture.authorization == 'Bearer test-key')
     assert(capture.session_id == 'session-http')
     assert(capture.body.find('"stream":true') >= 0)
+}
+test 'backfills encrypted reasoning content from a terminal HTTP response' {
+    var server = http.server()
+    server.port = REASONING_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        response.content_type = 'text/event-stream'
+        response.send(reasoning_sse())
+        server.close()
+    }
+    server.post('/v1/responses', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var model = fixture_model(REASONING_PORT)
+    model.reasoning = true
+    var options = new types.stream_options_t(api_key = 'test-key', timeout_ms = 5000, max_retries = 0, reasoning_effort = 'medium',)
+    var stream = openai_provider.stream(model, fixture_context(), options)
+    var start = stream.recv()
+    assert(start.kind == types.EVENT_START)
+    [string] event_kinds = []
+    for true {
+        var event = stream.recv()
+        event_kinds.push(event.kind)
+        if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
+            break
+        }
+    }
+    var result = stream.result()
+    assert(event_kinds.len() == 3)
+    assert(event_kinds[0] == types.EVENT_THINKING_START)
+    assert(event_kinds[1] == types.EVENT_THINKING_END)
+    assert(event_kinds[2] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    var thinking = result.content[0] as ref<types.thinking_content_t>
+    assert(thinking.thinking_signature.find('"id":"rs_http"') >= 0)
+    assert(thinking.thinking_signature.find('"encrypted_content":"opaque-http"') >= 0)
 }
 test 'retries a retryable HTTP response before emitting start' {
     var capture = new server_capture_t()

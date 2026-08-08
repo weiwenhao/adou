@@ -5,29 +5,29 @@ import co
 import fmt
 import http
 
-const MISTRAL_PORT = 18923
+pub const MISTRAL_PORT = 18923
 
-type capture_t = struct {
+pub type capture_t = struct {
     string body
     string authorization
 }
 
-fn serve_fixture(ref<http.server_t> server): void! {
+pub fn serve_fixture(ref<http.server_t> server): void! {
     server.listen(server.port)
 }
 
-fn fixture_model(int port): ref<types.model_t> {
+pub fn fixture_model(int port): ref<types.model_t> {
     return new types.model_t(id = 'mistral-large-latest', api = 'mistral-conversations', provider = 'mistral', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
 }
 
-fn fixture_context(): ref<types.context_t> {
+pub fn fixture_context(): ref<types.context_t> {
     var context = new types.context_t()
     types.message_t user = new types.user_message_t(content = 'hello')
     context.messages.push(user)
     return context
 }
 
-fn success_sse(): string {
+pub fn success_sse(): string {
     string body = ''
     body += 'data: {"id":"mistral_chunk_1","model":"mistral-large-latest","choices":[{"index":0,"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n'
     body += 'data: {"id":"mistral_chunk_2","model":"mistral-large-latest","choices":[{"index":0,"delta":{"content":[{"type":"thinking","thinking":[{"type":"text","text":"reasoning..."}]}]},"finish_reason":null}]}\n\n'
@@ -112,7 +112,7 @@ test 'mistral tool call streaming accumulates partial json' {
     assert(arguments['path'] as string == 'README.md')
 }
 
-fn kinds_has([string] kinds, string kind): bool {
+pub fn kinds_has([string] kinds, string kind): bool {
     for existing in kinds {
         if existing == kind {
             return true

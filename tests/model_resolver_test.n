@@ -4,11 +4,15 @@ import adou.src.ai.types as ai_types
 test 'model lookup is case insensitive for canonical and bare ids' {
     ref<ai_types.model_t>? canonical = models.find('OPENAI/GPT-5.1-CODEX')
     assert(canonical is ref<ai_types.model_t>)
-    ref<ai_types.model_t>? bare = models.find('sonnet')
-    assert(bare is ref<ai_types.model_t>)
-    if bare is ref<ai_types.model_t> selected {
+    ref<ai_types.model_t>? sonnet = models.find('anthropic/claude-sonnet-4-5')
+    assert(sonnet is ref<ai_types.model_t>)
+    if sonnet is ref<ai_types.model_t> selected {
         assert(selected.provider == 'anthropic')
     }
+    // With the full catalog a bare partial like `sonnet` matches many models,
+    // so Pi-style resolution rejects it as ambiguous.
+    ref<ai_types.model_t>? ambiguous = models.find('sonnet')
+    assert(ambiguous is null)
 }
 
 test 'model scopes support Pi-style glob and thinking suffix matching' {
@@ -20,8 +24,16 @@ test 'model scopes support Pi-style glob and thinking suffix matching' {
 }
 
 test 'model listing accepts bare partial and glob patterns' {
-    string sonnet = models.list_filtered('SONNET')
-    assert(sonnet == 'anthropic/claude-sonnet-4-5')
-    string providers = models.list_filtered('*/gpt-*')
-    assert(providers == 'openai/gpt-5.1-codex')
+    string sonnet = models.list_filtered('anthropic/claude-sonnet-4-5')
+    assert(sonnet.contains('anthropic/claude-sonnet-4-5'))
+    // Substring semantics: the dated variant matches the same pattern.
+    assert(sonnet.contains('anthropic/claude-sonnet-4-5-20250929'))
+    // gpt-5.1-codex exists under several providers (openai fallback, OpenRouter
+    // routing id, Vercel AI Gateway), so a bare-pattern listing is multi-line.
+    string providers = models.list_filtered('openai/gpt-5.1-codex')
+    assert(providers.contains('openai/gpt-5.1-codex'))
+    assert(providers.contains('openrouter/openai/gpt-5.1-codex'))
+    assert(providers.contains('vercel-ai-gateway/openai/gpt-5.1-codex'))
+    string unique = models.list_filtered('openrouter/moonshotai/kimi-k2.5')
+    assert(unique.contains('openrouter/moonshotai/kimi-k2.5'))
 }

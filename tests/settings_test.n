@@ -4,7 +4,7 @@ import os
 import path
 import syscall
 
-fn write_settings_file(string file_path, string content): void! {
+pub fn write_settings_file(string file_path, string content): void! {
     os.mkdirs(path.dir(file_path), 0o700)
     var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
     int written = output.write(content as [u8])

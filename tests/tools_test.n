@@ -1,4 +1,5 @@
 import adou.src.ai.abort
+import adou.src.json_util
 import adou.src.agent.types as agent_types
 import adou.src.tools.command as command
 import adou.src.tools.path_utils
@@ -15,15 +16,15 @@ import json
 import os
 import syscall
 
-fn text(ref<tool_types.tool_result_t> result): string {
+pub fn text(ref<tool_types.tool_result_t> result): string {
     return result.content[0].text
 }
 
-fn value_ref(json.value_t value): ref<json.value_t> {
-    return new json.value_t(kind = value.kind, boolean = value.boolean, number = value.number, text = value.text, array = value.array, object = value.object)
+pub fn value_ref(any value): any {
+    return value
 }
 
-fn write_fixture(string file_path, [u8] content): void! {
+pub fn write_fixture(string file_path, [u8] content): void! {
     os.mkdirs(path_utils.clean(file_path + '/..'), 0o755)
     var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
     file.write(content)
@@ -81,10 +82,10 @@ test 'read preserves Pi truncation details for an oversized first line' {
     }
     write_fixture(root + '/value.txt', long_line as [u8])
     var result = read.execute(root, 'value.txt', false, 0.0, false, 0.0, abort.new())
-    var details = result.details.as_object()
-    var truncation = details['truncation'].as_object()
-    assert(truncation['truncated'].boolean && truncation['firstLineExceedsLimit'].boolean)
-    assert(truncation['maxBytes'].as_number().to_int() == truncate.DEFAULT_MAX_BYTES)
+    var details = result.details as {string:any}
+    var truncation = details['truncation'] as {string:any}
+    assert(truncation['truncated'] as bool && truncation['firstLineExceedsLimit'] as bool)
+    assert(truncation['maxBytes'] as int == truncate.DEFAULT_MAX_BYTES)
     os.rmdir(root, true)
 }
 
@@ -166,7 +167,7 @@ test 'read rejects image content explicitly' {
 
 test 'bash publishes partial output while the child is still running' {
     var executor = new shell_tools.bash_executor_t(cwd = '/tmp')
-    var arguments = value_ref(json.parse('{"command":"printf first; sleep 0.2; printf second"}'))
+    var arguments = value_ref(json_util.parse('{"command":"printf first; sleep 0.2; printf second"}'))
     int update_count = 0
     agent_types.tool_update_fn on_update = fn(tool_types.tool_result_t partial) {
         update_count += 1
@@ -224,7 +225,7 @@ test 'bash timeout terminates descendants with Pi process-tree semantics' {
     os.remove(marker) catch error {}
     var executor = new shell_tools.bash_executor_t(cwd = '/tmp')
     bool timed_out = false
-    executor.execute('process-tree-timeout', value_ref(json.parse('{"command":"(sleep 0.2; printf leaked > /tmp/adou-bash-process-tree-marker) & wait","timeout":0.05}')), abort.new(), fn(tool_types.tool_result_t result) {}) catch error {
+    executor.execute('process-tree-timeout', value_ref(json_util.parse('{"command":"(sleep 0.2; printf leaked > /tmp/adou-bash-process-tree-marker) & wait","timeout":0.05}')), abort.new(), fn(tool_types.tool_result_t result) {}) catch error {
         timed_out = error.msg().contains('timed out')
         tool_types.tool_result_t{}
     }

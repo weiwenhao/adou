@@ -6,31 +6,31 @@ import fmt
 import http
 import syscall
 
-const AZURE_PORT = 18921
+pub const AZURE_PORT = 18921
 
-type capture_t = struct {
+pub type capture_t = struct {
     string path
     string query
     string api_key_header
     string authorization_header
 }
 
-fn serve_fixture(ref<http.server_t> server): void! {
+pub fn serve_fixture(ref<http.server_t> server): void! {
     server.listen(server.port)
 }
 
-fn fixture_model(int port): ref<types.model_t> {
+pub fn fixture_model(int port): ref<types.model_t> {
     return new types.model_t(id = 'gpt-5-mini', api = 'azure-openai-responses', provider = 'azure-openai-responses', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
 }
 
-fn fixture_context(): ref<types.context_t> {
+pub fn fixture_context(): ref<types.context_t> {
     var context = new types.context_t()
     types.message_t user = new types.user_message_t(content = 'hello')
     context.messages.push(user)
     return context
 }
 
-fn success_sse(): string {
+pub fn success_sse(): string {
     string body = ''
     body += 'data: {"type":"response.created","response":{"id":"resp_azure"}}\n\n'
     body += 'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_azure","content":[]}}\n\n'
@@ -90,7 +90,7 @@ test 'azure endpoint resolves resource name and deployment map' {
     assert(endpoint == 'https://my-resource.openai.azure.com/openai/v1/deployments/my-deployment/responses?api-version=2025-01-01')
 }
 
-fn kinds_has([string] kinds, string kind): bool {
+pub fn kinds_has([string] kinds, string kind): bool {
     for existing in kinds {
         if existing == kind {
             return true

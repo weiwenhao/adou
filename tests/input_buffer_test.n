@@ -1,6 +1,6 @@
 import adou.src.tui.input_buffer
 
-fn assert_sequences([string] actual, [string] expected) {
+pub fn assert_sequences([string] actual, [string] expected) {
     assert(actual.len() == expected.len())
     for index, value in expected {
         assert(actual[index] == value)

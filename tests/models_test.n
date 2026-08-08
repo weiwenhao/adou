@@ -54,8 +54,28 @@ test 'resolves Pi model scopes in pattern order with per-entry thinking' {
 }
 
 test 'scoped model resolution removes duplicate matches without later override' {
-    var scoped = config_models.resolve_scope(['deepseek-v4-flash', 'deepseek/*:max'])
+    var scoped = config_models.resolve_scope(['deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-flash:max'])
     assert(scoped.len() == 1)
     assert(scoped[0].thinking_level == '')
-    assert(config_models.thinking_for('deepseek/deepseek-v4-flash', ['deepseek-v4-flash', 'deepseek/*:max']) == '')
+    assert(config_models.thinking_for('deepseek/deepseek-v4-flash', ['deepseek/deepseek-v4-flash', 'deepseek/deepseek-v4-flash:max']) == '')
+}
+
+test 'full catalog exposes every registered provider family' {
+    var scoped = config_models.resolve_scope(['deepseek/deepseek-v4-pro:max'])
+    assert(scoped.len() == 1)
+    assert(scoped[0].model.id == 'deepseek-v4-pro' && scoped[0].thinking_level == 'max')
+    var xai = config_models.find('xai/grok-4.5')
+    assert(xai is ref<types.model_t>)
+    if xai is ref<types.model_t> model {
+        assert(model.api == 'openai-responses')
+    }
+    var router = config_models.find('openrouter/openai/gpt-5.1-codex')
+    assert(router is ref<types.model_t>)
+}
+
+test 'invalid scope thinking suffix falls back to the resolved model prefix' {
+    var scoped = config_models.resolve_scope(['deepseek/deepseek-v4-flash:bogus', 'deepseek/deepseek-v4-flash:max'])
+    assert(scoped.len() == 1)
+    assert(scoped[0].model.id == 'deepseek-v4-flash' && scoped[0].thinking_level == '')
+    assert(config_models.thinking_for('deepseek/deepseek-v4-flash', ['deepseek/deepseek-v4-flash:bogus', 'deepseek/deepseek-v4-flash:max']) == '')
 }

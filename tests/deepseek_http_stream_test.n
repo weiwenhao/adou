@@ -6,31 +6,31 @@ import fmt
 import http
 import net.tcp
 
-const DEEPSEEK_PORT = 18790
+pub const DEEPSEEK_PORT = 18790
 
-type capture_t = struct {
+pub type capture_t = struct {
     string body
     string authorization
     string endpoint
 }
 
-fn serve_fixture(ref<http.server_t> server): void! {
+pub fn serve_fixture(ref<http.server_t> server): void! {
     server.listen(server.port)
 }
 
-fn fixture_model(int port): ref<types.model_t> {
+pub fn fixture_model(int port): ref<types.model_t> {
     var model = new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
     return model
 }
 
-fn fixture_context(): ref<types.context_t> {
+pub fn fixture_context(): ref<types.context_t> {
     var context = new types.context_t()
     types.message_t user = new types.user_message_t(content = 'hello')
     context.messages.push(user)
     return context
 }
 
-fn kinds_has([string] kinds, string kind): bool {
+pub fn kinds_has([string] kinds, string kind): bool {
     for existing in kinds {
         if existing == kind {
             return true
@@ -39,7 +39,7 @@ fn kinds_has([string] kinds, string kind): bool {
     return false
 }
 
-fn success_sse(): string {
+pub fn success_sse(): string {
     string body = ''
     body += 'data: {"id":"chatcmpl_ds","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}\n\n'
     body += 'data: {"id":"chatcmpl_ds","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"thinking..."}}]}\n\n'
@@ -91,7 +91,7 @@ test 'streams a real DeepSeek HTTP response through the completions provider' {
     assert(result.usage.total_tokens == 7)
 }
 
-fn text_block(ref<types.assistant_message_t> message): ref<types.text_content_t> {
+pub fn text_block(ref<types.assistant_message_t> message): ref<types.text_content_t> {
     for block in message.content {
         if block is ref<types.text_content_t> text {
             return text

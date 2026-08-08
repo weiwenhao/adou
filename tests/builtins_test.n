@@ -1,14 +1,14 @@
 import adou.src.ai.abort
 import adou.src.agent.types as agent_types
+import adou.src.json_util
 import adou.src.tools.builtins
 import adou.src.tools.types as tool_types
-import json
 import fs
 import os
 import syscall
 
-fn value_ref(json.value_t value): ref<json.value_t> {
-    return new json.value_t(kind = value.kind, boolean = value.boolean, number = value.number, text = value.text, array = value.array, object = value.object)
+pub fn value_ref(any value): any {
+    return value
 }
 
 test 'built-in tool scope matches Pi CLI include/exclude semantics' {
@@ -27,13 +27,13 @@ test 'built-in read and write tools execute validated JSON arguments' {
     var cancellation = abort.new()
     agent_types.tool_update_fn no_update = fn(tool_types.tool_result_t result) {}
     var write_tool = builtins.write_tool(root)
-    var write_args = json.parse('{"path":"value.txt","content":"hello"}')
-    var write_args_ref = new json.value_t(kind = write_args.kind, boolean = write_args.boolean, number = write_args.number, text = write_args.text, array = write_args.array, object = write_args.object)
+    var write_args = json_util.parse('{"path":"value.txt","content":"hello"}')
+    var write_args_ref = write_args
     var write_result = write_tool.executor.execute('call-1', write_args_ref, cancellation, no_update)
     assert(write_result.content[0].text == 'Successfully wrote 5 bytes to value.txt')
     var read_tool = builtins.read_tool(root)
-    var read_args = json.parse('{"path":"value.txt"}')
-    var read_args_ref = new json.value_t(kind = read_args.kind, boolean = read_args.boolean, number = read_args.number, text = read_args.text, array = read_args.array, object = read_args.object)
+    var read_args = json_util.parse('{"path":"value.txt"}')
+    var read_args_ref = read_args
     var read_result = read_tool.executor.execute('call-2', read_args_ref, cancellation, no_update)
     assert(read_result.content[0].text == 'hello')
     os.rmdir(root, true)
@@ -46,54 +46,54 @@ test 'Pi core shell tools execute in the session directory' {
     agent_types.tool_update_fn no_update = fn(tool_types.tool_result_t result) {}
 
     var write_tool = builtins.write_tool(root)
-    var write_args = value_ref(json.parse('{"path":"value.txt","content":"hello\\nworld\\n"}'))
+    var write_args = value_ref(json_util.parse('{"path":"value.txt","content":"hello\\nworld\\n"}'))
     write_tool.executor.execute('write', write_args, cancellation, no_update)
 
     var edit_tool = builtins.all(root)[2]
-    var edit_args = value_ref(json.parse('{"path":"value.txt","edits":[{"oldText":"world","newText":"nature"}]}'))
+    var edit_args = value_ref(json_util.parse('{"path":"value.txt","edits":[{"oldText":"world","newText":"nature"}]}'))
     var edit_result = edit_tool.executor.execute('edit', edit_args, cancellation, no_update)
     assert(edit_result.content[0].text == 'Successfully replaced 1 block(s) in value.txt.')
-    var edit_details = edit_result.details.as_object()
-    assert(edit_details['diff'].as_string().contains('+2 nature'))
-    assert(edit_details['patch'].as_string().contains('@@'))
-    assert(edit_details['firstChangedLine'].as_number().to_float() as int == 2)
+    var edit_details = edit_result.details as {string:any}
+    assert(edit_details['diff'] as string.contains('+2 nature'))
+    assert(edit_details['patch'] as string.contains('@@'))
+    assert(edit_details['firstChangedLine'] as int == 2)
 
-    write_tool.executor.execute('write', value_ref(json.parse('{"path":"fuzzy.txt","content":"keep   \\nconsole.log(‘hello’);  \\nhello world\\nrange: 1–5\\nＡＢＣ１２３\\ncafé\\n"}')), cancellation, no_update)
-    var fuzzy_edits = value_ref(json.parse('{"path":"fuzzy.txt","edits":[{"oldText":"console.log(\'hello\');\\n","newText":"console.log(\'world\');\\n"},{"oldText":"hello world\\nrange: 1-5\\nABC123\\ncafé\\n","newText":"hello universe\\nrange: 10-50\\nXYZ789\\ncoffee\\n"}]}'))
+    write_tool.executor.execute('write', value_ref(json_util.parse('{"path":"fuzzy.txt","content":"keep   \\nconsole.log(‘hello’);  \\nhello world\\nrange: 1–5\\nＡＢＣ１２３\\ncafé\\n"}')), cancellation, no_update)
+    var fuzzy_edits = value_ref(json_util.parse('{"path":"fuzzy.txt","edits":[{"oldText":"console.log(\'hello\');\\n","newText":"console.log(\'world\');\\n"},{"oldText":"hello world\\nrange: 1-5\\nABC123\\ncafé\\n","newText":"hello universe\\nrange: 10-50\\nXYZ789\\ncoffee\\n"}]}'))
     edit_tool.executor.execute('edit-fuzzy', fuzzy_edits, cancellation, no_update)
     var fuzzy_file = fs.open(root + '/fuzzy.txt', syscall.O_RDONLY, 0)
     string fuzzy_content = fuzzy_file.content()
     fuzzy_file.close()
     assert(fuzzy_content == "keep   \nconsole.log('world');\nhello universe\nrange: 10-50\nXYZ789\ncoffee\n")
 
-    write_tool.executor.execute('write', value_ref(json.parse('{"path":"duplicates.txt","content":"same   \\nsame\\n"}')), cancellation, no_update)
+    write_tool.executor.execute('write', value_ref(json_util.parse('{"path":"duplicates.txt","content":"same   \\nsame\\n"}')), cancellation, no_update)
     bool fuzzy_duplicate = false
-    edit_tool.executor.execute('edit-duplicate', value_ref(json.parse('{"path":"duplicates.txt","edits":[{"oldText":"same","newText":"other"}]}')), cancellation, no_update) catch error {
+    edit_tool.executor.execute('edit-duplicate', value_ref(json_util.parse('{"path":"duplicates.txt","edits":[{"oldText":"same","newText":"other"}]}')), cancellation, no_update) catch error {
         fuzzy_duplicate = error.msg().contains('Found 2 occurrences')
         tool_types.tool_result_t{}
     }
     assert(fuzzy_duplicate)
 
     var bash_tool = builtins.all(root)[1]
-    var bash_args = value_ref(json.parse('{"command":"pwd && printf ok"}'))
+    var bash_args = value_ref(json_util.parse('{"command":"pwd && printf ok"}'))
     var bash_result = bash_tool.executor.execute('bash', bash_args, cancellation, no_update)
     assert(bash_result.content[0].text.contains(root))
     assert(bash_result.content[0].text.ends_with('ok'))
     bool timed_out = false
-    bash_tool.executor.execute('bash', value_ref(json.parse('{"command":"sleep 1","timeout":0.05}')), cancellation, no_update) catch error {
+    bash_tool.executor.execute('bash', value_ref(json_util.parse('{"command":"sleep 1","timeout":0.05}')), cancellation, no_update) catch error {
         timed_out = error.msg().contains('timed out') || error.msg().contains('exit code 124')
         tool_types.tool_result_t{}
     }
     assert(timed_out)
     bool timeout_too_large = false
-    bash_tool.executor.execute('bash', value_ref(json.parse('{"command":"true","timeout":2147484}')), cancellation, no_update) catch error {
+    bash_tool.executor.execute('bash', value_ref(json_util.parse('{"command":"true","timeout":2147484}')), cancellation, no_update) catch error {
         timeout_too_large = error.msg().contains('maximum is 2147483.647 seconds')
         tool_types.tool_result_t{}
     }
     assert(timeout_too_large)
-    var long_bash = bash_tool.executor.execute('bash', value_ref(json.parse('{"command":"/usr/bin/seq 1 2101"}')), cancellation, no_update)
-    var long_details = long_bash.details.as_object()
-    string full_output_path = long_details['fullOutputPath'].as_string()
+    var long_bash = bash_tool.executor.execute('bash', value_ref(json_util.parse('{"command":"/usr/bin/seq 1 2101"}')), cancellation, no_update)
+    var long_details = long_bash.details as {string:any}
+    string full_output_path = long_details['fullOutputPath'] as string
     assert(long_bash.content[0].text.contains('Full output: ' + full_output_path))
     assert(full_output_path.starts_with('/tmp/adou-bash-'))
     var full_output_file = fs.open(full_output_path, syscall.O_RDONLY, 0)
@@ -105,47 +105,47 @@ test 'Pi core shell tools execute in the session directory' {
     os.remove(full_output_path)
 
     var grep_tool = builtins.all(root)[4]
-    var grep_args = value_ref(json.parse('{"pattern":"nature","path":"value.txt"}'))
+    var grep_args = value_ref(json_util.parse('{"pattern":"nature","path":"value.txt"}'))
     var grep_result = grep_tool.executor.execute('grep', grep_args, cancellation, no_update)
     assert(grep_result.content[0].text.contains('value.txt:2: nature'))
-    write_tool.executor.execute('write', value_ref(json.parse('{"path":"first.txt","content":"match one\\nother\\n"}')), cancellation, no_update)
-    write_tool.executor.execute('write', value_ref(json.parse('{"path":"second.txt","content":"match two\\nother\\n"}')), cancellation, no_update)
-    var clamped_grep = grep_tool.executor.execute('grep-limit-zero', value_ref(json.parse('{"pattern":"match","path":"first.txt","limit":0}')), cancellation, no_update)
+    write_tool.executor.execute('write', value_ref(json_util.parse('{"path":"first.txt","content":"match one\\nother\\n"}')), cancellation, no_update)
+    write_tool.executor.execute('write', value_ref(json_util.parse('{"path":"second.txt","content":"match two\\nother\\n"}')), cancellation, no_update)
+    var clamped_grep = grep_tool.executor.execute('grep-limit-zero', value_ref(json_util.parse('{"pattern":"match","path":"first.txt","limit":0}')), cancellation, no_update)
     assert(clamped_grep.content[0].text.contains('first.txt:1: match one'))
     assert(!clamped_grep.content[0].text.contains('match two'))
 
     var find_tool = builtins.all(root)[5]
-    var find_args = value_ref(json.parse('{"pattern":"*.txt"}'))
+    var find_args = value_ref(json_util.parse('{"pattern":"*.txt"}'))
     var find_result = find_tool.executor.execute('find', find_args, cancellation, no_update)
     assert(find_result.content[0].text.contains('value.txt'))
-    write_tool.executor.execute('write', value_ref(json.parse('{"path":"a/.gitignore","content":"ignored.txt\\n"}')), cancellation, no_update)
-    write_tool.executor.execute('write', value_ref(json.parse('{"path":"a/ignored.txt","content":"ignored"}')), cancellation, no_update)
-    write_tool.executor.execute('write', value_ref(json.parse('{"path":"a/kept.txt","content":"kept"}')), cancellation, no_update)
-    write_tool.executor.execute('write', value_ref(json.parse('{"path":"b/ignored.txt","content":"visible"}')), cancellation, no_update)
-    var ignored_find = find_tool.executor.execute('find-ignore', value_ref(json.parse('{"pattern":"**/*.txt"}')), cancellation, no_update)
+    write_tool.executor.execute('write', value_ref(json_util.parse('{"path":"a/.gitignore","content":"ignored.txt\\n"}')), cancellation, no_update)
+    write_tool.executor.execute('write', value_ref(json_util.parse('{"path":"a/ignored.txt","content":"ignored"}')), cancellation, no_update)
+    write_tool.executor.execute('write', value_ref(json_util.parse('{"path":"a/kept.txt","content":"kept"}')), cancellation, no_update)
+    write_tool.executor.execute('write', value_ref(json_util.parse('{"path":"b/ignored.txt","content":"visible"}')), cancellation, no_update)
+    var ignored_find = find_tool.executor.execute('find-ignore', value_ref(json_util.parse('{"pattern":"**/*.txt"}')), cancellation, no_update)
     assert(!ignored_find.content[0].text.contains('a/ignored.txt'))
     assert(ignored_find.content[0].text.contains('a/kept.txt'))
     assert(ignored_find.content[0].text.contains('b/ignored.txt'))
     bool invalid_find_rejected = false
-    find_tool.executor.execute('find-invalid-glob', value_ref(json.parse('{"pattern":"["}')), cancellation, no_update) catch error {
+    find_tool.executor.execute('find-invalid-glob', value_ref(json_util.parse('{"pattern":"["}')), cancellation, no_update) catch error {
         invalid_find_rejected = error.msg().contains('error parsing glob')
         tool_types.tool_result_t{}
     }
     assert(invalid_find_rejected)
 
     var ls_tool = builtins.all(root)[6]
-    var ls_args = value_ref(json.parse('{"path":"."}'))
+    var ls_args = value_ref(json_util.parse('{"path":"."}'))
     var ls_result = ls_tool.executor.execute('ls', ls_args, cancellation, no_update)
     assert(ls_result.content[0].text.contains('value.txt'))
     bool ls_file_rejected = false
-    ls_tool.executor.execute('ls-file', value_ref(json.parse('{"path":"value.txt"}')), cancellation, no_update) catch error {
+    ls_tool.executor.execute('ls-file', value_ref(json_util.parse('{"path":"value.txt"}')), cancellation, no_update) catch error {
         ls_file_rejected = error.msg().contains('Not a directory: ' + root + '/value.txt')
         tool_types.tool_result_t{}
     }
     assert(ls_file_rejected)
 
-    write_tool.executor.execute('write', value_ref(json.parse('{"path":"z.txt","content":"z"}')), cancellation, no_update)
-    write_tool.executor.execute('write', value_ref(json.parse('{"path":"A.txt","content":"a"}')), cancellation, no_update)
+    write_tool.executor.execute('write', value_ref(json_util.parse('{"path":"z.txt","content":"z"}')), cancellation, no_update)
+    write_tool.executor.execute('write', value_ref(json_util.parse('{"path":"A.txt","content":"a"}')), cancellation, no_update)
     var sorted_ls = ls_tool.executor.execute('ls', ls_args, cancellation, no_update)
     [string] sorted_lines = sorted_ls.content[0].text.split('\n')
     assert(sorted_lines[0] == 'A.txt')
@@ -154,8 +154,8 @@ test 'Pi core shell tools execute in the session directory' {
     for int i = 0; i < 600; i += 1 {
         long_line += 'x'
     }
-    write_tool.executor.execute('write', value_ref(json.parse('{"path":"long.txt","content":"' + long_line + '"}')), cancellation, no_update)
-    var long_grep = grep_tool.executor.execute('grep', value_ref(json.parse('{"pattern":"x","path":"long.txt","literal":true}')), cancellation, no_update)
+    write_tool.executor.execute('write', value_ref(json_util.parse('{"path":"long.txt","content":"' + long_line + '"}')), cancellation, no_update)
+    var long_grep = grep_tool.executor.execute('grep', value_ref(json_util.parse('{"pattern":"x","path":"long.txt","literal":true}')), cancellation, no_update)
     assert(long_grep.content[0].text.contains('...'))
     os.rmdir(root, true)
 }

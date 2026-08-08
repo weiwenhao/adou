@@ -10,7 +10,7 @@ import os
 import path
 import syscall
 
-fn write_file(string file_path, string content): void! {
+pub fn write_file(string file_path, string content): void! {
     os.mkdirs(path.dir(file_path), 0o700)
     var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
     int written = output.write(content as [u8])
@@ -28,6 +28,11 @@ test 'MVP CLI parses provider model sessions compaction and messages' {
     var config = resolve.resolve(parsed, '/tmp/work')
     assert(config.model.api == 'anthropic-messages' && config.model.context_window == 1234)
     assert(config.stream_options.max_retries == 0 && config.stream_options.thinking_enabled)
+}
+
+test 'debug mode is an explicit startup option and preserves the prompt' {
+    var parsed = args.parse(['adou', '--debug', 'hello'])
+    assert(parsed.errors.len() == 0 && parsed.debug && parsed.messages.len() == 1 && parsed.messages[0] == 'hello')
 }
 
 test 'defaults to the Pi DeepSeek V4 Flash model' {
@@ -52,6 +57,22 @@ test 'model references may carry Pi thinking suffixes' {
     var config = resolve.resolve(parsed, '/tmp/work')
     assert(config.provider == 'deepseek' && config.model.id == 'deepseek-v4-flash')
     assert(config.thinking == 'high' && config.stream_options.reasoning_effort == 'high')
+}
+
+test 'explicit thinking keeps a colon-bearing custom model id intact' {
+    var parsed = args.parse(['adou', '--provider', 'ANTHROPIC', '--model', 'custom:high', '--thinking', 'medium'])
+    var config = resolve.resolve(parsed, '/tmp/work')
+    assert(config.provider == 'anthropic')
+    assert(config.model.id == 'custom:high')
+    assert(config.thinking == 'medium' && config.stream_options.reasoning_effort == 'medium')
+}
+
+test 'explicit thinking overrides a known model suffix without changing its id' {
+    var parsed = args.parse(['adou', '--provider', 'ANTHROPIC', '--model', 'claude-sonnet-4-5:high', '--thinking', 'low'])
+    var config = resolve.resolve(parsed, '/tmp/work')
+    assert(config.provider == 'anthropic')
+    assert(config.model.id == 'claude-sonnet-4-5')
+    assert(config.thinking == 'low' && config.stream_options.reasoning_effort == 'low')
 }
 
 test 'Pi-compatible one-shot and prompt/session options are preserved' {
@@ -100,6 +121,31 @@ test 'Pi startup rejects empty names and api keys without an explicit model' {
 test 'print mode is set even when it reads the prompt from stdin' {
     var parsed = args.parse(['adou', '--print'])
     assert(parsed.errors.len() == 0 && parsed.print_mode && parsed.messages.len() == 0)
+}
+
+test 'Pi allows session ids with ephemeral and forked sessions' {
+    var ephemeral = args.parse(['adou', '--no-session', '--session-id', 'ephemeral-id', '--help'])
+    assert(ephemeral.errors.len() == 0 && ephemeral.no_session && ephemeral.session_id == 'ephemeral-id')
+
+    var fork_target = args.parse(['adou', '--fork', 'source.jsonl', '--session-id', 'child-id'])
+    assert(fork_target.errors.len() == 0 && fork_target.fork_path == 'source.jsonl' && fork_target.session_id == 'child-id')
+}
+
+test 'session ids follow Pi character and boundary rules' {
+    var invalid = args.parse(['adou', '--session-id', 'bad id'])
+    assert(invalid.errors.len() == 1)
+    assert(invalid.errors[0].starts_with('Session id must be non-empty'))
+
+    var punctuation_boundary = args.parse(['adou', '--session-id', '.bad'])
+    assert(punctuation_boundary.errors.len() == 1)
+}
+
+test 'session id conflicts match Pi continue and resume validation' {
+    var continued = args.parse(['adou', '--session-id', 'child-id', '--continue'])
+    assert(continued.errors.len() == 1 && continued.errors[0] == '--session-id cannot be combined with --continue')
+
+    var resumed = args.parse(['adou', '--session-id', 'child-id', '--resume'])
+    assert(resumed.errors.len() == 1 && resumed.errors[0] == '--session-id cannot be combined with --resume')
 }
 
 test 'Pi output and session selection flags parse without losing prompts' {

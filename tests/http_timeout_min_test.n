@@ -1,0 +1,28 @@
+import co
+import fmt
+import http.client
+import net.tcp
+
+pub const MIN_TIMEOUT_PORT = 18780
+
+pub fn delayed_server(): void! {
+    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', MIN_TIMEOUT_PORT))
+    var conn = server.accept()
+    var request = vec<u8>.new(0, 4096)
+    conn.read(request)
+    co.sleep(200)
+    conn.close()
+    server.close()
+}
+
+test 'delayed response header reports timeout without crashing' {
+    go delayed_server()
+    co.sleep(100)
+    var request = client.new().get(fmt.sprintf('http://127.0.0.1:%d/', MIN_TIMEOUT_PORT)).timeout(50)
+    var response = request.send() catch e {
+        assert(e.msg().find('HTTP response read timeout') >= 0)
+        return
+    }
+    response.close()
+    assert(false)
+}

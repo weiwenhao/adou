@@ -1,19 +1,17 @@
 import adou.src.config.auth
 import os
+import path
+import syscall
 
 test 'stores Pi-compatible API key credentials with restrictive file mode' {
+    string home = '/tmp/adou-auth-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
     string file_path = auth.auth_path()
     auth.save('deepseek', 'test-key')
     assert(auth.read('deepseek') == 'test-key')
     assert(auth.effective('deepseek') == 'test-key')
     auth.remove('deepseek')
     assert(auth.read('deepseek') == '')
-    string parent = file_path
-    int slash = parent.find('/')
-    for int index = slash + 1; index < parent.len(); index += 1 {
-        if parent[index] == '/'.char() {
-            slash = index
-        }
-    }
-    os.rmdir(parent.slice(0, slash), true)
+    os.rmdir(home, true)
 }

@@ -1,47 +1,49 @@
 import adou.src.agent.event_json
 import adou.src.agent.session_stream
 import adou.src.agent.types as agent_types
+import adou.src.ai.types
 import adou.src.ai.types as ai_types
+import adou.src.json_util
 import adou.src.tools.types as tool_types
 import json
 
 test 'json mode serializes session lifecycle and retry fields' {
     var start = session_stream.event_t {kind: session_stream.EVENT_RETRY_START, retry_attempt: 1, retry_max_attempts: 3, retry_delay_ms: 2000, retry_error_message: '503 service unavailable',}
     string encoded = event_json.encode(start)
-    var value = json.parse(encoded)
-    assert(value.kind == json.VALUE_OBJECT)
-    var object = value.as_object()
-    assert(object['type'].as_string() == session_stream.EVENT_RETRY_START)
-    assert(object['attempt'].number == '1')
-    assert(object['maxAttempts'].number == '3')
-    assert(object['delayMs'].number == '2000')
-    assert(object['errorMessage'].as_string() == '503 service unavailable')
+    var value = json_util.parse(encoded)
+    assert(json_util.is_obj(value))
+    var object = value as {string:any}
+    assert(object['type'] as string == session_stream.EVENT_RETRY_START)
+    assert(json_util.num_token(object['attempt']) == '1')
+    assert(json_util.num_token(object['maxAttempts']) == '3')
+    assert(json_util.num_token(object['delayMs']) == '2000')
+    assert(object['errorMessage'] as string == '503 service unavailable')
 }
 
 test 'json mode matches Pi summarization retry event payloads' {
     var scheduled = session_stream.event_t {kind: session_stream.EVENT_SUMMARIZATION_RETRY_SCHEDULED, retry_attempt: 1, retry_max_attempts: 3, retry_delay_ms: 2000, retry_error_message: '503 service unavailable', retry_source: 'compaction', retry_reason: 'manual',}
-    var scheduled_object = json.parse(event_json.encode(scheduled)).as_object()
-    assert(scheduled_object['type'].as_string() == session_stream.EVENT_SUMMARIZATION_RETRY_SCHEDULED)
-    assert(scheduled_object['errorMessage'].as_string() == '503 service unavailable')
+    var scheduled_object = json_util.parse(event_json.encode(scheduled)) as {string:any}
+    assert(scheduled_object['type'] as string == session_stream.EVENT_SUMMARIZATION_RETRY_SCHEDULED)
+    assert(scheduled_object['errorMessage'] as string == '503 service unavailable')
     assert(!scheduled_object.contains('source') && !scheduled_object.contains('reason'))
 
     var attempt = session_stream.event_t {kind: session_stream.EVENT_SUMMARIZATION_RETRY_ATTEMPT_START, retry_source: 'compaction', retry_reason: 'manual',}
-    var attempt_object = json.parse(event_json.encode(attempt)).as_object()
-    assert(attempt_object['source'].as_string() == 'compaction' && attempt_object['reason'].as_string() == 'manual')
+    var attempt_object = json_util.parse(event_json.encode(attempt)) as {string:any}
+    assert(attempt_object['source'] as string == 'compaction' && attempt_object['reason'] as string == 'manual')
 
     var finished = session_stream.event_t {kind: session_stream.EVENT_SUMMARIZATION_RETRY_FINISHED, retry_attempt: 1, retry_success: true, retry_source: 'compaction', retry_reason: 'manual',}
-    var finished_object = json.parse(event_json.encode(finished)).as_object()
-    assert(finished_object.len() == 1 && finished_object['type'].as_string() == session_stream.EVENT_SUMMARIZATION_RETRY_FINISHED)
+    var finished_object = json_util.parse(event_json.encode(finished)) as {string:any}
+    assert(finished_object.len() == 1 && finished_object['type'] as string == session_stream.EVENT_SUMMARIZATION_RETRY_FINISHED)
 }
 
 test 'json mode emits assistant message payloads on message end' {
     var assistant = new ai_types.assistant_message_t(provider = 'deepseek', model = 'deepseek-v4-flash', stop_reason = ai_types.STOP_STOP)
     var event = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, assistant_message: assistant,}
     var envelope = session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: event,}
-    var value = json.parse(event_json.encode(envelope))
-    var object = value.as_object()
-    assert(object['type'].as_string() == agent_types.EVENT_MESSAGE_END)
-    assert(object['message'].kind == json.VALUE_OBJECT)
+    var value = json_util.parse(event_json.encode(envelope))
+    var object = value as {string:any}
+    assert(object['type'] as string == agent_types.EVENT_MESSAGE_END)
+    assert(json_util.is_obj(object['message']))
     assert(!object.contains('assistantMessage'))
 }
 
@@ -52,81 +54,82 @@ test 'json mode preserves Pi agent lifecycle payloads and settled event' {
     var turn = agent_types.agent_event_t {kind: agent_types.EVENT_TURN_END, assistant_message: assistant, tool_results: [new ai_types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'read')],}
     var ended = agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_END, messages: [user, assistant],}
 
-    var user_object = json.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: user_message,})).as_object()
-    assert(user_object['message'].kind == json.VALUE_OBJECT)
-    var turn_object = json.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_TURN_END, has_agent_event: true, agent_event: turn,})).as_object()
-    assert(turn_object['message'].kind == json.VALUE_OBJECT && turn_object['toolResults'].kind == json.VALUE_ARRAY)
-    assert(turn_object['toolResults'].as_array().len() == 1)
-    var ended_object = json.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_AGENT_END, has_agent_event: true, agent_event: ended,})).as_object()
-    assert(ended_object['messages'].kind == json.VALUE_ARRAY && ended_object['messages'].as_array().len() == 2)
-    assert(ended_object['willRetry'].kind == json.VALUE_BOOL && !ended_object['willRetry'].as_bool())
-    var settled = json.parse(event_json.encode(session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,})).as_object()
-    assert(settled.len() == 1 && settled['type'].as_string() == session_stream.EVENT_AGENT_SETTLED)
+    var user_object = json_util.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: user_message,})) as {string:any}
+    assert(json_util.is_obj(user_object['message']))
+    var turn_object = json_util.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_TURN_END, has_agent_event: true, agent_event: turn,})) as {string:any}
+    assert(json_util.is_obj(turn_object['message']) && json_util.is_arr(turn_object['toolResults']))
+    assert((turn_object['toolResults'] as [any]).len() == 1)
+    var ended_object = json_util.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_AGENT_END, has_agent_event: true, agent_event: ended,})) as {string:any}
+    assert(json_util.is_arr(ended_object['messages']) && (ended_object['messages'] as [any]).len() == 2)
+    assert((ended_object['willRetry']) is bool && !(ended_object['willRetry'] as bool))
+    var settled = json_util.parse(event_json.encode(session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,})) as {string:any}
+    assert(settled.len() == 1 && settled['type'] as string == session_stream.EVENT_AGENT_SETTLED)
 }
 
 test 'json mode matches Pi message update and tool event field names' {
     var assistant = new ai_types.assistant_message_t(provider = 'deepseek', model = 'deepseek-v4-flash')
     var update = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, assistant_message: assistant, assistant_event: ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_DELTA, delta: 'hi',},}
-    var update_object = json.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, has_agent_event: true, agent_event: update,})).as_object()
-    assert(update_object['message'].kind == json.VALUE_OBJECT)
-    assert(update_object['assistantMessageEvent'].kind == json.VALUE_OBJECT)
+    var update_object = json_util.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, has_agent_event: true, agent_event: update,})) as {string:any}
+    assert(json_util.is_obj(update_object['message']))
+    assert(json_util.is_obj(update_object['assistantMessageEvent']))
     assert(!update_object.contains('assistantEvent') && !update_object.contains('assistantMessage'))
 
-    var result = tool_types.tool_result_t {content: [new ai_types.text_content_t(text = 'partial')], details: json.object_value({})}
+    {string:any} empty_details = {}
+    var result = tool_types.tool_result_t {content: [new ai_types.text_content_t(text = 'partial')], details: empty_details}
     var tool_update = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_UPDATE, tool_call_id: 'call-1', tool_name: 'read', tool_result: result,}
-    var tool_update_object = json.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_TOOL_UPDATE, has_agent_event: true, agent_event: tool_update,})).as_object()
-    assert(tool_update_object['partialResult'].kind == json.VALUE_OBJECT)
+    var tool_update_object = json_util.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_TOOL_UPDATE, has_agent_event: true, agent_event: tool_update,})) as {string:any}
+    assert(json_util.is_obj(tool_update_object['partialResult']))
     assert(!tool_update_object.contains('toolOutput'))
 
     var tool_end = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_END, tool_call_id: 'call-1', tool_name: 'read', tool_result: result, is_error: false,}
-    var tool_end_object = json.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_TOOL_END, has_agent_event: true, agent_event: tool_end,})).as_object()
-    assert(tool_end_object['result'].kind == json.VALUE_OBJECT && tool_end_object['isError'].kind == json.VALUE_BOOL)
+    var tool_end_object = json_util.parse(event_json.encode(session_stream.event_t {kind: agent_types.EVENT_TOOL_END, has_agent_event: true, agent_event: tool_end,})) as {string:any}
+    assert(json_util.is_obj(tool_end_object['result']) && (tool_end_object['isError']) is bool)
 }
 
 test 'json mode encodes Pi queue_update snapshots' {
     var event = session_stream.event_t {kind: session_stream.EVENT_QUEUE_UPDATE, queue_steering: ['stop and inspect'], queue_follow_up: ['summarize after'],}
-    var object = json.parse(event_json.encode(event)).as_object()
-    assert(object['type'].as_string() == session_stream.EVENT_QUEUE_UPDATE)
-    assert(object['steering'].kind == json.VALUE_ARRAY && object['followUp'].kind == json.VALUE_ARRAY)
-    assert(object['steering'].as_array().len() == 1 && object['followUp'].as_array().len() == 1)
-    assert(object['steering'].as_array()[0].as_string() == 'stop and inspect')
+    var object = json_util.parse(event_json.encode(event)) as {string:any}
+    assert(object['type'] as string == session_stream.EVENT_QUEUE_UPDATE)
+    assert(json_util.is_arr(object['steering']) && json_util.is_arr(object['followUp']))
+    assert((object['steering'] as [any]).len() == 1 && (object['followUp'] as [any]).len() == 1)
+    assert((object['steering'] as [any])[0] as string == 'stop and inspect')
 }
 
 test 'json mode encodes Pi bash execution updates as deltas' {
     var event = session_stream.event_t {kind: session_stream.EVENT_BASH_EXECUTION_UPDATE, bash_id: 'bash-1', bash_delta: 'first\n'}
-    var object = json.parse(event_json.encode(event)).as_object()
-    assert(object['type'].as_string() == session_stream.EVENT_BASH_EXECUTION_UPDATE)
-    assert(object['id'].as_string() == 'bash-1')
-    assert(object['delta'].as_string() == 'first\n')
+    var object = json_util.parse(event_json.encode(event)) as {string:any}
+    assert(object['type'] as string == session_stream.EVENT_BASH_EXECUTION_UPDATE)
+    assert(object['id'] as string == 'bash-1')
+    assert(object['delta'] as string == 'first\n')
     assert(object.len() == 3)
     assert(!object.contains('command') && !object.contains('output'))
 }
 
 test 'json mode encodes Pi session setting events' {
     var named = session_stream.event_t {kind: session_stream.EVENT_SESSION_INFO_CHANGED, session_name: 'Demo'}
-    var named_object = json.parse(event_json.encode(named)).as_object()
-    assert(named_object['type'].as_string() == session_stream.EVENT_SESSION_INFO_CHANGED)
-    assert(named_object['name'].as_string() == 'Demo')
+    var named_object = json_util.parse(event_json.encode(named)) as {string:any}
+    assert(named_object['type'] as string == session_stream.EVENT_SESSION_INFO_CHANGED)
+    assert(named_object['name'] as string == 'Demo')
 
     var thinking = session_stream.event_t {kind: session_stream.EVENT_THINKING_LEVEL_CHANGED, thinking_level: 'high'}
-    var thinking_object = json.parse(event_json.encode(thinking)).as_object()
-    assert(thinking_object['type'].as_string() == session_stream.EVENT_THINKING_LEVEL_CHANGED)
-    assert(thinking_object['level'].as_string() == 'high')
+    var thinking_object = json_util.parse(event_json.encode(thinking)) as {string:any}
+    assert(thinking_object['type'] as string == session_stream.EVENT_THINKING_LEVEL_CHANGED)
+    assert(thinking_object['level'] as string == 'high')
 }
 
 test 'json mode nests the Pi compaction result and preserves terminal flags' {
-    var details = json.object_value({})
+    {string:any} details = {}
     var usage = ai_types.usage_t {input: 10, output: 4, total_tokens: 14}
     var event = session_stream.event_t {kind: session_stream.EVENT_COMPACTION_END, reason: 'manual', aborted: false, will_retry: false, compaction_has_result: true, summary: 'checkpoint', compaction_first_kept_entry_id: 'entry-2', tokens_before: 100, estimated_tokens_after: 30, compaction_usage: usage, compaction_details: details,}
-    var object = json.parse(event_json.encode(event)).as_object()
-    assert(object['aborted'].kind == json.VALUE_BOOL && !object['aborted'].as_bool())
-    assert(object['willRetry'].kind == json.VALUE_BOOL && !object['willRetry'].as_bool())
-    assert(object['result'].kind == json.VALUE_OBJECT)
-    var result = object['result'].as_object()
-    assert(result['summary'].as_string() == 'checkpoint')
-    assert(result['firstKeptEntryId'].as_string() == 'entry-2')
-    assert(result['tokensBefore'].number == '100')
-    assert(result['estimatedTokensAfter'].number == '30')
-    assert(result['usage'].kind == json.VALUE_OBJECT)
+    var object = json_util.parse(event_json.encode(event)) as {string:any}
+    assert((object['aborted']) is bool && !(object['aborted'] as bool))
+    assert((object['willRetry']) is bool && !(object['willRetry'] as bool))
+    assert(json_util.is_obj(object['result']))
+    var result = object['result'] as {string:any}
+    assert(result['summary'] as string == 'checkpoint')
+    assert(result['firstKeptEntryId'] as string == 'entry-2')
+    assert(json_util.num_token(result['tokensBefore']) == '100')
+    assert(json_util.num_token(result['estimatedTokensAfter']) == '30')
+    assert(json_util.is_obj(result['usage']))
     assert(!object.contains('summary') && !object.contains('tokensBefore'))
 }

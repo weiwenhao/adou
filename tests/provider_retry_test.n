@@ -1,5 +1,11 @@
 import adou.src.ai.abort
 import adou.src.ai.provider_retry
+
+test 'recognizes Nature TLS EOF while reading a response body' {
+    assert(provider_retry.is_clean_eof('TLS read failed: end of file'))
+    assert(!provider_retry.is_clean_eof('TLS read timed out'))
+}
+
 test 'matches provider retry status and override headers' {
     [provider_retry.header_t] headers = []
     assert(provider_retry.should_retry(429, headers))

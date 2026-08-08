@@ -1,0 +1,45 @@
+import adou.src.output_guard
+import adou.src.timings
+import syscall
+
+test 'Pi startup timings are opt-in and preserve main/extensions groups' {
+    string previous = syscall.get_env('PI_TIMING')
+    syscall.set_env('PI_TIMING', '0')
+    timings.reset_timings()
+    timings.time('disabled')
+    assert(timings.format_timings() == '')
+
+    syscall.set_env('PI_TIMING', '1')
+    timings.reset_timings()
+    timings.time('parseArgs')
+    timings.reset_namespace(timings.EXTENSIONS_NAMESPACE)
+    timings.time_namespace(timings.EXTENSIONS_NAMESPACE, 'loadResources')
+    string output = timings.format_timings()
+    assert(output.contains('--- Startup Timings: main ---'))
+    assert(output.contains('  parseArgs: '))
+    assert(output.contains('--- Startup Timings: extensions ---'))
+    assert(output.contains('  loadResources: '))
+    assert(timings.namespace_timings(timings.MAIN_NAMESPACE).len() == 1)
+    assert(timings.namespace_timings(timings.EXTENSIONS_NAMESPACE).len() == 1)
+
+    syscall.set_env('PI_TIMING', previous)
+}
+
+test 'stdout takeover remains explicit and idempotent' {
+    output_guard.restore_stdout()
+    assert(!output_guard.is_stdout_taken_over())
+    output_guard.take_over_stdout()
+    output_guard.take_over_stdout()
+    assert(output_guard.is_stdout_taken_over())
+    output_guard.restore_stdout()
+    assert(!output_guard.is_stdout_taken_over())
+    output_guard.write_raw_stdout('') catch error {
+        assert(false)
+    }
+    output_guard.write_raw_stderr('') catch error {
+        assert(false)
+    }
+    output_guard.flush_raw_stdout() catch error {
+        assert(false)
+    }
+}

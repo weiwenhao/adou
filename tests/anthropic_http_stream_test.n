@@ -5,13 +5,13 @@ import fmt
 import http
 import net.tcp
 
-const SUCCESS_PORT = 18772
-const RETRY_PORT = 18773
-const STREAM_ERROR_PORT = 18774
-const EOF_PORT = 18775
-const ABORT_PORT = 18776
-const TIMEOUT_PORT = 18777
-type capture_t = struct {
+pub const SUCCESS_PORT = 18772
+pub const RETRY_PORT = 18773
+pub const STREAM_ERROR_PORT = 18774
+pub const EOF_PORT = 18775
+pub const ABORT_PORT = 18776
+pub const TIMEOUT_PORT = 18777
+pub type capture_t = struct {
     string body
     string api_key
     string version
@@ -19,22 +19,22 @@ type capture_t = struct {
     int attempts
 }
 
-fn serve_http(ref<http.server_t> server): void! {
+pub fn serve_http(ref<http.server_t> server): void! {
     server.listen(server.port)
 }
 
-fn model(int port): ref<types.model_t> {
+pub fn model(int port): ref<types.model_t> {
     return new types.model_t(id = 'claude-sonnet-4-5', api = 'anthropic-messages', provider = 'anthropic', base_url = fmt.sprintf('http://127.0.0.1:%d/v1', port), max_tokens = 128,)
 }
 
-fn context(): ref<types.context_t> {
+pub fn context(): ref<types.context_t> {
     var context = new types.context_t(system_prompt = 'system')
     types.message_t user = new types.user_message_t(content = 'hello')
     context.messages.push(user)
     return context
 }
 
-fn success_sse(): string {
+pub fn success_sse(): string {
     string body = ''
     body += 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_http","usage":{"input_tokens":3,"output_tokens":0}}}\n\n'
     body += 'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
@@ -45,7 +45,7 @@ fn success_sse(): string {
     return body
 }
 
-fn serve_abort_fixture(): void! {
+pub fn serve_abort_fixture(): void! {
     var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', ABORT_PORT))
     var conn = server.accept()
     var request = vec<u8>.new(0, 4096)
@@ -56,7 +56,7 @@ fn serve_abort_fixture(): void! {
     server.close()
 }
 
-fn serve_timeout_fixture(): void! {
+pub fn serve_timeout_fixture(): void! {
     var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', TIMEOUT_PORT))
     var conn = server.accept()
     var request = vec<u8>.new(0, 4096)

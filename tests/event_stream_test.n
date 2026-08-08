@@ -2,7 +2,7 @@ import adou.src.ai.abort
 import adou.src.ai.event_stream
 import adou.src.ai.types
 import co
-fn produce_events(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message): void! {
+pub fn produce_events(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message): void! {
     var started = types.assistant_event_t {
         kind: types.EVENT_START, partial: message,
     }
@@ -16,12 +16,12 @@ fn produce_events(ref<event_stream.assistant_stream_t> stream, ref<types.assista
     }
     stream.push(done)
 }
-fn produce_done_later(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message): void! {
+pub fn produce_done_later(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message): void! {
     co.sleep(20)
     var done = types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,}
     stream.push(done)
 }
-fn mutate_after_start(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message, chan<u8> started, chan<u8> release, chan<u8> mutated): void! {
+pub fn mutate_after_start(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message, chan<u8> started, chan<u8> release, chan<u8> mutated): void! {
     stream.push(types.assistant_event_t {kind: types.EVENT_START, partial: message,})
     started.send(1)
     release.recv()

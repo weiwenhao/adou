@@ -1,11 +1,14 @@
-import term
+import adou.src.tui.term
+import fs
+import os
+import syscall
 
 test 'terminal package detects non-tty test streams' {
     assert(!term.is_tty(term.STDIN))
     assert(!term.is_tty(term.STDOUT))
 }
 
-fn can_open_terminal():bool {
+pub fn can_open_terminal():bool {
     var terminal = term.open() catch e {
         return false
     }
@@ -15,4 +18,28 @@ fn can_open_terminal():bool {
 
 test 'terminal open rejects non-tty streams without changing state' {
     assert(!can_open_terminal())
+}
+
+test 'terminal reads and writes through fs files' {
+    var dir = '/tmp/adou-term-fs-io'
+    os.mkdirs(dir, 0o755)
+    var input = fs.open(dir + '/input.txt', syscall.O_RDWR | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    input.write('hello\n' as [u8])
+    input.seek(0, syscall.SEEK_SET)
+    var output = fs.open(dir + '/output.txt', syscall.O_RDWR | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    var terminal = new term.terminal_t(input_fd = syscall.STDIN, output_fd = syscall.STDOUT, input = input, output = output, active = false, restored = true)
+
+    var bytes = terminal.read()
+    assert(bytes as string == 'hello\n')
+    assert(!terminal.is_eof())
+
+    bytes = terminal.read()
+    assert(bytes.len() == 0)
+    assert(terminal.is_eof())
+
+    terminal.write('world')
+    output.seek(0, syscall.SEEK_SET)
+    var written = vec<u8>.new(0, 16)
+    int count = output.read(written)
+    assert(written.slice(0, count) as string == 'world')
 }

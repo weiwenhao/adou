@@ -1,6 +1,6 @@
 import adou.src.tui.editor
 
-fn repeat(string value, int count): string {
+pub fn repeat(string value, int count): string {
     string result = ''
     for int index = 0; index < count; index += 1 {
         result += value

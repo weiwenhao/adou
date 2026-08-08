@@ -1,8 +1,9 @@
 import adou.src.ai.providers.anthropic_request
 import adou.src.ai.types
+import adou.src.json_util
 import json
 
-fn anthropic_model(): ref<types.model_t> {
+pub fn anthropic_model(): ref<types.model_t> {
     return new types.model_t(id = 'claude-sonnet-4-5', api = 'anthropic-messages', provider = 'anthropic', base_url = 'https://api.anthropic.com/v1/', reasoning = true, max_tokens = 8192,)
 }
 
@@ -16,7 +17,7 @@ test 'builds Pi-compatible Anthropic messages tools cache and thinking payload' 
     types.content_t text = new types.text_content_t(text = 'answer')
     types.content_t thinking = new types.thinking_content_t(thinking = 'reason', thinking_signature = 'sig')
     types.content_t redacted = new types.thinking_content_t(thinking = '[Reasoning redacted]', thinking_signature = 'opaque', redacted = true,)
-    types.content_t tool_call = new types.tool_call_t(id = 'call|foreign:id', name = 'read', arguments = json.parse('{"path":"README.md"}'),)
+    types.content_t tool_call = new types.tool_call_t(id = 'call|foreign:id', name = 'read', arguments = json_util.parse('{"path":"README.md"}'),)
     assistant.content.push(text)
     assistant.content.push(thinking)
     assistant.content.push(redacted)
@@ -33,30 +34,30 @@ test 'builds Pi-compatible Anthropic messages tools cache and thinking payload' 
     context.messages.push(second_tool_result)
     types.message_t final_user = new types.user_message_t(content = 'continue')
     context.messages.push(final_user)
-    var tool = new types.tool_t(name = 'read', description = 'Read a file', parameters = json.parse('{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}'),)
+    var tool = new types.tool_t(name = 'read', description = 'Read a file', parameters = json_util.parse('{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}'),)
     context.tools.push(tool)
     var options = new types.stream_options_t(api_key = 'key', max_tokens = 2048, thinking_enabled = true, thinking_budget_tokens = 1536, cache_retention = 'long',)
-    var body = json.parse(anthropic_request.build(model, context, options))
-    assert(body.get('model').as_string() == 'claude-sonnet-4-5')
-    assert(body.get('max_tokens').as_number() == '2048')
-    assert(body.get('thinking').get('type').as_string() == 'enabled')
-    assert(body.get('thinking').get('budget_tokens').as_number() == '1536')
-    assert(body.get('system').at(0).get('cache_control').get('ttl').as_string() == '1h')
-    var messages = body.get('messages')
-    assert(messages.as_array().len() == 4)
-    var assistant_blocks = messages.at(1).get('content')
-    assert(assistant_blocks.as_array().len() == 4)
-    assert(assistant_blocks.at(1).get('type').as_string() == 'thinking')
-    assert(assistant_blocks.at(2).get('type').as_string() == 'redacted_thinking')
-    assert(assistant_blocks.at(3).get('id').as_string() == 'call_foreign_id')
-    var tool_results = messages.at(2).get('content')
-    assert(tool_results.as_array().len() == 2)
-    assert(tool_results.at(0).get('tool_use_id').as_string() == 'call_foreign_id')
-    assert(tool_results.at(1).get('is_error').as_bool())
-    assert(messages.at(3).get('content').at(0).get('cache_control').get('ttl').as_string() == '1h')
-    assert(body.get('tools').at(0).get('input_schema').get('required').at(0).as_string() == 'path')
-    assert(!body.get('tools').at(0).as_object().contains('eager_input_streaming'))
-    assert(body.get('tools').at(0).get('cache_control').get('ttl').as_string() == '1h')
+    var body = json_util.parse(anthropic_request.build(model, context, options))
+    assert((body as {string:any})['model'] as string == 'claude-sonnet-4-5')
+    assert(json_util.num_token((body as {string:any})['max_tokens']) == '2048')
+    assert(((body as {string:any})['thinking'] as {string:any})['type'] as string == 'enabled')
+    assert(json_util.num_token(((body as {string:any})['thinking'] as {string:any})['budget_tokens']) == '1536')
+    assert(((((body as {string:any})['system'] as [any])[0] as {string:any})['cache_control'] as {string:any})['ttl'] as string == '1h')
+    var messages = (body as {string:any})['messages']
+    assert((messages as [any]).len() == 4)
+    var assistant_blocks = ((messages as [any])[1] as {string:any})['content']
+    assert((assistant_blocks as [any]).len() == 4)
+    assert(((assistant_blocks as [any])[1] as {string:any})['type'] as string == 'thinking')
+    assert(((assistant_blocks as [any])[2] as {string:any})['type'] as string == 'redacted_thinking')
+    assert(((assistant_blocks as [any])[3] as {string:any})['id'] as string == 'call_foreign_id')
+    var tool_results = ((messages as [any])[2] as {string:any})['content']
+    assert((tool_results as [any]).len() == 2)
+    assert(((tool_results as [any])[0] as {string:any})['tool_use_id'] as string == 'call_foreign_id')
+    assert(((tool_results as [any])[1] as {string:any})['is_error'] as bool)
+    assert((((((messages as [any])[3] as {string:any})['content'] as [any])[0] as {string:any})['cache_control'] as {string:any})['ttl'] as string == '1h')
+    assert((((((body as {string:any})['tools'] as [any])[0] as {string:any})['input_schema'] as {string:any})['required'] as [any])[0] as string == 'path')
+    assert(!(((body as {string:any})['tools'] as [any])[0] as {string:any}).contains('eager_input_streaming'))
+    assert(((((body as {string:any})['tools'] as [any])[0] as {string:any})['cache_control'] as {string:any})['ttl'] as string == '1h')
     assert(anthropic_request.endpoint(model) == 'https://api.anthropic.com/v1/messages')
     assert(anthropic_request.beta_header(model, context).find('interleaved-thinking') >= 0)
     assert(anthropic_request.beta_header(model, context).find('fine-grained-tool-streaming') >= 0)
@@ -69,18 +70,43 @@ test 'builds adaptive thinking and disables cache when requested' {
     types.message_t user = new types.user_message_t(content = 'hello')
     context.messages.push(user)
     var options = new types.stream_options_t(api_key = 'key', thinking_enabled = true, reasoning_effort = 'high', cache_retention = 'none',)
-    var body = json.parse(anthropic_request.build(model, context, options))
-    assert(body.get('thinking').get('type').as_string() == 'adaptive')
-    assert(body.get('output_config').get('effort').as_string() == 'high')
-    assert(!body.get('messages').at(0).get('content').at(0).as_object().contains('cache_control'))
+    var body = json_util.parse(anthropic_request.build(model, context, options))
+    assert(((body as {string:any})['thinking'] as {string:any})['type'] as string == 'adaptive')
+    assert(((body as {string:any})['output_config'] as {string:any})['effort'] as string == 'high')
+    var first_block = ((((body as {string:any})['messages'] as [any])[0] as {string:any})['content'] as [any])[0] as {string:any}
+    assert(!first_block.contains('cache_control'))
     assert(anthropic_request.beta_header(model, context) == '')
 }
 
 test 'maps branch summaries into Pi user context' {
     var context = new types.context_t()
     context.messages.push(new types.branch_summary_message_t(summary = 'abandoned work', from_id = 'entry-1', timestamp = 1))
-    var body = json.parse(anthropic_request.build(anthropic_model(), context, new types.stream_options_t(api_key = 'key')))
-    assert(body.get('messages').at(0).get('content').at(0).get('text').as_string() == 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\nabandoned work</summary>')
+    var body = json_util.parse(anthropic_request.build(anthropic_model(), context, new types.stream_options_t(api_key = 'key')))
+    assert((((((body as {string:any})['messages'] as [any])[0] as {string:any})['content'] as [any])[0] as {string:any})['text'] as string == 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\nabandoned work</summary>')
+}
+
+test 'does not replay an errored assistant turn' {
+    var context = new types.context_t()
+    var assistant = new types.assistant_message_t(content = [new types.text_content_t(text = 'failed'),], stop_reason = types.STOP_ERROR, error_message = 'overloaded')
+    types.message_t assistant_message = assistant
+    context.messages.push(assistant_message)
+    context.messages.push(new types.user_message_t(content = 'retry'))
+    var body = json_util.parse(anthropic_request.build(anthropic_model(), context, new types.stream_options_t(api_key = 'key')))
+    assert(((body as {string:any})['messages'] as [any]).len() == 1)
+    assert((((body as {string:any})['messages'] as [any])[0] as {string:any})['role'] as string == 'user')
+}
+
+test 'inserts an error tool result for an orphaned Anthropic tool call' {
+    var context = new types.context_t()
+    var call = new types.tool_call_t(id = 'tool_orphan', name = 'read', arguments = json_util.parse('{}'))
+    types.content_t call_content = call
+    context.messages.push(new types.assistant_message_t(content = [call_content,], stop_reason = types.STOP_TOOL_USE))
+    context.messages.push(new types.user_message_t(content = 'continue'))
+    var body = json_util.parse(anthropic_request.build(anthropic_model(), context, new types.stream_options_t(api_key = 'key')))
+    assert(((body as {string:any})['messages'] as [any]).len() == 3)
+    assert((((body as {string:any})['messages'] as [any])[1] as {string:any})['role'] as string == 'user')
+    assert((((((body as {string:any})['messages'] as [any])[1] as {string:any})['content'] as [any])[0] as {string:any})['type'] as string == 'tool_result')
+    assert((((((body as {string:any})['messages'] as [any])[1] as {string:any})['content'] as [any])[0] as {string:any})['is_error'] as bool)
 }
 
 test 'rejects missing Anthropic authentication' {

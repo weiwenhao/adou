@@ -1,0 +1,41 @@
+import adou.src.tools.mutation_queue
+import co
+import co.mutex
+
+pub type state_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    int active
+    bool overlapped
+}
+
+pub fn acquire_worker(string target, ref<state_t> state, chan<int> done): void! {
+    var acquired = mutation_queue.acquire(target)
+    string key = acquired[0]
+    var entry = acquired[1]
+    state.lock.lock()
+    state.active += 1
+    if state.active > 1 {
+        state.overlapped = true
+    }
+    state.lock.unlock()
+    // Give queued callers a chance to contend while this holder owns the key.
+    co.sleep(2)
+    state.lock.lock()
+    state.active -= 1
+    state.lock.unlock()
+    mutation_queue.release(key, entry)
+    done.send(1)
+}
+
+test 'first concurrent mutation registrations share one per-file lock' {
+    string target = '/tmp/adou-mutation-queue-first-use.txt'
+    var state = new state_t()
+    chan<int> done = chan<int>.new(32)
+    for int index = 0; index < 32; index += 1 {
+        go acquire_worker(target, state, done)
+    }
+    for int index = 0; index < 32; index += 1 {
+        done.recv()
+    }
+    assert(!state.overlapped)
+}

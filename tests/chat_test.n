@@ -1,6 +1,7 @@
 import adou.src.agent.session_stream
 import adou.src.agent.types as agent_types
 import adou.src.ai.types
+import adou.src.tools.types as tool_types
 import adou.src.tui.chat
 import strings
 import time
@@ -30,6 +31,28 @@ test 'chat view consumes streaming messages, tools, compaction and errors' {
     assert(value.compaction_count == 1)
     value.apply(session_stream.event_t {kind: session_stream.EVENT_SESSION_END,})
     assert(!value.running)
+}
+
+test 'streamed multiline tool previews stay one terminal row and settle once' {
+    var value = chat.new('mock-model', '/tmp/project')
+    var start = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_START, tool_call_id: 'call-1', tool_name: 'bash',}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_TOOL_START, has_agent_event: true, agent_event: start,})
+    var result = tool_types.text_result('alpha\nbeta')
+    var end = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_END, tool_call_id: 'call-1', tool_name: 'bash', tool_result: result,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_TOOL_END, has_agent_event: true, agent_event: end,})
+    var lines = value.render(80)
+    for line in lines {
+        assert(!line.contains('\n') && !line.contains('\r'))
+    }
+    var tool = new types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'bash', content = result.content)
+    var message_end = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, tool_message: tool,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: message_end,})
+    int visible_tool_rows = 0
+    var settled_lines = value.render(80)
+    for line in settled_lines {
+        if line.contains('✓ ') && line.contains('bash') {visible_tool_rows += 1}
+    }
+    assert(visible_tool_rows == 1)
 }
 
 test 'chat restores history and renders configured context state in the footer' {

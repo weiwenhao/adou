@@ -1,0 +1,11 @@
+import adou.src.tui.theme
+
+test 'foreground styles preserve an enclosing background' {
+    string line = theme.background_line(theme.USER_BG, theme.fg(theme.TEXT, 'hello') + '   ', 8)
+    assert(line == '\x1b[48;2;52;53;65m\x1b[38;2;212;212;212mhello\x1b[39m   \x1b[0m')
+}
+
+test 'text attributes reset without clearing an enclosing background' {
+    string line = theme.background_line(theme.USER_BG, theme.bold('bold') + '  ', 6)
+    assert(line == '\x1b[48;2;52;53;65m\x1b[1mbold\x1b[22m  \x1b[0m')
+}

@@ -1,13 +1,14 @@
 import adou.src.ai.providers.openai_completions
 import adou.src.ai.sse
 import adou.src.ai.types
+import adou.src.json_util
 import json
 
-fn model(): ref<types.model_t> {
+pub fn model(): ref<types.model_t> {
     return new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek')
 }
 
-fn frame(string data): sse.event_t {
+pub fn frame(string data): sse.event_t {
     return sse.event_t {data: data,}
 }
 
@@ -38,15 +39,15 @@ test 'processes streamed function tool call and maps toolUse stop reason' {
     assert(first.len() == 2 && first[0].kind == types.EVENT_TOOLCALL_START && first[1].kind == types.EVENT_TOOLCALL_DELTA)
     var partial = first[1].partial as ref<types.assistant_message_t>
     var partial_call = partial.content[0] as ref<types.tool_call_t>
-    assert(partial_call.arguments.kind == json.VALUE_OBJECT)
-    assert(partial_call.arguments.get('path').as_string() == '')
+    assert(json_util.is_obj(partial_call.arguments))
+    assert((partial_call.arguments as {string:any})['path'] as string == '')
     processor.feed(frame('{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"README.md\\"}"}}]},"finish_reason":null}]}'))
     processor.feed(frame('{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}'))
     var done = processor.finish()
     assert(done[0].kind == types.EVENT_TOOLCALL_END)
     if done[0].tool_call is ref<types.tool_call_t> tool_call {
         assert(tool_call.name == 'read')
-        assert(tool_call.arguments.get('path').as_string() == 'README.md')
+        assert((tool_call.arguments as {string:any})['path'] as string == 'README.md')
     } else {
         assert(false)
     }
@@ -60,8 +61,8 @@ test 'repairs incomplete final function arguments like Pi' {
     processor.feed(frame('{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}'))
     var done = processor.finish()
     if done[0].tool_call is ref<types.tool_call_t> tool_call {
-        assert(tool_call.arguments.kind == json.VALUE_OBJECT)
-        assert(tool_call.arguments.get('path').as_string() == 'README')
+        assert(json_util.is_obj(tool_call.arguments))
+        assert((tool_call.arguments as {string:any})['path'] as string == 'README')
     } else {
         assert(false)
     }
@@ -79,7 +80,7 @@ test 'continues a tool call by id when the provider omits index' {
     assert(done.len() == 2 && done[0].kind == types.EVENT_TOOLCALL_END)
     if done[0].tool_call is ref<types.tool_call_t> tool_call {
         assert(tool_call.id == 'call_no_index')
-        assert(tool_call.arguments.get('path').as_string() == 'main.n')
+        assert((tool_call.arguments as {string:any})['path'] as string == 'main.n')
     } else {
         assert(false)
     }

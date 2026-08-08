@@ -7,18 +7,18 @@ import http
 import fmt
 import syscall
 
-const VERTEX_PORT = 18925
+pub const VERTEX_PORT = 18925
 
-type capture_t = struct {
+pub type capture_t = struct {
     string path
     string authorization
 }
 
-fn serve_fixture(ref<http.server_t> server): void! {
+pub fn serve_fixture(ref<http.server_t> server): void! {
     server.listen(server.port)
 }
 
-fn fixture_model(int port): ref<types.model_t> {
+pub fn fixture_model(int port): ref<types.model_t> {
     return new types.model_t(id = 'gemini-2.5-flash', api = 'google-vertex', provider = 'google-vertex', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
 }
 
@@ -65,7 +65,7 @@ test 'vertex stream authenticates with bearer token' {
     assert(capture.authorization == 'Bearer vertex-token-abc')
 }
 
-fn fixture_context(): ref<types.context_t> {
+pub fn fixture_context(): ref<types.context_t> {
     var context = new types.context_t()
     types.message_t user = new types.user_message_t(content = 'hello')
     context.messages.push(user)
