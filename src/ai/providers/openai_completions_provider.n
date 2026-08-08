@@ -1,10 +1,12 @@
 import adou.src.ai.abort
 import adou.src.ai.event_stream
 import adou.src.ai.provider_retry
+import adou.src.ai.providers.decorators
 import adou.src.ai.providers.openai_completions
 import adou.src.ai.providers.openai_completions_request
 import adou.src.ai.sse
 import adou.src.ai.types
+import adou.src.debug
 import fmt
 import http.client
 import time
@@ -29,9 +31,11 @@ fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stre
 
 #local
 fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
+    debug.log('provider', 'openai-completions stream start model=' + model.id)
     var processor = openai_completions.processor(model, time.now().ms_timestamp())
     var state = new run_state_t(stream = stream, model = model, context = context, options = options, processor = processor,)
     run_inner(stream, state) catch error {
+        debug.log('provider', 'openai-completions stream failure: ' + error.msg())
         fail(stream, state, error.msg())
     }
 }
@@ -43,17 +47,20 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     }
     state.body = openai_completions_request.build(state.model, state.context, state.options)
     var current = send_with_retry(state, 0)
+    debug.log('provider', 'openai-completions response status=' + fmt.sprintf('%d', current.status))
     stream.push(state.processor.start())
     var decoder = sse.parser()
     [u8] scratch = vec<u8>.new(0, 8192)
     bool saw_done = false
     for true {
+        debug.log('provider', 'openai-completions read begin')
         int n = current.read(scratch) catch error {
             if provider_retry.is_clean_eof(error.msg()) {
                 break
             }
             throw error
         }
+        debug.log('provider', 'openai-completions read bytes=' + fmt.sprintf('%d', n))
         var frames = decoder.feed(scratch.slice(0, n))
         saw_done = push_frames(stream, state.processor, frames)
         // OpenAI-compatible SSE streams are complete at the protocol-level
@@ -61,6 +68,7 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
         // Nature HTTP connection implementations the peer close that follows
         // `[DONE]` can race the coroutine and corrupt an interface dispatch.
         if saw_done {
+            debug.log('provider', 'openai-completions received [DONE]')
             break
         }
     }
@@ -73,6 +81,7 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
         stream.push(event)
     }
     stream.end()
+    debug.log('provider', 'openai-completions stream end')
 }
 
 #local
@@ -97,6 +106,7 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
         throw errorf('Request aborted')
     }
     var current = send_once(state) catch error {
+        debug.log('provider', 'openai-completions request attempt failed: ' + error.msg())
         if stream.is_aborted() || retry_index >= state.options.max_retries {
             throw error
         }
@@ -113,6 +123,7 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
         throw errorf('Request aborted')
     }
     if current.status >= 200 && current.status < 300 {
+        debug.log('provider', 'openai-completions request accepted status=' + fmt.sprintf('%d', current.status))
         return current
     }
     int status = current.status
@@ -130,7 +141,19 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
 
 #local
 fn send_once(ref<run_state_t> state): ref<client.response_t>! {
-    return client.new().post(openai_completions_request.endpoint(state.model)).timeout(state.options.timeout_ms).header('Authorization', openai_completions_request.authorization(state.options)).header('Content-Type', 'application/json').header('Accept', 'text/event-stream').content(state.body).send()
+    debug.log('provider', 'openai-completions sending request')
+    var request = client.new().post(openai_completions_request.endpoint(state.model)).timeout(state.options.timeout_ms).header('Content-Type', 'application/json').header('Accept', 'text/event-stream')
+    if decorators.is_cloudflare_gateway(state.model) {
+        request.header(decorators.cloudflare_gateway_auth_header(state.options.api_key).name, decorators.cloudflare_gateway_auth_header(state.options.api_key).value)
+    } else {
+        request.header('Authorization', openai_completions_request.authorization(state.options))
+    }
+    var headers = decorators.copilot_headers(state.context)
+    for header in headers {
+        request.header(header.name, header.value)
+    }
+    request.content(state.body)
+    return request.send()
 }
 
 #local
@@ -144,6 +167,7 @@ fn response_headers(ref<client.response_t> response): [provider_retry.header_t] 
 
 #local
 fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
+    debug.log('provider', 'openai-completions terminal failure: ' + message)
     // A failed streaming read has already transitioned Nature's HTTP
     // response/connection into its terminal state. Calling response.close()
     // again can dispatch through a corrupted connable interface on the

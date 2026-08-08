@@ -1,10 +1,12 @@
 import adou.src.ai.abort
 import adou.src.ai.event_stream
 import adou.src.ai.provider_retry
+import adou.src.ai.providers.decorators
 import adou.src.ai.providers.openai_request
 import adou.src.ai.providers.openai_responses
 import adou.src.ai.sse
 import adou.src.ai.types
+import adou.src.debug
 import fmt
 import http.client
 import time
@@ -25,9 +27,11 @@ fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stre
 }
 #local
 fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
+    debug.log('provider', 'openai-responses stream start model=' + model.id)
     var processor = openai_responses.processor(model, time.now().ms_timestamp())
     var state = new run_state_t(stream = stream, model = model, context = context, options = options, processor = processor,)
     run_inner(stream, state) catch e {
+        debug.log('provider', 'openai-responses stream failure: ' + e.msg())
         fail(stream, state, e.msg())
         return
     }
@@ -39,23 +43,27 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     }
     state.body = openai_request.build(state.model, state.context, state.options)
     var current = send_with_retry(state, 0)
+    debug.log('provider', 'openai-responses response status=' + fmt.sprintf('%d', current.status))
     stream.push(state.processor.start())
     var decoder = sse.parser()
     [u8] scratch = vec<u8>.new(0, 8192)
     bool terminal = false
     for!terminal {
+        debug.log('provider', 'openai-responses read begin')
         int n = current.read(scratch) catch e {
             if provider_retry.is_clean_eof(e.msg()) {
                 break
             }
             throw e
         }
+        debug.log('provider', 'openai-responses read bytes=' + fmt.sprintf('%d', n))
         var frames = decoder.feed(scratch.slice(0, n))
         for frame in frames {
             var events = state.processor.feed(frame)
             for event in events {
                 stream.push(event)
                 if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
+                    debug.log('provider', 'openai-responses terminal event=' + event.kind)
                     terminal = true
                     break
                 }
@@ -79,6 +87,7 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     }
     state.processor.finish()
     stream.end()
+    debug.log('provider', 'openai-responses stream end')
 }
 #local
 fn send_with_retry(ref<run_state_t> state, int retry_index): ref < client.response_t > ! {
@@ -87,6 +96,7 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref < client.respon
         throw errorf('Request aborted')
     }
     var current = send_once(state) catch e {
+        debug.log('provider', 'openai-responses request attempt failed: ' + e.msg())
         if stream.is_aborted() || retry_index >= state.options.max_retries {
             throw e
         }
@@ -103,6 +113,7 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref < client.respon
         throw errorf('Request aborted')
     }
     if current.status >= 200 && current.status < 300 {
+        debug.log('provider', 'openai-responses request accepted status=' + fmt.sprintf('%d', current.status))
         return current
     }
     int status = current.status
@@ -119,13 +130,22 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref < client.respon
 }
 #local
 fn send_once(ref<run_state_t> state): ref < client.response_t > ! {
+    debug.log('provider', 'openai-responses sending request')
     var request = client.new()
     .post(openai_request.endpoint(state.model))
     .timeout(state.options.timeout_ms)
-    .header('Authorization', openai_request.authorization(state.options))
     .header('Content-Type', 'application/json')
     .header('Accept', 'text/event-stream')
     .content(state.body)
+    if decorators.is_cloudflare_gateway(state.model) {
+        request.header(decorators.cloudflare_gateway_auth_header(state.options.api_key).name, decorators.cloudflare_gateway_auth_header(state.options.api_key).value)
+    } else {
+        request.header('Authorization', openai_request.authorization(state.options))
+    }
+    var headers = decorators.copilot_headers(state.context)
+    for header in headers {
+        request.header(header.name, header.value)
+    }
     if state.options.session_id != '' {
         request.header('session_id', state.options.session_id)
         request.header('x-client-request-id', state.options.session_id)
@@ -149,6 +169,7 @@ fn format_http_error(int status, string message, string body): string {
 }
 #local
 fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
+    debug.log('provider', 'openai-responses terminal failure: ' + message)
     // The failed read owns transport cleanup. Re-dispatching close through
     // Nature's connable interface here can corrupt the receiver on a TTY
     // coroutine schedule and raise SIGBUS.

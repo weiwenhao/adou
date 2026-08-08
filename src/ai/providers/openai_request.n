@@ -1,17 +1,19 @@
 import adou.src.ai.types
+import adou.src.ai.providers.decorators
 import adou.src.ai.ids
+import adou.src.ai.providers.replay
+import adou.src.json_util
 import fmt
 import json
 import strings
 const MIN_OUTPUT_TOKENS = 16
 const MAX_PROMPT_CACHE_KEY_CHARS = 64
-type json_object_t = map<string, ref < json.value_t >>
 fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
-    json_object_t body = {}
-    body['model'] = boxed_string(model.id)
-    body['input'] = json.box_value(json.array_value(convert_messages(model, context)))
-    body['stream'] = json.box_value(json.bool_value(true))
-    body['store'] = json.box_value(json.bool_value(false))
+    {string:any} body = {}
+    body['model'] = model.id
+    body['input'] = convert_messages(model, context)
+    body['stream'] = true
+    body['store'] = false
     int max_tokens = options.max_tokens
     if max_tokens <= 0 {
         max_tokens = model.max_tokens
@@ -20,29 +22,36 @@ fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.strea
         if max_tokens < MIN_OUTPUT_TOKENS {
             max_tokens = MIN_OUTPUT_TOKENS
         }
-        body['max_output_tokens'] = json.box_value(json.number_value(fmt.sprintf('%d', max_tokens)))
+        body['max_output_tokens'] = max_tokens
     }
-    if options.session_id != '' {
-        body['prompt_cache_key'] = boxed_string(clamp_cache_key(options.session_id))
+    // Pi disables implicit prompt caching when retention is explicitly none.
+    // Long retention is represented by OpenAI's 24h cache hint.
+    if options.session_id != '' && options.cache_retention != 'none' {
+        body['prompt_cache_key'] = clamp_cache_key(options.session_id)
+    }
+    if options.cache_retention == 'long' && model.supports_long_cache_retention {
+        body['prompt_cache_retention'] = '24h'
     }
     if context.tools.len() > 0 {
-        body['tools'] = json.box_value(json.array_value(convert_tools(context.tools)))
+        body['tools'] = convert_tools(context.tools)
     }
     if model.reasoning {
-        json_object_t reasoning = {}
+        {string:any} reasoning = {}
         if options.reasoning_effort != '' && options.reasoning_effort != 'off' {
-            reasoning['effort'] = boxed_string(options.reasoning_effort)
-            reasoning['summary'] = boxed_string(options.reasoning_summary)
-            body['include'] = json.box_value(json.array_value([boxed_string('reasoning.encrypted_content'),]))
+            reasoning['effort'] = options.reasoning_effort
+            reasoning['summary'] = options.reasoning_summary
+            [any] include = []
+            include.push('reasoning.encrypted_content')
+            body['include'] = include
         } else {
-            reasoning['effort'] = boxed_string('none')
+            reasoning['effort'] = 'none'
         }
-        body['reasoning'] = json.box_value(object_value(reasoning))
+        body['reasoning'] = reasoning
     }
-    return json.stringify(object_value(body))
+    return json.serialize(body)
 }
 fn endpoint(ref<types.model_t> model): string {
-    string base = model.base_url
+    string base = decorators.resolve_base_url(model)
     for base.ends_with('/') {
         base = base.slice(0, base.len() - 1)
     }
@@ -55,65 +64,104 @@ fn authorization(ref<types.stream_options_t> options): string! {
     return 'Bearer ' + options.api_key
 }
 #local
-fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [ref<json.value_t>]! {
-    [ref<json.value_t>] result = []
+fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [any]! {
+    [any] result = []
     if context.system_prompt != '' {
-        json_object_t system = {}
+        {string:any} system = {}
         if model.reasoning {
-            system['role'] = boxed_string('developer')
+            system['role'] = 'developer'
         } else {
-            system['role'] = boxed_string('system')
+            system['role'] = 'system'
         }
-        system['content'] = boxed_string(context.system_prompt)
-        result.push(json.box_value(object_value(system)))
+        system['content'] = context.system_prompt
+        result.push(system)
     }
-    for index, message in context.messages {
+    var replay = replay.tracker()
+    int message_index = 0
+    for message in context.messages {
+        bool counts_for_index = true
         if message is ref<types.user_message_t> user {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(missing))
+            }
             result.push(user_item(user))
         } else if message is ref<types.assistant_message_t> assistant {
-            result.append(assistant_items(model, assistant, index))
+            for missing in replay.before_assistant(assistant) {
+                result.push(tool_result_item(missing))
+            }
+            // Pi never replays an incomplete assistant turn. Its reasoning
+            // signature or partial tool call may not have a valid successor.
+            if assistant.stop_reason == types.STOP_ERROR || assistant.stop_reason == types.STOP_ABORTED {
+                continue
+            }
+            result.append(assistant_items(model, assistant, message_index))
         } else if message is ref<types.tool_result_message_t> tool_result {
+            replay.observe_tool_result(tool_result.tool_call_id)
             result.push(tool_result_item(tool_result))
         } else if message is ref<types.compaction_summary_message_t> summary {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(missing))
+            }
             result.push(summary_item(summary))
         } else if message is ref<types.branch_summary_message_t> summary {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(missing))
+            }
             var user = new types.user_message_t(content = 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\n' + summary.summary + '</summary>', timestamp = summary.timestamp)
             result.push(user_item(user))
         } else if message is ref<types.custom_message_t> custom {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(missing))
+            }
             var user = new types.user_message_t(content = custom.content, timestamp = custom.timestamp)
             result.push(user_item(user))
         } else if message is ref<types.bash_execution_message_t> bash {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(missing))
+            }
             if !bash.exclude_from_context {
                 var user = new types.user_message_t(content = types.bash_execution_text(bash), timestamp = bash.timestamp)
                 result.push(user_item(user))
+            } else {
+                // convertToLlm removes excluded bash records before Pi assigns
+                // fallback Responses message indexes.
+                counts_for_index = false
             }
         }
+        if counts_for_index {
+            message_index += 1
+        }
+    }
+    for missing in replay.finish() {
+        result.push(tool_result_item(missing))
     }
     return result
 }
 #local
-fn summary_item(ref<types.compaction_summary_message_t> message): ref<json.value_t> {
+fn summary_item(ref<types.compaction_summary_message_t> message): any {
     var user = new types.user_message_t(content = 'The conversation history before this point was compacted into the following summary:\n\n<summary>\n' + message.summary + '\n</summary>', timestamp = message.timestamp)
     return user_item(user)
 }
 #local
-fn user_item(ref<types.user_message_t> message): ref<json.value_t> {
-    json_object_t text = {}
-    text['type'] = boxed_string('input_text')
-    text['text'] = boxed_string(message.content)
-    json_object_t item = {}
-    item['role'] = boxed_string('user')
-    item['content'] = json.box_value(json.array_value([json.box_value(object_value(text)),]))
-    return json.box_value(object_value(item))
+fn user_item(ref<types.user_message_t> message): any {
+    {string:any} text = {}
+    text['type'] = 'input_text'
+    text['text'] = message.content
+    [any] content = []
+    content.push(text)
+    {string:any} item = {}
+    item['role'] = 'user'
+    item['content'] = content
+    return item
 }
 #local
-fn assistant_items(ref<types.model_t> model, ref<types.assistant_message_t> message, int message_index): [ref<json.value_t>]! {
-    [ref<json.value_t>] result = []
+fn assistant_items(ref<types.model_t> model, ref<types.assistant_message_t> message, int message_index): [any]! {
+    [any] result = []
     int text_index = 0
     for block in message.content {
         if block is ref<types.thinking_content_t> thinking {
             if thinking.thinking_signature != '' {
-                result.push(json.box_value(json.parse(thinking.thinking_signature)))
+                result.push(json_util.parse(thinking.thinking_signature))
             }
         } else if block is ref<types.text_content_t> text {
             result.push(assistant_text_item(text, message_index, text_index))
@@ -125,7 +173,7 @@ fn assistant_items(ref<types.model_t> model, ref<types.assistant_message_t> mess
     return result
 }
 #local
-fn assistant_text_item(ref<types.text_content_t> text, int message_index, int text_index): ref < json.value_t > ! {
+fn assistant_text_item(ref<types.text_content_t> text, int message_index, int text_index): any! {
     string fallback_id = fmt.sprintf('msg_pi_%d', message_index)
     if text_index > 0 {
         fallback_id += fmt.sprintf('_%d', text_index)
@@ -134,23 +182,26 @@ fn assistant_text_item(ref<types.text_content_t> text, int message_index, int te
     if message_id.len() > 64 {
         message_id = 'msg_' + ids.short_hash(message_id)
     }
-    json_object_t content = {}
-    content['type'] = boxed_string('output_text')
-    content['text'] = boxed_string(text.text)
-    content['annotations'] = json.box_value(json.array_value([]))
-    json_object_t item = {}
-    item['type'] = boxed_string('message')
-    item['role'] = boxed_string('assistant')
-    item['content'] = json.box_value(json.array_value([json.box_value(object_value(content)),]))
-    item['status'] = boxed_string('completed')
-    item['id'] = boxed_string(message_id)
+    {string:any} content = {}
+    content['type'] = 'output_text'
+    content['text'] = text.text
+    [any] annotations = []
+    content['annotations'] = annotations
+    [any] content_items = []
+    content_items.push(content)
+    {string:any} item = {}
+    item['type'] = 'message'
+    item['role'] = 'assistant'
+    item['content'] = content_items
+    item['status'] = 'completed'
+    item['id'] = message_id
     if phase != '' {
-        item['phase'] = boxed_string(phase)
+        item['phase'] = phase
     }
-    return json.box_value(object_value(item))
+    return item
 }
 #local
-fn assistant_tool_item(ref<types.model_t> model, ref<types.assistant_message_t> assistant, ref<types.tool_call_t> tool_call): ref < json.value_t > ! {
+fn assistant_tool_item(ref<types.model_t> model, ref<types.assistant_message_t> assistant, ref<types.tool_call_t> tool_call): any! {
     string normalized_id = normalize_tool_call_id(model, assistant, tool_call.id)
     var parts = normalized_id.split('|')
     string call_id = normalized_id
@@ -161,19 +212,19 @@ fn assistant_tool_item(ref<types.model_t> model, ref<types.assistant_message_t> 
     if parts.len() > 1 {
         item_id = parts[1]
     }
-    json_object_t item = {}
-    item['type'] = boxed_string('function_call')
-    item['call_id'] = boxed_string(call_id)
+    {string:any} item = {}
+    item['type'] = 'function_call'
+    item['call_id'] = call_id
     bool different_model = assistant.model != '' && assistant.model != model.id && assistant.provider == model.provider && assistant.api == model.api
     if item_id != '' && !different_model {
-        item['id'] = boxed_string(item_id)
+        item['id'] = item_id
     }
-    item['name'] = boxed_string(tool_call.name)
-    item['arguments'] = boxed_string(json.stringify(tool_call.arguments))
-    return json.box_value(object_value(item))
+    item['name'] = tool_call.name
+    item['arguments'] = json.serialize(tool_call.arguments)
+    return item
 }
 #local
-fn tool_result_item(ref<types.tool_result_message_t> message): ref<json.value_t> {
+fn tool_result_item(ref<types.tool_result_message_t> message): any {
     string call_id = ids.normalize_id_part(message.tool_call_id)
     var parts = message.tool_call_id.split('|')
     if parts.len() > 0 {
@@ -187,11 +238,11 @@ fn tool_result_item(ref<types.tool_result_message_t> message): ref<json.value_t>
     if output == '' {
         output = '(no tool output)'
     }
-    json_object_t item = {}
-    item['type'] = boxed_string('function_call_output')
-    item['call_id'] = boxed_string(call_id)
-    item['output'] = boxed_string(output)
-    return json.box_value(object_value(item))
+    {string:any} item = {}
+    item['type'] = 'function_call_output'
+    item['call_id'] = call_id
+    item['output'] = output
+    return item
 }
 #local
 fn normalize_tool_call_id(ref<types.model_t> model, ref<types.assistant_message_t> assistant, string id): string {
@@ -211,16 +262,16 @@ fn normalize_tool_call_id(ref<types.model_t> model, ref<types.assistant_message_
     return call_id + '|' + item_id
 }
 #local
-fn convert_tools([ref<types.tool_t>] tools): [ref<json.value_t>]! {
-    [ref<json.value_t>] result = []
+fn convert_tools([ref<types.tool_t>] tools): [any]! {
+    [any] result = []
     for tool in tools {
-        json_object_t item = {}
-        item['type'] = boxed_string('function')
-        item['name'] = boxed_string(tool.name)
-        item['description'] = boxed_string(tool.description)
-        item['parameters'] = json.box_value(tool.parameters)
-        item['strict'] = json.box_value(json.bool_value(false))
-        result.push(json.box_value(object_value(item)))
+        {string:any} item = {}
+        item['type'] = 'function'
+        item['name'] = tool.name
+        item['description'] = tool.description
+        item['parameters'] = tool.parameters
+        item['strict'] = false
+        result.push(item)
     }
     return result
 }
@@ -232,19 +283,24 @@ fn parse_text_signature(string signature, string fallback): (string, string)! {
         }
         return (fallback, '')
     }
-    var value = json.parse(signature)
-    var object = value.as_object()
-    if!object.contains('v') || object['v'].as_number() != '1' || !object.contains('id') {
+    var value = json_util.parse(signature) catch e {
+        return (signature, '')
+    }
+    var object = value as {string:any}
+    if !object.contains('v') || json_util.num_token(object['v']) != '1' || !object.contains('id') {
         return (fallback, '')
     }
     string phase = ''
     if object.contains('phase') {
-        var candidate = object['phase'].as_string()
+        var candidate = object['phase'] as string
         if candidate == 'commentary' || candidate == 'final_answer' {
             phase = candidate
         }
     }
-    return (object['id'].as_string(), phase)
+    // Intermediate locals: direct `(any as string)` expressions inside tuple
+    // constructions corrupt the heap on the current Nature runtime.
+    string message_id = object['id'] as string
+    return (message_id, phase)
 }
 #local
 fn clamp_cache_key(string key): string {
@@ -254,13 +310,4 @@ fn clamp_cache_key(string key): string {
         return key
     }
     return key.slice(0, MAX_PROMPT_CACHE_KEY_CHARS)
-}
-#local
-fn boxed_string(string value): ref<json.value_t> {
-    return json.box_value(json.string_value(value))
-}
-
-#local
-fn object_value(json_object_t value):json.value_t {
-    return json.object_value(value as map<string, ref<json.value_t>>)
 }

@@ -3,8 +3,10 @@ import adou.src.ai.event_stream
 import adou.src.ai.provider_retry
 import adou.src.ai.providers.anthropic_messages
 import adou.src.ai.providers.anthropic_request
+import adou.src.ai.providers.decorators
 import adou.src.ai.sse
 import adou.src.ai.types
+import adou.src.debug
 import fmt
 import http.client
 import time
@@ -28,9 +30,11 @@ fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stre
 
 #local
 fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
+    debug.log('provider', 'anthropic stream start model=' + model.id)
     var processor = anthropic_messages.processor(model, time.now().ms_timestamp())
     var state = new run_state_t(stream = stream, model = model, context = context, options = options, processor = processor,)
     run_inner(stream, state) catch e {
+        debug.log('provider', 'anthropic stream failure: ' + e.msg())
         fail(stream, state, e.msg())
         return
     }
@@ -43,20 +47,24 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     }
     state.body = anthropic_request.build(state.model, state.context, state.options)
     var current = send_with_retry(state, 0)
+    debug.log('provider', 'anthropic response status=' + fmt.sprintf('%d', current.status))
     stream.push(state.processor.start())
     var decoder = sse.parser()
     [u8] scratch = vec<u8>.new(0, 8192)
     bool saw_stop = false
     for true {
+        debug.log('provider', 'anthropic read begin')
         int n = current.read(scratch) catch e {
             if provider_retry.is_clean_eof(e.msg()) {
                 break
             }
             throw e
         }
+        debug.log('provider', 'anthropic read bytes=' + fmt.sprintf('%d', n))
         var frames = decoder.feed(scratch.slice(0, n))
         saw_stop = push_frames(stream, state.processor, frames)
         if saw_stop {
+            debug.log('provider', 'anthropic received message_stop')
             break
         }
     }
@@ -65,6 +73,7 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     }
     stream.push(state.processor.finish())
     stream.end()
+    debug.log('provider', 'anthropic stream end')
 }
 
 #local
@@ -89,6 +98,7 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
         throw errorf('Request aborted')
     }
     var current = send_once(state) catch e {
+        debug.log('provider', 'anthropic request attempt failed: ' + e.msg())
         if stream.is_aborted() || retry_index >= state.options.max_retries {
             throw e
         }
@@ -105,6 +115,7 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
         throw errorf('Request aborted')
     }
     if current.status >= 200 && current.status < 300 {
+        debug.log('provider', 'anthropic request accepted status=' + fmt.sprintf('%d', current.status))
         return current
     }
     int status = current.status
@@ -122,10 +133,18 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
 
 #local
 fn send_once(ref<run_state_t> state): ref<client.response_t>! {
+    debug.log('provider', 'anthropic sending request')
     var request = client.new().post(anthropic_request.endpoint(state.model)).timeout(state.options.timeout_ms).header('x-api-key', anthropic_request.api_key(state.options)).header('anthropic-version', anthropic_request.ANTHROPIC_VERSION).header('Content-Type', 'application/json').header('Accept', 'text/event-stream').content(state.body)
     string beta = anthropic_request.beta_header(state.model, state.context)
     if beta != '' {
         request.header('anthropic-beta', beta)
+    }
+    if decorators.is_cloudflare_gateway(state.model) {
+        request.header(decorators.cloudflare_gateway_auth_header(state.options.api_key).name, decorators.cloudflare_gateway_auth_header(state.options.api_key).value)
+    }
+    var headers = decorators.copilot_headers(state.context)
+    for header in headers {
+        request.header(header.name, header.value)
     }
     return request.send()
 }
@@ -147,6 +166,7 @@ fn format_http_error(int status, string message, string body): string {
 
 #local
 fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
+    debug.log('provider', 'anthropic terminal failure: ' + message)
     // The failed read owns transport cleanup. Re-dispatching close through
     // Nature's connable interface here can corrupt the receiver on a TTY
     // coroutine schedule and raise SIGBUS.
