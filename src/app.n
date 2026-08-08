@@ -1191,7 +1191,8 @@ fn rpc_entries(ref<repository.manager_t> repository, string since): {string:any}
 
 #local
 fn rpc_tree(ref<repository.manager_t> repository): {string:any} {
-    [any] roots = rpc_tree_nodes(repository, '')
+    [string] visited = []
+    [any] roots = rpc_tree_nodes(repository, '', visited)
     {string:any} result = {}
     result['tree'] = roots
     result['leafId'] = rpc_nullable_string(repository.get_leaf_id())
@@ -1199,14 +1200,36 @@ fn rpc_tree(ref<repository.manager_t> repository): {string:any} {
 }
 
 #local
-fn rpc_tree_nodes(ref<repository.manager_t> repository, string parent_id): [any] {
+fn rpc_tree_nodes(ref<repository.manager_t> repository, string parent_id, [string] visited): [any] {
     [any] values = []
     for entry in repository.get_entries() {
-        bool matches = parent_id == '' ? !entry.has_parent : entry.has_parent && entry.parent_id == parent_id
+        // An entry whose parent reference is missing, itself, or a descendant
+        // (corrupt data) is surfaced as a root like Pi instead of being
+        // dropped or recursing forever.
+        bool dangling_parent = false
+        if entry.has_parent && entry.parent_id != entry.id {
+            bool parent_exists = false
+            for candidate in repository.get_entries() {
+                if candidate.id == entry.parent_id {parent_exists = true; break}
+            }
+            dangling_parent = !parent_exists
+        }
+        bool is_root = !entry.has_parent || entry.parent_id == entry.id || dangling_parent
+        bool matches = parent_id == '' ? is_root : entry.has_parent && entry.parent_id == parent_id && entry.parent_id != entry.id
         if !matches {continue}
+        bool seen = false
+        for existing in visited {
+            if existing == entry.id {seen = true; break}
+        }
+        // Corrupt session files can reference a parent that points back at
+        // the entry (self-loops) or at a descendant (cycles).  Guard the
+        // recursion so get_tree terminates and still returns every entry.
+        if seen {continue}
         {string:any} node = {}
         node['entry'] = entry.raw
-        node['children'] = rpc_tree_nodes(repository, entry.id)
+        [string] next_visited = visited
+        next_visited.push(entry.id)
+        node['children'] = rpc_tree_nodes(repository, entry.id, next_visited)
         string label = repository.get_label(entry.id)
         if label != '' {
             node['label'] = label

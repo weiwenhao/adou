@@ -1,5 +1,6 @@
 import adou.src.ai.types as ai_types
 import adou.src.config.paths
+import adou.src.json_util
 import adou.src.session.identity
 import adou.src.session.jsonl
 import adou.src.session.message_json
@@ -17,7 +18,6 @@ import path
 import strings
 import syscall
 
-type object_t = map<string, ref<json.value_t>>
 type branch_collection_t = struct {
     [ref<types.entry_t>] entries = []
     bool has_common_ancestor
@@ -92,7 +92,7 @@ fn in_memory(string cwd): ref<manager_t>! {
 fn in_memory_with_parent(string cwd, string parent_session): ref<manager_t>! {
     string resolved = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
     string timestamp = identity.iso_now()
-    var header = new types.header_t(version = types.CURRENT_VERSION, id = identity.uuid_v7(), timestamp = timestamp, cwd = resolved, parent_session = parent_session, raw = json.null_value())
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = identity.uuid_v7(), timestamp = timestamp, cwd = resolved, parent_session = parent_session, raw = null)
     return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = '', persisted = false, header = header)
 }
 
@@ -125,7 +125,7 @@ fn create_with_id_and_parent(string cwd, string session_dir, string session_id, 
     string timestamp = identity.iso_now()
     string file_timestamp = timestamp.replace(':', '-').replace('.', '-')
     string file_path = path.join(directory, file_timestamp + '_' + session_id + '.jsonl')
-    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved, parent_session = parent_session, raw = json.null_value())
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved, parent_session = parent_session, raw = null)
     write_new_file(file_path, jsonl.encode_header(header) + '\n')
     return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = directory, session_file = file_path, persisted = true, header = header)
 }
@@ -143,7 +143,7 @@ fn open_or_create(string file_path, string cwd): ref<manager_t>! {
     os.mkdirs(directory, 0o700)
     string timestamp = identity.iso_now()
     string session_id = identity.uuid_v7()
-    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved_cwd, raw = json.null_value())
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved_cwd, raw = null)
     write_new_file(resolved_file, jsonl.encode_header(header) + '\n')
     return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved_cwd, session_dir = directory, session_file = resolved_file, persisted = true, header = header)
 }
@@ -183,7 +183,7 @@ fn open(string file_path): ref<manager_t>! {
     if loaded.migrated {
         string content = jsonl.encode_header(loaded.header) + '\n'
         for entry in loaded.entries {
-            content += json.stringify(entry.raw) + '\n'
+            content += json.serialize(entry.raw) + '\n'
         }
         rewrite_file(resolved_file, content)
     }
@@ -348,9 +348,10 @@ fn manager_t.rebuild_index(&self) {
         self.has_leaf = true
         self.leaf_id = entry.id
         if entry.kind == types.ENTRY_LABEL {
-            var object = entry.raw.as_object() catch error {continue}
-            string target_id = optional_string(object as object_t, 'targetId')
-            string label = optional_string(object as object_t, 'label')
+            if !json_util.is_obj(entry.raw) {continue}
+            var object = entry.raw as {string:any}
+            string target_id = json_util.opt_string(object, 'targetId')
+            string label = json_util.opt_string(object, 'label')
             if target_id != '' {
                 if label != '' {
                     self.labels_by_id[target_id] = label
@@ -420,11 +421,18 @@ fn manager_t.collect_branch_entries(&self, string old_leaf_id, string target_id)
         }
     }
     [ref<types.entry_t>] reversed = []
+    [string] walked = []
     string current_id = old_leaf_id
     for current_id != '' && (!has_common || current_id != common_id) {
         if !self.by_id.contains(current_id) {
             break
         }
+        bool seen = false
+        for existing in walked {
+            if existing == current_id {seen = true; break}
+        }
+        if seen {break}
+        walked.push(current_id)
         var entry = self.by_id[current_id]
         reversed.push(entry)
         current_id = entry.has_parent ? entry.parent_id : ''
@@ -441,8 +449,17 @@ fn manager_t.active_entries(&self): [ref<types.entry_t>] {
         return []
     }
     [ref<types.entry_t>] reversed = []
+    [string] visited = []
     string current_id = self.leaf_id
     for current_id != '' && self.by_id.contains(current_id) {
+        // Guard against corrupt parent references (self-loops and cycles);
+        // see path_to.
+        bool seen = false
+        for existing in visited {
+            if existing == current_id {seen = true; break}
+        }
+        if seen {break}
+        visited.push(current_id)
         var current = self.by_id[current_id]
         reversed.push(current)
         if current.has_parent {
@@ -460,8 +477,8 @@ fn manager_t.active_entries(&self): [ref<types.entry_t>] {
 
 fn manager_t.append_message(&self, ai_types.message_t message): string! {
     self.lock.lock()
-    object_t object = self.entry_base(types.ENTRY_MESSAGE)
-    object['message'] = json.box_value(message_json.encode(message))
+    {string:any} object = self.entry_base(types.ENTRY_MESSAGE)
+    object['message'] = message_json.encode(message)
     var entry = self.append_object_locked(object) catch error {
         self.lock.unlock()
         throw error
@@ -470,18 +487,18 @@ fn manager_t.append_message(&self, ai_types.message_t message): string! {
     return entry.id
 }
 
-fn manager_t.append_compaction(&self, string summary, string first_kept_entry_id, int tokens_before, json.value_t details, ai_types.usage_t usage): string! {
+fn manager_t.append_compaction(&self, string summary, string first_kept_entry_id, int tokens_before, any details, ai_types.usage_t usage): string! {
     self.lock.lock()
     if !self.by_id.contains(first_kept_entry_id) {
         self.lock.unlock()
         throw errorf('Entry %s not found', first_kept_entry_id)
     }
-    object_t object = self.entry_base(types.ENTRY_COMPACTION)
-    object['summary'] = boxed_string(summary)
-    object['firstKeptEntryId'] = boxed_string(first_kept_entry_id)
-    object['tokensBefore'] = number(tokens_before)
-    if details.kind != json.VALUE_NULL {
-        object['details'] = json.box_value(details)
+    {string:any} object = self.entry_base(types.ENTRY_COMPACTION)
+    object['summary'] = summary
+    object['firstKeptEntryId'] = first_kept_entry_id
+    object['tokensBefore'] = tokens_before
+    if !json_util.is_null(details) {
+        object['details'] = details
     }
     if has_usage(usage) {
         object['usage'] = message_json.encode_usage(usage)
@@ -494,17 +511,17 @@ fn manager_t.append_compaction(&self, string summary, string first_kept_entry_id
     return entry.id
 }
 
-fn manager_t.append_branch_summary(&self, string from_id, string summary, json.value_t details, ai_types.usage_t usage): string! {
+fn manager_t.append_branch_summary(&self, string from_id, string summary, any details, ai_types.usage_t usage): string! {
     self.lock.lock()
     if from_id != 'root' && !self.by_id.contains(from_id) {
         self.lock.unlock()
         throw errorf('Entry %s not found', from_id)
     }
-    object_t object = self.entry_base(types.ENTRY_BRANCH_SUMMARY)
-    object['fromId'] = boxed_string(from_id)
-    object['summary'] = boxed_string(summary)
-    if details.kind != json.VALUE_NULL {
-        object['details'] = json.box_value(details)
+    {string:any} object = self.entry_base(types.ENTRY_BRANCH_SUMMARY)
+    object['fromId'] = from_id
+    object['summary'] = summary
+    if !json_util.is_null(details) {
+        object['details'] = details
     }
     if has_usage(usage) {
         object['usage'] = message_json.encode_usage(usage)
@@ -519,9 +536,9 @@ fn manager_t.append_branch_summary(&self, string from_id, string summary, json.v
 
 fn manager_t.append_model_change(&self, string provider, string model_id): string! {
     self.lock.lock()
-    object_t object = self.entry_base(types.ENTRY_MODEL_CHANGE)
-    object['provider'] = boxed_string(provider)
-    object['modelId'] = boxed_string(model_id)
+    {string:any} object = self.entry_base(types.ENTRY_MODEL_CHANGE)
+    object['provider'] = provider
+    object['modelId'] = model_id
     var entry = self.append_object_locked(object) catch error {
         self.lock.unlock()
         throw error
@@ -532,8 +549,8 @@ fn manager_t.append_model_change(&self, string provider, string model_id): strin
 
 fn manager_t.append_thinking_change(&self, string level): string! {
     self.lock.lock()
-    object_t object = self.entry_base(types.ENTRY_THINKING_CHANGE)
-    object['thinkingLevel'] = boxed_string(level)
+    {string:any} object = self.entry_base(types.ENTRY_THINKING_CHANGE)
+    object['thinkingLevel'] = level
     var entry = self.append_object_locked(object) catch error {
         self.lock.unlock()
         throw error
@@ -544,12 +561,12 @@ fn manager_t.append_thinking_change(&self, string level): string! {
 
 fn manager_t.append_session_info(&self, string name): string! {
     self.lock.lock()
-    object_t object = self.entry_base(types.ENTRY_SESSION_INFO)
+    {string:any} object = self.entry_base(types.ENTRY_SESSION_INFO)
     string sanitized = name.replace('\r', ' ').replace('\n', ' ').trim([' ', '\t'])
     if sanitized != '' {
-        object['name'] = boxed_string(sanitized)
+        object['name'] = sanitized
     } else {
-        object['name'] = json.box_value(json.null_value())
+        object['name'] = null
     }
     var entry = self.append_object_locked(object) catch error {
         self.lock.unlock()
@@ -566,9 +583,13 @@ fn manager_t.append_label_change(&self, string target_id, string label): string!
         throw errorf('Entry %s not found', target_id)
     }
     string value = label.trim([' ', '\t', '\n', '\r'])
-    object_t object = self.entry_base(types.ENTRY_LABEL)
-    object['targetId'] = boxed_string(target_id)
-    object['label'] = value == '' ? json.box_value(json.null_value()) : boxed_string(value)
+    {string:any} object = self.entry_base(types.ENTRY_LABEL)
+    object['targetId'] = target_id
+    if value == '' {
+        object['label'] = null
+    } else {
+        object['label'] = value
+    }
     var entry = self.append_object_locked(object) catch error {
         self.lock.unlock()
         throw error
@@ -604,8 +625,8 @@ fn manager_t.get_session_name(&self): string! {
     // not reveal an older name from the selected path.
     for entry in self.entries {
         if entry.kind == types.ENTRY_SESSION_INFO {
-            var object = entry.raw.as_object() as object_t
-            result = optional_string(object, 'name')
+            var object = entry.raw as {string:any}
+            result = json_util.opt_string(object, 'name')
         }
     }
     return result
@@ -646,10 +667,10 @@ fn manager_t.fork_to(&self, string target_cwd, string target_session_dir, string
     string file_timestamp = timestamp.replace(':', '-').replace('.', '-')
     string file_path = path.join(directory, file_timestamp + '_' + session_id + '.jsonl')
     string parent_session = self.persisted ? self.session_file : ''
-    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved_cwd, parent_session = parent_session, raw = json.null_value())
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved_cwd, parent_session = parent_session, raw = null)
     string content = jsonl.encode_header(header) + '\n'
     for entry in self.entries {
-        content += json.stringify(entry.raw) + '\n'
+        content += json.serialize(entry.raw) + '\n'
     }
     write_new_file(file_path, content)
     return open(file_path)
@@ -663,8 +684,8 @@ fn manager_t.fork_before(&self, string entry_id): ref<manager_t>! {
     if selected.kind != types.ENTRY_MESSAGE {
         throw errorf('Session entry %s is not a user message', entry_id)
     }
-    var object = selected.raw.as_object() as object_t
-    if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+    var object = selected.raw as {string:any}
+    if !object.contains('message') || !(object['message'] is {string:any}) {
         throw errorf('Session entry %s has no valid message', entry_id)
     }
     var message = message_json.decode(object['message'])
@@ -697,7 +718,7 @@ fn manager_t.clone_path_to(&self, bool has_target, string target_id, string targ
     }
     string timestamp = identity.iso_now()
     string parent_session = self.persisted ? self.session_file : ''
-    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved_cwd, parent_session = parent_session, raw = json.null_value())
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved_cwd, parent_session = parent_session, raw = null)
     if !self.persisted && directory == '' {
         var manager = new manager_t(lock = mutex.mutex_t.new(), cwd = self.cwd, session_dir = '', persisted = false, header = header, entries = retained)
         manager.rebuild_index()
@@ -711,7 +732,7 @@ fn manager_t.clone_path_to(&self, bool has_target, string target_id, string targ
     string file_path = path.join(directory, file_timestamp + '_' + session_id + '.jsonl')
     string content = jsonl.encode_header(header) + '\n'
     for entry in retained {
-        content += json.stringify(entry.raw) + '\n'
+        content += json.serialize(entry.raw) + '\n'
     }
     write_new_file(file_path, content)
     return open(file_path)
@@ -726,12 +747,16 @@ fn manager_t.rechain_with_labels(&self, [ref<types.entry_t>] source): [ref<types
         if entry.kind == types.ENTRY_LABEL {
             continue
         }
-        object_t object = {}
-        for key, value in entry.raw.as_object() {
+        {string:any} object = {}
+        for key, value in entry.raw as {string:any} {
             object[key] = value
         }
-        object['parentId'] = has_parent ? boxed_string(parent_id) : json.box_value(json.null_value())
-        var cloned = jsonl.parse_entry(json.parse(json.stringify(json.object_value(object as map<string, ref<json.value_t>>))))
+        if has_parent {
+        object['parentId'] = parent_id
+    } else {
+        object['parentId'] = null
+    }
+        var cloned = jsonl.parse_entry(json_util.parse(json.serialize(object)))
         result.push(cloned)
         has_parent = true
         parent_id = cloned.id
@@ -741,15 +766,19 @@ fn manager_t.rechain_with_labels(&self, [ref<types.entry_t>] source): [ref<types
         if !self.labels_by_id.contains(entry.id) {
             continue
         }
-        object_t object = {}
-        object['type'] = boxed_string(types.ENTRY_LABEL)
-        object['id'] = boxed_string(identity.uuid_v7())
-        object['parentId'] = has_parent ? boxed_string(parent_id) : json.box_value(json.null_value())
+        {string:any} object = {}
+        object['type'] = types.ENTRY_LABEL
+        object['id'] = identity.uuid_v7()
+        if has_parent {
+        object['parentId'] = parent_id
+    } else {
+        object['parentId'] = null
+    }
         string timestamp = self.get_label_timestamp(entry.id)
-        object['timestamp'] = boxed_string(timestamp == '' ? identity.iso_now() : timestamp)
-        object['targetId'] = boxed_string(entry.id)
-        object['label'] = boxed_string(self.labels_by_id[entry.id])
-        var label_entry = jsonl.parse_entry(json.parse(json.stringify(json.object_value(object as map<string, ref<json.value_t>>))))
+        object['timestamp'] = timestamp == '' ? identity.iso_now() : timestamp
+        object['targetId'] = entry.id
+        object['label'] = self.labels_by_id[entry.id]
+        var label_entry = jsonl.parse_entry(json_util.parse(json.serialize(object)))
         result.push(label_entry)
         has_parent = true
         parent_id = label_entry.id
@@ -763,8 +792,18 @@ fn manager_t.path_to(&self, string entry_id): [ref<types.entry_t>]! {
         throw errorf('Session entry %s not found', entry_id)
     }
     [ref<types.entry_t>] reversed = []
+    [string] visited = []
     string current_id = entry_id
     for current_id != '' && self.by_id.contains(current_id) {
+        // Corrupt session files can reference a parent that points back at
+        // the entry (self-loops) or at a descendant (cycles); stop walking
+        // instead of looping forever.
+        bool seen = false
+        for existing in visited {
+            if existing == current_id {seen = true; break}
+        }
+        if seen {break}
+        visited.push(current_id)
         var current = self.by_id[current_id]
         reversed.push(current)
         if current.has_parent {
@@ -787,16 +826,16 @@ fn manager_t.build_context(&self): types.context_t! {
     ref<types.entry_t>? compaction = null
     for index, entry in active {
         if entry.kind == types.ENTRY_MODEL_CHANGE {
-            var object = entry.raw.as_object() as object_t
-            result.provider = optional_string(object, 'provider')
-            result.model_id = optional_string(object, 'modelId')
+            var object = entry.raw as {string:any}
+            result.provider = json_util.opt_string(object, 'provider')
+            result.model_id = json_util.opt_string(object, 'modelId')
             result.has_model = result.provider != '' && result.model_id != ''
         } else if entry.kind == types.ENTRY_THINKING_CHANGE {
-            result.thinking_level = optional_string(entry.raw.as_object() as object_t, 'thinkingLevel')
+            result.thinking_level = json_util.opt_string(entry.raw as {string:any}, 'thinkingLevel')
             result.has_thinking_level = result.thinking_level != ''
         } else if entry.kind == types.ENTRY_MESSAGE {
-            var object = entry.raw.as_object() as object_t
-            if object.contains('message') && object['message'].kind == json.VALUE_OBJECT {
+            var object = entry.raw as {string:any}
+            if object.contains('message') && object['message'] is {string:any} {
                 var decoded = message_json.decode(object['message'])
                 if decoded is ref<ai_types.assistant_message_t> assistant {
                     result.provider = assistant.provider
@@ -812,13 +851,13 @@ fn manager_t.build_context(&self): types.context_t! {
     }
     int start = 0
     if compaction is ref<types.entry_t> compact_entry {
-        var object = compact_entry.raw.as_object() as object_t
-        string summary = required_string(object, 'summary')
-        int tokens_before = required_int(object, 'tokensBefore')
+        var object = compact_entry.raw as {string:any}
+        string summary = json_util.required_string(object, 'summary')
+        int tokens_before = json_util.required_int(object, 'tokensBefore')
         int timestamp = iso_to_ms(compact_entry.timestamp)
         ai_types.message_t summary_message = new ai_types.compaction_summary_message_t(summary = summary, tokens_before = tokens_before, timestamp = timestamp)
         result.messages.push(summary_message)
-        string first_kept = required_string(object, 'firstKeptEntryId')
+        string first_kept = json_util.required_string(object, 'firstKeptEntryId')
         start = find_entry_index(active, first_kept)
         if start < 0 || start >= compaction_index {
             throw errorf('Compaction entry %s references missing firstKeptEntryId %s', compact_entry.id, first_kept)
@@ -830,28 +869,28 @@ fn manager_t.build_context(&self): types.context_t! {
     }
     for int index = start; index < before_end; index += 1 {
         if active[index].kind == types.ENTRY_MESSAGE {
-            var object = active[index].raw.as_object() as object_t
-            if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+            var object = active[index].raw as {string:any}
+            if !object.contains('message') || !(object['message'] is {string:any}) {
                 throw errorf('session message entry %s has no valid message', active[index].id)
             }
             result.messages.push(message_json.decode(object['message']))
         } else if active[index].kind == types.ENTRY_BRANCH_SUMMARY {
-            var object = active[index].raw.as_object() as object_t
-            ai_types.message_t message = new ai_types.branch_summary_message_t(summary = required_string(object, 'summary'), from_id = required_string(object, 'fromId'), timestamp = iso_to_ms(active[index].timestamp))
+            var object = active[index].raw as {string:any}
+            ai_types.message_t message = new ai_types.branch_summary_message_t(summary = json_util.required_string(object, 'summary'), from_id = json_util.required_string(object, 'fromId'), timestamp = iso_to_ms(active[index].timestamp))
             result.messages.push(message)
         }
     }
     if compaction_index >= 0 {
         for int index = compaction_index + 1; index < active.len(); index += 1 {
             if active[index].kind == types.ENTRY_MESSAGE {
-                var object = active[index].raw.as_object() as object_t
-                if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+                var object = active[index].raw as {string:any}
+                if !object.contains('message') || !(object['message'] is {string:any}) {
                     throw errorf('session message entry %s has no valid message', active[index].id)
                 }
                 result.messages.push(message_json.decode(object['message']))
             } else if active[index].kind == types.ENTRY_BRANCH_SUMMARY {
-                var object = active[index].raw.as_object() as object_t
-                ai_types.message_t message = new ai_types.branch_summary_message_t(summary = required_string(object, 'summary'), from_id = required_string(object, 'fromId'), timestamp = iso_to_ms(active[index].timestamp))
+                var object = active[index].raw as {string:any}
+                ai_types.message_t message = new ai_types.branch_summary_message_t(summary = json_util.required_string(object, 'summary'), from_id = json_util.required_string(object, 'fromId'), timestamp = iso_to_ms(active[index].timestamp))
                 result.messages.push(message)
             }
         }
@@ -875,8 +914,9 @@ fn manager_t.usage_totals(&self): ai_types.usage_t {
     ai_types.usage_t total = ai_types.usage_t{}
     for entry in self.entries {
         if entry.kind == types.ENTRY_MESSAGE {
-            var object = entry.raw.as_object() catch error {continue}
-            if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+            if !json_util.is_obj(entry.raw) {continue}
+            var object = entry.raw as {string:any}
+            if !object.contains('message') || !(object['message'] is {string:any}) {
                 continue
             }
             var message = message_json.decode(object['message']) catch error {continue}
@@ -886,8 +926,9 @@ fn manager_t.usage_totals(&self): ai_types.usage_t {
                 add_usage(&total, tool.usage)
             }
         } else if entry.kind == types.ENTRY_COMPACTION || entry.kind == types.ENTRY_BRANCH_SUMMARY {
-            var object = entry.raw.as_object() catch error {continue}
-            if object.contains('usage') && object['usage'].kind == json.VALUE_OBJECT {
+            if !json_util.is_obj(entry.raw) {continue}
+            var object = entry.raw as {string:any}
+            if object.contains('usage') && object['usage'] is {string:any} {
                 var usage = message_json.decode_usage(object['usage']) catch error {continue}
                 add_usage(&total, usage)
             }
@@ -905,8 +946,9 @@ fn manager_t.latest_cache_hit_rate(&self): float {
         if entry.kind != types.ENTRY_MESSAGE {
             continue
         }
-        var object = entry.raw.as_object() catch error {continue}
-        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+        if !json_util.is_obj(entry.raw) {continue}
+            var object = entry.raw as {string:any}
+        if !object.contains('message') || !(object['message'] is {string:any}) {
             continue
         }
         var message = message_json.decode(object['message']) catch error {continue}
@@ -940,8 +982,9 @@ fn manager_t.context_usage_known(&self): bool {
         if entry.kind != types.ENTRY_MESSAGE {
             continue
         }
-        var object = entry.raw.as_object() catch error {continue}
-        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {
+        if !json_util.is_obj(entry.raw) {continue}
+            var object = entry.raw as {string:any}
+        if !object.contains('message') || !(object['message'] is {string:any}) {
             continue
         }
         var message = message_json.decode(object['message']) catch error {continue}
@@ -962,8 +1005,9 @@ fn manager_t.stats(&self, int context_window): stats_t! {
     result.usage = self.usage_totals()
     for entry in self.entries {
         if entry.kind != types.ENTRY_MESSAGE {continue}
-        var object = entry.raw.as_object() catch error {continue}
-        if !object.contains('message') || object['message'].kind != json.VALUE_OBJECT {continue}
+        if !json_util.is_obj(entry.raw) {continue}
+            var object = entry.raw as {string:any}
+        if !object.contains('message') || !(object['message'] is {string:any}) {continue}
         var message = message_json.decode(object['message']) catch error {continue}
         result.total_messages += 1
         if message is ref<ai_types.user_message_t> {
@@ -1025,16 +1069,16 @@ fn add_usage(ptr<ai_types.usage_t> total, ai_types.usage_t value) {
 }
 
 #local
-fn manager_t.entry_base(&self, string kind): object_t! {
-    object_t object = {}
-    object['type'] = boxed_string(kind)
-    object['id'] = boxed_string(self.unique_short_id())
+fn manager_t.entry_base(&self, string kind): {string:any}! {
+    {string:any} object = {}
+    object['type'] = kind
+    object['id'] = self.unique_short_id()
     if self.has_leaf {
-        object['parentId'] = boxed_string(self.leaf_id)
+        object['parentId'] = self.leaf_id
     } else {
-        object['parentId'] = json.box_value(json.null_value())
+        object['parentId'] = null
     }
-    object['timestamp'] = boxed_string(identity.iso_now())
+    object['timestamp'] = identity.iso_now()
     return object
 }
 
@@ -1050,9 +1094,9 @@ fn manager_t.unique_short_id(&self): string! {
 }
 
 #local
-fn manager_t.append_object_locked(&self, object_t object): ref<types.entry_t>! {
-    string line = json.stringify(json.object_value(object as map<string, ref<json.value_t>>))
-    var entry = jsonl.parse_entry(json.parse(line))
+fn manager_t.append_object_locked(&self, {string:any} object): ref<types.entry_t>! {
+    string line = json.serialize(object)
+    var entry = jsonl.parse_entry(json_util.parse(line))
     self.persist_line(line) catch error {
         throw error
     }
@@ -1136,40 +1180,6 @@ fn iso_to_ms(string value): int {
         return 0
     }
     return (libc.timegm(&parsed) as int) * 1000
-}
-
-#local
-fn required_string(object_t object, string key): string! {
-    if !object.contains(key) {
-        throw errorf('session JSON missing `%s`', key)
-    }
-    return object[key].as_string()
-}
-
-#local
-fn optional_string(object_t object, string key): string {
-    if !object.contains(key) || object[key].kind != json.VALUE_STRING {
-        return ''
-    }
-    return object[key].text
-}
-
-#local
-fn required_int(object_t object, string key): int! {
-    if !object.contains(key) || object[key].kind != json.VALUE_NUMBER {
-        throw errorf('session JSON missing numeric `%s`', key)
-    }
-    return libc.atol(object[key].number.to_cstr()) as int
-}
-
-#local
-fn number(int value): ref<json.value_t>! {
-    return json.box_value(json.number_value(fmt.sprintf('%d', value)))
-}
-
-#local
-fn boxed_string(string value): ref<json.value_t> {
-    return json.box_value(json.string_value(value))
 }
 
 #local
