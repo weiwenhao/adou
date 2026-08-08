@@ -53,13 +53,11 @@ test 'streams a real Mistral HTTP response' {
     co.sleep(500)
     var options = new types.stream_options_t(api_key = 'mistral-key', timeout_ms = 5000, max_retries = 0,)
     var stream = mistral_provider.stream(fixture_model(MISTRAL_PORT), fixture_context(), options)
+    co.sleep(800)
     [string] kinds = []
     for true {
-        var event = stream.recv()
+        var event = stream.recv() catch error {break}
         kinds.push(event.kind)
-        if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
-            break
-        }
     }
     var result = stream.result()
     assert(kinds[0] == types.EVENT_START)
@@ -97,8 +95,9 @@ test 'mistral tool call streaming accumulates partial json' {
     co.sleep(500)
     var options = new types.stream_options_t(api_key = 'mistral-key', timeout_ms = 5000, max_retries = 0,)
     var stream = mistral_provider.stream(fixture_model(MISTRAL_PORT + 1), fixture_context(), options)
+    co.sleep(800)
     for true {
-        var event = stream.recv()
+        var event = stream.recv() catch error {break}
         if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
             break
         }

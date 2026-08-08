@@ -1,0 +1,123 @@
+import adou.src.ai.providers.deepseek
+import adou.src.ai.providers.openai_completions_provider
+import adou.src.ai.types
+import co
+import fmt
+import http
+import net.tcp
+
+const DEEPSEEK_PORT = 18790
+
+type capture_t = struct {
+    string body
+    string authorization
+    string endpoint
+}
+
+fn serve_fixture(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+fn fixture_model(int port): ref<types.model_t> {
+    var model = new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
+    return model
+}
+
+fn fixture_context(): ref<types.context_t> {
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    return context
+}
+
+fn kinds_has([string] kinds, string kind): bool {
+    for existing in kinds {
+        if existing == kind {
+            return true
+        }
+    }
+    return false
+}
+
+fn success_sse(): string {
+    string body = ''
+    body += 'data: {"id":"chatcmpl_ds","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}\n\n'
+    body += 'data: {"id":"chatcmpl_ds","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"reasoning_content":"thinking..."}}]}\n\n'
+    body += 'data: {"id":"chatcmpl_ds","object":"chat.completion.chunk","choices":[{"index":0,"delta":{"content":"你好"}}]}\n\n'
+    body += 'data: {"id":"chatcmpl_ds","object":"chat.completion.chunk","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+    body += 'data: {"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}\n\n'
+    body += 'data: [DONE]\n\n'
+    return body
+}
+
+test 'streams a real DeepSeek HTTP response through the completions provider' {
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = DEEPSEEK_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.endpoint = request.path
+        capture.body = request.body
+        capture.authorization = request.headers['Authorization'] catch e {''}
+        response.content_type = 'text/event-stream'
+        response.send(success_sse())
+        server.close()
+    }
+    server.post('/chat/completions', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'deepseek-test-key', timeout_ms = 5000, max_retries = 0, thinking_enabled = true,)
+    var stream = openai_completions_provider.stream(fixture_model(DEEPSEEK_PORT), fixture_context(), options)
+    co.sleep(800)
+    [string] kinds = []
+    for true {
+        var event = stream.recv() catch error {break}
+        kinds.push(event.kind)
+    }
+    var result = stream.result()
+    assert(kinds[0] == types.EVENT_START)
+    assert(kinds_has(kinds, types.EVENT_THINKING_DELTA))
+    assert(kinds_has(kinds, types.EVENT_THINKING_END))
+    assert(kinds_has(kinds, types.EVENT_TEXT_DELTA))
+    assert(kinds_has(kinds, types.EVENT_TEXT_END))
+    assert(kinds[kinds.len() - 1] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    assert(capture.endpoint == '/chat/completions')
+    assert(capture.authorization == 'Bearer deepseek-test-key')
+    assert(capture.body.find('"model":"deepseek-v4-flash"') >= 0)
+    assert(capture.body.find('"stream":true') >= 0)
+    assert(capture.body.find('"thinking":{"type":"enabled"}') >= 0)
+    var text = text_block(result)
+    assert(text.text == '你好')
+    assert(result.usage.total_tokens == 7)
+}
+
+fn text_block(ref<types.assistant_message_t> message): ref<types.text_content_t> {
+    for block in message.content {
+        if block is ref<types.text_content_t> text {
+            return text
+        }
+    }
+    return new types.text_content_t()
+}
+
+test 'deepseek provider metadata matches Pi' {
+    var def = deepseek.def()
+    assert(def.id == 'deepseek')
+    assert(def.name == 'DeepSeek')
+    assert(def.api == 'openai-completions')
+    assert(def.base_url == 'https://api.deepseek.com')
+    assert(def.env_vars.len() == 1 && def.env_vars[0] == 'DEEPSEEK_API_KEY')
+    var models = deepseek.models()
+    assert(models.len() == 2)
+    var flash = models[0]
+    assert(flash.id == 'deepseek-v4-flash')
+    assert(flash.reasoning)
+    assert(flash.context_window == 1000000)
+    assert(flash.max_tokens == 384000)
+    assert(flash.cost.input == 0.14)
+    assert(flash.cost.output == 0.28)
+    assert(flash.cost.cache_read == 0.0028)
+    assert(flash.thinking_level_map['high'] == 'high')
+    assert(flash.thinking_level_map['max'] == 'max')
+    assert(flash.thinking_level_map['low'] == '')
+}

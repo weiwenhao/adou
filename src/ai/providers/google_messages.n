@@ -1,0 +1,188 @@
+import adou.src.ai.providers.decorators
+import adou.src.ai.providers.replay
+import adou.src.ai.types
+import adou.src.json_util
+import json
+import strings
+
+fn endpoint(ref<types.model_t> model): string {
+    string base = decorators.resolve_base_url(model)
+    for base.ends_with('/') {
+        base = base.slice(0, base.len() - 1)
+    }
+    return base + '/models/' + model.id + ':streamGenerateContent?alt=sse'
+}
+
+fn query_key(ref<types.stream_options_t> options): string {
+    return '&key=' + options.api_key
+}
+
+fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+    {string:any} body = {}
+    [any] contents = convert_contents(context)
+    body['contents'] = contents
+    if context.system_prompt != '' {
+        {string:any} system = {}
+        [any] parts = []
+        {string:any} text_part = {}
+        text_part['text'] = context.system_prompt
+        parts.push(text_part)
+        system['parts'] = parts
+        body['systemInstruction'] = system
+    }
+    if context.tools.len() > 0 {
+        body['tools'] = convert_tools(context.tools)
+    }
+    {string:any} generation_config = {}
+    int max_tokens = options.max_tokens
+    if max_tokens <= 0 {
+        max_tokens = model.max_tokens
+    }
+    if max_tokens > 0 {
+        generation_config['maxOutputTokens'] = max_tokens
+    }
+    body['generationConfig'] = generation_config
+    return json.serialize(body)
+}
+
+#local
+fn convert_contents(ref<types.context_t> context): [any] {
+    [any] result = []
+    var replay = replay.tracker()
+    for message in context.messages {
+        if message is ref<types.user_message_t> user {
+            for missing in replay.before_other() {
+                result.push(tool_result_content(missing))
+            }
+            result.push(user_content(user.content))
+        } else if message is ref<types.assistant_message_t> assistant {
+            for missing in replay.before_assistant(assistant) {
+                result.push(tool_result_content(missing))
+            }
+            if assistant.stop_reason == types.STOP_ERROR || assistant.stop_reason == types.STOP_ABORTED {
+                continue
+            }
+            var content = model_content(assistant)
+            if !json_util.is_null(content) {
+                result.push(content)
+            }
+        } else if message is ref<types.tool_result_message_t> tool_result {
+            replay.observe_tool_result(tool_result.tool_call_id)
+            result.push(tool_result_content(tool_result))
+        } else if message is ref<types.compaction_summary_message_t> summary {
+            for missing in replay.before_other() {
+                result.push(tool_result_content(missing))
+            }
+            result.push(user_content('The conversation history before this point was compacted into the following summary:\n\n<summary>\n' + summary.summary + '\n</summary>'))
+        } else if message is ref<types.branch_summary_message_t> summary {
+            for missing in replay.before_other() {
+                result.push(tool_result_content(missing))
+            }
+            result.push(user_content('The following is a summary of a branch that this conversation came back from:\n\n<summary>\n' + summary.summary + '</summary>'))
+        } else if message is ref<types.custom_message_t> custom {
+            for missing in replay.before_other() {
+                result.push(tool_result_content(missing))
+            }
+            result.push(user_content(custom.content))
+        } else if message is ref<types.bash_execution_message_t> bash {
+            for missing in replay.before_other() {
+                result.push(tool_result_content(missing))
+            }
+            if !bash.exclude_from_context {
+                result.push(user_content(types.bash_execution_text(bash)))
+            }
+        }
+    }
+    for missing in replay.finish() {
+        result.push(tool_result_content(missing))
+    }
+    return result
+}
+
+#local
+fn user_content(string text): any {
+    {string:any} content = {}
+    content['role'] = 'user'
+    [any] parts = []
+    {string:any} part = {}
+    part['text'] = text
+    parts.push(part)
+    content['parts'] = parts
+    return content
+}
+
+#local
+fn model_content(ref<types.assistant_message_t> message): any {
+    [any] parts = []
+    for block in message.content {
+        if block is ref<types.text_content_t> text_block {
+            {string:any} part = {}
+            part['text'] = text_block.text
+            parts.push(part)
+        } else if block is ref<types.thinking_content_t> thinking_block {
+            {string:any} part = {}
+            part['text'] = thinking_block.thinking
+            part['thought'] = true
+            parts.push(part)
+        } else if block is ref<types.tool_call_t> tool_call {
+            {string:any} function_call = {}
+            function_call['name'] = tool_call.name
+            function_call['args'] = tool_call.arguments
+            if tool_call.id != '' {
+                function_call['id'] = tool_call.id
+            }
+            {string:any} part = {}
+            part['functionCall'] = function_call
+            parts.push(part)
+        }
+    }
+    if parts.len() == 0 {
+        return null
+    }
+    {string:any} content = {}
+    content['role'] = 'model'
+    content['parts'] = parts
+    return content
+}
+
+#local
+fn tool_result_content(ref<types.tool_result_message_t> message): any {
+    [string] lines = []
+    for block in message.content {
+        lines.push(block.text)
+    }
+    string text = strings.join(lines, '\n')
+    if text == '' {
+        text = '(no tool output)'
+    }
+    {string:any} function_response = {}
+    function_response['name'] = message.tool_name
+    {string:any} response = {}
+    response['result'] = text
+    function_response['response'] = response
+    {string:any} part = {}
+    part['functionResponse'] = function_response
+    {string:any} content = {}
+    content['role'] = 'user'
+    [any] parts = []
+    parts.push(part)
+    content['parts'] = parts
+    return content
+}
+
+#local
+fn convert_tools([ref<types.tool_t>] tools): [any]! {
+    [any] result = []
+    for tool in tools {
+        {string:any} declaration = {}
+        declaration['name'] = tool.name
+        declaration['description'] = tool.description
+        declaration['parameters'] = tool.parameters
+        [any] declarations = []
+        declarations.push(declaration)
+        {string:any} tool_group = {}
+        tool_group['functionDeclarations'] = declarations
+        result.push(tool_group)
+    }
+    return result
+}

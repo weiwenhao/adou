@@ -1,0 +1,120 @@
+import adou.src.ai.providers.google_provider
+import adou.src.ai.types
+import co
+import fmt
+import http
+
+const GOOGLE_PORT = 18924
+
+type capture_t = struct {
+    string path
+    string query
+    string body
+}
+
+fn serve_fixture(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+fn fixture_model(int port): ref<types.model_t> {
+    return new types.model_t(id = 'gemini-2.5-flash', api = 'google-generative-ai', provider = 'google', base_url = fmt.sprintf('http://127.0.0.1:%d/v1beta', port), reasoning = true, max_tokens = 128)
+}
+
+fn fixture_context(): ref<types.context_t> {
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    return context
+}
+
+fn success_sse(): string {
+    string body = ''
+    body += 'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"thinking...","thought":true,"thoughtSignature":"sig-1"}]}}],"usageMetadata":{"promptTokenCount":3,"cachedContentTokenCount":1,"candidatesTokenCount":2,"thoughtsTokenCount":3,"totalTokenCount":9}}\n\n'
+    body += 'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"你好"}]}}]}\n\n'
+    body += 'data: {"candidates":[{"content":{"role":"model","parts":[]},"finishReason":"STOP"}]}\n\n'
+    return body
+}
+
+test 'streams a real Google Generative AI response' {
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = GOOGLE_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.path = request.path
+        capture.query = request.query
+        capture.body = request.body
+        response.content_type = 'text/event-stream'
+        response.send(success_sse())
+        server.close()
+    }
+    server.post('/v1beta/models/gemini-2.5-flash:streamGenerateContent', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'google-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = google_provider.stream(fixture_model(GOOGLE_PORT), fixture_context(), options)
+    co.sleep(800)
+    [string] kinds = []
+    for true {
+        var event = stream.recv() catch error {break}
+        kinds.push(event.kind)
+    }
+    var result = stream.result()
+    assert(kinds[0] == types.EVENT_START)
+    assert(kinds_has(kinds, types.EVENT_THINKING_DELTA))
+    assert(kinds_has(kinds, types.EVENT_TEXT_DELTA))
+    assert(kinds[kinds.len() - 1] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    assert(capture.path.find(':streamGenerateContent') >= 0)
+    assert(capture.path.find('alt=sse') >= 0 || capture.query.find('alt=sse') >= 0)
+    assert(capture.query.find('key=google-key') >= 0 || capture.path.find('key=google-key') >= 0)
+    assert(capture.body.find('"systemInstruction"') < 0)
+    assert(capture.body.find('"contents"') >= 0)
+    assert(result.usage.cache_read == 1)
+    assert(result.usage.reasoning == 3)
+    assert(result.usage.total_tokens == 9)
+    var thinking = result.content[0] as ref<types.thinking_content_t>
+    assert(thinking.thinking == 'thinking...')
+    assert(thinking.thinking_signature == 'sig-1')
+    var text = result.content[1] as ref<types.text_content_t>
+    assert(text.text == '你好')
+}
+
+test 'google function call parts become tool calls' {
+    var server = http.server()
+    server.port = GOOGLE_PORT + 1
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        string body = ''
+        body += 'data: {"candidates":[{"content":{"role":"model","parts":[{"functionCall":{"name":"read","args":{"path":"README.md"}}}]},"finishReason":"STOP"}]}\n\n'
+        response.content_type = 'text/event-stream'
+        response.send(body)
+        server.close()
+    }
+    server.post('/v1beta/models/gemini-2.5-flash:streamGenerateContent', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var options = new types.stream_options_t(api_key = 'google-key', timeout_ms = 5000, max_retries = 0,)
+    var stream = google_provider.stream(fixture_model(GOOGLE_PORT + 1), fixture_context(), options)
+    co.sleep(800)
+    for true {
+        var event = stream.recv() catch error {break}
+        if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
+            break
+        }
+    }
+    var result = stream.result()
+    assert(result.stop_reason == types.STOP_TOOL_USE)
+    assert(result.content.len() == 1)
+    var call = result.content[0] as ref<types.tool_call_t>
+    assert(call.name == 'read')
+    var arguments = call.arguments as {string:any}
+    assert(arguments['path'] as string == 'README.md')
+}
+
+fn kinds_has([string] kinds, string kind): bool {
+    for existing in kinds {
+        if existing == kind {
+            return true
+        }
+    }
+    return false
+}
