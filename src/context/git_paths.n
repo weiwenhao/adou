@@ -1,0 +1,102 @@
+import adou.src.tools.path_utils
+import adou.src.tools.command
+import fs
+import path
+import syscall
+
+// Port of the git metadata detection from
+// vendors/pi/packages/coding-agent/src/core/footer-data-provider.ts:
+// walking up from cwd for .git directories and worktree gitdir files.
+// Watcher/change-notification behavior stays out of scope (no fs.watch in
+// Nature); the footer polls the head file.
+
+pub type git_paths_t = struct {
+    string repo_dir
+    string common_git_dir
+    string head_path
+}
+
+pub fn find_git_paths(string cwd): ref<git_paths_t>? {
+    string dir = cwd
+    for true {
+        string git_path = path.join(dir, '.git')
+        if path_utils.exists(git_path) {
+            var stat = syscall.stat(git_path) catch error {
+                return null
+            }
+            if !syscall.stat_is_dir(stat.mode) {
+                // Worktree: .git is a file containing `gitdir: <path>`.
+                string content = read_text(git_path) catch error {
+                    return null
+                }
+                string trimmed = content.trim([' ', '\t', '\n', '\r'])
+                if !trimmed.starts_with('gitdir: ') {
+                    return null
+                }
+                string git_dir = path_utils.resolve_to_cwd(trimmed.slice(8, trimmed.len()).trim([' ', '\t']), dir)
+                string head_path = path.join(git_dir, 'HEAD')
+                if !path_utils.exists(head_path) {
+                    return null
+                }
+                string common_git_dir = git_dir
+                string common_dir_path = path.join(git_dir, 'commondir')
+                if path_utils.exists(common_dir_path) {
+                    string common_content = read_text(common_dir_path) catch error {
+                        return null
+                    }
+                    common_git_dir = path_utils.resolve_to_cwd(common_content.trim([' ', '\t', '\n', '\r']), git_dir)
+                }
+                var found = new git_paths_t(repo_dir = dir, common_git_dir = common_git_dir, head_path = head_path)
+                return found
+            }
+            string head_path = path.join(git_path, 'HEAD')
+            if !path_utils.exists(head_path) {
+                return null
+            }
+            var found = new git_paths_t(repo_dir = dir, common_git_dir = git_path, head_path = head_path)
+            return found
+        }
+        string parent = path.dir(dir)
+        if parent == dir || parent == '' {
+            return null
+        }
+        dir = parent
+    }
+    return null
+}
+
+// Read the branch directly from the HEAD file (`ref: refs/heads/<branch>`);
+// returns '' on detached HEAD or packed refs.
+pub fn read_head_branch(string head_path): string {
+    string content = read_text(head_path) catch error {
+        return ''
+    }
+    string trimmed = content.trim([' ', '\t', '\n', '\r'])
+    if !trimmed.starts_with('ref: refs/heads/') {
+        return ''
+    }
+    string branch = trimmed.slice(16, trimmed.len())
+    if branch == '' {
+        return ''
+    }
+    return branch
+}
+
+pub fn resolve_branch_with_git(string repo_dir): string {
+    var result = command.argv(repo_dir, '/usr/bin/git', ['--no-optional-locks', 'symbolic-ref', '--quiet', '--short', 'HEAD']) catch error {
+        return ''
+    }
+    if result.exit_code != 0 {
+        return ''
+    }
+    return result.stdout.trim([' ', '\t', '\n', '\r'])
+}
+
+fn read_text(string file_path): string! {
+    var file = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        throw error
+    }
+    string content = file.content()
+    file.close()
+    return content
+}

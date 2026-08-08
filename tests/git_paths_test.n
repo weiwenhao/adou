@@ -1,0 +1,70 @@
+import adou.src.context.git_paths
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+pub fn write_file(string file_path, string content): void! {
+    var parent = path.dir(file_path)
+    os.mkdirs(parent, 0o700)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644) catch error {
+        throw error
+    }
+    file.write(content as [u8])
+    file.close()
+}
+
+test 'find_git_paths walks up to a regular .git directory like Pi' {
+    string root = path.join('/tmp', 'adou-git-repo-' + suffix())
+    write_file(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n')
+    var found = git_paths.find_git_paths(path.join(root, 'src', 'nested'))
+    assert(!(found is null))
+    if found is ref<git_paths.git_paths_t> paths {
+        assert(paths.repo_dir == root)
+        assert(paths.common_git_dir == path.join(root, '.git'))
+        assert(paths.head_path == path.join(root, '.git', 'HEAD'))
+        assert(git_paths.read_head_branch(paths.head_path) == 'main')
+    }
+    os.rmdir(root, true)
+}
+
+test 'find_git_paths resolves worktree gitdir files like Pi' {
+    string repo = path.join('/tmp', 'adou-git-worktree-' + suffix())
+    string worktree = path.join(repo, 'wt')
+    write_file(path.join(repo, '.git', 'HEAD'), 'ref: refs/heads/dev\n')
+    write_file(path.join(worktree, '.git'), 'gitdir: ' + path.join(repo, '.git', 'worktrees', 'wt') + '\n')
+    write_file(path.join(repo, '.git', 'worktrees', 'wt', 'HEAD'), 'ref: refs/heads/dev\n')
+    write_file(path.join(repo, '.git', 'worktrees', 'wt', 'commondir'), '../..\n')
+    var found = git_paths.find_git_paths(worktree)
+    assert(!(found is null))
+    if found is ref<git_paths.git_paths_t> paths {
+        assert(paths.repo_dir == worktree)
+        assert(git_paths.read_head_branch(paths.head_path) == 'dev')
+        // commondir resolves ../.. relative to the worktree git dir.
+        assert(paths.common_git_dir.ends_with('.git'))
+    }
+    os.rmdir(repo, true)
+}
+
+test 'find_git_paths returns null outside a repository like Pi' {
+    string root = path.join('/tmp', 'adou-git-none-' + suffix())
+    os.mkdirs(root, 0o700)
+    var found = git_paths.find_git_paths(root)
+    assert(found is null)
+    os.rmdir(root, true)
+}
+
+test 'read_head_branch ignores detached and packed heads like Pi' {
+    string root = path.join('/tmp', 'adou-git-head-' + suffix())
+    write_file(path.join(root, 'detached'), 'c1f2a3b4c5d6e7f8\n')
+    assert(git_paths.read_head_branch(path.join(root, 'detached')) == '')
+    write_file(path.join(root, 'packed'), 'ref: refs/heads/feature/x\n')
+    assert(git_paths.read_head_branch(path.join(root, 'packed')) == 'feature/x')
+    os.rmdir(root, true)
+}
+
+fn suffix(): string {
+    return fmt.sprintf('%d', time.now().ms_timestamp())
+}
