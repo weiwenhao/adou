@@ -7,23 +7,42 @@ if [ ! -x "$binary" ]; then
     exit 2
 fi
 
-expected='anthropic/claude-sonnet-4-5'
-actual=$($binary --list-models SONNET)
+expected='anthropic/claude-sonnet-4-5-20250929'
+actual=$($binary --list-models 'anthropic/claude-sonnet-4-5-20250929')
 if [ "$actual" != "$expected" ]; then
-    echo "e2e: partial model lookup mismatch" >&2
+    echo "e2e: exact model lookup mismatch" >&2
     echo "expected: $expected" >&2
     echo "actual:   $actual" >&2
     exit 1
 fi
 
-expected='openai/gpt-5.1-codex'
-actual=$($binary --list-models '*/gpt-*')
-if [ "$actual" != "$expected" ]; then
-    echo "e2e: glob model lookup mismatch" >&2
-    echo "expected: $expected" >&2
-    echo "actual:   $actual" >&2
-    exit 1
-fi
+# A bare SONNET partial now matches many providers in the full catalog.
+case "$($binary --list-models SONNET)" in
+    *'anthropic/claude-sonnet-4-5'*) ;;
+    *)
+        echo "e2e: partial model lookup did not include the canonical model" >&2
+        exit 1
+        ;;
+esac
+
+# openai/gpt-5.1-codex is also an OpenRouter routing id, so a bare-pattern
+# listing is multi-line; assert it contains the canonical entry.
+case "$($binary --list-models 'openai/gpt-5.1-codex')" in
+    *'openai/gpt-5.1-codex'*) ;;
+    *)
+        echo "e2e: exact model lookup did not include openai/gpt-5.1-codex" >&2
+        exit 1
+        ;;
+esac
+
+# With the full catalog a `*/gpt-*` glob lists every provider's GPT models.
+case "$($binary --list-models '*/gpt-*')" in
+    *'openai/gpt-5.1-codex'*) ;;
+    *)
+        echo "e2e: glob model lookup did not include openai/gpt-5.1-codex" >&2
+        exit 1
+        ;;
+esac
 
 echo 'e2e: model selection OK'
 
@@ -32,7 +51,7 @@ trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 state=$(printf '%s\n' '{"id":"1","type":"get_state"}' | \
     PI_CODING_AGENT_DIR="$tmp_dir/agent" \
     PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions" \
-    "$binary" --model sonnet --mode rpc --no-session)
+    "$binary" --model anthropic/claude-sonnet-4-5 --mode rpc --no-session)
 case "$state" in
     *'"provider":"anthropic","id":"claude-sonnet-4-5"'*) ;;
     *)

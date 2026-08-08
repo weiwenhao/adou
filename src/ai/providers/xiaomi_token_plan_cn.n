@@ -1,0 +1,12 @@
+// Provider definition for Xiaomi Token Plan CN.
+// Metadata follows vendors/pi/packages/ai/src/providers/xiaomi-token-plan-cn.ts.
+import adou.src.ai.providers.xiaomi_token_plan_cn_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'xiaomi-token-plan-cn', name: 'Xiaomi Token Plan CN', api: 'openai-completions', base_url: 'https://token-plan-cn.xiaomimimo.com/v1', env_vars: ['XIAOMI_TOKEN_PLAN_CN_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return xiaomi_token_plan_cn_models.models()
+}

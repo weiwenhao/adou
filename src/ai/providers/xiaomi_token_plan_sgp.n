@@ -1,0 +1,12 @@
+// Provider definition for Xiaomi Token Plan SGP.
+// Metadata follows vendors/pi/packages/ai/src/providers/xiaomi-token-plan-sgp.ts.
+import adou.src.ai.providers.xiaomi_token_plan_sgp_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'xiaomi-token-plan-sgp', name: 'Xiaomi Token Plan SGP', api: 'openai-completions', base_url: 'https://token-plan-sgp.xiaomimimo.com/v1', env_vars: ['XIAOMI_TOKEN_PLAN_SGP_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return xiaomi_token_plan_sgp_models.models()
+}

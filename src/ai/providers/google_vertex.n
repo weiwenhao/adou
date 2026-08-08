@@ -1,0 +1,12 @@
+// Provider definition for Google Vertex.
+// Metadata follows vendors/pi/packages/ai/src/providers/google-vertex.ts.
+import adou.src.ai.providers.google_vertex_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'google-vertex', name: 'Google Vertex', api: 'google-vertex', base_url: 'https://{location}-aiplatform.googleapis.com', env_vars: [], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return google_vertex_models.models()
+}

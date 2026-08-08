@@ -1,0 +1,12 @@
+// Provider definition for OpenAI.
+// Metadata follows vendors/pi/packages/ai/src/providers/openai.ts.
+import adou.src.ai.providers.openai_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'openai', name: 'OpenAI', api: 'openai-responses', base_url: 'https://api.openai.com/v1', env_vars: ['OPENAI_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return openai_models.models()
+}

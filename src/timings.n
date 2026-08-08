@@ -1,0 +1,160 @@
+import fmt
+import syscall
+import time as clock
+
+// Pi keeps startup timing opt-in so normal CLI/RPC output is unchanged.
+// Nature has no process-wide monotonic clock in the standard library, so the
+// wall-clock millisecond timestamp is used consistently with the rest of Adou.
+pub const MAIN_NAMESPACE = 'main'
+pub const EXTENSIONS_NAMESPACE = 'extensions'
+
+pub type timing_t = struct {
+    string label
+    i64 ms
+}
+
+pub type timing_namespace_t = struct {
+    string name
+    [timing_t] timings = []
+    i64 last_time
+}
+
+[ref<timing_namespace_t>] timing_namespaces = []
+
+pub fn enabled(): bool {
+    return syscall.get_env('PI_TIMING') == '1'
+}
+
+// Reset the default (main) startup timing group.
+pub fn reset_timings() {
+    reset_namespace(MAIN_NAMESPACE)
+}
+
+pub fn reset_namespace(string namespace) {
+    if !enabled() {
+        return
+    }
+    i64 now = clock.now().ms_timestamp()
+    ref<timing_namespace_t>? current = find_namespace(namespace)
+    if current is ref<timing_namespace_t> value {
+        value.timings = []
+        value.last_time = now
+        return
+    }
+    timing_namespaces.push(new timing_namespace_t(name = namespace, last_time = now))
+}
+
+// Record a label in the default (main) startup timing group.
+pub fn time(string label) {
+    time_namespace(MAIN_NAMESPACE, label)
+}
+
+pub fn time_namespace(string namespace, string label) {
+    if !enabled() {
+        return
+    }
+    i64 now = clock.now().ms_timestamp()
+    ref<timing_namespace_t>? current = find_namespace(namespace)
+    if !(current is ref<timing_namespace_t>) {
+        timing_namespaces.push(new timing_namespace_t(name = namespace, last_time = now))
+        current = find_namespace(namespace)
+    }
+    if current is ref<timing_namespace_t> value {
+        value.timings.push(timing_t {label: label, ms: now - value.last_time,})
+        value.last_time = now
+    }
+}
+
+// Return a stable, testable rendering of every timing group.  Printing is a
+// separate operation so callers can route diagnostics without contaminating
+// protocol stdout.
+pub fn format_timings(): string {
+    if !enabled() {
+        return ''
+    }
+    string output = ''
+    for namespace in timing_namespaces {
+        string group = format_group(namespace)
+        if group != '' {
+            output += group
+        }
+    }
+    return output
+}
+
+pub fn print_timings() {
+    string output = format_timings()
+    if output == '' {
+        return
+    }
+    syscall.write(syscall.STDERR, output.ref(), output.len()) catch error {}
+}
+
+pub fn namespace_timings(string namespace): [timing_t] {
+    if !enabled() {
+        return []
+    }
+    ref<timing_namespace_t>? current = find_namespace(namespace)
+    if current is ref<timing_namespace_t> value {
+        return value.timings.slice(0, value.timings.len())
+    }
+    return []
+}
+
+// Pi-compatible camel-case aliases make the port easy to call from code
+// which follows the original module names.
+pub fn resetTimings() {
+    reset_timings()
+}
+
+pub fn resetTimingsNamespace(string namespace) {
+    reset_namespace(namespace)
+}
+
+pub fn timeNamespace(string namespace, string label) {
+    time_namespace(namespace, label)
+}
+
+pub fn printTimings() {
+    print_timings()
+}
+
+#local
+fn find_namespace(string namespace): ref<timing_namespace_t>? {
+    for value in timing_namespaces {
+        if value.name == namespace {
+            return value
+        }
+    }
+    return null
+}
+
+#local
+fn format_group(ref<timing_namespace_t> namespace): string {
+    string title = 'Startup Timings: ' + namespace.name
+    string output = '\n--- ' + title + ' ---\n'
+    i64 total = 0
+    bool has_printable = false
+    for timing in namespace.timings {
+        if timing.ms < 0 {
+            continue
+        }
+        has_printable = true
+        output += fmt.sprintf('  %s: %dms\n', timing.label, timing.ms)
+        total += timing.ms
+    }
+    if !has_printable {
+        return ''
+    }
+    output += fmt.sprintf('  TOTAL: %dms\n', total)
+    output += dashes(title.len() + 8) + '\n\n'
+    return output
+}
+
+pub fn dashes(int count): string {
+    string output = ''
+    for int index = 0; index < count; index += 1 {
+        output += '-'
+    }
+    return output
+}

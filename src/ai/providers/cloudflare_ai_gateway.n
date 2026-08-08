@@ -1,0 +1,12 @@
+// Provider definition for Cloudflare AI Gateway.
+// Metadata follows vendors/pi/packages/ai/src/providers/cloudflare-ai-gateway.ts.
+import adou.src.ai.providers.cloudflare_ai_gateway_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'cloudflare-ai-gateway', name: 'Cloudflare AI Gateway', api: 'openai-completions', base_url: 'https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}', env_vars: ['CLOUDFLARE_API_KEY', 'CLOUDFLARE_ACCOUNT_ID', 'CLOUDFLARE_GATEWAY_ID'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return cloudflare_ai_gateway_models.models()
+}

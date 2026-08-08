@@ -1,0 +1,12 @@
+// Provider definition for Azure OpenAI.
+// Metadata follows vendors/pi/packages/ai/src/providers/azure-openai-responses.ts.
+import adou.src.ai.providers.azure_openai_responses_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'azure-openai-responses', name: 'Azure OpenAI', api: 'azure-openai-responses', base_url: '', env_vars: ['AZURE_OPENAI_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return azure_openai_responses_models.models()
+}

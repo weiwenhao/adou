@@ -1,0 +1,12 @@
+// Provider definition for MiniMax.
+// Metadata follows vendors/pi/packages/ai/src/providers/minimax.ts.
+import adou.src.ai.providers.minimax_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'minimax', name: 'MiniMax', api: 'anthropic-messages', base_url: 'https://api.minimax.io/anthropic', env_vars: ['MINIMAX_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return minimax_models.models()
+}

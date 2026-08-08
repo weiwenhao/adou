@@ -1,0 +1,247 @@
+import adou.src.ai.providers.amazon_bedrock
+import adou.src.ai.providers.ant_ling
+import adou.src.ai.providers.anthropic
+import adou.src.ai.providers.azure_openai_responses
+import adou.src.ai.providers.cerebras
+import adou.src.ai.providers.cloudflare_ai_gateway
+import adou.src.ai.providers.cloudflare_workers_ai
+import adou.src.ai.providers.deepseek
+import adou.src.ai.providers.fireworks
+import adou.src.ai.providers.github_copilot
+import adou.src.ai.providers.google
+import adou.src.ai.providers.google_vertex
+import adou.src.ai.providers.groq
+import adou.src.ai.providers.huggingface
+import adou.src.ai.providers.kimi_coding
+import adou.src.ai.providers.minimax
+import adou.src.ai.providers.minimax_cn
+import adou.src.ai.providers.mistral
+import adou.src.ai.providers.moonshotai
+import adou.src.ai.providers.moonshotai_cn
+import adou.src.ai.providers.nvidia
+import adou.src.ai.providers.openai
+import adou.src.ai.providers.openai_codex
+import adou.src.ai.providers.opencode
+import adou.src.ai.providers.opencode_go
+import adou.src.ai.providers.openrouter
+import adou.src.ai.providers.qwen_token_plan
+import adou.src.ai.providers.qwen_token_plan_cn
+import adou.src.ai.providers.radius
+import adou.src.ai.providers.together
+import adou.src.ai.providers.vercel_ai_gateway
+import adou.src.ai.providers.xai
+import adou.src.ai.providers.xiaomi
+import adou.src.ai.providers.xiaomi_token_plan_ams
+import adou.src.ai.providers.xiaomi_token_plan_cn
+import adou.src.ai.providers.xiaomi_token_plan_sgp
+import adou.src.ai.providers.zai
+import adou.src.ai.providers.zai_coding_cn
+import adou.src.ai.types
+
+pub fn defs(): [types.provider_def_t] {
+    [types.provider_def_t] result = []
+    result.push(amazon_bedrock.def())
+    result.push(ant_ling.def())
+    result.push(anthropic.def())
+    result.push(azure_openai_responses.def())
+    result.push(cerebras.def())
+    result.push(cloudflare_ai_gateway.def())
+    result.push(cloudflare_workers_ai.def())
+    result.push(deepseek.def())
+    result.push(fireworks.def())
+    result.push(github_copilot.def())
+    result.push(google.def())
+    result.push(google_vertex.def())
+    result.push(groq.def())
+    result.push(huggingface.def())
+    result.push(kimi_coding.def())
+    result.push(minimax.def())
+    result.push(minimax_cn.def())
+    result.push(mistral.def())
+    result.push(moonshotai.def())
+    result.push(moonshotai_cn.def())
+    result.push(nvidia.def())
+    result.push(openai.def())
+    result.push(openai_codex.def())
+    result.push(opencode.def())
+    result.push(opencode_go.def())
+    result.push(openrouter.def())
+    result.push(qwen_token_plan.def())
+    result.push(qwen_token_plan_cn.def())
+    result.push(radius.def())
+    result.push(together.def())
+    result.push(vercel_ai_gateway.def())
+    result.push(xai.def())
+    result.push(xiaomi.def())
+    result.push(xiaomi_token_plan_ams.def())
+    result.push(xiaomi_token_plan_cn.def())
+    result.push(xiaomi_token_plan_sgp.def())
+    result.push(zai.def())
+    result.push(zai_coding_cn.def())
+    return result
+}
+
+pub fn find_def(string id): types.provider_def_t? {
+    for def in defs() {
+        if def.id == id {
+            return def
+        }
+    }
+    return null
+}
+
+pub fn all_models(): [ref<types.model_t>] {
+    [ref<types.model_t>] result = []
+    for def in defs() {
+        var models = models_for(def.id)
+        for model in models {
+            result.push(model)
+        }
+    }
+    return result
+}
+
+pub fn models_for(string provider): [ref<types.model_t>] {
+    if provider == 'amazon-bedrock' {
+        return amazon_bedrock.models()
+    }
+    if provider == 'ant-ling' {
+        return ant_ling.models()
+    }
+    if provider == 'anthropic' {
+        return anthropic.models()
+    }
+    if provider == 'azure-openai-responses' {
+        return azure_openai_responses.models()
+    }
+    if provider == 'cerebras' {
+        return cerebras.models()
+    }
+    if provider == 'cloudflare-ai-gateway' {
+        return cloudflare_ai_gateway.models()
+    }
+    if provider == 'cloudflare-workers-ai' {
+        return cloudflare_workers_ai.models()
+    }
+    if provider == 'deepseek' {
+        return deepseek.models()
+    }
+    if provider == 'fireworks' {
+        return fireworks.models()
+    }
+    if provider == 'github-copilot' {
+        return github_copilot.models()
+    }
+    if provider == 'google' {
+        return google.models()
+    }
+    if provider == 'google-vertex' {
+        return google_vertex.models()
+    }
+    if provider == 'groq' {
+        return groq.models()
+    }
+    if provider == 'huggingface' {
+        return huggingface.models()
+    }
+    if provider == 'kimi-coding' {
+        return kimi_coding.models()
+    }
+    if provider == 'minimax' {
+        return minimax.models()
+    }
+    if provider == 'minimax-cn' {
+        return minimax_cn.models()
+    }
+    if provider == 'mistral' {
+        return mistral.models()
+    }
+    if provider == 'moonshotai' {
+        return moonshotai.models()
+    }
+    if provider == 'moonshotai-cn' {
+        return moonshotai_cn.models()
+    }
+    if provider == 'nvidia' {
+        return nvidia.models()
+    }
+    if provider == 'openai' {
+        return openai.models()
+    }
+    if provider == 'openai-codex' {
+        return openai_codex.models()
+    }
+    if provider == 'opencode' {
+        return opencode.models()
+    }
+    if provider == 'opencode-go' {
+        return opencode_go.models()
+    }
+    if provider == 'openrouter' {
+        return openrouter.models()
+    }
+    if provider == 'qwen-token-plan' {
+        return qwen_token_plan.models()
+    }
+    if provider == 'qwen-token-plan-cn' {
+        return qwen_token_plan_cn.models()
+    }
+    if provider == 'radius' {
+        return radius.models()
+    }
+    if provider == 'together' {
+        return together.models()
+    }
+    if provider == 'vercel-ai-gateway' {
+        return vercel_ai_gateway.models()
+    }
+    if provider == 'xai' {
+        return xai.models()
+    }
+    if provider == 'xiaomi' {
+        return xiaomi.models()
+    }
+    if provider == 'xiaomi-token-plan-ams' {
+        return xiaomi_token_plan_ams.models()
+    }
+    if provider == 'xiaomi-token-plan-cn' {
+        return xiaomi_token_plan_cn.models()
+    }
+    if provider == 'xiaomi-token-plan-sgp' {
+        return xiaomi_token_plan_sgp.models()
+    }
+    if provider == 'zai' {
+        return zai.models()
+    }
+    if provider == 'zai-coding-cn' {
+        return zai_coding_cn.models()
+    }
+    [ref<types.model_t>] empty = []
+    return empty
+}
+
+pub fn find_model(string provider, string id): ref<types.model_t>? {
+    for model in models_for(provider) {
+        if model.id == id {
+            return model
+        }
+    }
+    return null
+}
+
+pub fn apis(): [string] {
+    [string] result = []
+    for model in all_models() {
+        bool seen = false
+        for api in result {
+            if api == model.api {
+                seen = true
+                break
+            }
+        }
+        if !seen {
+            result.push(model.api)
+        }
+    }
+    return result
+}

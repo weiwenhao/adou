@@ -1,0 +1,137 @@
+// Terminal raw mode, size, and I/O helpers.  Ported from the Nature standard
+// library's term package so Adou stays self-contained: the runtime-backed
+// linkid symbols (adou_term_*) live in native/term.c and report errors as
+// negative errno codes instead of raising runtime exceptions.
+import fs
+
+pub const STDIN = 0
+pub const STDOUT = 1
+
+pub const KEYBOARD_PROTOCOL_ON = '\x1b[>1u'
+pub const KEYBOARD_PROTOCOL_OFF = '\x1b[<u'
+pub const BRACKETED_PASTE_ON = '\x1b[?2004h'
+pub const BRACKETED_PASTE_OFF = '\x1b[?2004l'
+pub const CURSOR_HIDE = '\x1b[?25l'
+pub const CURSOR_SHOW = '\x1b[?25h'
+pub const SYNC_OUTPUT_ON = '\x1b[?2026h'
+pub const SYNC_OUTPUT_OFF = '\x1b[?2026l'
+
+pub type size_t = struct {
+    int rows
+    int columns
+}
+
+pub type terminal_t = struct {
+    int input_fd
+    int output_fd
+    ref<fs.file_t> input
+    ref<fs.file_t> output
+    bool active
+    bool eof
+    bool restored
+}
+
+#linkid adou_term_is_tty
+pub fn is_tty_native(int fd):int
+
+#linkid adou_term_enter_raw
+pub fn enter_raw_native(int fd):int
+
+#linkid adou_term_restore_raw
+pub fn restore_raw_native(int fd):int
+
+#linkid adou_term_size
+pub fn size_native(int fd, ptr<int> rows, ptr<int> columns):int
+
+pub fn is_tty(int fd):bool {
+    return is_tty_native(fd) != 0
+}
+
+pub fn enter_raw(int fd):void! {
+    var code = enter_raw_native(fd)
+    if code != 0 {
+        throw errorf('enter raw mode failed with code %d', code)
+    }
+}
+
+pub fn restore_raw(int fd):void! {
+    var code = restore_raw_native(fd)
+    if code != 0 {
+        throw errorf('restore terminal failed with code %d', code)
+    }
+}
+
+pub fn open():ref<terminal_t>! {
+    if !is_tty(STDIN) || !is_tty(STDOUT) {
+        throw errorf('stdin and stdout must both be terminals')
+    }
+
+    enter_raw(STDIN)
+    var terminal = new terminal_t(input_fd = STDIN, output_fd = STDOUT, input = fs.stdin(), output = fs.stdout(), active = true)
+    terminal.write(BRACKETED_PASTE_ON + CURSOR_HIDE + KEYBOARD_PROTOCOL_ON)
+    return terminal
+}
+
+pub fn terminal_t.size(&self):size_t! {
+    var result = size_t{}
+    var code = size_native(self.output_fd, &result.rows, &result.columns)
+    if code != 0 {
+        throw errorf('terminal size failed with code %d', code)
+    }
+    return result
+}
+
+pub fn terminal_t.read(&self):[u8]! {
+    if self.eof {
+        return []
+    }
+
+    var buffer = vec<u8>.new(0, 4096)
+    int count = self.input.read(buffer)
+    if count < 0 {
+        throw errorf('negative read count')
+    }
+    if count == 0 {
+        self.eof = true
+        return []
+    }
+    return buffer.slice(0, count)
+}
+
+pub fn terminal_t.write(&self, string text):void! {
+    if text == '' {
+        return
+    }
+
+    [u8] buf = text as [u8]
+    int written = 0
+    for written < buf.len() {
+        int count = self.output.write(buf.slice(written, buf.len()))
+        if count <= 0 {
+            throw errorf('terminal write made no progress')
+        }
+        written += count
+    }
+}
+
+pub fn terminal_t.is_eof(&self):bool {
+    return self.eof
+}
+
+pub fn terminal_t.begin_sync(&self):void! {
+    self.write(SYNC_OUTPUT_ON)
+}
+
+pub fn terminal_t.end_sync(&self):void! {
+    self.write(SYNC_OUTPUT_OFF)
+}
+
+pub fn terminal_t.restore(&self):void! {
+    if self.restored {
+        return
+    }
+    self.write(KEYBOARD_PROTOCOL_OFF + BRACKETED_PASTE_OFF + CURSOR_SHOW)
+    restore_raw(self.input_fd)
+    self.restored = true
+    self.active = false
+}

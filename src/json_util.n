@@ -1,0 +1,194 @@
+import fmt
+import json
+import libc
+
+// ---------- kind 判断 ----------
+
+pub fn is_null(any value):bool {
+    return !(value is f64) && !(value is string) && !(value is bool) && !(value is {string:any}) && !(value is [any]) && !(value is int)
+}
+
+pub fn is_num(any value):bool {
+    return value is f64 || value is int
+}
+
+pub fn is_str(any value):bool {
+    return value is string
+}
+
+pub fn is_bool(any value):bool {
+    return value is bool
+}
+
+pub fn is_arr(any value):bool {
+    return value is [any]
+}
+
+pub fn is_obj(any value):bool {
+    return value is {string:any}
+}
+
+// ---------- 强制读取 ----------
+
+pub fn as_string(any value):string! {
+    if value is string {
+        return value as string
+    }
+    throw errorf('json value is not a string')
+}
+
+pub fn as_bool(any value):bool! {
+    if value is bool {
+        return value as bool
+    }
+    throw errorf('json value is not a bool')
+}
+
+pub fn as_int(any value):int! {
+    if value is int {
+        return value as int
+    }
+    if value is f64 {
+        return value as f64 as int
+    }
+    throw errorf('json value is not a number')
+}
+
+pub fn as_float(any value):float! {
+    if value is f64 {
+        return value as f64
+    }
+    if value is int {
+        return value as int as float
+    }
+    throw errorf('json value is not a number')
+}
+
+pub fn as_obj(any value):{string:any}! {
+    if value is {string:any} {
+        return value as {string:any}
+    }
+    throw errorf('json value is not an object')
+}
+
+pub fn as_arr(any value):[any]! {
+    if value is [any] {
+        return value as [any]
+    }
+    throw errorf('json value is not an array')
+}
+
+// ---------- 可选读取 ----------
+
+pub fn opt_string({string:any} object, string key):string {
+    if !object.contains(key) || !(object[key] is string) {
+        return ''
+    }
+    return object[key] as string
+}
+
+pub fn opt_bool({string:any} object, string key):bool {
+    if !object.contains(key) || !(object[key] is bool) {
+        return false
+    }
+    return object[key] as bool
+}
+
+pub fn opt_int({string:any} object, string key):int {
+    if !object.contains(key) {
+        return 0
+    }
+    var value = object[key]
+    if value is int {
+        return value as int
+    }
+    if value is f64 {
+        return value as f64 as int
+    }
+    return 0
+}
+
+pub fn opt_float({string:any} object, string key):float {
+    if !object.contains(key) {
+        return 0.0
+    }
+    var value = object[key]
+    if value is f64 {
+        return value as f64
+    }
+    if value is int {
+        return value as int as float
+    }
+    return 0.0
+}
+
+pub fn opt_obj({string:any} object, string key):{string:any} {
+    if !object.contains(key) || !(object[key] is {string:any}) {
+        return {}
+    }
+    return object[key] as {string:any}
+}
+
+pub fn opt_arr({string:any} object, string key):[any] {
+    if !object.contains(key) || !(object[key] is [any]) {
+        return []
+    }
+    return object[key] as [any]
+}
+
+pub fn required_string({string:any} object, string key):string! {
+    if !object.contains(key) {
+        throw errorf('json object missing `%s`', key)
+    }
+    if !(object[key] is string) {
+        throw errorf('json field `%s` is not a string', key)
+    }
+    return object[key] as string
+}
+
+pub fn required_int({string:any} object, string key):int! {
+    if !object.contains(key) {
+        throw errorf('json object missing `%s`', key)
+    }
+    var value = object[key]
+    if value is int {
+        return value as int
+    }
+    if value is f64 {
+        return value as f64 as int
+    }
+    throw errorf('json field `%s` is not a number', key)
+}
+
+// ---------- 解析/序列化 ----------
+
+pub fn parse(string source):any! {
+    return json.deserialize<any>(source)
+}
+
+pub fn stringify(any value):string! {
+    return json.serialize(value)
+}
+
+pub fn clone(any value):any! {
+    return json.deserialize<any>(json.serialize(value))
+}
+
+// ---------- 数字字符串 ----------
+
+pub fn num_token(any value):string {
+    if value is int {
+        return fmt.sprintf('%d', value as int)
+    }
+    if value is f64 {
+        var token = fmt.sprintf('%.15f', value as f64)
+        if token.contains('.') {
+            token = token.rtrim(['0'])
+            if token.ends_with('.') {
+                token = token.slice(0, token.len() - 1)
+            }
+        }
+        return token
+    }
+    return '0'
+}

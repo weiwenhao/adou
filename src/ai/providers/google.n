@@ -1,0 +1,12 @@
+// Provider definition for Google.
+// Metadata follows vendors/pi/packages/ai/src/providers/google.ts.
+import adou.src.ai.providers.google_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'google', name: 'Google', api: 'google-generative-ai', base_url: 'https://generativelanguage.googleapis.com/v1beta', env_vars: ['GEMINI_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return google_models.models()
+}

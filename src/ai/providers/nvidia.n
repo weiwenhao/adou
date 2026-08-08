@@ -1,0 +1,12 @@
+// Provider definition for NVIDIA.
+// Metadata follows vendors/pi/packages/ai/src/providers/nvidia.ts.
+import adou.src.ai.providers.nvidia_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'nvidia', name: 'NVIDIA', api: 'openai-completions', base_url: 'https://integrate.api.nvidia.com/v1', env_vars: ['NVIDIA_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return nvidia_models.models()
+}

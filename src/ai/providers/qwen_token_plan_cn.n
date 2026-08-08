@@ -1,0 +1,12 @@
+// Provider definition for Qwen Token Plan CN.
+// Metadata follows vendors/pi/packages/ai/src/providers/qwen-token-plan-cn.ts.
+import adou.src.ai.providers.qwen_token_plan_cn_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'qwen-token-plan-cn', name: 'Qwen Token Plan CN', api: 'openai-completions', base_url: 'https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1', env_vars: ['QWEN_TOKEN_PLAN_CN_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return qwen_token_plan_cn_models.models()
+}

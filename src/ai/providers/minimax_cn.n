@@ -1,0 +1,12 @@
+// Provider definition for MiniMax CN.
+// Metadata follows vendors/pi/packages/ai/src/providers/minimax-cn.ts.
+import adou.src.ai.providers.minimax_cn_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'minimax-cn', name: 'MiniMax CN', api: 'anthropic-messages', base_url: 'https://api.minimaxi.com/anthropic', env_vars: ['MINIMAX_CN_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return minimax_cn_models.models()
+}

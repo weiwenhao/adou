@@ -1,0 +1,323 @@
+import adou.src.ai.models
+import adou.src.ai.providers.openai_completions
+import adou.src.ai.sse
+import adou.src.ai.streaming_json
+import adou.src.ai.types
+import adou.src.json_util
+import strings
+
+// Port of vendors/pi/packages/ai/src/api/pi-messages.ts event conversion.
+// A pi-messages backend streams serialized assistant-message events; each
+// event carries an explicit contentIndex into the assistant content array.
+
+pub type processor_t = struct {
+    ref<types.model_t> model
+    ref<types.assistant_message_t> output
+    map<int, string> tool_json = {}
+    bool started
+    bool saw_terminal
+}
+
+pub fn processor(ref<types.model_t> model, int timestamp): ref<processor_t> {
+    var output = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, timestamp = timestamp,)
+    return new processor_t(model = model, output = output)
+}
+
+pub fn processor_t.start(&self): types.assistant_event_t! {
+    if self.started {
+        throw errorf('pi-messages stream already started')
+    }
+    self.started = true
+    return types.assistant_event_t {kind: types.EVENT_START, partial: self.output,}
+}
+
+pub fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
+    if !self.started {
+        throw errorf('pi-messages stream has not started')
+    }
+    if self.saw_terminal {
+        throw errorf('pi-messages stream received data after terminal event')
+    }
+    if frame.data == '[DONE]' {
+        return []
+    }
+    var root = json_util.parse(frame.data)
+    if !json_util.is_obj(root) {
+        return []
+    }
+    var object = root as {string:any}
+    if !object.contains('type') || !(object['type'] is string) {
+        return []
+    }
+    string event_type = object['type'] as string
+    [types.assistant_event_t] events = []
+    if event_type == 'start' {
+        return events
+    } else if event_type == 'text_start' {
+        int index = content_index(object) catch error { throw errorf('pi-messages event missing contentIndex') }
+        events = self.ensure_text(index, events)
+    } else if event_type == 'text_delta' {
+        int index = content_index(object) catch error { throw errorf('pi-messages event missing contentIndex') }
+        string delta = json_util.opt_string(object, 'delta')
+        events = self.append_text_at(index, delta, events)
+    } else if event_type == 'text_end' {
+        int index = content_index(object) catch error { throw errorf('pi-messages event missing contentIndex') }
+        string content = json_util.opt_string(object, 'content')
+        string signature = json_util.opt_string(object, 'contentSignature')
+        var block = self.text_block(index)
+        if block is ref<types.text_content_t> text {
+            text.text = content
+            text.text_signature = signature
+        }
+        events.push(openai_completions.update_event(types.EVENT_TEXT_END, index, '', content, self.output))
+    } else if event_type == 'thinking_start' {
+        int index = content_index(object) catch error { throw errorf('pi-messages event missing contentIndex') }
+        events = self.ensure_thinking(index, events)
+    } else if event_type == 'thinking_delta' {
+        int index = content_index(object) catch error { throw errorf('pi-messages event missing contentIndex') }
+        string delta = json_util.opt_string(object, 'delta')
+        events = self.append_thinking_at(index, delta, events)
+    } else if event_type == 'thinking_end' {
+        int index = content_index(object) catch error { throw errorf('pi-messages event missing contentIndex') }
+        string content = json_util.opt_string(object, 'content')
+        string signature = json_util.opt_string(object, 'contentSignature')
+        bool redacted = json_util.opt_bool(object, 'redacted')
+        var block = self.thinking_block(index)
+        if block is ref<types.thinking_content_t> thinking {
+            thinking.thinking = content
+            thinking.thinking_signature = signature
+            thinking.redacted = redacted
+        }
+        events.push(openai_completions.update_event(types.EVENT_THINKING_END, index, '', content, self.output))
+    } else if event_type == 'toolcall_start' {
+        int index = content_index(object) catch error { throw errorf('pi-messages event missing contentIndex') }
+        string id = json_util.opt_string(object, 'id')
+        string tool_name = json_util.opt_string(object, 'toolName')
+        events = self.ensure_tool_call(index, id, tool_name, events)
+    } else if event_type == 'toolcall_delta' {
+        int index = content_index(object) catch error { throw errorf('pi-messages event missing contentIndex') }
+        string delta = json_util.opt_string(object, 'delta')
+        events = self.append_tool_call_delta(index, delta, events)
+    } else if event_type == 'toolcall_end' {
+        int index = content_index(object) catch error { throw errorf('pi-messages event missing contentIndex') }
+        events = self.finish_tool_call(index, object, events)
+    } else if event_type == 'done' {
+        self.apply_done(object)
+        events.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: self.output.stop_reason, message: self.output,})
+        self.saw_terminal = true
+    } else if event_type == 'error' {
+        self.apply_error(object)
+        events.push(types.assistant_event_t {kind: types.EVENT_ERROR, reason: self.output.stop_reason, error: self.output,})
+        self.saw_terminal = true
+    }
+    return events
+}
+
+pub fn processor_t.finish(&self): [types.assistant_event_t]! {
+    if !self.saw_terminal {
+        throw errorf('pi-messages stream ended without a terminal event')
+    }
+    [types.assistant_event_t] events = []
+    if self.output.stop_reason == types.STOP_STOP && has_tool_call(self.output) {
+        self.output.stop_reason = types.STOP_TOOL_USE
+    }
+    return events
+}
+
+pub fn processor_t.ensure_text(&self, int index, [types.assistant_event_t] events): [types.assistant_event_t] {
+    var block = self.text_block(index)
+    if block is ref<types.text_content_t> {
+        return events
+    }
+    var created = new types.text_content_t()
+    types.content_t content = created
+    self.output.content.push(content)
+    events.push(openai_completions.update_event(types.EVENT_TEXT_START, index, '', '', self.output))
+    return events
+}
+
+pub fn processor_t.ensure_thinking(&self, int index, [types.assistant_event_t] events): [types.assistant_event_t] {
+    var block = self.thinking_block(index)
+    if block is ref<types.thinking_content_t> {
+        return events
+    }
+    var created = new types.thinking_content_t(thinking_signature = 'reasoning_content')
+    types.content_t content = created
+    self.output.content.push(content)
+    events.push(openai_completions.update_event(types.EVENT_THINKING_START, index, '', '', self.output))
+    return events
+}
+
+pub fn processor_t.ensure_tool_call(&self, int index, string id, string tool_name, [types.assistant_event_t] events): [types.assistant_event_t] {
+    var block = self.tool_call_block(index)
+    if block is ref<types.tool_call_t> {
+        return events
+    }
+    var created = new types.tool_call_t(id = id, name = tool_name, arguments = streaming_json.parse(''), partial_json = '')
+    types.content_t content = created
+    self.output.content.push(content)
+    self.tool_json[index] = ''
+    events.push(openai_completions.update_event(types.EVENT_TOOLCALL_START, index, '', '', self.output))
+    return events
+}
+
+pub fn processor_t.append_text_at(&self, int index, string delta, [types.assistant_event_t] events): [types.assistant_event_t] {
+    var block = self.text_block(index)
+    if block is ref<types.text_content_t> text {
+        text.text += delta
+    }
+    events.push(openai_completions.update_event(types.EVENT_TEXT_DELTA, index, delta, '', self.output))
+    return events
+}
+
+pub fn processor_t.append_thinking_at(&self, int index, string delta, [types.assistant_event_t] events): [types.assistant_event_t] {
+    var block = self.thinking_block(index)
+    if block is ref<types.thinking_content_t> thinking {
+        thinking.thinking += delta
+    }
+    events.push(openai_completions.update_event(types.EVENT_THINKING_DELTA, index, delta, '', self.output))
+    return events
+}
+
+pub fn processor_t.append_tool_call_delta(&self, int index, string delta, [types.assistant_event_t] events): [types.assistant_event_t]! {
+    string json = ''
+    if self.tool_json.contains(index) {
+        json = self.tool_json[index]
+    }
+    json += delta
+    self.tool_json[index] = json
+    var block = self.tool_call_block(index)
+    if block is ref<types.tool_call_t> tool_call {
+        tool_call.partial_json = json
+        tool_call.arguments = streaming_json.parse(json)
+    }
+    events.push(openai_completions.update_event(types.EVENT_TOOLCALL_DELTA, index, delta, '', self.output))
+    return events
+}
+
+pub fn processor_t.finish_tool_call(&self, int index, {string:any} object, [types.assistant_event_t] events): [types.assistant_event_t]! {
+    var block = self.tool_call_block(index)
+    if block is ref<types.tool_call_t> tool_call {
+        if object.contains('toolCall') && !json_util.is_null(object['toolCall']) {
+            var tool_call_object = object['toolCall'] as {string:any}
+            if tool_call_object.contains('id') && !json_util.is_null(tool_call_object['id']) {
+                string id = tool_call_object['id'] as string
+                tool_call.id = id
+            }
+            if tool_call_object.contains('name') && !json_util.is_null(tool_call_object['name']) {
+                string name = tool_call_object['name'] as string
+                tool_call.name = name
+            }
+            if tool_call_object.contains('arguments') && !json_util.is_null(tool_call_object['arguments']) {
+                tool_call.arguments = tool_call_object['arguments']
+                tool_call.partial_json = ''
+            }
+        }
+    }
+    if self.tool_json.contains(index) {
+        self.tool_json.del(index)
+    }
+    var event = openai_completions.update_event(types.EVENT_TOOLCALL_END, index, '', '', self.output)
+    event.tool_call = self.tool_call_block(index)
+    events.push(event)
+    return events
+}
+
+pub fn processor_t.apply_done(&self, {string:any} object): void! {
+    string reason = json_util.opt_string(object, 'reason')
+    if reason == 'length' {
+        self.output.stop_reason = types.STOP_LENGTH
+    } else if reason == 'toolUse' {
+        self.output.stop_reason = types.STOP_TOOL_USE
+    } else {
+        self.output.stop_reason = types.STOP_STOP
+    }
+    if object.contains('usage') && !json_util.is_null(object['usage']) {
+        self.apply_usage(object['usage'])
+    }
+    if object.contains('responseId') && !json_util.is_null(object['responseId']) {
+        string response_id = object['responseId'] as string
+        self.output.response_id = response_id
+    }
+}
+
+pub fn processor_t.apply_error(&self, {string:any} object): void! {
+    string reason = json_util.opt_string(object, 'reason')
+    if reason == 'aborted' {
+        self.output.stop_reason = types.STOP_ABORTED
+    } else {
+        self.output.stop_reason = types.STOP_ERROR
+    }
+    self.output.error_message = json_util.opt_string(object, 'errorMessage')
+    if object.contains('usage') && !json_util.is_null(object['usage']) {
+        self.apply_usage(object['usage'])
+    }
+}
+
+pub fn processor_t.apply_usage(&self, any value): void! {
+    if !json_util.is_obj(value) {
+        return
+    }
+    var object = value as {string:any}
+    int input = openai_completions.optional_int(object, 'input', 0)
+    int output = openai_completions.optional_int(object, 'output', 0)
+    int cache_read = openai_completions.optional_int(object, 'cacheRead', 0)
+    int cache_write = openai_completions.optional_int(object, 'cacheWrite', 0)
+    int total = openai_completions.optional_int(object, 'totalTokens', 0)
+    self.output.usage.input = input
+    self.output.usage.output = output
+    self.output.usage.cache_read = cache_read
+    self.output.usage.cache_write = cache_write
+    self.output.usage.reasoning = 0
+    self.output.usage.total_tokens = total
+    self.output.usage = models.calculate_cost(self.model, self.output.usage)
+}
+
+pub fn processor_t.text_block(&self, int index): ref<types.text_content_t>? {
+    if index < 0 || index >= self.output.content.len() {
+        return null
+    }
+    var block = self.output.content[index]
+    if block is ref<types.text_content_t> text {
+        return text
+    }
+    return null
+}
+
+pub fn processor_t.thinking_block(&self, int index): ref<types.thinking_content_t>? {
+    if index < 0 || index >= self.output.content.len() {
+        return null
+    }
+    var block = self.output.content[index]
+    if block is ref<types.thinking_content_t> thinking {
+        return thinking
+    }
+    return null
+}
+
+pub fn processor_t.tool_call_block(&self, int index): ref<types.tool_call_t>? {
+    if index < 0 || index >= self.output.content.len() {
+        return null
+    }
+    var block = self.output.content[index]
+    if block is ref<types.tool_call_t> tool_call {
+        return tool_call
+    }
+    return null
+}
+
+fn content_index({string:any} object): int! {
+    if !object.contains('contentIndex') || json_util.is_null(object['contentIndex']) {
+        throw errorf('pi-messages event missing contentIndex')
+    }
+    return (object['contentIndex'] as f64) as int
+}
+
+fn has_tool_call(ref<types.assistant_message_t> message): bool {
+    for block in message.content {
+        if block is ref<types.tool_call_t> {
+            return true
+        }
+    }
+    return false
+}

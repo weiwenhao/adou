@@ -1,0 +1,12 @@
+// Provider definition for Fireworks.
+// Metadata follows vendors/pi/packages/ai/src/providers/fireworks.ts.
+import adou.src.ai.providers.fireworks_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'fireworks', name: 'Fireworks', api: 'openai-completions', base_url: 'https://api.fireworks.ai/inference', env_vars: ['FIREWORKS_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return fireworks_models.models()
+}

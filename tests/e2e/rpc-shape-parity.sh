@@ -12,6 +12,8 @@ trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 output="$tmp_dir/output.jsonl"
 
 printf '%s\n' \
+    '' \
+    '{' \
     '{"type":"get_state"}' \
     '{"type":"get_session_stats"}' \
     '{"type":"get_last_assistant_text"}' \
@@ -28,6 +30,12 @@ import sys
 
 items = [json.loads(line) for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
 responses = {item.get("command"): item for item in items if item.get("type") == "response"}
+
+parse_errors = [item for item in items if item.get("type") == "response" and item.get("command") == "parse"]
+if len(parse_errors) != 2 or any(item.get("success") is not False for item in parse_errors):
+    raise SystemExit(f"blank and malformed JSONL lines must produce parse errors: {items!r}")
+if not all(item.get("error", "").startswith("Failed to parse command:") for item in parse_errors):
+    raise SystemExit(f"parse errors must use Pi's diagnostic prefix: {parse_errors!r}")
 
 for command in ("get_state", "get_session_stats", "get_last_assistant_text", "bash"):
     if command not in responses or responses[command].get("success") is not True:

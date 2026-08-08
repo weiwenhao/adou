@@ -1,0 +1,196 @@
+import adou.src.ai.types
+import adou.src.json_util
+import http.client
+import fmt
+
+// Port of vendors/pi/packages/ai/src/providers/radius-config.ts.
+// Radius exposes a persisted, dynamically refreshed model catalog at
+// <gateway>/v1/config; Adou keeps the same sanitization and URL rules.
+
+pub const DEFAULT_RADIUS_GATEWAY = 'https://radius.pi.dev'
+
+pub fn normalize_radius_gateway_url(string value): string {
+    string result = value
+    if !result.starts_with('http://') && !result.starts_with('https://') {
+        result = 'https://' + result
+    }
+    for result.len() > 0 && result[result.len() - 1] == '/'.char() {
+        result = result.slice(0, result.len() - 1)
+    }
+    return result
+}
+
+fn is_gateway_model(any value): bool {
+    if !json_util.is_obj(value) {
+        return false
+    }
+    var model = value as {string:any}
+    if !(model.contains('id') && model['id'] is string) {
+        return false
+    }
+    if !(model.contains('name') && model['name'] is string) {
+        return false
+    }
+    if !(model.contains('reasoning') && model['reasoning'] is bool) {
+        return false
+    }
+    if !(model.contains('input') && model['input'] is [any]) {
+        return false
+    }
+    if !(model.contains('cost') && json_util.is_obj(model['cost'])) {
+        return false
+    }
+    if !(model.contains('contextWindow') && is_number(model['contextWindow'])) {
+        return false
+    }
+    if !(model.contains('maxTokens') && is_number(model['maxTokens'])) {
+        return false
+    }
+    return true
+}
+
+fn is_number(any value): bool {
+    return value is f64 || value is int
+}
+
+fn number_to_int(any value): int {
+    if value is f64 {
+        return (value as f64) as int
+    }
+    if value is int {
+        return value as int
+    }
+    return 0
+}
+
+pub fn sanitize_radius_gateway_config(any value): {string:any}? {
+    if !json_util.is_obj(value) {
+        return null
+    }
+    var config = value as {string:any}
+    if !(config.contains('baseUrl') && config['baseUrl'] is string) {
+        return null
+    }
+    if !(config.contains('models') && config['models'] is [any]) {
+        return null
+    }
+    var models = config['models'] as [any]
+    [any] filtered = []
+    for model in models {
+        if is_gateway_model(model) {
+            filtered.push(model)
+        }
+    }
+    {string:any} result = {}
+    result['baseUrl'] = config['baseUrl']
+    result['models'] = filtered
+    return result
+}
+
+pub fn radius_models_from_config(string provider_id, {string:any} config): [ref<types.model_t>] {
+    [ref<types.model_t>] result = []
+    var models = config['models'] as [any]
+    string base_url = config['baseUrl'] as string
+    for model in models {
+        var object = model as {string:any}
+        // Intermediate locals avoid a runtime heap corruption on direct
+        // `ref.field = (any as string)` stores (see docs/nature-issues.md).
+        string id = object['id'] as string
+        string name = object['name'] as string
+        bool reasoning = false
+        if object['reasoning'] is bool {
+            reasoning = object['reasoning'] as bool
+        }
+        int context_window = number_to_int(object['contextWindow'])
+        int max_tokens = number_to_int(object['maxTokens'])
+        var entry = new types.model_t(id = id, name = name, api = 'pi-messages', provider = provider_id, base_url = base_url, reasoning = reasoning, context_window = context_window, max_tokens = max_tokens,)
+        entry.cost = parse_cost(object['cost'])
+        if object.contains('thinkingLevelMap') && json_util.is_obj(object['thinkingLevelMap']) {
+            var level_map = object['thinkingLevelMap'] as {string:any}
+            for level, value in level_map {
+                if value is string {
+                    entry.thinking_level_map[level] = value as string
+                } else {
+                    entry.thinking_level_map[level] = ''
+                }
+            }
+        }
+        result.push(entry)
+    }
+    return result
+}
+
+pub fn load_radius_gateway_config(string gateway, string api_key): {string:any}! {
+    var request = client.new().get(gateway + '/v1/config').timeout(30000)
+    request.header('Accept', 'application/json')
+    if api_key != '' {
+        request.header('Authorization', 'Bearer ' + api_key)
+    }
+    var response = request.send()
+    if response.status < 200 || response.status >= 300 {
+        string body = read_limited(response)
+        throw errorf('Could not load Radius config from %s: %d: %s', gateway, response.status, truncate_body(body))
+    }
+    [u8] scratch = vec<u8>.new(0, 65536)
+    [u8] bytes = []
+    for true {
+        int n = response.read(scratch) catch error {
+            break
+        }
+        if n == 0 {
+            break
+        }
+        bytes.append(scratch.slice(0, n))
+    }
+    response.close()
+    any parsed = json_util.parse(bytes as string)
+    var config = sanitize_radius_gateway_config(parsed)
+    if config is null {
+        throw errorf('Invalid Radius config from %s', gateway)
+    }
+    return config as {string:any}
+}
+
+fn parse_cost(any value): types.cost_t {
+    types.cost_t cost = types.cost_t {}
+    if !json_util.is_obj(value) {
+        return cost
+    }
+    var object = value as {string:any}
+    cost.input = optional_float(object, 'input')
+    cost.output = optional_float(object, 'output')
+    cost.cache_read = optional_float(object, 'cacheRead')
+    cost.cache_write = optional_float(object, 'cacheWrite')
+    return cost
+}
+
+fn optional_float({string:any} object, string key): float {
+    if object.contains(key) && object[key] is f64 {
+        return object[key] as f64
+    }
+    return 0.0
+}
+
+fn read_limited(ref<client.response_t> response): string! {
+    [u8] scratch = vec<u8>.new(0, 4096)
+    [u8] bytes = []
+    for bytes.len() < 4096 {
+        int n = response.read(scratch) catch error {
+            break
+        }
+        if n == 0 {
+            break
+        }
+        bytes.append(scratch.slice(0, n))
+    }
+    response.close()
+    return bytes as string
+}
+
+fn truncate_body(string body): string {
+    string trimmed = body.trim([' ', '\t', '\n', '\r'])
+    if trimmed.len() > 512 {
+        return trimmed.slice(0, 512)
+    }
+    return trimmed
+}

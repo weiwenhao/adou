@@ -1,0 +1,240 @@
+import adou.src.config.paths
+import adou.src.output_guard
+import adou.src.session.identity
+import fs
+import fmt
+import os
+import path
+import strings
+import syscall
+import time
+
+var terminal_log_configured = ''
+var terminal_log_target = ''
+var tui_frame_sequence = 0
+
+pub const DIAGNOSTIC_WARNING = 'warning'
+pub const DIAGNOSTIC_ERROR = 'error'
+pub const DIAGNOSTIC_COLLISION = 'collision'
+
+// Pi exposes these as TypeScript interfaces.  Nature uses value types and
+// explicit presence flags for the optional path/collision members.
+pub type resource_collision_t = struct {
+    string resource_type
+    string name
+    string winner_path
+    string loser_path
+    string winner_source
+    string loser_source
+}
+
+pub type resource_diagnostic_t = struct {
+    string kind
+    string message
+    string path
+    bool has_path
+    bool has_collision
+    resource_collision_t collision
+}
+
+// Pi's debug artifacts are opt-in and live below the agent directory.  The
+// lifecycle logger remains on stderr so JSON/RPC stdout stays machine-readable.
+
+// Debug output is deliberately kept on stderr so normal text, JSON, and RPC
+// protocols remain machine-readable. Use `adou --debug 2>adou-debug.log` when
+// tracing a TUI crash; the log contains lifecycle metadata, never API keys or
+// request bodies.
+pub fn configure(bool requested): void! {
+    if requested {
+        syscall.set_env('ADOU_DEBUG', '1')
+    }
+}
+
+pub fn enabled(): bool {
+    string value = syscall.get_env('ADOU_DEBUG')
+    return value != '' && value != '0'
+}
+
+pub fn log(string component, string message) {
+    if !enabled() {
+        return
+    }
+    string line = '[adou debug] ' + component + ': ' + message + '\n'
+    output_guard.write_raw_stderr(line) catch error {}
+    string file_target = syscall.get_env('ADOU_DEBUG_FILE')
+    if file_target != '' {
+        append_file(file_target, line)
+    }
+}
+
+pub fn write_stdout(string text): void! {
+    output_guard.write_raw_stdout(text)
+}
+
+pub fn write_stderr(string text): void! {
+    output_guard.write_raw_stderr(text)
+}
+
+pub fn warning_diagnostic(string message): resource_diagnostic_t {
+    return resource_diagnostic_t {kind: DIAGNOSTIC_WARNING, message: message,}
+}
+
+pub fn diagnostic_warning(string message): resource_diagnostic_t {
+    return warning_diagnostic(message)
+}
+
+pub fn error_diagnostic(string message): resource_diagnostic_t {
+    return resource_diagnostic_t {kind: DIAGNOSTIC_ERROR, message: message,}
+}
+
+pub fn diagnostic_error(string message): resource_diagnostic_t {
+    return error_diagnostic(message)
+}
+
+pub fn collision_diagnostic(string message, resource_collision_t collision): resource_diagnostic_t {
+    return resource_diagnostic_t {kind: DIAGNOSTIC_COLLISION, message: message, has_collision: true, collision: collision,}
+}
+
+pub fn diagnostic_collision(string message, resource_collision_t collision): resource_diagnostic_t {
+    return collision_diagnostic(message, collision)
+}
+
+pub fn diagnostic_with_path(resource_diagnostic_t diagnostic, string path_value): resource_diagnostic_t {
+    diagnostic.path = path_value
+    diagnostic.has_path = path_value != ''
+    return diagnostic
+}
+
+pub fn format_diagnostic(resource_diagnostic_t diagnostic): string {
+    string prefix = diagnostic.kind == DIAGNOSTIC_ERROR ? 'Error: ' : diagnostic.kind == DIAGNOSTIC_WARNING ? 'Warning: ' : ''
+    string output = prefix + diagnostic.message
+    if diagnostic.has_path {
+        output += ' [' + diagnostic.path + ']'
+    }
+    if diagnostic.has_collision {
+        output += fmt.sprintf(' (resource=%s name=%s winner=%s loser=%s', diagnostic.collision.resource_type, diagnostic.collision.name, diagnostic.collision.winner_path, diagnostic.collision.loser_path)
+        if diagnostic.collision.winner_source != '' {
+            output += ' winnerSource=' + diagnostic.collision.winner_source
+        }
+        if diagnostic.collision.loser_source != '' {
+            output += ' loserSource=' + diagnostic.collision.loser_source
+        }
+        output += ')'
+    }
+    return output
+}
+
+pub fn format_diagnostics([resource_diagnostic_t] diagnostics): string {
+    [string] lines = []
+    for diagnostic in diagnostics {
+        lines.push(format_diagnostic(diagnostic))
+    }
+    return strings.join(lines, '\n')
+}
+
+pub fn report_diagnostics([resource_diagnostic_t] diagnostics) {
+    for diagnostic in diagnostics {
+        output_guard.write_raw_stderr(format_diagnostic(diagnostic) + '\n') catch error {}
+    }
+}
+
+pub fn debug_log_path(): string {
+    return paths.debug_log_path()
+}
+
+pub fn crash_log_path(): string {
+    return paths.crash_log_path()
+}
+
+pub fn write_debug_file(string content): string! {
+    string target = paths.debug_log_path()
+    write_file(target, content, false)
+    return target
+}
+
+pub fn log_redraw(string reason, int previous_lines, int new_lines, int height) {
+    if syscall.get_env('PI_DEBUG_REDRAW') != '1' {
+        return
+    }
+    string line = fmt.sprintf('[%s] fullRender: %s (prev=%d, new=%d, height=%d)\n', timestamp(), reason, previous_lines, new_lines, height)
+    append_file(paths.debug_log_path(), line)
+}
+
+pub fn log_terminal_output(string output) {
+    string configured = syscall.get_env('PI_TUI_WRITE_LOG')
+    if configured == '' {
+        terminal_log_configured = ''
+        terminal_log_target = ''
+        return
+    }
+    if configured != terminal_log_configured {
+        terminal_log_configured = configured
+        terminal_log_target = resolve_terminal_log_target(configured)
+    }
+    append_file(terminal_log_target, output)
+}
+
+pub fn log_tui_frame(string content) {
+    if syscall.get_env('PI_TUI_DEBUG') != '1' {
+        return
+    }
+    string directory = '/tmp/tui'
+    os.mkdirs(directory, 0o700) catch error {}
+    int pid = syscall.getpid() catch error {0}
+    tui_frame_sequence += 1
+    string target = path.join(directory, fmt.sprintf('render-%d-%d-%d.log', time.now().ms_timestamp(), pid, tui_frame_sequence))
+    write_file(target, content, false) catch error {}
+}
+
+pub fn write_crash_file(string content): string! {
+    string target = paths.crash_log_path()
+    write_file(target, content, false)
+    return target
+}
+
+#local
+fn resolve_terminal_log_target(string configured): string {
+    // Pi accepts either a file path or an existing directory here.  A failed
+    // stat means the value is treated as a file path, which also lets the
+    // terminal create the requested log on first write.
+    var status = syscall.stat(configured) catch error {syscall.stat_t{}}
+    if status.mode == 0 || !syscall.stat_is_dir(status.mode) {
+        return configured
+    }
+    string stamp = identity.iso_now() catch error {fmt.sprintf('%d', time.now().ms_timestamp())}
+    if stamp.len() >= 19 {
+        stamp = stamp.slice(0, 19).replace('T', '_').replace(':', '-')
+    }
+    int pid = syscall.getpid() catch error {0}
+    return path.join(configured, fmt.sprintf('tui-%s-%d.log', stamp, pid))
+}
+
+pub fn write_file(string target, string content, bool append): void! {
+    os.mkdirs(path.dir(target), 0o700)
+    int flags = syscall.O_WRONLY | syscall.O_CREAT
+    if append {
+        flags |= syscall.O_APPEND
+    } else {
+        flags |= syscall.O_TRUNC
+    }
+    var file = fs.open(target, flags, 0o600)
+    int offset = 0
+    [u8] bytes = content as [u8]
+    for offset < bytes.len() {
+        int written = file.write(bytes.slice(offset, bytes.len()))
+        if written <= 0 {
+            file.close()
+            throw errorf('incomplete debug log write')
+        }
+        offset += written
+    }
+    file.close()
+}
+
+pub fn append_file(string target, string content) {
+    write_file(target, content, true) catch error {}
+}
+
+pub fn timestamp(): string {
+    return fmt.sprintf('%d', time.now().ms_timestamp())
+}

@@ -1,0 +1,12 @@
+// Provider definition for DeepSeek.
+// Metadata follows vendors/pi/packages/ai/src/providers/deepseek.ts.
+import adou.src.ai.providers.deepseek_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'deepseek', name: 'DeepSeek', api: 'openai-completions', base_url: 'https://api.deepseek.com', env_vars: ['DEEPSEEK_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return deepseek_models.models()
+}

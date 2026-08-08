@@ -1,0 +1,14 @@
+// Provider definition for Radius.
+// Metadata follows vendors/pi/packages/ai/src/providers/radius.ts; the
+// OAuth credential flow is out of Adou's scope, the provider authenticates
+// with an API key and keeps the dynamic gateway catalog refresh.
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'radius', name: 'Radius', api: 'pi-messages', base_url: 'https://radius.pi.dev', env_vars: ['RADIUS_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    [ref<types.model_t>] empty = []
+    return empty
+}

@@ -1,0 +1,59 @@
+import adou.src.ai.types
+
+// Tracks tool calls while converting persisted messages. Pi inserts an error
+// tool result when a completed assistant turn has no corresponding result, so
+// provider APIs never receive an orphaned tool call.
+pub type tracker_t = struct {
+    [ref<types.tool_call_t>] pending = []
+    [string] seen_results = []
+}
+
+pub fn tracker(): ref<tracker_t> {
+    return new tracker_t()
+}
+
+pub fn tracker_t.before_assistant(&self, ref<types.assistant_message_t> message): [ref<types.tool_result_message_t>] {
+    [ref<types.tool_result_message_t>] missing = self.flush()
+    if message.stop_reason == types.STOP_ERROR || message.stop_reason == types.STOP_ABORTED {
+        return missing
+    }
+    for block in message.content {
+        if block is ref<types.tool_call_t> call {
+            self.pending.push(call)
+        }
+    }
+    return missing
+}
+
+pub fn tracker_t.before_other(&self): [ref<types.tool_result_message_t>] {
+    return self.flush()
+}
+
+pub fn tracker_t.observe_tool_result(&self, string tool_call_id) {
+    self.seen_results.push(tool_call_id)
+}
+
+pub fn tracker_t.finish(&self): [ref<types.tool_result_message_t>] {
+    return self.flush()
+}
+
+pub fn tracker_t.flush(&self): [ref<types.tool_result_message_t>] {
+    [ref<types.tool_result_message_t>] missing = []
+    for call in self.pending {
+        bool has_result = false
+        for result_id in self.seen_results {
+            if result_id == call.id {
+                has_result = true
+                break
+            }
+        }
+        if has_result {
+            continue
+        }
+        var text = new types.text_content_t(text = 'No result provided')
+        missing.push(new types.tool_result_message_t(tool_call_id = call.id, tool_name = call.name, content = [text,], is_error = true,))
+    }
+    self.pending = []
+    self.seen_results = []
+    return missing
+}

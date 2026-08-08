@@ -1,0 +1,12 @@
+// Provider definition for Ant Ling.
+// Metadata follows vendors/pi/packages/ai/src/providers/ant-ling.ts.
+import adou.src.ai.providers.ant_ling_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'ant-ling', name: 'Ant Ling', api: 'openai-completions', base_url: 'https://api.ant-ling.com/v1', env_vars: ['ANT_LING_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return ant_ling_models.models()
+}

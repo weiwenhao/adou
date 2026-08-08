@@ -1,0 +1,12 @@
+// Provider definition for GitHub Copilot.
+// Metadata follows vendors/pi/packages/ai/src/providers/github-copilot.ts.
+import adou.src.ai.providers.github_copilot_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'github-copilot', name: 'GitHub Copilot', api: 'openai-completions', base_url: 'https://api.individual.githubcopilot.com', env_vars: ['COPILOT_GITHUB_TOKEN'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return github_copilot_models.models()
+}

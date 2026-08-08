@@ -1,0 +1,12 @@
+// Provider definition for Vercel AI Gateway.
+// Metadata follows vendors/pi/packages/ai/src/providers/vercel-ai-gateway.ts.
+import adou.src.ai.providers.vercel_ai_gateway_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'vercel-ai-gateway', name: 'Vercel AI Gateway', api: 'anthropic-messages', base_url: 'https://ai-gateway.vercel.sh', env_vars: ['AI_GATEWAY_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return vercel_ai_gateway_models.models()
+}

@@ -1,0 +1,12 @@
+// Provider definition for Moonshot AI CN.
+// Metadata follows vendors/pi/packages/ai/src/providers/moonshotai-cn.ts.
+import adou.src.ai.providers.moonshotai_cn_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'moonshotai-cn', name: 'Moonshot AI CN', api: 'openai-completions', base_url: 'https://api.moonshot.cn/v1', env_vars: ['MOONSHOT_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return moonshotai_cn_models.models()
+}

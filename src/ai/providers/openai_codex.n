@@ -1,0 +1,12 @@
+// Provider definition for OpenAI Codex.
+// Metadata follows vendors/pi/packages/ai/src/providers/openai-codex.ts.
+import adou.src.ai.providers.openai_codex_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'openai-codex', name: 'OpenAI Codex', api: 'openai-codex-responses', base_url: 'https://chatgpt.com/backend-api', env_vars: [], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return openai_codex_models.models()
+}

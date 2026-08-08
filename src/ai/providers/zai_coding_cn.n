@@ -1,0 +1,12 @@
+// Provider definition for Z.AI Coding CN.
+// Metadata follows vendors/pi/packages/ai/src/providers/zai-coding-cn.ts.
+import adou.src.ai.providers.zai_coding_cn_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'zai-coding-cn', name: 'Z.AI Coding CN', api: 'openai-completions', base_url: 'https://open.bigmodel.cn/api/coding/paas/v4', env_vars: ['ZAI_CODING_CN_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return zai_coding_cn_models.models()
+}

@@ -76,6 +76,9 @@ try:
     os.write(fd, b"/login\r")
     if not collect(b"Select authentication method:"):
         raise SystemExit("/login did not open the authentication selector")
+    # The title and lower border can arrive in separate PTY reads even though
+    # they belong to the same synchronized render frame.
+    collect(timeout=0.5)
     if b"\x1b[38;2;138;190;183mSelect authentication method:" not in output:
         raise SystemExit("authentication selector title is not Pi accent colored")
     if b"\xe2\x86\x92" not in output or b"Sign in with an account" not in output:

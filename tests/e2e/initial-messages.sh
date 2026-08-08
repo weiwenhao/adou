@@ -103,7 +103,7 @@ if [ "$(cat "$output_file")" != 'answer-2' ]; then
 fi
 
 stdin_output="$tmp_dir/stdin-output"
-if ! printf '%s' 'STDIN_CONTENT' | \
+if ! printf '%b' '  STDIN_CONTENT  \n' | \
     PI_CODING_AGENT_DIR="$tmp_dir/agent-stdin" \
     PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions-stdin" \
     "$binary" --provider deepseek --model deepseek-v4-flash --thinking off \
@@ -163,7 +163,7 @@ if not file_first or "FILE_CONTENT" not in str(file_first[-1]) or "first" not in
     raise SystemExit(f"@file content was not prefixed to the first prompt: {file_first!r}")
 if file_second[-1] != "second" or any("first second" in str(value) for value in file_second):
     raise SystemExit(f"CLI messages were merged instead of sent sequentially: {file_second!r}")
-if not stdin_first or "STDIN_CONTENT" not in str(stdin_first[-1]) or "first" not in str(stdin_first[-1]):
+if not stdin_first or stdin_first[-1] != "STDIN_CONTENTfirst":
     raise SystemExit(f"stdin content was not prefixed to the first prompt: {stdin_first!r}")
 if stdin_second[-1] != "second" or any("first second" in str(value) for value in stdin_second):
     raise SystemExit(f"piped CLI messages were merged instead of sent sequentially: {stdin_second!r}")

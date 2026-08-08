@@ -1,0 +1,12 @@
+// Provider definition for OpenCode Zen Go.
+// Metadata follows vendors/pi/packages/ai/src/providers/opencode-go.ts.
+import adou.src.ai.providers.opencode_go_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'opencode-go', name: 'OpenCode Zen Go', api: 'openai-completions', base_url: 'https://opencode.ai/zen/go', env_vars: ['OPENCODE_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return opencode_go_models.models()
+}

@@ -1,0 +1,14 @@
+import adou.src.ai.types
+
+// Shared helper for generated model catalogs. Keeps every generated entry a
+// single expression while still carrying tiered pricing where Pi's generator
+// attaches it (OpenAI long-context tiers and models.dev cost tiers).
+pub fn build(string id, string name, string api, string provider, string base_url, bool reasoning, int context_window, int max_tokens, float input_cost, float output_cost, float cache_read, float cache_write, [types.cost_tier_t] tiers): ref<types.model_t> {
+    var model = new types.model_t(id = id, name = name, api = api, provider = provider, base_url = base_url, reasoning = reasoning, context_window = context_window, max_tokens = max_tokens)
+    model.cost.input = input_cost
+    model.cost.output = output_cost
+    model.cost.cache_read = cache_read
+    model.cost.cache_write = cache_write
+    model.cost.tiers = tiers
+    return model
+}

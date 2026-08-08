@@ -1,0 +1,12 @@
+// Provider definition for Kimi For Coding.
+// Metadata follows vendors/pi/packages/ai/src/providers/kimi-coding.ts.
+import adou.src.ai.providers.kimi_coding_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'kimi-coding', name: 'Kimi For Coding', api: 'anthropic-messages', base_url: 'https://api.kimi.com/coding', env_vars: ['KIMI_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return kimi_coding_models.models()
+}

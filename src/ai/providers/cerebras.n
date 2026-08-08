@@ -1,0 +1,12 @@
+// Provider definition for Cerebras.
+// Metadata follows vendors/pi/packages/ai/src/providers/cerebras.ts.
+import adou.src.ai.providers.cerebras_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'cerebras', name: 'Cerebras', api: 'openai-completions', base_url: 'https://api.cerebras.ai/v1', env_vars: ['CEREBRAS_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return cerebras_models.models()
+}

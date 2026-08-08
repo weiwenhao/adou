@@ -1,0 +1,99 @@
+import syscall
+
+// Node can replace process.stdout.write.  Nature does not expose a mutable
+// process stream method, so callers explicitly use these raw writers for
+// machine-readable output and keep ordinary diagnostics on stderr.
+var stdout_taken_over = false
+
+pub fn take_over_stdout() {
+    stdout_taken_over = true
+}
+
+pub fn restore_stdout() {
+    stdout_taken_over = false
+}
+
+pub fn is_stdout_taken_over(): bool {
+    return stdout_taken_over
+}
+
+pub fn write_raw_stdout(string text): void! {
+    write_fd(syscall.STDOUT, text)
+}
+
+pub fn write_raw_stderr(string text): void! {
+    write_fd(syscall.STDERR, text)
+}
+
+pub fn write_stdout(string text): void! {
+    write_raw_stdout(text)
+}
+
+pub fn write_stderr(string text): void! {
+    write_raw_stderr(text)
+}
+
+// Standard streams are blocking file descriptors in the CLI.  A synchronous
+// loop preserves the bytes on short writes and gives callers an explicit
+// error instead of silently dropping protocol output.
+pub fn write_fd(int fd, string text): void! {
+    if text.len() == 0 {
+        return
+    }
+    [u8] bytes = text as [u8]
+    int offset = 0
+    for offset < bytes.len() {
+        [u8] chunk = bytes.slice(offset, bytes.len())
+        int written = syscall.write(fd, chunk.ref(), chunk.len())
+        if written <= 0 {
+            throw errorf('incomplete raw output write')
+        }
+        offset += written
+    }
+}
+
+// Nature writes synchronously, so these are explicit no-ops that preserve the
+// call shape used by Pi's async output guard.
+pub fn wait_for_raw_stdout_backpressure(): void! {
+    return
+}
+
+pub fn flush_raw_stdout(): void! {
+    wait_for_raw_stdout_backpressure()
+}
+
+pub fn takeOverStdout() {
+    take_over_stdout()
+}
+
+pub fn restoreStdout() {
+    restore_stdout()
+}
+
+pub fn isStdoutTakenOver(): bool {
+    return is_stdout_taken_over()
+}
+
+pub fn writeRawStdout(string text): void! {
+    write_raw_stdout(text)
+}
+
+pub fn writeRawStderr(string text): void! {
+    write_raw_stderr(text)
+}
+
+pub fn writeStdout(string text): void! {
+    write_stdout(text)
+}
+
+pub fn writeStderr(string text): void! {
+    write_stderr(text)
+}
+
+pub fn waitForRawStdoutBackpressure(): void! {
+    wait_for_raw_stdout_backpressure()
+}
+
+pub fn flushRawStdout(): void! {
+    flush_raw_stdout()
+}

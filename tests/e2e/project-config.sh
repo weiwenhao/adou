@@ -33,7 +33,7 @@ printf '%s' '{"defaultProvider":"openai","defaultModel":"gpt-5.1-codex","default
 printf '%s' 'GLOBAL_SYSTEM' > "$agent_dir/SYSTEM.md"
 printf '%s' 'PROJECT_SYSTEM' > "$project_dir/.pi/SYSTEM.md"
 printf '%s' 'PROJECT_APPEND' > "$project_dir/.pi/APPEND_SYSTEM.md"
-printf '%s' '{"defaultProvider":"deepseek","defaultModel":"deepseek-v4-flash","defaultThinkingLevel":"off"}' > "$project_dir/.pi/settings.json"
+printf '%s' '{"defaultProvider":"anthropic","defaultModel":"claude-sonnet-4-5","defaultThinkingLevel":"off","enabledModels":["openai/gpt-5.1-codex:high","deepseek/deepseek-v4-flash:low"]}' > "$project_dir/.pi/settings.json"
 
 python3 - "$port_file" "$request_file" <<'PY' &
 import json
@@ -101,11 +101,17 @@ items = [json.loads(line) for line in sys.argv[1].splitlines() if line.strip()]
 state = next(item for item in items if item.get("id") == "state")
 data = state.get("data", {})
 model = data.get("model", {})
-if (model.get("provider"), model.get("id")) != ("deepseek", "deepseek-v4-flash"):
-    raise SystemExit(f"project settings did not override global model: {data!r}")
-if data.get("thinkingLevel") != "off":
-    raise SystemExit(f"project settings did not override global thinking level: {data!r}")
+if (model.get("provider"), model.get("id")) != ("openai", "gpt-5.1-codex"):
+    raise SystemExit(f"project enabledModels did not override global default model: {data!r}")
+if data.get("thinkingLevel") != "high":
+    raise SystemExit(f"project enabledModels did not apply its thinking suffix: {data!r}")
 PY
+
+# The scope check above intentionally proves the Pi initial-selection rule.
+# Switch back to the project default before the provider request so this test
+# can continue to exercise the DeepSeek OpenAI-compatible transport and the
+# project SYSTEM.md precedence in the same invocation.
+printf '%s' '{"defaultProvider":"deepseek","defaultModel":"deepseek-v4-flash","defaultThinkingLevel":"off"}' > "$project_dir/.pi/settings.json"
 
 output_file="$tmp_dir/output"
 if ! (cd "$project_dir" && \

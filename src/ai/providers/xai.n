@@ -1,0 +1,12 @@
+// Provider definition for xAI.
+// Metadata follows vendors/pi/packages/ai/src/providers/xai.ts.
+import adou.src.ai.providers.xai_models
+import adou.src.ai.types
+
+pub fn def(): types.provider_def_t {
+    return types.provider_def_t {id: 'xai', name: 'xAI', api: 'openai-completions', base_url: 'https://api.x.ai/v1', env_vars: ['XAI_API_KEY'], headers: {},}
+}
+
+pub fn models(): [ref<types.model_t>] {
+    return xai_models.models()
+}
