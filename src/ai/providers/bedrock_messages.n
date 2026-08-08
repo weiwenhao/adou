@@ -1,0 +1,356 @@
+import adou.src.ai.providers.decorators
+import adou.src.ai.providers.replay
+import adou.src.ai.types
+import adou.src.json_util
+import crypto.hmac as hmac_lib
+import libc
+import crypto.sha256
+import fmt
+import json
+import strings
+import syscall
+import time
+import time
+
+pub fn endpoint(ref<types.model_t> model): string {
+    if model.base_url != '' && !model.base_url.contains('bedrock-runtime.') {
+        // Custom endpoints (proxies, tests, VPC) carry the full runtime path.
+        string base = model.base_url
+        for base.ends_with('/') {
+            base = base.slice(0, base.len() - 1)
+        }
+        return base + '/model/' + model.id + '/converse-stream'
+    }
+    string region = region_for(model)
+    return 'https://bedrock-runtime.' + region + '.amazonaws.com/model/' + model.id + '/converse-stream'
+}
+
+pub fn region_for(ref<types.model_t> model): string {
+    string region = syscall.get_env('AWS_REGION')
+    if region == '' {
+        region = syscall.get_env('AWS_DEFAULT_REGION')
+    }
+    if region == '' {
+        // Extract the region from an inference-profile ARN model id.
+        if model.id.starts_with('arn:aws:bedrock:') {
+            [string] parts = model.id.split(':')
+            if parts.len() >= 4 && parts[3] != '' {
+                region = parts[3]
+            }
+        }
+    }
+    if region == '' {
+        region = 'us-east-1'
+    }
+    return region
+}
+
+pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+    {string:any} body = {}
+    body['modelId'] = model.id
+    [any] messages = convert_messages(model, context)
+    body['messages'] = messages
+    if context.system_prompt != '' {
+        {string:any} system = {}
+        system['text'] = context.system_prompt
+        body['system'] = [system]
+    }
+    {string:any} inference = {}
+    int max_tokens = options.max_tokens
+    if max_tokens <= 0 {
+        max_tokens = model.max_tokens
+    }
+    if max_tokens > 0 {
+        inference['maxTokens'] = max_tokens
+    }
+    body['inferenceConfig'] = inference
+    if context.tools.len() > 0 {
+        body['toolConfig'] = convert_tools(context.tools)
+    }
+    return json.serialize(body)
+}
+
+// AWS SigV4 signing for the Bedrock Runtime. The canonical request covers the
+// URI, content-type, host and x-amz-date headers, and the hashed body; the
+// signing key is an HMAC chain over the date/region/service/aws4_request scope.
+pub fn authorization(ref<types.model_t> model, string body, string amz_date): string! {
+    string access_key = syscall.get_env('AWS_ACCESS_KEY_ID')
+    string secret_key = syscall.get_env('AWS_SECRET_ACCESS_KEY')
+    if access_key == '' || secret_key == '' {
+        throw errorf('No AWS credentials for provider: amazon-bedrock. Set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.')
+    }
+    string region = region_for(model)
+    string payload_hash = sha256.hex(body)
+    string uri = '/model/' + model.id + '/converse-stream'
+    string host = 'bedrock-runtime.' + region + '.amazonaws.com'
+    string date = amz_date.slice(0, 8)
+    string canonical_headers = 'content-type:application/json\nhost:' + host + '\nx-amz-date:' + amz_date + '\n'
+    string signed_headers = 'content-type;host;x-amz-date'
+    string canonical_request = 'POST\n' + uri + '\n\n' + canonical_headers + '\n' + signed_headers + '\n' + payload_hash
+    string scope = date + '/' + region + '/bedrock/aws4_request'
+    string string_to_sign = 'AWS4-HMAC-SHA256\n' + amz_date + '\n' + scope + '\n' + sha256.hex(canonical_request)
+    string signing_key = hmac_key(secret_key, date, region)
+    string signature = hmac_hex(signing_key, string_to_sign)
+    return 'AWS4-HMAC-SHA256 Credential=' + access_key + '/' + scope + ', SignedHeaders=' + signed_headers + ', Signature=' + signature
+}
+
+pub fn amz_date_now(): string {
+    // x-amz-date is a UTC YYYYMMDD'T'HHMMSS'Z' timestamp.
+    var now = time.now()
+    var tm = libc.gmtime(&(now.sec as libc.time_t))
+    var buf = vec<u8>.new(0, 32)
+    libc.strftime(buf.ref() as libc.cstr, buf.len() as u64, '%Y%m%dT%H%M%SZ'.to_cstr(), tm)
+    return buf as string
+}
+
+pub fn session_token_header(): string {
+    return syscall.get_env('AWS_SESSION_TOKEN')
+}
+
+#local
+fn hmac_key(string secret, string date, string region): string {
+    var k_date = hmac_lib.new(hmac_lib.SHA256, ('AWS4' + secret) as [u8])
+    k_date.update(date as [u8])
+    var date_bytes = k_date.finish()
+    var k_region = hmac_lib.new(hmac_lib.SHA256, date_bytes)
+    k_region.update(region as [u8])
+    var region_bytes = k_region.finish()
+    var k_service = hmac_lib.new(hmac_lib.SHA256, region_bytes)
+    k_service.update('bedrock' as [u8])
+    var service_bytes = k_service.finish()
+    var k_signing = hmac_lib.new(hmac_lib.SHA256, service_bytes)
+    k_signing.update('aws4_request' as [u8])
+    return k_signing.finish() as string
+}
+
+#local
+fn hmac_hex(string key, string message): string {
+    var h = hmac_lib.new(hmac_lib.SHA256, key as [u8])
+    h.update(message as [u8])
+    return bytes_hex(h.finish())
+}
+
+#local
+fn bytes_hex([u8] bytes): string {
+    string result = ''
+    for byte in bytes {
+        result += hex_byte(byte)
+    }
+    return result
+}
+
+#local
+fn hex_byte(u8 byte): string {
+    [string] digits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
+    return digits[byte >> 4] + digits[byte & 0x0f]
+}
+
+#local
+fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [any]! {
+    [any] result = []
+    var replay = replay.tracker()
+    for message in context.messages {
+        if message is ref<types.user_message_t> user {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(model, missing))
+            }
+            result.push(user_item(user.content))
+        } else if message is ref<types.assistant_message_t> assistant {
+            for missing in replay.before_assistant(assistant) {
+                result.push(tool_result_item(model, missing))
+            }
+            if assistant.stop_reason == types.STOP_ERROR || assistant.stop_reason == types.STOP_ABORTED {
+                continue
+            }
+            var item = assistant_item(model, assistant)
+            if !json_util.is_null(item) {
+                result.push(item)
+            }
+        } else if message is ref<types.tool_result_message_t> tool_result {
+            replay.observe_tool_result(tool_result.tool_call_id)
+            result.push(tool_result_item(model, tool_result))
+        } else if message is ref<types.compaction_summary_message_t> summary {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(model, missing))
+            }
+            result.push(user_item('The conversation history before this point was compacted into the following summary:\n\n<summary>\n' + summary.summary + '\n</summary>'))
+        } else if message is ref<types.branch_summary_message_t> summary {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(model, missing))
+            }
+            result.push(user_item('The following is a summary of a branch that this conversation came back from:\n\n<summary>\n' + summary.summary + '</summary>'))
+        } else if message is ref<types.custom_message_t> custom {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(model, missing))
+            }
+            result.push(user_item(custom.content))
+        } else if message is ref<types.bash_execution_message_t> bash {
+            for missing in replay.before_other() {
+                result.push(tool_result_item(model, missing))
+            }
+            if !bash.exclude_from_context {
+                result.push(user_item(types.bash_execution_text(bash)))
+            }
+        }
+    }
+    for missing in replay.finish() {
+        result.push(tool_result_item(model, missing))
+    }
+    return result
+}
+
+#local
+fn user_item(string text): any {
+    {string:any} item = {}
+    item['role'] = 'user'
+    [any] content = []
+    {string:any} block = {}
+    block['text'] = text
+    content.push(block)
+    item['content'] = content
+    return item
+}
+
+#local
+fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> message): any! {
+    [any] content = []
+    for block in message.content {
+        if block is ref<types.text_content_t> text_block {
+            {string:any} item = {}
+            item['text'] = text_block.text
+            content.push(item)
+        } else if block is ref<types.tool_call_t> tool_call {
+            {string:any} item = {}
+            item['toolUse'] = json_util.parse(json.serialize(tool_call.arguments) catch error {'{}'})
+            content.push(item)
+        }
+    }
+    if content.len() == 0 {
+        return null
+    }
+    {string:any} item = {}
+    item['role'] = 'assistant'
+    item['content'] = content
+    return item
+}
+
+#local
+fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_t> message): any {
+    [string] lines = []
+    for block in message.content {
+        lines.push(block.text)
+    }
+    string text = strings.join(lines, '\n')
+    if text == '' {
+        text = '(no tool output)'
+    }
+    {string:any} result = {}
+    result['text'] = text
+    {string:any} item = {}
+    item['toolResult'] = result
+    [any] content = []
+    content.push(item)
+    {string:any} wrapper = {}
+    wrapper['role'] = 'user'
+    wrapper['content'] = content
+    return wrapper
+}
+
+#local
+fn convert_tools([ref<types.tool_t>] tools): {string:any}! {
+    [any] result = []
+    for tool in tools {
+        {string:any} spec = {}
+        spec['name'] = tool.name
+        spec['description'] = tool.description
+        {string:any} input_schema = {}
+        input_schema['json'] = tool.parameters
+        spec['inputSchema'] = input_schema
+        result.push(spec)
+    }
+    {string:any} config = {}
+    config['tools'] = result
+    return config
+}
+
+// -------- AWS event stream decoding --------
+
+// The ConverseStream response is an AWS event-stream binary stream: each
+// message is [4B total length][4B headers length][headers][payload][4B CRC].
+// Headers carry :message-type and :event-type; the payload is the JSON event.
+pub type stream_event_t = struct {
+    string event_type
+    string payload
+}
+
+pub fn decode_event_stream([u8] buffer): [stream_event_t]! {
+    [stream_event_t] events = []
+    int offset = 0
+    for offset + 16 <= buffer.len() {
+        int total = read_u32(buffer, offset)
+        if total < 16 || offset + total > buffer.len() {
+            break
+        }
+        int headers_len = read_u32(buffer, offset + 4)
+        int cursor = offset + 8
+        string event_type = ''
+        for cursor < offset + 8 + headers_len {
+            int name_len = buffer[cursor] as int
+            cursor += 1
+            string name = buffer.slice(cursor, cursor + name_len) as string
+            cursor += name_len
+            u8 value_type = buffer[cursor]
+            cursor += 1
+            var value = read_header_value(buffer, cursor, value_type)
+            cursor = value.next
+            if name == ':event-type' && value.text != '' {
+                event_type = value.text
+            }
+        }
+        int payload_len = offset + total - 4 - cursor
+        string payload = buffer.slice(cursor, cursor + payload_len) as string
+        events.push(stream_event_t {event_type: event_type, payload: payload,})
+        offset += total
+    }
+    return events
+}
+
+pub type header_value_t = struct {
+    int next
+    string text
+}
+
+#local
+fn read_header_value([u8] buffer, int cursor, u8 value_type): header_value_t {
+    if value_type == 7 {
+        int len = read_u16(buffer, cursor)
+        return header_value_t {next: cursor + 2 + len, text: buffer.slice(cursor + 2, cursor + 2 + len) as string,}
+    }
+    if value_type == 4 {
+        int len = read_u16(buffer, cursor)
+        return header_value_t {next: cursor + 2 + len, text: '',}
+    }
+    if value_type == 6 {
+        return header_value_t {next: cursor + 1, text: '',}
+    }
+    if value_type == 5 {
+        return header_value_t {next: cursor + 2, text: '',}
+    }
+    if value_type == 2 {
+        return header_value_t {next: cursor + 4, text: '',}
+    }
+    if value_type == 3 {
+        return header_value_t {next: cursor + 8, text: '',}
+    }
+    return header_value_t {next: cursor, text: '',}
+}
+
+#local
+fn read_u16([u8] buffer, int offset): int {
+    return (buffer[offset] as int) << 8 | (buffer[offset + 1] as int)
+}
+
+#local
+fn read_u32([u8] buffer, int offset): int {
+    return (buffer[offset] as int) << 24 | (buffer[offset + 1] as int) << 16 | (buffer[offset + 2] as int) << 8 | (buffer[offset + 3] as int)
+}

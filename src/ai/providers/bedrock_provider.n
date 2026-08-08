@@ -1,0 +1,434 @@
+import adou.src.ai.abort
+import adou.src.ai.event_stream
+import adou.src.ai.provider_retry
+import adou.src.ai.providers.bedrock_messages
+import adou.src.ai.sse
+import adou.src.ai.types
+import adou.src.debug
+import adou.src.json_util
+import fmt
+import http.client as client
+import time
+
+pub const ERROR_BODY_LIMIT = 64 * 1024
+
+pub type run_state_t = struct {
+    ref<event_stream.assistant_stream_t> stream
+    ref<types.model_t> model
+    ref<types.context_t> context
+    ref<types.stream_options_t> options
+    ref<processor_t> processor
+    string body
+    ref<client.response_t>? response = null
+}
+
+// Bedrock ConverseStream processor: the response is an AWS event stream whose
+// JSON payloads carry messageStart / contentBlockStart / contentBlockDelta /
+// contentBlockStop / messageStop / metadata events.
+pub type processor_t = struct {
+    ref<types.model_t> model
+    ref<types.assistant_message_t> output
+    int text_index = -1
+    int thinking_index = -1
+    bool started
+    bool saw_message_stop
+    bool saw_terminal
+}
+
+pub fn processor(ref<types.model_t> model, int timestamp): ref<processor_t> {
+    var output = new types.assistant_message_t(api = 'bedrock-converse-stream', provider = model.provider, model = model.id, timestamp = timestamp,)
+    return new processor_t(model = model, output = output)
+}
+
+pub fn processor_t.start(&self): types.assistant_event_t! {
+    if self.started {
+        throw errorf('Bedrock stream already started')
+    }
+    self.started = true
+    return types.assistant_event_t {kind: types.EVENT_START, partial: self.output,}
+}
+
+pub fn processor_t.feed(&self, bedrock_messages.stream_event_t event): [types.assistant_event_t]! {
+    if !self.started {
+        throw errorf('Bedrock stream has not started')
+    }
+    if self.saw_terminal {
+        throw errorf('Bedrock stream received data after terminal event')
+    }
+    [types.assistant_event_t] events = []
+    if event.payload == '' {
+        return events
+    }
+    var root = json_util.parse(event.payload)
+    if !json_util.is_obj(root) {
+        return events
+    }
+    var object = root as {string:any}
+    if event.event_type == 'messageStart' {
+        if object.contains('role') && object['role'] is string && object['role'] as string != 'assistant' {
+            throw errorf('Unexpected Bedrock message start role')
+        }
+        return events
+    }
+    if event.event_type == 'contentBlockStart' {
+        if object.contains('start') && !json_util.is_null(object['start']) {
+            var start = object['start'] as {string:any}
+            if start.contains('toolUse') && !json_util.is_null(start['toolUse']) {
+                var tool_use = start['toolUse'] as {string:any}
+                var call = new types.tool_call_t()
+                call.id = opt_string(tool_use, 'toolUseId')
+                call.name = opt_string(tool_use, 'name')
+                types.content_t content = call
+                self.output.content.push(content)
+                int index = self.output.content.len() - 1
+                events.push(update_event(types.EVENT_TOOLCALL_START, index, '', '', self.output))
+            }
+        }
+        return events
+    }
+    if event.event_type == 'contentBlockDelta' {
+        if object.contains('delta') && !json_util.is_null(object['delta']) {
+            var delta = object['delta'] as {string:any}
+            if delta.contains('text') && delta['text'] is string {
+                string text = delta['text'] as string
+                if text != '' {
+                    events = self.append_text(text, events)
+                }
+            }
+            if delta.contains('reasoningContent') && !json_util.is_null(delta['reasoningContent']) {
+                var reasoning = delta['reasoningContent'] as {string:any}
+                if reasoning.contains('text') && reasoning['text'] is string {
+                    string text = reasoning['text'] as string
+                    if text != '' {
+                        events = self.append_thinking(text, events)
+                    }
+                }
+            }
+            if delta.contains('toolUse') && !json_util.is_null(delta['toolUse']) {
+                var tool_use = delta['toolUse'] as {string:any}
+                if tool_use.contains('input') && !json_util.is_null(tool_use['input']) {
+                    for block in self.output.content {
+                        if block is ref<types.tool_call_t> call {
+                            var merged = merge_json(call.arguments, tool_use['input'])
+                            call.arguments = merged
+                            events.push(update_event(types.EVENT_TOOLCALL_DELTA, self.output.content.len() - 1, json_util.stringify(tool_use['input']), '', self.output))
+                        }
+                    }
+                }
+            }
+        }
+        return events
+    }
+    if event.event_type == 'contentBlockStop' {
+        int index = self.output.content.len() - 1
+        if index >= 0 {
+            var block = self.output.content[index]
+            if block is ref<types.text_content_t> text {
+                events.push(update_event(types.EVENT_TEXT_END, index, '', text.text, self.output))
+            } else if block is ref<types.thinking_content_t> thinking {
+                events.push(update_event(types.EVENT_THINKING_END, index, '', thinking.thinking, self.output))
+            } else if block is ref<types.tool_call_t> call {
+                var event = update_event(types.EVENT_TOOLCALL_END, index, '', '', self.output)
+                event.tool_call = call
+                events.push(event)
+            }
+        }
+        return events
+    }
+    if event.event_type == 'messageStop' {
+        self.saw_message_stop = true
+        string stop_reason = opt_string(object, 'stopReason')
+        if stop_reason == 'max_tokens' || stop_reason == 'maxTokens' {
+            self.output.stop_reason = types.STOP_LENGTH
+        } else if stop_reason == 'tool_use' || stop_reason == 'toolUse' {
+            self.output.stop_reason = types.STOP_TOOL_USE
+        } else {
+            self.output.stop_reason = types.STOP_STOP
+        }
+        return events
+    }
+    if event.event_type == 'metadata' {
+        if object.contains('usage') && !json_util.is_null(object['usage']) {
+            var usage = object['usage'] as {string:any}
+            self.output.usage.input = optional_int(usage, 'inputTokens', 0)
+            self.output.usage.output = optional_int(usage, 'outputTokens', 0)
+            self.output.usage.total_tokens = self.output.usage.input + self.output.usage.output
+        }
+        return events
+    }
+    return events
+}
+
+pub fn processor_t.finish(&self): [types.assistant_event_t]! {
+    if self.saw_terminal {
+        throw errorf('Bedrock stream already finished')
+    }
+    if !self.saw_message_stop {
+        throw errorf('Bedrock stream ended without message_stop')
+    }
+    [types.assistant_event_t] events = []
+    self.saw_terminal = true
+    if self.output.stop_reason == types.STOP_STOP && self.has_tool_call() {
+        self.output.stop_reason = types.STOP_TOOL_USE
+    }
+    events.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: self.output.stop_reason, message: self.output,})
+    return events
+}
+
+pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    var result = event_stream.new()
+    go run(result, model, context, options)
+    return result
+}
+
+#local
+fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
+    debug.log('provider', 'bedrock stream start model=' + model.id)
+    var processor = processor(model, time.now().ms_timestamp())
+    var state = new run_state_t(stream = stream, model = model, context = context, options = options, processor = processor,)
+    run_inner(stream, state) catch error {
+        debug.log('provider', 'bedrock stream failure: ' + error.msg())
+        fail(stream, state, error.msg())
+    }
+}
+
+#local
+fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
+    if stream.is_aborted() {
+        throw errorf('Operation aborted')
+    }
+    state.body = bedrock_messages.build(state.model, state.context, state.options)
+    var current = send_with_retry(state, 0)
+    debug.log('provider', 'bedrock response status=' + fmt.sprintf('%d', current.status))
+    stream.push(state.processor.start())
+    [u8] accumulator = vec<u8>.new(0, 0)
+    [u8] scratch = vec<u8>.new(0, 8192)
+    bool terminal = false
+    for !terminal {
+        int n = current.read(scratch) catch error {
+            if provider_retry.is_clean_eof(error.msg()) {
+                break
+            }
+            throw error
+        }
+        accumulator.append(scratch.slice(0, n))
+        var events = decode_frames(state.processor, accumulator)
+        for event in events {
+            stream.push(event)
+            if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
+                terminal = true
+                break
+            }
+        }
+    }
+    var done = state.processor.finish()
+    for event in done {
+        stream.push(event)
+    }
+    stream.end()
+    debug.log('provider', 'bedrock stream end')
+}
+
+#local
+fn decode_frames(ref<processor_t> processor, [u8] accumulator): [types.assistant_event_t]! {
+    [types.assistant_event_t] events = []
+    var decoded = bedrock_messages.decode_event_stream(accumulator)
+    for event in decoded {
+        var result = processor.feed(event)
+        for item in result {
+            events.push(item)
+        }
+    }
+    return events
+}
+
+#local
+fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response_t>! {
+    var stream = state.stream
+    if stream.is_aborted() {
+        throw errorf('Request aborted')
+    }
+    var current = send_once(state) catch error {
+        debug.log('provider', 'bedrock request attempt failed: ' + error.msg())
+        if stream.is_aborted() || retry_index >= state.options.max_retries {
+            throw error
+        }
+        provider_retry.sleep(stream.cancellation, provider_retry.exponential_delay_ms(retry_index))
+        return send_with_retry(state, retry_index + 1)
+    }
+    state.response = current
+    abort.abort_callback_t close_response = fn () {
+        current.close()
+    }
+    stream.cancellation.on_abort(close_response)
+    if stream.is_aborted() {
+        current.close()
+        throw errorf('Request aborted')
+    }
+    if current.status >= 200 && current.status < 300 {
+        debug.log('provider', 'bedrock request accepted status=' + fmt.sprintf('%d', current.status))
+        return current
+    }
+    int status = current.status
+    string status_message = current.message
+    var headers = response_headers(current)
+    string error_body = read_error_body(current)
+    string provider_error = fmt.sprintf('Bedrock API error: HTTP %d %s: %s', status, status_message, error_body)
+    if retry_index >= state.options.max_retries || !provider_retry.should_retry(status, headers) {
+        throw errorf('%s', provider_error)
+    }
+    int delay = provider_retry.delay_ms(headers, retry_index, state.options.max_retry_delay_ms, provider_error)
+    provider_retry.sleep(stream.cancellation, delay)
+    return send_with_retry(state, retry_index + 1)
+}
+
+#local
+fn send_once(ref<run_state_t> state): ref<client.response_t>! {
+    debug.log('provider', 'bedrock sending request')
+    string amz_date = bedrock_messages.amz_date_now()
+    var request = client.new().post(bedrock_messages.endpoint(state.model)).timeout(state.options.timeout_ms).header('Authorization', bedrock_messages.authorization(state.model, state.body, amz_date)).header('Content-Type', 'application/json').header('Accept', 'application/vnd.amazon.eventstream').header('x-amz-date', amz_date).content(state.body)
+    string session_token = bedrock_messages.session_token_header()
+    if session_token != '' {
+        request.header('X-Amz-Security-Token', session_token)
+    }
+    return request.send()
+}
+
+#local
+fn response_headers(ref<client.response_t> response): [provider_retry.header_t] {
+    [provider_retry.header_t] result = []
+    for name, value in response.headers {
+        result.push(provider_retry.header_t {name: name, value: value,})
+    }
+    return result
+}
+
+#local
+fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
+    debug.log('provider', 'bedrock terminal failure: ' + message)
+    state.processor.output.stop_reason = stream.is_aborted() ? types.STOP_ABORTED : types.STOP_ERROR
+    state.processor.output.error_message = message
+    var event = types.assistant_event_t {kind: types.EVENT_ERROR, reason: state.processor.output.stop_reason, error: state.processor.output,}
+    stream.push(event) catch error {}
+    stream.end() catch error {}
+}
+
+#local
+fn read_error_body(ref<client.response_t> response): string! {
+    [u8] result = []
+    [u8] scratch = vec<u8>.new(0, 4096)
+    for result.len() < ERROR_BODY_LIMIT {
+        int n = response.read(scratch) catch error {
+            if provider_retry.is_clean_eof(error.msg()) {
+                break
+            }
+            throw error
+        }
+        int allowed = ERROR_BODY_LIMIT - result.len()
+        if n > allowed {
+            n = allowed
+        }
+        result.append(scratch.slice(0, n))
+    }
+    response.close()
+    return result as string
+}
+
+#local
+fn processor_t.append_text(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
+    ref<types.text_content_t>? text = null
+    for block in self.output.content {
+        if block is ref<types.text_content_t> existing {
+            text = existing
+            break
+        }
+    }
+    int index = -1
+    if text is ref<types.text_content_t> existing {
+        index = self.text_index
+        existing.text += value
+    } else {
+        var block = new types.text_content_t(text = value)
+        types.content_t content = block
+        self.output.content.push(content)
+        index = self.output.content.len() - 1
+        self.text_index = index
+        events.push(update_event(types.EVENT_TEXT_START, index, '', '', self.output))
+    }
+    events.push(update_event(types.EVENT_TEXT_DELTA, index, value, '', self.output))
+    return events
+}
+
+#local
+fn processor_t.append_thinking(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
+    ref<types.thinking_content_t>? thinking = null
+    for block in self.output.content {
+        if block is ref<types.thinking_content_t> existing {
+            thinking = existing
+            break
+        }
+    }
+    int index = -1
+    if thinking is ref<types.thinking_content_t> existing {
+        index = self.thinking_index
+        existing.thinking += value
+    } else {
+        var block = new types.thinking_content_t(thinking_signature = 'bedrock', thinking = value)
+        types.content_t content = block
+        self.output.content.push(content)
+        index = self.output.content.len() - 1
+        self.thinking_index = index
+        events.push(update_event(types.EVENT_THINKING_START, index, '', '', self.output))
+    }
+    events.push(update_event(types.EVENT_THINKING_DELTA, index, value, '', self.output))
+    return events
+}
+
+#local
+fn processor_t.has_tool_call(&self): bool {
+    for block in self.output.content {
+        if block is ref<types.tool_call_t> {
+            return true
+        }
+    }
+    return false
+}
+
+#local
+fn merge_json(any base, any extra): any {
+    if base is {string:any} {
+        if extra is {string:any} {
+            var result = base as {string:any}
+            var addition = extra as {string:any}
+            for key, value in addition {
+                result[key] = value
+            }
+            return result
+        }
+    }
+    return extra
+}
+
+#local
+fn optional_int({string:any} object, string key, int fallback): int {
+    if !object.contains(key) || json_util.is_null(object[key]) {
+        return fallback
+    }
+    if object[key] is int {
+        return object[key] as int
+    }
+    return (object[key] as f64) as int
+}
+
+#local
+fn opt_string({string:any} object, string key): string {
+    if object.contains(key) && object[key] is string {
+        return object[key] as string
+    }
+    return ''
+}
+
+#local
+fn update_event(string kind, int content_index, string delta, string content, ref<types.assistant_message_t> partial): types.assistant_event_t {
+    return types.assistant_event_t {kind: kind, content_index: content_index, delta: delta, content: content, partial: partial,}
+}

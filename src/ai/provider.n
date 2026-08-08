@@ -1,5 +1,6 @@
 import adou.src.ai.event_stream
 import adou.src.ai.providers.anthropic_provider
+import adou.src.ai.providers.bedrock_provider
 import adou.src.ai.providers.codex_provider
 import adou.src.ai.providers.google_provider
 import adou.src.ai.providers.mistral_provider
@@ -25,6 +26,9 @@ pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.
     }
     if model.api == 'openai-codex-responses' {
         return codex_provider.stream(model, context, options)
+    }
+    if model.api == 'bedrock-converse-stream' {
+        return bedrock_provider.stream(model, context, options)
     }
     var result = event_stream.new()
     var message = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, stop_reason = types.STOP_ERROR, error_message = 'Unsupported provider API: ' + model.api)
