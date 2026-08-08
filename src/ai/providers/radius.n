@@ -8,7 +8,13 @@ pub fn def(): types.provider_def_t {
     return types.provider_def_t {id: 'radius', name: 'Radius', api: 'pi-messages', base_url: 'https://radius.pi.dev', env_vars: ['RADIUS_API_KEY'], headers: {},}
 }
 
+// Radius serves a persisted, dynamically refreshed catalog; Adou without
+// OAuth keeps a placeholder model so `--provider radius` selects through the
+// CLI. Point it at a gateway with --base-url; radius_config loads the real
+// catalog from <gateway>/v1/config.
 pub fn models(): [ref<types.model_t>] {
-    [ref<types.model_t>] empty = []
-    return empty
+    [ref<types.model_t>] result = []
+    var model = new types.model_t(id = 'default', name = 'Radius default', api = 'pi-messages', provider = 'radius', base_url = 'https://radius.pi.dev', reasoning = true, context_window = 200000, max_tokens = 64000)
+    result.push(model)
+    return result
 }

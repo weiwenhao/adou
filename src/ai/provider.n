@@ -6,6 +6,7 @@ import adou.src.ai.providers.google_provider
 import adou.src.ai.providers.mistral_provider
 import adou.src.ai.providers.openai_completions_provider
 import adou.src.ai.providers.openai_provider
+import adou.src.ai.providers.pi_messages_provider
 import adou.src.ai.types
 
 pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
@@ -29,6 +30,9 @@ pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.
     }
     if model.api == 'bedrock-converse-stream' {
         return bedrock_provider.stream(model, context, options)
+    }
+    if model.api == 'pi-messages' {
+        return pi_messages_provider.stream(model, context, options)
     }
     var result = event_stream.new()
     var message = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, stop_reason = types.STOP_ERROR, error_message = 'Unsupported provider API: ' + model.api)

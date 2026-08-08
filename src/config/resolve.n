@@ -1,4 +1,5 @@
 import adou.src.ai.types as ai_types
+import adou.src.ai.providers.registry
 import adou.src.config.auth
 import adou.src.config.models
 import adou.src.config.settings
@@ -105,8 +106,8 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
         provider = infer_provider()
     }
     provider = provider.to_lower()
-    if provider != 'openai' && provider != 'anthropic' && provider != 'deepseek' {
-        throw errorf('Unsupported provider: %s. MVP supports deepseek, openai and anthropic.', provider)
+    if !is_known_provider(provider) {
+        throw errorf('Unsupported provider: %s', provider)
     }
     string model_id = requested_model
     int model_separator = model_id.find('/')
@@ -143,7 +144,39 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
     string api = provider == 'anthropic' ? 'anthropic-messages' : provider == 'deepseek' ? 'openai-completions' : 'openai-responses'
     bool reasoning = provider == 'openai' || provider == 'deepseek' || provider == 'anthropic'
     bool adaptive_thinking = provider == 'anthropic'
-    var model = new ai_types.model_t(id = model_id, api = api, provider = provider, base_url = base_url, reasoning = reasoning, adaptive_thinking = adaptive_thinking, context_window = context_window, max_tokens = max_tokens)
+    ref<ai_types.model_t>? catalog_model = models.find(provider + '/' + model_id)
+    if catalog_model is ref<ai_types.model_t> catalog {
+        // A catalog entry carries the provider's real protocol and metadata;
+        // the CLI overrides below (base-url/context-window/max-tokens) still
+        // take precedence over the catalog defaults.
+        api = catalog.api
+        reasoning = catalog.reasoning
+        adaptive_thinking = catalog.adaptive_thinking
+        if context_window == 0 {
+            context_window = catalog.context_window
+        }
+        if max_tokens == 0 {
+            max_tokens = catalog.max_tokens
+        }
+    }
+    if context_window == 0 && model_id == 'deepseek-v4-flash' {
+        context_window = 1000000
+    } else if context_window == 0 && model_id == 'gpt-5.1-codex' {
+        context_window = 400000
+    } else if context_window == 0 && model_id == 'claude-sonnet-4-5' {
+        context_window = 200000
+    }
+    if max_tokens == 0 && model_id == 'deepseek-v4-flash' {
+        max_tokens = 384000
+    } else if max_tokens == 0 && model_id == 'gpt-5.1-codex' {
+        max_tokens = 128000
+    } else if max_tokens == 0 && model_id == 'claude-sonnet-4-5' {
+        max_tokens = 64000
+    }
+    var model = new ai_types.model_t(id = model_id, name = model_id, api = api, provider = provider, base_url = base_url, reasoning = reasoning, adaptive_thinking = adaptive_thinking, context_window = context_window, max_tokens = max_tokens)
+    if catalog_model is ref<ai_types.model_t> catalog {
+        model.cost = catalog.cost
+    }
     if provider == 'deepseek' && model_id == 'deepseek-v4-flash' {
         model.cost.input = 0.14
         model.cost.output = 0.28
@@ -207,4 +240,10 @@ fn join_errors([string] errors): string {
         result += message
     }
     return result
+}
+
+#local
+fn is_known_provider(string value): bool {
+    var def = registry.find_def(value)
+    return !(def is null)
 }
