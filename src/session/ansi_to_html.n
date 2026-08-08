@@ -1,0 +1,233 @@
+import adou.src.json_util
+import fmt
+import strings
+
+// Port of vendors/pi/packages/coding-agent/src/core/export-html/ansi-to-html.ts.
+// ANSI SGR escape codes convert to inline-styled HTML spans.
+
+pub type text_style_t = struct {
+    string fg
+    string bg
+    bool bold
+    bool dim
+    bool italic
+    bool underline
+}
+
+fn ansi_colors(): [string] {
+    return ['#000000', '#800000', '#008000', '#808000', '#000080', '#800080', '#008080', '#c0c0c0', '#808080', '#ff0000', '#00ff00', '#ffff00', '#0000ff', '#ff00ff', '#00ffff', '#ffffff']
+}
+
+pub fn color256_to_hex(int index): string {
+    if index < 0 {
+        index = 0
+    }
+    if index < 16 {
+        return ansi_colors()[index]
+    }
+    if index < 232 {
+        int cube_index = index - 16
+        int r = cube_index / 36
+        int g = (cube_index % 36) / 6
+        int b = cube_index % 6
+        string red = hex_component(r)
+        string green = hex_component(g)
+        string blue = hex_component(b)
+        return '#' + red + green + blue
+    }
+    if index > 255 {
+        index = 255
+    }
+    int gray = 8 + (index - 232) * 10
+    string gray_hex = hex_pair(gray)
+    return '#' + gray_hex + gray_hex + gray_hex
+}
+
+fn hex_component(int n): string {
+    int value = n == 0 ? 0 : 55 + n * 40
+    return hex_pair(value)
+}
+
+fn hex_pair(int value): string {
+    string digits = '0123456789abcdef'
+    return digits.slice(value / 16, value / 16 + 1) + digits.slice(value % 16, value % 16 + 1)
+}
+
+pub fn escape_html(string text): string {
+    string result = text
+    result = result.replace('&', '&amp;')
+    result = result.replace('<', '&lt;')
+    result = result.replace('>', '&gt;')
+    result = result.replace('"', '&quot;')
+    result = result.replace("'", '&#039;')
+    return result
+}
+
+fn style_to_inline_css(ref<text_style_t> style): string {
+    [string] parts = []
+    if style.fg != '' {
+        parts.push('color:' + style.fg)
+    }
+    if style.bg != '' {
+        parts.push('background-color:' + style.bg)
+    }
+    if style.bold {
+        parts.push('font-weight:bold')
+    }
+    if style.dim {
+        parts.push('opacity:0.6')
+    }
+    if style.italic {
+        parts.push('font-style:italic')
+    }
+    if style.underline {
+        parts.push('text-decoration:underline')
+    }
+    return strings.join(parts, ';')
+}
+
+fn has_style(ref<text_style_t> style): bool {
+    return style.fg != '' || style.bg != '' || style.bold || style.dim || style.italic || style.underline
+}
+
+fn apply_sgr([int] params, ref<text_style_t> style) {
+    int index = 0
+    for index < params.len() {
+        int code = params[index]
+        if code == 0 {
+            style.fg = ''
+            style.bg = ''
+            style.bold = false
+            style.dim = false
+            style.italic = false
+            style.underline = false
+        } else if code == 1 {
+            style.bold = true
+        } else if code == 2 {
+            style.dim = true
+        } else if code == 3 {
+            style.italic = true
+        } else if code == 4 {
+            style.underline = true
+        } else if code == 22 {
+            style.bold = false
+            style.dim = false
+        } else if code == 23 {
+            style.italic = false
+        } else if code == 24 {
+            style.underline = false
+        } else if code >= 30 && code <= 37 {
+            style.fg = ansi_colors()[code - 30]
+        } else if code == 38 {
+            if index + 1 < params.len() && params[index + 1] == 5 && index + 2 < params.len() {
+                style.fg = color256_to_hex(params[index + 2])
+                index += 2
+            } else if index + 1 < params.len() && params[index + 1] == 2 && index + 4 < params.len() {
+                style.fg = 'rgb(' + fmt_int(params[index + 2]) + ',' + fmt_int(params[index + 3]) + ',' + fmt_int(params[index + 4]) + ')'
+                index += 4
+            }
+        } else if code == 39 {
+            style.fg = ''
+        } else if code >= 40 && code <= 47 {
+            style.bg = ansi_colors()[code - 40]
+        } else if code == 48 {
+            if index + 1 < params.len() && params[index + 1] == 5 && index + 2 < params.len() {
+                style.bg = color256_to_hex(params[index + 2])
+                index += 2
+            } else if index + 1 < params.len() && params[index + 1] == 2 && index + 4 < params.len() {
+                style.bg = 'rgb(' + fmt_int(params[index + 2]) + ',' + fmt_int(params[index + 3]) + ',' + fmt_int(params[index + 4]) + ')'
+                index += 4
+            }
+        } else if code == 49 {
+            style.bg = ''
+        } else if code >= 90 && code <= 97 {
+            style.fg = ansi_colors()[code - 90 + 8]
+        } else if code >= 100 && code <= 107 {
+            style.bg = ansi_colors()[code - 100 + 8]
+        }
+        index += 1
+    }
+}
+
+pub fn ansi_to_html(string text): string {
+    var style = new text_style_t()
+    string result = ''
+    int last_index = 0
+    bool in_span = false
+    int cursor = 0
+    for cursor < text.len() {
+        if text[cursor] == 0x1b && cursor + 1 < text.len() && text[cursor + 1] == '['.char() {
+            int end = cursor + 2
+            for end < text.len() && text[end] != 'm'.char() {
+                end += 1
+            }
+            if end >= text.len() {
+                break
+            }
+            string before = text.slice(last_index, cursor)
+            if before != '' {
+                result += escape_html(before)
+            }
+            string param_string = text.slice(cursor + 2, end)
+            [int] params = parse_params(param_string)
+            if in_span {
+                result += '</span>'
+                in_span = false
+            }
+            apply_sgr(params, style)
+            if has_style(style) {
+                result += '<span style="' + style_to_inline_css(style) + '">'
+                in_span = true
+            }
+            last_index = end + 1
+            cursor = end + 1
+            continue
+        }
+        cursor += 1
+    }
+    string remaining = text.slice(last_index, text.len())
+    if remaining != '' {
+        result += escape_html(remaining)
+    }
+    if in_span {
+        result += '</span>'
+    }
+    return result
+}
+
+pub fn ansi_lines_to_html([string] lines): string {
+    string result = ''
+    for line in lines {
+        string content = ansi_to_html(line)
+        if content == '' {
+            content = '&nbsp;'
+        }
+        result += '<div class="ansi-line">' + content + '</div>'
+    }
+    return result
+}
+
+fn parse_params(string param_string): [int] {
+    [int] params = []
+    if param_string == '' {
+        params.push(0)
+        return params
+    }
+    // string.split returns empty for single tokens in the current
+    // toolchain; scan the separator manually.
+    int start = 0
+    for int cursor = 0; cursor <= param_string.len(); cursor += 1 {
+        if cursor == param_string.len() || param_string[cursor] == ';'.char() {
+            string token = param_string.slice(start, cursor)
+            int value = token.to_int() catch error {0}
+            params.push(value)
+            start = cursor + 1
+        }
+    }
+    return params
+}
+
+fn fmt_int(int value): string {
+    return fmt.sprintf('%d', value)
+}
+
