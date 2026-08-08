@@ -1,0 +1,14 @@
+import adou.src.ai.providers.openrouter_images
+import adou.src.ai.images_models
+import adou.src.ai.types
+
+// Pi's images facade: resolve the registered API provider and generate.
+// The MVP registry carries the OpenRouter images provider only.
+
+pub fn generate_images(string api, images_models.image_model_t model, openrouter_images.images_context_t context, string api_key, int timeout_ms): ref<openrouter_images.assistant_images_t> {
+    if api == 'openrouter-images' {
+        return openrouter_images.generate_images(model, context, api_key, timeout_ms)
+    }
+    var output = new openrouter_images.assistant_images_t(api = api, provider = model.provider, model = model.id, stop_reason = 'error', error_message = 'No API provider registered for api: ' + api, timestamp = 0)
+    return output
+}

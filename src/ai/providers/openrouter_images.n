@@ -1,0 +1,208 @@
+import adou.src.ai.images_models
+import adou.src.ai.types
+import adou.src.json_util
+import adou.src.ai.images_models
+import fmt
+import http.client as client
+import strings
+import time
+
+// OpenRouter image generation: a non-streaming chat completion whose
+// response messages carry `images` entries with data: URLs, plus optional
+// text. Ported from Pi's api/openrouter-images.ts.
+
+pub type image_content_t = struct {
+    string kind
+    string text
+    string mime_type
+    string data
+}
+
+pub type assistant_images_t = struct {
+    string api
+    string provider
+    string model
+    string response_id
+    [image_content_t] output = []
+    string stop_reason = 'stop'
+    string error_message
+    int timestamp
+    int input_tokens
+    int output_tokens
+}
+
+pub type images_context_t = struct {
+    [image_content_t] input = []
+}
+
+pub fn generate_images(images_models.image_model_t model, images_context_t context, string api_key, int timeout_ms): ref<assistant_images_t> {
+    var output = new assistant_images_t(api = model.api, provider = model.provider, model = model.id, timestamp = time.now().ms_timestamp())
+    if api_key == '' {
+        output.stop_reason = 'error'
+        output.error_message = 'No API key for provider: ' + model.provider
+        return output
+    }
+    var result = send(model, context, api_key, timeout_ms) catch error {
+        output.stop_reason = 'error'
+        output.error_message = error.msg()
+        return output
+    }
+    return result
+}
+
+#local
+fn send(images_models.image_model_t model, images_context_t context, string api_key, int timeout_ms): ref<assistant_images_t>! {
+    {string:any} body = {}
+    body['model'] = model.id
+    body['stream'] = false
+    [any] modalities = []
+    modalities.push('image')
+    modalities.push('text')
+    body['modalities'] = modalities
+    [any] content = []
+    for item in context.input {
+        if item.kind == 'text' {
+            {string:any} part = {}
+            part['type'] = 'text'
+            part['text'] = item.text
+            content.push(part)
+        } else if item.kind == 'image' {
+            {string:any} image_url = {}
+            image_url['url'] = 'data:' + item.mime_type + ';base64,' + item.data
+            {string:any} part = {}
+            part['type'] = 'image_url'
+            part['image_url'] = image_url
+            content.push(part)
+        }
+    }
+    [any] messages = []
+    {string:any} user_message = {}
+    user_message['role'] = 'user'
+    user_message['content'] = content
+    messages.push(user_message)
+    body['messages'] = messages
+    string payload = json_util.stringify(body) catch error {
+        throw errorf('image request build failed: %s', error.msg())
+    }
+    string base = model.base_url
+    for base.ends_with('/') {
+        base = base.slice(0, base.len() - 1)
+    }
+    var response = client.new().post(base + '/chat/completions').timeout(timeout_ms).header('Authorization', 'Bearer ' + api_key).header('Content-Type', 'application/json').content(payload).send()
+    if response.status < 200 || response.status >= 300 {
+        string error_body = read_error_body(response)
+        throw errorf('OpenRouter images API error: HTTP %d %s: %s', response.status, response.message, error_body)
+    }
+    string text_body = response.text() catch error {
+        response.close()
+        throw error
+    }
+    response.close()
+    return parse_response(model, text_body)
+}
+
+#local
+fn parse_response(images_models.image_model_t model, string body): ref<assistant_images_t>! {
+    var output = new assistant_images_t(api = model.api, provider = model.provider, model = model.id, timestamp = time.now().ms_timestamp())
+    var root = json_util.parse(body)
+    if !json_util.is_obj(root) {
+        output.stop_reason = 'error'
+        output.error_message = 'Invalid image response'
+        return output
+    }
+    var object = root as {string:any}
+    if object.contains('id') && object['id'] is string {
+        string id = object['id'] as string
+        output.response_id = id
+    }
+    if object.contains('usage') && !json_util.is_null(object['usage']) {
+        var usage = object['usage'] as {string:any}
+        output.input_tokens = num(usage, 'prompt_tokens')
+        output.output_tokens = num(usage, 'completion_tokens')
+    }
+    if !object.contains('choices') || json_util.is_null(object['choices']) {
+        return output
+    }
+    var choices = object['choices'] as [any]
+    if choices.len() > 0 {
+        var choice = choices[0]
+        var choice_object = choice as {string:any}
+        if choice_object.contains('message') && !json_util.is_null(choice_object['message']) {
+            var message = choice_object['message'] as {string:any}
+            if message.contains('content') && message['content'] is string {
+                string text = message['content'] as string
+                if text != '' {
+                    output.output.push(image_content_t {kind: 'text', text: text,})
+                }
+            }
+            if message.contains('images') && message['images'] is [any] {
+                for image in message['images'] as [any] {
+                    if image is {string:any} {
+                        var image_object = image as {string:any}
+                        if image_object.contains('image_url') && !json_util.is_null(image_object['image_url']) {
+                            string url = ''
+                            if image_object['image_url'] is string {
+                                url = image_object['image_url'] as string
+                            } else if image_object['image_url'] is {string:any} {
+                                var url_object = image_object['image_url'] as {string:any}
+                                if url_object.contains('url') && url_object['url'] is string {
+                                    url = url_object['url'] as string
+                                }
+                            }
+                            if url.starts_with('data:') {
+                                var (mime, data) = split_data_url(url)
+                                if mime != '' {
+                                    output.output.push(image_content_t {kind: 'image', mime_type: mime, data: data,})
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return output
+}
+
+#local
+fn split_data_url(string url): (string, string) {
+    // data:<mime>;base64,<data>
+    int semicolon = url.find(';')
+    if semicolon <= 0 {
+        return ('', '')
+    }
+    string mime = url.slice(5, semicolon)
+    int comma = url.find(',')
+    if comma < 0 {
+        return ('', '')
+    }
+    return (mime, url.slice(comma + 1, url.len()))
+}
+
+#local
+fn num({string:any} object, string key): int {
+    if object.contains(key) && !json_util.is_null(object[key]) {
+        if object[key] is int {
+            return object[key] as int
+        }
+        return (object[key] as f64) as int
+    }
+    return 0
+}
+
+#local
+fn read_error_body(ref<client.response_t> response): string! {
+    [u8] result = []
+    [u8] scratch = vec<u8>.new(0, 4096)
+    for result.len() < 65536 {
+        int n = response.read(scratch) catch error {
+            break
+        }
+        if n <= 0 {
+            break
+        }
+        result.append(scratch.slice(0, n))
+    }
+    response.close()
+    return result as string
+}

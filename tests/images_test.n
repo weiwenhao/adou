@@ -1,0 +1,57 @@
+import adou.src.ai.images
+import adou.src.ai.images_models as images_models
+import adou.src.ai.providers.openrouter_images
+import co
+import fmt
+import http
+
+const IMAGES_PORT = 18928
+
+fn serve_fixture(ref<http.server_t> server): void! {
+    server.listen(server.port)
+}
+
+fn fixture_model(int port): images_models.image_model_t {
+    return images_models.image_model_t {id: 'black-forest-labs/flux.2-flex', name: 'FLUX.2 Flex', api: 'openrouter-images', provider: 'openrouter', base_url: fmt.sprintf('http://127.0.0.1:%d/v1', port), input_cost: 0.0, output_cost: 0.0, cache_read_cost: 0.0, cache_write_cost: 0.0,}
+}
+
+test 'generates images from an OpenRouter chat completion response' {
+    var server = http.server()
+    server.port = IMAGES_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        response.content_type = 'application/json'
+        response.send('{"id":"gen_1","choices":[{"message":{"content":"here you go","images":[{"image_url":{"url":"data:image/png;base64,iVBORw0KGgoAAAANSUhEUg=="}}]}}],"usage":{"prompt_tokens":5,"completion_tokens":3}}')
+        server.close()
+    }
+    server.post('/v1/chat/completions', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var model = fixture_model(IMAGES_PORT)
+    var context = openrouter_images.images_context_t {input: [openrouter_images.image_content_t {kind: 'text', text: 'draw a cat',}],}
+    var result = openrouter_images.generate_images(model, context, 'img-key', 5000)
+    assert(result.stop_reason == 'stop')
+    assert(result.response_id == 'gen_1')
+    assert(result.output.len() == 2)
+    assert(result.output[0].kind == 'text' && result.output[0].text == 'here you go')
+    assert(result.output[1].kind == 'image')
+    assert(result.output[1].mime_type == 'image/png')
+    assert(result.output[1].data == 'iVBORw0KGgoAAAANSUhEUg==')
+    assert(result.input_tokens == 5 && result.output_tokens == 3)
+}
+
+test 'image facade dispatches by api and reports missing providers' {
+    var model = fixture_model(IMAGES_PORT)
+    var context = openrouter_images.images_context_t {}
+    var ok = images.generate_images('openrouter-images', model, context, 'k', 1000)
+    assert(ok.stop_reason == 'error') // no server on this port: transport error
+    var missing = images.generate_images('unknown-api', model, context, 'k', 1000)
+    assert(missing.stop_reason == 'error')
+    assert(missing.error_message.find('No API provider registered') >= 0)
+}
+
+test 'image model catalog carries the OpenRouter entries' {
+    var models = images_models.image_models()
+    assert(models.len() == 38)
+    assert(models[0].provider == 'openrouter')
+    assert(models[0].api == 'openrouter-images')
+}
