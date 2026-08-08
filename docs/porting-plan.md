@@ -80,9 +80,15 @@ auth guidance 与 runtime credential overlay（`src/config/auth_guidance.n` +
 auth.n runtime keys，3/3）、cache waste accounting（`src/session/cache_stats.n`，
 4/4）、models.json provider 组合（`src/config/models_json.n`，5/5）、
 trust-manager 补全（`src/config/trust.n` set_many/clear/资源门控，5/5）。
-进行中：footer-data-provider、export-html 交互式模板、sdk、package-manager、
-remote-catalog-provider、slash-commands 动态命令来源；event-bus 与
-http-dispatcher 按架构性差异处理（无扩展单消费者流 + libc 直连）。
+已完成 remote-catalog overlay（`src/ai/remote_catalog.n`：merge/etag/304/404 语义，
+6/6）、slash-commands 动态来源（TUI `/skill:name` 展开，skills.strip_frontmatter）、
+git 元数据检测（`src/context/git_paths.n`：.git 目录/worktree/commondir/HEAD 解析，
+4/4）、ansi-to-html（`src/session/ansi_to_html.n`：SGR 全量支持，7/7，已接入
+export_html 的 bash/tool 输出渲染）。
+进行中：sdk、package-manager；export-html 的交互式模板（template.html/css/js +
+marked/highlight vendor 资产）按排除项处理——无前端资产分发机制，保留静态 HTML
+导出 + ANSI 渲染增强；footer 的 fs.watch 变更通知同样排除（无 fs.watch）；
+event-bus 与 http-dispatcher 按架构性差异处理（无扩展单消费者流 + libc 直连）。
 
 ### Phase 4｜TUI 补全
 - autocomplete、fuzzy、kill-ring、native-modifiers、terminal-image、undo-stack、

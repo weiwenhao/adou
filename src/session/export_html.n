@@ -1,5 +1,6 @@
 import adou.src.ai.types as ai_types
 import adou.src.json_util
+import adou.src.session.ansi_to_html
 import adou.src.session.message_json
 import adou.src.session.repository
 import adou.src.session.types as session_types
@@ -60,10 +61,10 @@ fn render_message(ai_types.message_t message): string {
         for block in tool.content {
             content += block.text + '\n'
         }
-        return '<article class="message tool-result"><header>Tool result: ' + escape(tool.tool_name) + '</header><pre>' + escape(content) + '</pre></article>'
+        return '<article class="message tool-result"><header>Tool result: ' + escape(tool.tool_name) + '</header><pre>' + ansi_to_html.ansi_to_html(content) + '</pre></article>'
     }
     if message is ref<ai_types.bash_execution_message_t> bash {
-        return '<article class="message bash"><header>Shell</header><pre>$ ' + escape(bash.command) + '\n' + escape(bash.output) + '</pre></article>'
+        return '<article class="message bash"><header>Shell</header><pre>$ ' + escape(bash.command) + '\n' + ansi_to_html.ansi_to_html(bash.output) + '</pre></article>'
     }
     if message is ref<ai_types.custom_message_t> custom {
         return '<article class="message custom"><header>' + escape(custom.custom_type) + '</header><pre>' + escape(custom.content) + '</pre></article>'
