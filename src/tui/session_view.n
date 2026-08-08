@@ -11,6 +11,7 @@ import adou.src.config.settings as config_settings
 import adou.src.config.trust as trust
 import adou.src.config.types
 import adou.src.context.project
+import adou.src.context.prompt_templates
 import adou.src.context.skills
 import adou.src.context.system_prompt
 import adou.src.debug
@@ -141,6 +142,7 @@ pub type view_t = struct {
     // project context without silently dropping those session-wide options.
     string system_prompt_override
     [string] append_system_prompts = []
+    [ref<prompt_templates.prompt_template_t>] prompt_templates = []
     bool no_context_files
     // Pi coalesces render requests into one frame per animation interval.
     // Keep the same property so a burst of stream deltas cannot race the
@@ -162,6 +164,8 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     view.chat.set_auto_compaction(runner.compaction_settings.enabled)
     view.chat.git_branch = detect_git_branch(cwd)
     view.chat.load_messages(runner.active_messages)
+    [string] no_extra_prompts = []
+    view.prompt_templates = prompt_templates.load_prompt_templates(cwd, paths.agent_dir(), no_extra_prompts, true)
     var stored_settings = config_settings.load_for(cwd)
     view.scoped_model_ids = stored_settings.enabled_model_ids
     view.scoped_models_active = stored_settings.enabled_model_ids.len() > 0
@@ -651,6 +655,11 @@ pub fn view_t.start_prompt(&self, string text): ref<session_stream.stream_t>? {
         return stream
     }
     if text.starts_with('/') {
+        var expanded = prompt_templates.expand_prompt_template(text, self.prompt_templates)
+        if expanded != text {
+            self.editor.clear()
+            return self.start_prompt(expanded)
+        }
         var command_stream = self.run_command(text)
         // Selecting a slash-command from completion does not go through
         // editor.submit(), so clear the command line here just like Pi does.

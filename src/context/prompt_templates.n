@@ -1,0 +1,351 @@
+import adou.src.context.skills
+import adou.src.json_util
+import adou.src.tools.path_utils
+import fs
+import os
+import path
+import strings
+import syscall
+
+// Port of vendors/pi/packages/coding-agent/src/core/prompt-templates.ts and
+// the argument substitution it shares with the agent harness.
+
+pub type prompt_template_t = struct {
+    string name
+    string description
+    string argument_hint
+    string content
+    skills.source_info_t source_info
+    string file_path
+}
+
+pub fn parse_command_args(string args_string): [string] {
+    [string] args = []
+    string current = ''
+    string in_quote = ''
+    for int index = 0; index < args_string.len(); index += 1 {
+        string char = args_string.slice(index, index + 1)
+        if in_quote != '' {
+            if char == in_quote {
+                in_quote = ''
+            } else {
+                current += char
+            }
+        } else if char == '"' || char == "'" {
+            in_quote = char
+        } else if char == ' ' || char == '\t' {
+            if current != '' {
+                args.push(current)
+                current = ''
+            }
+        } else {
+            current += char
+        }
+    }
+    if current != '' {
+        args.push(current)
+    }
+    return args
+}
+
+pub fn substitute_args(string content, [string] args): string {
+    string all_args = strings.join(args, ' ')
+    string result = ''
+    int index = 0
+    for index < content.len() {
+        if content[index] == '$'.char() && index + 1 < content.len() {
+            if content[index + 1] == '{'.char() {
+                int close = find_from(content, '}', index + 2)
+                if close >= 0 {
+                    string body = content.slice(index + 2, close)
+                    var (matched, replacement) = substitute_braced(body, args, all_args)
+                    if matched {
+                        result += replacement
+                        index = close + 1
+                        continue
+                    }
+                }
+            } else {
+                int end = simple_ref_end(content, index + 1)
+                if end > index + 1 {
+                    string name = content.slice(index + 1, end)
+                    if name == '@' || name == 'ARGUMENTS' {
+                        result += all_args
+                    } else {
+                        int arg_index = name.to_int() catch error {-1}
+                        if arg_index >= 1 {
+                            result += positional(args, arg_index - 1)
+                        } else {
+                            result += content.slice(index, end)
+                            index = end
+                            continue
+                        }
+                    }
+                    index = end
+                    continue
+                }
+            }
+        }
+        result += content.slice(index, index + 1)
+        index += 1
+    }
+    return result
+}
+
+// Returns (matched, replacement) for a ${...} body; unmatched bodies are kept
+// verbatim by the caller.
+fn substitute_braced(string body, [string] args, string all_args): (bool, string) {
+    int default_separator = find_separator(body, ':-')
+    if default_separator >= 0 {
+        string target = body.slice(0, default_separator)
+        string default_value = body.slice(default_separator + 2, body.len())
+        string value = ''
+        if target == '@' || target == 'ARGUMENTS' {
+            value = all_args
+        } else {
+            int target_index = target.to_int() catch error {-1}
+            if target_index >= 1 {
+                value = positional(args, target_index - 1)
+            } else {
+                return (false, '')
+            }
+        }
+        if value != '' {
+            return (true, value)
+        }
+        return (true, default_value)
+    }
+    if body.starts_with('@:') {
+        var slice = parse_slice(body.slice(2, body.len()))
+        if slice.valid {
+            return (true, join_slice(args, slice.start, slice.length))
+        }
+    }
+    return (false, '')
+}
+
+pub type slice_spec_t = struct {
+    bool valid
+    int start
+    int length
+}
+
+fn parse_slice(string value): slice_spec_t {
+    slice_spec_t spec = slice_spec_t {}
+    int colon = value.find(':')
+    string start_text = colon >= 0 ? value.slice(0, colon) : value
+    string length_text = colon >= 0 ? value.slice(colon + 1, value.len()) : ''
+    int start = start_text.to_int() catch error {0}
+    start -= 1
+    if start < 0 {
+        start = 0
+    }
+    spec.valid = true
+    spec.start = start
+    if length_text != '' {
+        int length = length_text.to_int() catch error {0}
+        spec.length = length
+    } else {
+        spec.length = -1
+    }
+    return spec
+}
+
+fn join_slice([string] args, int start, int length): string {
+    [string] selected = []
+    int cursor = start
+    for cursor < args.len() {
+        if length >= 0 && selected.len() >= length {
+            break
+        }
+        selected.push(args[cursor])
+        cursor += 1
+    }
+    return strings.join(selected, ' ')
+}
+
+fn positional([string] args, int index): string {
+    if index >= 0 && index < args.len() {
+        return args[index]
+    }
+    return ''
+}
+
+fn simple_ref_end(string content, int start): int {
+    int cursor = start
+    for cursor < content.len() {
+        u8 byte = content[cursor]
+        if byte == '@'.char() {
+            return cursor + 1
+        }
+        bool digit = byte >= '0'.char() && byte <= '9'.char()
+        bool letter = byte >= 'a'.char() && byte <= 'z'.char()
+        bool upper = byte >= 'A'.char() && byte <= 'Z'.char()
+        if digit || letter || upper {
+            cursor += 1
+            continue
+        }
+        return cursor
+    }
+    return cursor
+}
+
+fn find_separator(string body, string separator): int {
+    return body.find(separator)
+}
+
+fn find_from(string content, string needle, int start): int {
+    for int cursor = start; cursor + needle.len() <= content.len(); cursor += 1 {
+        if content.slice(cursor, cursor + needle.len()) == needle {
+            return cursor
+        }
+    }
+    return -1
+}
+
+pub fn load_templates_from_dir(string dir, string source): [ref<prompt_template_t>] {
+    [ref<prompt_template_t>] templates = []
+    if !path_utils.exists(dir) {
+        return templates
+    }
+    [string] names = os.listdir(dir) catch error {
+        return templates
+    }
+    for name in names {
+        if !name.ends_with('.md') {
+            continue
+        }
+        string full_path = path.join(dir, name)
+        if is_directory(full_path) {
+            continue
+        }
+        var template = load_template_from_file(full_path, source)
+        if template is ref<prompt_template_t> template_value {
+            templates.push(template_value)
+        }
+    }
+    return templates
+}
+
+pub fn load_template_from_file(string file_path, string source): ref<prompt_template_t>? {
+    string content = read_utf8(file_path) catch error {
+        return null
+    }
+    var parsed = skills.parse_frontmatter(content)
+    var frontmatter = parsed[0]
+    var body = parsed[1]
+    string name = path.base(file_path)
+    if name.ends_with('.md') {
+        name = name.slice(0, name.len() - 3)
+    }
+    string description = json_util.opt_string(frontmatter, 'description')
+    if description == '' {
+        string first_line = first_non_empty_line(body)
+        if first_line != '' {
+            description = first_line
+            if description.len() > 60 {
+                description = description.slice(0, 60) + '...'
+            }
+        }
+    }
+    var template = new prompt_template_t(name = name, description = description, content = body, file_path = file_path)
+    template.argument_hint = json_util.opt_string(frontmatter, 'argument-hint')
+    template.source_info = skills.source_info_t {source: 'local', scope: source_scope(source), origin: 'top-level', base_dir: source == 'user' || source == 'project' ? path.dir(file_path) : '',}
+    if template.source_info.base_dir == '' {
+        template.source_info.base_dir = path.dir(file_path)
+    }
+    return template
+}
+
+pub fn load_prompt_templates(string cwd, string agent_dir, [string] prompt_paths, bool include_defaults): [ref<prompt_template_t>] {
+    [ref<prompt_template_t>] templates = []
+    if include_defaults {
+        for template in load_templates_from_dir(path.join(agent_dir, 'prompts'), 'user') {
+            templates.push(template)
+        }
+        for template in load_templates_from_dir(path.join(cwd, skills.CONFIG_DIR_NAME, 'prompts'), 'project') {
+            templates.push(template)
+        }
+    }
+    for raw_path in prompt_paths {
+        string resolved = path_utils.resolve_to_cwd(raw_path, cwd)
+        if !path_utils.exists(resolved) {
+            continue
+        }
+        if is_directory(resolved) {
+            for template in load_templates_from_dir(resolved, 'path') {
+                templates.push(template)
+            }
+        } else if resolved.ends_with('.md') {
+            var template = load_template_from_file(resolved, 'path')
+            if template is ref<prompt_template_t> template_value {
+                templates.push(template_value)
+            }
+        }
+    }
+    return templates
+}
+
+pub fn expand_prompt_template(string text, [ref<prompt_template_t>] templates): string {
+    if !text.starts_with('/') {
+        return text
+    }
+    int space = text.find(' ')
+    string template_name = ''
+    string args_string = ''
+    if space < 0 {
+        template_name = text.slice(1, text.len())
+    } else {
+        template_name = text.slice(1, space)
+        args_string = text.slice(space + 1, text.len())
+    }
+    if template_name == '' {
+        return text
+    }
+    for template in templates {
+        if template.name == template_name {
+            return substitute_args(template.content, parse_command_args(args_string))
+        }
+    }
+    return text
+}
+
+pub fn format_prompt_template_invocation(ref<prompt_template_t> template, [string] args): string {
+    return substitute_args(template.content, args)
+}
+
+fn first_non_empty_line(string body): string {
+    for raw_line in body.split('\n') {
+        string line = raw_line.trim([' ', '\t', '\r'])
+        if line != '' {
+            return line
+        }
+    }
+    return ''
+}
+
+fn source_scope(string source): string {
+    if source == 'user' {
+        return 'user'
+    }
+    if source == 'project' {
+        return 'project'
+    }
+    return 'temporary'
+}
+
+fn read_utf8(string file_path): string! {
+    var file = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        throw error
+    }
+    string content = file.content()
+    file.close()
+    return content
+}
+
+fn is_directory(string full_path): bool {
+    var stat = syscall.stat(full_path) catch error {
+        return false
+    }
+    return syscall.stat_is_dir(stat.mode)
+}

@@ -1,0 +1,98 @@
+import adou.src.context.prompt_templates
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+pub fn write_file(string file_path, string content): void! {
+    var parent = path.dir(file_path)
+    os.mkdirs(parent, 0o700)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644) catch error {
+        throw error
+    }
+    file.write(content as [u8])
+    file.close()
+}
+
+test 'parse_command_args handles quotes like Pi' {
+    var args = prompt_templates.parse_command_args('one "two three" four')
+    assert(args.len() == 3)
+    assert(args[0] == 'one')
+    assert(args[1] == 'two three')
+    assert(args[2] == 'four')
+    var single = prompt_templates.parse_command_args("'two words' tail")
+    assert(single.len() == 2)
+    assert(single[0] == 'two words')
+    assert(single[1] == 'tail')
+    var empty = prompt_templates.parse_command_args('   ')
+    assert(empty.len() == 0)
+}
+
+test 'substitute_args handles positional and aggregate forms like Pi' {
+    [string] args = ['a', 'b', 'c']
+    assert(prompt_templates.substitute_args('$1 $2 $3', args) == 'a b c')
+    assert(prompt_templates.substitute_args('$@', args) == 'a b c')
+    assert(prompt_templates.substitute_args('$ARGUMENTS', args) == 'a b c')
+    assert(prompt_templates.substitute_args('$9', args) == '')
+    assert(prompt_templates.substitute_args('${2:-fallback}', args) == 'b')
+    assert(prompt_templates.substitute_args('${9:-fallback}', args) == 'fallback')
+    assert(prompt_templates.substitute_args('${@:-none}', []) == 'none')
+    assert(prompt_templates.substitute_args('${@:2}', args) == 'b c')
+    assert(prompt_templates.substitute_args('${@:2:1}', args) == 'b')
+    assert(prompt_templates.substitute_args('${@:1:2}', args) == 'a b')
+    assert(prompt_templates.substitute_args('x $1 y', args) == 'x a y')
+    assert(prompt_templates.substitute_args('no substitution', args) == 'no substitution')
+}
+
+test 'substitute_args does not recurse into substituted values' {
+    [string] args = ['$1']
+    assert(prompt_templates.substitute_args('$1', args) == '$1')
+}
+
+test 'load_templates_from_dir loads markdown files non-recursively' {
+    string dir = path.join('/tmp', 'adou-prompts-test-' + fmt_suffix())
+    write_file(path.join(dir, 'review.md'), '---\ndescription: Review changes\nargument-hint: files...\n---\n\nPlease review $@.')
+    write_file(path.join(dir, 'nested', 'ignored.md'), '---\ndescription: Nested\n---\n\nnested body')
+    var templates = prompt_templates.load_templates_from_dir(dir, 'path')
+    assert(templates.len() == 1)
+    assert(templates[0].name == 'review')
+    assert(templates[0].description == 'Review changes')
+    assert(templates[0].argument_hint == 'files...')
+    assert(templates[0].content.find('Please review $@.') >= 0)
+    os.rmdir(dir, true)
+}
+
+test 'description falls back to the first non-empty line truncated at 60' {
+    string dir = path.join('/tmp', 'adou-prompts-test-' + fmt_suffix())
+    string long_line = 'This is a very long first line that should be truncated to sixty characters exactly'
+    write_file(path.join(dir, 'plain.md'), long_line + '\n\nbody')
+    var templates = prompt_templates.load_templates_from_dir(dir, 'path')
+    assert(templates.len() == 1)
+    assert(templates[0].description.len() == 63)
+    assert(templates[0].description.ends_with('...'))
+    os.rmdir(dir, true)
+}
+
+test 'expand_prompt_template expands matches and keeps other text' {
+    string dir = path.join('/tmp', 'adou-prompts-test-' + fmt_suffix())
+    write_file(path.join(dir, 'fix.md'), '---\ndescription: Fix issue\n---\n\nFix $@ carefully.')
+    var templates = prompt_templates.load_templates_from_dir(dir, 'path')
+    assert(prompt_templates.expand_prompt_template('/fix the bug', templates) == 'Fix the bug carefully.')
+    assert(prompt_templates.expand_prompt_template('/other thing', templates) == '/other thing')
+    assert(prompt_templates.expand_prompt_template('plain text', templates) == 'plain text')
+    os.rmdir(dir, true)
+}
+
+test 'format_prompt_template_invocation substitutes positionally' {
+    string dir = path.join('/tmp', 'adou-prompts-test-' + fmt_suffix())
+    write_file(path.join(dir, 'commit.md'), '---\ndescription: Commit message\n---\n\nCommit: $1')
+    var templates = prompt_templates.load_templates_from_dir(dir, 'path')
+    assert(prompt_templates.format_prompt_template_invocation(templates[0], ['hello world']) == 'Commit: hello world')
+    os.rmdir(dir, true)
+}
+
+fn fmt_suffix(): string {
+    return fmt.sprintf('%d', time.now().ms_timestamp())
+}
