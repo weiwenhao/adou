@@ -325,6 +325,11 @@ fn run(): void! {
         throw error
     }
     terminal.restore()
+    // The terminal reader coroutine stays parked in a blocking PTY read after
+    // the run loop exits, so the process would never terminate on its own.
+    // Exit explicitly after restoring the terminal.
+    syscall.exit(0) catch exit_error {}
+    return
 }
 
 #local
