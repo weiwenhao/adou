@@ -1,0 +1,50 @@
+import adou.src.ai.diagnostics
+import adou.src.ai.types
+import adou.src.json_util
+
+test 'format_thrown_value handles errors strings and objects like Pi' {
+    assert(diagnostics.format_thrown_value('boom') == 'boom')
+    assert(diagnostics.format_thrown_value(42) == '42')
+    {string:any} error = {}
+    error['name'] = 'TimeoutError'
+    error['message'] = 'timed out'
+    assert(diagnostics.format_thrown_value(error) == 'timed out')
+    {string:any} name_only = {}
+    name_only['name'] = 'TimeoutError'
+    assert(diagnostics.format_thrown_value(name_only) == 'TimeoutError')
+}
+
+test 'extract_diagnostic_error preserves name message and code like Pi' {
+    {string:any} error = {}
+    error['name'] = 'HttpError'
+    error['message'] = 'HTTP 500'
+    error['code'] = 500
+    var extracted = diagnostics.extract_diagnostic_error(error)
+    assert(json_util.opt_string(extracted, 'name') == 'HttpError')
+    assert(json_util.opt_string(extracted, 'message') == 'HTTP 500')
+    assert((json_util.as_float(extracted['code']) catch error {0.0}) == 500.0)
+    var thrown = diagnostics.extract_diagnostic_error('plain')
+    assert(json_util.opt_string(thrown, 'name') == 'ThrownValue')
+    assert(json_util.opt_string(thrown, 'message') == 'plain')
+}
+
+test 'create_assistant_message_diagnostic carries type timestamp and details' {
+    {string:any} details = {}
+    details['provider'] = 'radius'
+    var diagnostic = diagnostics.create_assistant_message_diagnostic('pi_messages_response_failure', 'oops', details)
+    assert(json_util.opt_string(diagnostic, 'type') == 'pi_messages_response_failure')
+    assert(diagnostic.contains('timestamp'))
+    assert(diagnostic.contains('error'))
+    assert(diagnostic.contains('details'))
+}
+
+test 'append_assistant_message_diagnostic accumulates on the message' {
+    var message = new types.assistant_message_t(api = 'pi-messages', provider = 'radius', model = 'm')
+    {string:any} first = {}
+    first['type'] = 'one'
+    {string:any} second = {}
+    second['type'] = 'two'
+    diagnostics.append_assistant_message_diagnostic(message, first)
+    diagnostics.append_assistant_message_diagnostic(message, second)
+    assert(message.diagnostics.len() == 2)
+}

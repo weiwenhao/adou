@@ -1,0 +1,73 @@
+import adou.src.ai.types
+import adou.src.json_util
+import time
+
+// Port of vendors/pi/packages/ai/src/utils/diagnostics.ts.
+// Assistant-message diagnostics record provider/runtime failure details
+// alongside the redacted error_message string.
+
+pub fn format_thrown_value(any value): string {
+    if value is string {
+        return value as string
+    }
+    if json_util.is_obj(value) {
+        var object = value as {string:any}
+        string message = json_util.opt_string(object, 'message')
+        if message != '' {
+            return message
+        }
+        string name = json_util.opt_string(object, 'name')
+        if name != '' {
+            return name
+        }
+    }
+    return json_util.stringify(value) catch error {
+        return 'unserializable value'
+    }
+}
+
+pub fn extract_diagnostic_error(any error): {string:any} {
+    {string:any} result = {}
+    if !json_util.is_obj(error) {
+        result['name'] = 'ThrownValue'
+        result['message'] = format_thrown_value(error)
+        return result
+    }
+    var object = error as {string:any}
+    string name = json_util.opt_string(object, 'name')
+    if name != '' {
+        result['name'] = name
+    }
+    string message = json_util.opt_string(object, 'message')
+    if message != '' {
+        result['message'] = message
+    } else if name != '' {
+        result['message'] = name
+    }
+    string stack = json_util.opt_string(object, 'stack')
+    if stack != '' {
+        result['stack'] = stack
+    }
+    if object.contains('code') && (object['code'] is string || object['code'] is int || object['code'] is f64) {
+        result['code'] = object['code']
+    }
+    return result
+}
+
+pub fn create_assistant_message_diagnostic(string diagnostic_type, any error, {string:any} details): {string:any} {
+    {string:any} diagnostic = {}
+    diagnostic['type'] = diagnostic_type
+    diagnostic['timestamp'] = time.now().ms_timestamp()
+    var extracted = extract_diagnostic_error(error)
+    if extracted.len() > 0 {
+        diagnostic['error'] = extracted
+    }
+    if details.len() > 0 {
+        diagnostic['details'] = details
+    }
+    return diagnostic
+}
+
+pub fn append_assistant_message_diagnostic(ref<types.assistant_message_t> message, {string:any} diagnostic) {
+    message.diagnostics.push(diagnostic)
+}

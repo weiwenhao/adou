@@ -69,6 +69,7 @@ pub type assistant_message_t = struct {
     usage_t usage
     string stop_reason = STOP_PENDING
     string error_message
+    [any] diagnostics = []
     int timestamp
 }
 pub type user_message_t = struct {
