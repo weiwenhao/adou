@@ -1,0 +1,125 @@
+import adou.src.tui.terminal_image
+import base64
+import strings
+
+pub fn base64_of([u8] bytes): string {
+    var encoded = base64.encode(bytes) catch error {
+        [u8] empty = []
+        empty
+    }
+    return encoded as string
+}
+
+pub fn bytes_equal(string left, string right): bool {
+    if left.len() != right.len() {
+        return false
+    }
+    for int index = 0; index < left.len(); index += 1 {
+        if left[index] != right[index] {
+            return false
+        }
+    }
+    return true
+}
+
+pub fn repeat_char(string char, int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += char
+    }
+    return result
+}
+
+test 'kitty encoding splits chunks like Pi' {
+    string data = repeat_char('A', 9000)
+    string encoded = terminal_image.encode_kitty(data, 0, 0, 0, true)
+    assert(encoded.starts_with('\x1b_Ga=T,f=100,q=2,m=1;'))
+    assert(encoded.contains('\x1b_Gm=1;'))
+    string expected_tail = '\x1b_Gm=0;' + data.slice(8192, 9000) + '\x1b\\'
+    string actual_tail = encoded.slice(encoded.len() - expected_tail.len(), encoded.len())
+    assert(bytes_equal(actual_tail, expected_tail))
+    string small = terminal_image.encode_kitty('abc', 5, 3, 7, false)
+    assert(bytes_equal(small, '\x1b_Ga=T,f=100,q=2,C=1,c=5,r=3,i=7;abc\x1b\\'))
+}
+
+test 'kitty delete sequences like Pi' {
+    assert(bytes_equal(terminal_image.delete_kitty_image(42), '\x1b_Ga=d,d=I,i=42,q=2\x1b\\'))
+    assert(bytes_equal(terminal_image.delete_all_kitty_images(), '\x1b_Ga=d,d=A,q=2\x1b\\'))
+}
+
+test 'iterm2 encoding like Pi' {
+    string encoded = terminal_image.encode_iterm2('abc', '5', '3', 'name', true)
+    assert(encoded.starts_with('\x1b]1337;File=inline=1;width=5;height=3;name='))
+    assert(encoded.ends_with(':abc\x07'))
+}
+
+test 'image cell sizing preserves aspect ratio like Pi' {
+    terminal_image.image_dimensions_t image = terminal_image.image_dimensions_t {width_px: 900, height_px: 900}
+    terminal_image.cell_dimensions_t cell = terminal_image.cell_dimensions_t {width_px: 9, height_px: 18}
+    var (columns, rows) = terminal_image.calculate_image_cell_size(image, 100, 50, cell)
+    // width scale 1.0, height scale 1.0 -> 100x50 capped by height.
+    assert(rows <= 50)
+    assert(columns >= 1)
+}
+
+test 'png dimensions parse from base64 like Pi' {
+    [u8] png = []
+    png.append([0x89, 0x50, 0x4e, 0x47])
+    png.append([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    png.append([0, 0, 1, 0])   // width 256 at 16
+    png.append([0, 0, 2, 0])   // height 512 at 20
+    var dims = terminal_image.get_png_dimensions(base64_of(png))
+    if dims is terminal_image.image_dimensions_t parsed {
+        assert(parsed.width_px == 256)
+        assert(parsed.height_px == 512)
+    } else {
+        assert(false)
+    }
+    var bad = terminal_image.get_png_dimensions(base64_of('nope' as [u8]))
+    assert(bad is null)
+}
+
+test 'jpeg dimensions walk markers like Pi' {
+    [u8] jpeg = []
+    jpeg.append([0xff, 0xd8])          // SOI
+    jpeg.append([0xff, 0xe0, 0, 4])    // APP0 (length 4)
+    jpeg.append([0, 0, 0, 0])
+    jpeg.append([0xff, 0xc0, 0, 11])   // SOF0 (length 11)
+    jpeg.append([0])                   // precision
+    jpeg.append([3, 0])                // height 768
+    jpeg.append([4, 0])                // width 1024
+    jpeg.append([0])                   // components
+    var dims = terminal_image.get_jpeg_dimensions(base64_of(jpeg))
+    if dims is terminal_image.image_dimensions_t parsed {
+        assert(parsed.width_px == 1024)
+        assert(parsed.height_px == 768)
+    } else {
+        assert(false)
+    }
+}
+
+test 'gif and webp dimensions like Pi' {
+    [u8] gif = []
+    gif.append('GIF89a' as [u8])
+    gif.append([10, 0, 20, 0])         // width 10, height 20
+    var gif_dims = terminal_image.get_gif_dimensions(base64_of(gif))
+    if gif_dims is terminal_image.image_dimensions_t parsed {
+        assert(parsed.width_px == 10)
+        assert(parsed.height_px == 20)
+    } else {
+        assert(false)
+    }
+    [u8] webp = []
+    webp.append('RIFF' as [u8])
+    for int index = 0; index < 22; index += 1 {
+        webp.push(0)
+    }
+    webp.append([7, 0, 9, 0])          // width 7, height 9 at 26/28
+    var webp_dims = terminal_image.get_webp_dimensions(base64_of(webp))
+    if webp_dims is terminal_image.image_dimensions_t parsed {
+        assert(parsed.width_px == 7)
+        assert(parsed.height_px == 9)
+    } else {
+        assert(false)
+    }
+}

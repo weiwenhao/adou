@@ -1,0 +1,305 @@
+import adou.src.tools.command
+import adou.src.tools.image_detect
+import base64
+import fmt
+import strings
+import syscall
+import time
+
+// Port of the pure logic from vendors/pi/packages/tui/src/terminal-image.ts:
+// terminal capability detection, kitty/iTerm2 encoding and image dimension
+// parsing.  Rendering integration stays out of scope.
+
+pub type image_dimensions_t = struct {
+    int width_px
+    int height_px
+}
+
+pub type cell_dimensions_t = struct {
+    int width_px
+    int height_px
+}
+
+pub fn detect_capabilities(): (string, bool, bool) {
+    string term_program = syscall.get_env('TERM_PROGRAM').to_lower()
+    string terminal_emulator = syscall.get_env('TERMINAL_EMULATOR').to_lower()
+    string term = syscall.get_env('TERM').to_lower()
+    string color_term = syscall.get_env('COLORTERM').to_lower()
+    bool has_true_color = color_term == 'truecolor' || color_term == '24bit'
+    string tmux = syscall.get_env('TMUX')
+    if tmux != '' || term.starts_with('tmux') {
+        return ('', has_true_color, probe_tmux_hyperlinks())
+    }
+    if term.starts_with('screen') {
+        return ('', has_true_color, false)
+    }
+    if syscall.get_env('KITTY_WINDOW_ID') != '' || term_program == 'kitty' {
+        return ('kitty', true, true)
+    }
+    if term_program == 'ghostty' || term.contains('ghostty') || syscall.get_env('GHOSTTY_RESOURCES_DIR') != '' {
+        return ('kitty', true, true)
+    }
+    if syscall.get_env('WEZTERM_PANE') != '' || term_program == 'wezterm' {
+        return ('kitty', true, true)
+    }
+    if term_program == 'warpterminal' || syscall.get_env('WARP_SESSION_ID') != '' || syscall.get_env('WARP_TERMINAL_SESSION_UUID') != '' {
+        return ('kitty', true, true)
+    }
+    if syscall.get_env('ITERM_SESSION_ID') != '' || term_program == 'iterm.app' {
+        return ('iterm2', true, true)
+    }
+    if syscall.get_env('WT_SESSION') != '' {
+        return ('', true, true)
+    }
+    if term_program == 'vscode' {
+        return ('', true, true)
+    }
+    if term_program == 'alacritty' {
+        return ('', true, true)
+    }
+    if terminal_emulator == 'jetbrains-jediterm' {
+        return ('', true, false)
+    }
+    return ('', has_true_color, false)
+}
+
+pub fn probe_tmux_hyperlinks(): bool {
+    var result = command.argv(syscall.get_env('HOME'), 'tmux', ['display-message', '-p', '#{client_termfeatures}']) catch error {
+        return false
+    }
+    if result.exit_code != 0 {
+        return false
+    }
+    for feature in result.stdout.split(',') {
+        if feature.trim([' ', '\t', '\n', '\r']) == 'hyperlinks' {
+            return true
+        }
+    }
+    return false
+}
+
+pub fn allocate_image_id(): int {
+    return (time.now().ms_timestamp() % 0xfffffffe) + 1
+}
+
+pub fn encode_kitty(string base64_data, int columns, int rows, int image_id, bool move_cursor): string {
+    [string] params = ['a=T', 'f=100', 'q=2']
+    if !move_cursor {
+        params.push('C=1')
+    }
+    if columns > 0 {
+        params.push('c=' + fmt_int(columns))
+    }
+    if rows > 0 {
+        params.push('r=' + fmt_int(rows))
+    }
+    if image_id > 0 {
+        params.push('i=' + fmt_int(image_id))
+    }
+    if base64_data.len() <= 4096 {
+        return '\x1b_G' + strings.join(params, ',') + ';' + base64_data + '\x1b\\'
+    }
+    string result = ''
+    int offset = 0
+    bool first = true
+    for offset < base64_data.len() {
+        int end = offset + 4096
+        if end > base64_data.len() {
+            end = base64_data.len()
+        }
+        string chunk = base64_data.slice(offset, end)
+        bool is_last = end >= base64_data.len()
+        if first {
+            result += '\x1b_G' + strings.join(params, ',') + ',m=1;' + chunk + '\x1b\\'
+            first = false
+        } else if is_last {
+            result += '\x1b_Gm=0;' + chunk + '\x1b\\'
+        } else {
+            result += '\x1b_Gm=1;' + chunk + '\x1b\\'
+        }
+        offset = end
+    }
+    return result
+}
+
+pub fn delete_kitty_image(int image_id): string {
+    return '\x1b_Ga=d,d=I,i=' + fmt_int(image_id) + ',q=2\x1b\\'
+}
+
+pub fn delete_all_kitty_images(): string {
+    return '\x1b_Ga=d,d=A,q=2\x1b\\'
+}
+
+pub fn encode_iterm2(string base64_data, string width, string height, string name, bool preserve_aspect_ratio): string {
+    [string] params = []
+    params.push('inline=1')
+    if width != '' {
+        params.push('width=' + width)
+    }
+    if height != '' {
+        params.push('height=' + height)
+    }
+    if name != '' {
+        var encoded = base64.encode(name as [u8]) catch error {
+            return ''
+        }
+        params.push('name=' + encoded as string)
+    }
+    if !preserve_aspect_ratio {
+        params.push('preserveAspectRatio=0')
+    }
+    return '\x1b]1337;File=' + strings.join(params, ';') + ':' + base64_data + '\x07'
+}
+
+pub fn calculate_image_cell_size(image_dimensions_t image, int max_width_cells, int max_height_cells, cell_dimensions_t cell): (int, int) {
+    int max_width = max_width_cells > 1 ? max_width_cells : 1
+    int max_height = max_height_cells > 1 ? max_height_cells : 1
+    int image_width = image.width_px > 1 ? image.width_px : 1
+    int image_height = image.height_px > 1 ? image.height_px : 1
+    float width_scale = (max_width * cell.width_px) as float / (image_width as float)
+    float height_scale = (max_height * cell.height_px) as float / (image_height as float)
+    float scale = width_scale < height_scale ? width_scale : height_scale
+    float scaled_width = (image_width as float) * scale
+    float scaled_height = (image_height as float) * scale
+    int columns = ceil_div(scaled_width, cell.width_px as float)
+    int rows = ceil_div(scaled_height, cell.height_px as float)
+    if columns > max_width {
+        columns = max_width
+    }
+    if rows > max_height {
+        rows = max_height
+    }
+    if columns < 1 {
+        columns = 1
+    }
+    if rows < 1 {
+        rows = 1
+    }
+    return (columns, rows)
+}
+
+fn ceil_div(float value, float divisor): int {
+    int result = (value / divisor) as int
+    if (value / divisor) > (result as float) {
+        result += 1
+    }
+    return result
+}
+
+pub fn get_image_dimensions(string base64_data, string mime_type): image_dimensions_t? {
+    if mime_type == 'image/png' {
+        return get_png_dimensions(base64_data)
+    }
+    if mime_type == 'image/jpeg' {
+        return get_jpeg_dimensions(base64_data)
+    }
+    if mime_type == 'image/gif' {
+        return get_gif_dimensions(base64_data)
+    }
+    if mime_type == 'image/webp' {
+        return get_webp_dimensions(base64_data)
+    }
+    return null
+}
+
+pub fn get_png_dimensions(string base64_data): image_dimensions_t? {
+    var bytes = base64.decode(base64_data as [u8]) catch error {
+        return null
+    }
+    if bytes.len() < 24 {
+        return null
+    }
+    if bytes[0] != 0x89 || bytes[1] != 0x50 || bytes[2] != 0x4e || bytes[3] != 0x47 {
+        return null
+    }
+    int width = read_uint32_be(bytes, 16)
+    int height = read_uint32_be(bytes, 20)
+    return image_dimensions_t {width_px: width, height_px: height}
+}
+
+pub fn get_jpeg_dimensions(string base64_data): image_dimensions_t? {
+    var bytes = base64.decode(base64_data as [u8]) catch error {
+        return null
+    }
+    if bytes.len() < 2 || bytes[0] != 0xff || bytes[1] != 0xd8 {
+        return null
+    }
+    int offset = 2
+    for offset < bytes.len() - 9 {
+        if bytes[offset] != 0xff {
+            offset += 1
+            continue
+        }
+        if bytes[offset + 1] == 0xff {
+            offset += 1
+            continue
+        }
+        int marker = bytes[offset + 1] as int
+        if marker >= 0xd0 && marker <= 0xd9 {
+            offset += 2
+            continue
+        }
+        if marker == 0x01 {
+            offset += 2
+            continue
+        }
+        if offset + 4 > bytes.len() {
+            return null
+        }
+        int length = read_uint16_be(bytes, offset + 2)
+        if marker >= 0xc0 && marker <= 0xc3 || marker >= 0xc5 && marker <= 0xc7 || marker >= 0xc9 && marker <= 0xcb || marker >= 0xcd && marker <= 0xcf {
+            if offset + 9 > bytes.len() {
+                return null
+            }
+            int height = read_uint16_be(bytes, offset + 5)
+            int width = read_uint16_be(bytes, offset + 7)
+            return image_dimensions_t {width_px: width, height_px: height}
+        }
+        if length < 2 {
+            return null
+        }
+        offset += 2 + length
+    }
+    return null
+}
+
+pub fn get_gif_dimensions(string base64_data): image_dimensions_t? {
+    var bytes = base64.decode(base64_data as [u8]) catch error {
+        return null
+    }
+    if bytes.len() < 10 {
+        return null
+    }
+    int width = read_uint16_le(bytes, 6)
+    int height = read_uint16_le(bytes, 8)
+    return image_dimensions_t {width_px: width, height_px: height}
+}
+
+pub fn get_webp_dimensions(string base64_data): image_dimensions_t? {
+    var bytes = base64.decode(base64_data as [u8]) catch error {
+        return null
+    }
+    if bytes.len() < 30 {
+        return null
+    }
+    int width = (bytes[26] as int) | ((bytes[27] as int) << 8)
+    int height = (bytes[28] as int) | ((bytes[29] as int) << 8)
+    return image_dimensions_t {width_px: width, height_px: height}
+}
+
+fn read_uint16_be([u8] bytes, int offset): int {
+    return ((bytes[offset] as int) << 8) + (bytes[offset + 1] as int)
+}
+
+fn read_uint16_le([u8] bytes, int offset): int {
+    return (bytes[offset] as int) + ((bytes[offset + 1] as int) << 8)
+}
+
+fn read_uint32_be([u8] bytes, int offset): int {
+    return ((bytes[offset] as int) * 0x1000000) + ((bytes[offset + 1] as int) << 16) + ((bytes[offset + 2] as int) << 8) + (bytes[offset + 3] as int)
+}
+
+fn fmt_int(int value): string {
+    return fmt.sprintf('%d', value)
+}
+
