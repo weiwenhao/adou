@@ -162,7 +162,9 @@ pub fn refresh_remote_catalog(string provider_id, ref<models_store.models_store_
         }
         throw errorf('Model catalog request failed for %s: %d', provider_id, response.status)
     }
-    string etag = response.headers['etag'] catch error {''}
+    string etag = header_value(response.headers, 'etag')
+    string last_modified_header = header_value(response.headers, 'last-modified')
+    int last_modified = parse_http_date(last_modified_header)
     [u8] scratch = vec<u8>.new(0, 65536)
     [u8] bytes = []
     for true {
@@ -182,11 +184,78 @@ pub fn refresh_remote_catalog(string provider_id, ref<models_store.models_store_
     models_store.models_store_entry_t entry = models_store.models_store_entry_t {}
     entry.models = refreshed
     entry.checked_at = now_ms
-    entry.last_modified = 0
+    entry.last_modified = last_modified
     entry.etag = etag
     store.write(provider_id, entry)
     ref<models_store.models_store_entry_t> entry_ref = new models_store.models_store_entry_t(models = entry.models, checked_at = entry.checked_at, last_modified = entry.last_modified, etag = entry.etag)
     return remote_models(entry_ref, local_generated_at)
+}
+
+// HTTP header names are case-insensitive; servers commonly send
+// Last-Modified with a capital initial where the lookup key is lowercase.
+fn header_value({string:string} headers, string name): string {
+    string lower = name.to_lower()
+    for key, value in headers {
+        if key.to_lower() == lower {
+            return value
+        }
+    }
+    return ''
+}
+
+// Parse the RFC 7231 HTTP-date "Fri, 01 Jan 2021 00:00:00 GMT" form into an
+// epoch-millisecond timestamp, matching Pi's Date.parse of the
+// Last-Modified header.  Unparseable values yield 0, which Pi treats as
+// "no known modification time".
+fn parse_http_date(string value): int {
+    if value.len() < 29 {
+        return 0
+    }
+    [string] months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+    string day = value.slice(5, 7)
+    string month = value.slice(8, 11)
+    string rest = value.slice(12, value.len())
+    int day_value = day.to_int() catch error {0}
+    int month_value = 0
+    for index, name in months {
+        if name == month {
+            month_value = index + 1
+            break
+        }
+    }
+    string year = rest.slice(0, 4)
+    string clock = rest.slice(5, 13)
+    int year_value = year.to_int() catch error {0}
+    int hour = clock.slice(0, 2).to_int() catch error {0}
+    int minute = clock.slice(3, 5).to_int() catch error {0}
+    int second = clock.slice(6, 8).to_int() catch error {0}
+    if day_value <= 0 || month_value == 0 || year_value <= 0 {
+        return 0
+    }
+    // Proleptic days since 1970-01-01 (the epoch the CLI reports in ms).
+    int days = days_before_year(year_value) - DAYS_BEFORE_1970 + days_before_month(year_value, month_value) + day_value - 1
+    return (days * 86400 + hour * 3600 + minute * 60 + second) * 1000
+}
+
+// Days from year 1 to 1970-01-01, for the proleptic Gregorian count.
+pub const DAYS_BEFORE_1970 = 719162
+
+fn days_before_year(int year): int {
+    int years = year - 1
+    return years * 365 + (years / 4) - (years / 100) + (years / 400)
+}
+
+fn days_before_month(int year, int month): int {
+    [int] days = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334]
+    int total = days[month - 1]
+    if month > 2 && leap_year(year) {
+        total += 1
+    }
+    return total
+}
+
+fn leap_year(int year): bool {
+    return year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)
 }
 
 fn optional_float({string:any} object, string key): float {

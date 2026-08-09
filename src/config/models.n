@@ -1,11 +1,15 @@
 import adou.src.ai.providers.registry
+import adou.src.ai.models_store
+import adou.src.ai.remote_catalog
 import adou.src.ai.types as ai_types
 import adou.src.config.models_json
 import adou.src.config.paths as config_paths
 import adou.src.debug
 import adou.src.tools.path_utils
 import path
+import time
 import strings
+import syscall
 
 // A resolved --models entry.  Pi resolves scope patterns once, preserves the
 // user's pattern order, removes duplicate models, and carries an optional
@@ -23,12 +27,18 @@ pub type scoped_model_t = struct {
 // ModelRuntime construction); the parsed provider configs are cached, while
 // the base catalog and the composed copies are rebuilt per call so runtime
 // provider registrations stay visible.
+// A persisted <agentDir>/models-store.json remote overlay (pi.dev catalog
+// refreshes) merges over the baseline before models.json composition.
 pub fn all(): [ref<ai_types.model_t>] {
     ensure_models_json()
     [ref<ai_types.model_t>] result = []
     var catalog = registry.all_models()
     for model in catalog {
         result.push(model)
+    }
+    for provider_id, overlay in remote_overlays {
+        var overlay_models = overlay.models
+        result = remote_catalog.merge_models(result, overlay_models)
     }
     [string] provider_ids = []
     for provider_id, config in models_json_providers {
@@ -350,6 +360,59 @@ fn ensure_models_json() {
         models_json_providers[provider_id] = config
     }
 }
+
+// Load the persisted remote catalog overlay (<agentDir>/models-store.json)
+// once per process.  Call before any catalog read so offline sessions still
+// see the last fetched pi.dev overlay; the fetch itself is opt-in.
+pub fn load_remote_overlays() {
+    if remote_overlays_loaded {
+        return
+    }
+    remote_overlays_loaded = true
+    string file = models_store_path()
+    var store = models_store.new_store()
+    store.load(file) catch error {
+        return
+    }
+    for provider_id, entry in store.entries {
+        remote_overlays[provider_id] = entry
+    }
+}
+
+// Pi's ModelRuntime.create refreshes the remote catalogs when networking is
+// allowed (PI_OFFLINE unset) and the host opts in.  Adou mirrors that with
+// the ADOU_CATALOG_NETWORK=1 opt-in; failures are silent and keep the
+// stored overlay.
+pub fn refresh_remote_catalogs() {
+    if syscall.get_env('PI_OFFLINE') != '' || syscall.get_env('ADOU_CATALOG_NETWORK') == '' {
+        return
+    }
+    var store = models_store.new_store()
+    string file = models_store_path()
+    store.load(file) catch error {}
+    for def in registry.defs() {
+        if def.api == '' && def.base_url == '' {
+            continue
+        }
+        int now_ms = time.now().ms_timestamp() as int
+        var models = remote_catalog.refresh_remote_catalog(def.id, store, remote_catalog.DEFAULT_CATALOG_BASE_URL, 0, now_ms, true) catch error {
+            continue
+        }
+        var stored = store.read(def.id)
+        if stored is ref<models_store.models_store_entry_t> entry {
+            remote_overlays[def.id] = entry
+        }
+    }
+    store.save(file) catch error {}
+}
+
+// <agentDir>/models-store.json, Pi's FileModelsStore default path.
+fn models_store_path(): string {
+    return path.join(config_paths.agent_dir(), 'models-store.json')
+}
+
+{string:ref<models_store.models_store_entry_t>} remote_overlays = {}
+bool remote_overlays_loaded = false
 
 // Parsed once per process; composing happens per all() call so runtime
 // registrations (extensions) remain visible in the catalog.

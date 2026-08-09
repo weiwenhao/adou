@@ -6,6 +6,9 @@ import co
 import fmt
 import http
 import net.tcp
+import os
+import path
+import time
 
 pub const CATALOG_PORT = 18982
 
@@ -146,4 +149,70 @@ test 'stale local catalogs suppress older remote overlays like Pi' {
     // stored overlay, so the overlay must not apply.
     var dynamic = remote_catalog.refresh_remote_catalog('demo', store, 'http://127.0.0.1:1', 2000, 1000, false)
     assert(dynamic.len() == 0)
+}
+
+test 'a Last-Modified header keeps a fresh overlay above local catalogs' {
+    var store = models_store.new_store()
+    var server = http.server()
+    server.port = CATALOG_PORT + 3
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        response.content_type = 'application/json'
+        response.headers['etag'] = '"v3"'
+        response.headers['Last-Modified'] = 'Tue, 01 Jan 2030 00:00:00 GMT'
+        response.send('[{"id":"fresh-x","name":"Fresh X","api":"openai-completions","baseUrl":"https://remote.example.com"}]')
+        server.close()
+    }
+    server.get('/api/models/providers/demo', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var dynamic = remote_catalog.refresh_remote_catalog('demo', store, fmt.sprintf('http://127.0.0.1:%d', CATALOG_PORT + 3), 0, 1000, true) catch error {
+        assert(false)
+        []
+    }
+    assert(dynamic.len() == 1)
+    var entry = store.read('demo')
+    if entry is ref<models_store.models_store_entry_t> stored {
+        // 2030-01-01T00:00:00Z in epoch milliseconds.
+        assert(stored.last_modified == 1893456000000)
+        // local_generated_at before the Last-Modified value keeps the overlay.
+        var overlay = remote_catalog.refresh_remote_catalog('demo', store, 'http://127.0.0.1:1', 1700000000000, 2000, false)
+        assert(overlay.len() == 1)
+    } else {
+        assert(false)
+    }
+}
+
+test 'models store persists and reloads entries like FileModelsStore' {
+    string dir = path.join('/tmp', 'adou-models-store-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    os.mkdirs(dir, 0o700)
+    var store = models_store.new_store()
+    models_store.models_store_entry_t entry = models_store.models_store_entry_t {}
+    entry.models = []
+    entry.models.push(new types.model_t(id = 'persisted-x', name = 'Persisted X', api = 'openai-completions', provider = 'demo', base_url = 'https://remote.example.com', reasoning = true, context_window = 64000, max_tokens = 8192))
+    entry.checked_at = 12345
+    entry.last_modified = 67890
+    entry.etag = '"e1"'
+    store.write('demo', entry)
+    string file = path.join(dir, 'models-store.json')
+    store.save(file) catch error {
+        assert(false)
+    }
+    var reloaded = models_store.new_store()
+    reloaded.load(file) catch error {
+        assert(false)
+    }
+    var read = reloaded.read('demo')
+    if read is ref<models_store.models_store_entry_t> restored {
+        assert(restored.models.len() == 1)
+        assert(restored.models[0].id == 'persisted-x')
+        assert(restored.models[0].reasoning)
+        assert(restored.models[0].context_window == 64000)
+        assert(restored.models[0].base_url == 'https://remote.example.com')
+        assert(restored.checked_at == 12345)
+        assert(restored.last_modified == 67890)
+        assert(restored.etag == '"e1"')
+    } else {
+        assert(false)
+    }
+    os.rmdir(dir, true)
 }

@@ -1,4 +1,10 @@
 import adou.src.ai.types
+import adou.src.json_util
+import adou.src.tools.path_utils
+import fs
+import os
+import path
+import syscall
 
 // Pi's InMemoryModelsStore: persistent model catalogs keyed by provider id.
 // Models are stored as their serialized cost/shape so refreshes can replace
@@ -33,4 +39,142 @@ pub fn models_store_t.delete(&self, string provider_id) {
     if self.entries.contains(provider_id) {
         self.entries.del(provider_id)
     }
+}
+
+// Persist the store to <agentDir>/models-store.json in the FileModelsStore
+// shape Pi uses; a store without a file path stays in memory.
+pub fn models_store_t.save(&self, string file_path): void! {
+    if file_path == '' {
+        return
+    }
+    {string:any} root = {}
+    for provider_id, entry in self.entries {
+        {string:any} object = {}
+        object['checkedAt'] = entry.checked_at
+        object['lastModified'] = entry.last_modified
+        object['etag'] = entry.etag
+        [any] models = []
+        for model in entry.models {
+            models.push(model_to_object(model))
+        }
+        object['models'] = models
+        root[provider_id] = object
+    }
+    var parent = path.dir(file_path)
+    if parent != '' && !path_utils.exists(parent) {
+        os.mkdirs(parent, 0o700)
+    }
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644) catch error {
+        return
+    }
+    var serialized = json_util.stringify(root) catch error {
+        file.close()
+        return
+    }
+    file.write(serialized as [u8])
+    file.close()
+}
+
+// Load a persisted store; missing or malformed files yield an empty store.
+pub fn models_store_t.load(&self, string file_path): void! {
+    if file_path == '' || !path_utils.exists(file_path) {
+        return
+    }
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        return
+    }
+    string content = input.content() catch error {
+        input.close()
+        return
+    }
+    input.close()
+    any parsed = json_util.parse(content) catch error {
+        return
+    }
+    if !json_util.is_obj(parsed) {
+        return
+    }
+    var root = parsed as {string:any}
+    for provider_id, value in root {
+        if !json_util.is_obj(value) {
+            continue
+        }
+        var object = value as {string:any}
+        [ref<types.model_t>] models = []
+        var model_values = json_util.opt_arr(object, 'models')
+        for model_value in model_values {
+            if json_util.is_obj(model_value) {
+                var model_object = model_value as {string:any}
+                ref<types.model_t>? model = object_to_model(provider_id, model_object)
+                if model is ref<types.model_t> parsed_model {
+                    models.push(parsed_model)
+                }
+            }
+        }
+        models_store_entry_t entry = models_store_entry_t {}
+        entry.models = models
+        entry.checked_at = json_util.opt_int(object, 'checkedAt')
+        entry.last_modified = json_util.opt_int(object, 'lastModified')
+        entry.etag = json_util.opt_string(object, 'etag')
+        self.entries[provider_id] = new models_store_entry_t(models = entry.models, checked_at = entry.checked_at, last_modified = entry.last_modified, etag = entry.etag)
+    }
+}
+
+fn model_to_object(ref<types.model_t> model): {string:any} {
+    {string:any} object = {}
+    object['id'] = model.id
+    object['name'] = model.name
+    object['api'] = model.api
+    object['provider'] = model.provider
+    object['baseUrl'] = model.base_url
+    object['reasoning'] = model.reasoning
+    object['contextWindow'] = model.context_window
+    object['maxTokens'] = model.max_tokens
+    {string:any} cost = {}
+    cost['input'] = model.cost.input
+    cost['output'] = model.cost.output
+    cost['cacheRead'] = model.cost.cache_read
+    cost['cacheWrite'] = model.cost.cache_write
+    object['cost'] = cost
+    return object
+}
+
+fn object_to_model(string provider_id, {string:any} object): ref<types.model_t>? {
+    if !object.contains('id') || !(object['id'] is string) {
+        return null
+    }
+    string id = object['id'] as string
+    var model = new types.model_t(id = id, provider = provider_id)
+    model.api = json_util.opt_string(object, 'api')
+    model.base_url = json_util.opt_string(object, 'baseUrl')
+    model.name = json_util.opt_string(object, 'name')
+    if object.contains('reasoning') && object['reasoning'] is bool {
+        model.reasoning = object['reasoning'] as bool
+    }
+    int context_window = json_util.opt_int(object, 'contextWindow')
+    if context_window > 0 {
+        model.context_window = context_window
+    }
+    int max_tokens = json_util.opt_int(object, 'maxTokens')
+    if max_tokens > 0 {
+        model.max_tokens = max_tokens
+    }
+    var cost = json_util.opt_obj(object, 'cost')
+    if cost.len() > 0 {
+        model.cost.input = optional_float(cost, 'input')
+        model.cost.output = optional_float(cost, 'output')
+        model.cost.cache_read = optional_float(cost, 'cacheRead')
+        model.cost.cache_write = optional_float(cost, 'cacheWrite')
+    }
+    return model
+}
+
+fn optional_float({string:any} object, string key): float {
+    if object.contains(key) && object[key] is f64 {
+        return object[key] as f64
+    }
+    if object.contains(key) && object[key] is int {
+        return (object[key] as int) as float
+    }
+    return 0.0
 }

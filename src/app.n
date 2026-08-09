@@ -99,6 +99,12 @@ pub fn run(): void! {
         return
     }
     var config = resolve.resolve(arguments, cwd)
+    // Pi's ModelRuntime.create loads the persisted remote catalog overlay
+    // before the model resolver runs; an opt-in network refresh follows.
+    models.load_remote_overlays()
+    if !config.offline {
+        models.refresh_remote_catalogs()
+    }
     if config.mode == 'rpc' && arguments.file_args.len() > 0 {
         println('Error: @file arguments are not supported in RPC mode')
         syscall.exit(1) catch exit_error {}
