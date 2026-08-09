@@ -135,6 +135,19 @@ word-navigation/stdin-buffer 已覆盖。新增 fuzzy 匹配（`src/tui/fuzzy.n`
 三档结论：Phase 1 已完成 26 / 行为不一致 15 / 缺失 4；Phase 2 已完成 13 / 行为不一致 9 /
 缺失 0；Phase 3 已完成 10 / 行为不一致 8 / 缺失 4。详见各阶段小节。
 
+扩展接口面（extension ABI/钩子/注册点）按"接口齐全、具体扩展不移植"标准补齐：
+EventBus（`src/agent/event_bus.n`，emit/on/off/clear）、provider 钩子
+（before_provider_request/after_provider_response 挂在 agent config_t）、
+CredentialStore 完整接口（`src/config/auth.n`：credential_t/oauth 形状、list、
+序列化 modify）、ModelRegistry 注册面（`src/ai/providers/registry.n` 运行时
+register/unregister）、compat API 注册面（`src/ai/provider.n` runtime api
+分派优先）、动态 slash 命令注册（`src/context/slash_commands.n`，RPC
+get_commands 返回 prompt/skill 来源）、扩展注册集合（`src/agent/extensions.n`：
+Extension/tool/command/flag/shortcut 集合、ExtensionError、LoadExtensionsResult）。
+剩余接口面：ExtensionRunner 生命周期（emit*/bindCore）、.pi/extensions 发现
+loader、ExtensionAPI 全量方法、ToolDefinition 扩展字段（promptSnippet/
+constrainedSampling/renderCall 等）——作为后续扩展接入的骨架。
+
 本轮验证补上的缺口（每项独立 commit）：
 - Phase 1：mistral `promptMode:"reasoning"`；google thinkingConfig（Gemini 3 level /
   2.5 budget）；thinking_level_map 驱动的 clamp/available；unpaired surrogate 清理
