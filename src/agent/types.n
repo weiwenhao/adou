@@ -83,6 +83,15 @@ pub type optional_after_tool_call_fn = after_tool_call_fn|null
 pub type optional_prepare_next_turn_fn = prepare_next_turn_fn|null
 pub type optional_should_stop_after_turn_fn = should_stop_after_turn_fn|null
 
+// Extension-facing provider hooks (Pi before_provider_request /
+// after_provider_response).  The request hook may return modified stream
+// options before the provider call; the response hook observes the finished
+// assistant message.
+pub type before_provider_request_fn = fn(ref<types.stream_options_t>, ref<types.context_t>): ref<types.stream_options_t>!
+pub type after_provider_response_fn = fn(ref<types.assistant_message_t>)
+pub type optional_before_provider_request_fn = before_provider_request_fn|null
+pub type optional_after_provider_response_fn = after_provider_response_fn|null
+
 pub type queue_snapshot_t = struct {
     [string] steering = []
     [string] follow_up = []
@@ -217,6 +226,8 @@ pub type config_t = struct {
     optional_after_tool_call_fn after_tool_call = null
     optional_prepare_next_turn_fn prepare_next_turn = null
     optional_should_stop_after_turn_fn should_stop_after_turn = null
+    optional_before_provider_request_fn before_provider_request = null
+    optional_after_provider_response_fn after_provider_response = null
 }
 
 pub type agent_event_t = struct {

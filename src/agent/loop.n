@@ -178,6 +178,14 @@ pub fn run_loop(ref<run_state_t> state): void! {
 #local
 fn stream_assistant(ref<run_state_t> state): ref<types.assistant_message_t>! {
     var llm_context = provider_context(state.context)
+    // Extension-facing before_provider_request hook may patch the stream
+    // options for this call.
+    if state.config.before_provider_request is agent_types.before_provider_request_fn hook {
+        var patched = hook(state.options, llm_context) catch e {
+            throw errorf('before_provider_request hook failed: %s', e.msg())
+        }
+        state.options = patched
+    }
     var response = state.stream_function(state.model, llm_context, state.options)
     abort.abort_callback_t cancel_response = fn() {
         response.abort()
@@ -226,6 +234,7 @@ fn stream_assistant(ref<run_state_t> state): ref<types.assistant_message_t>! {
             }
             types.message_t final_event_message = final_message
             emit_message(state, agent_types.EVENT_MESSAGE_END, final_event_message, types.assistant_event_t{})
+            observe_provider_response(state, final_message)
             return final_message
         }
     }
@@ -237,7 +246,17 @@ fn stream_assistant(ref<run_state_t> state): ref<types.assistant_message_t>! {
     }
     types.message_t final_event_message = final_message
     emit_message(state, agent_types.EVENT_MESSAGE_END, final_event_message, types.assistant_event_t{})
+    observe_provider_response(state, final_message)
     return final_message
+}
+
+#local
+fn observe_provider_response(ref<run_state_t> state, ref<types.assistant_message_t> message) {
+    // Extension-facing after_provider_response hook observes the finished
+    // assistant message.
+    if state.config.after_provider_response is agent_types.after_provider_response_fn observer {
+        observer(message)
+    }
 }
 
 #local
