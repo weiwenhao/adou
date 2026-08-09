@@ -14,6 +14,7 @@ pub type result_t = struct {
     int output_lines
     int output_bytes
     bool last_line_partial
+    int last_line_bytes
     bool first_line_exceeds_limit
     int max_lines
     int max_bytes
@@ -92,7 +93,7 @@ pub fn tail_with_limits(string content, int max_lines, int max_bytes): result_t 
         // the next non-continuation byte before slicing the tail.
         start = utf8_boundary_start(last, start)
         string partial = last.slice(start, last.len())
-        return result_t {content: partial, truncated: true, truncated_by: 'bytes', total_lines: total_lines, total_bytes: total_bytes, output_lines: 1, output_bytes: partial.len(), last_line_partial: start > 0, max_lines: max_lines, max_bytes: max_bytes,}
+        return result_t {content: partial, truncated: true, truncated_by: 'bytes', total_lines: total_lines, total_bytes: total_bytes, output_lines: 1, output_bytes: partial.len(), last_line_partial: start > 0, last_line_bytes: last.len(), max_lines: max_lines, max_bytes: max_bytes,}
     }
     [string] output = lines.slice(first, lines.len())
     string output_content = strings.join(output, '\n')

@@ -1177,7 +1177,7 @@ fn bash_truncation_footer(truncate.result_t truncated, string full_output_path):
     int start_line = truncated.total_lines - truncated.output_lines + 1
     int end_line = truncated.total_lines
     if truncated.last_line_partial {
-        return fmt.sprintf('\n\n[Showing last %s of line %d. Full output: %s]', truncate.format_size(truncated.output_bytes), end_line, full_output_path)
+        return fmt.sprintf('\n\n[Showing last %s of line %d (line is %s). Full output: %s]', truncate.format_size(truncated.output_bytes), end_line, truncate.format_size(truncated.last_line_bytes), full_output_path)
     }
     if truncated.truncated_by == 'lines' {
         return fmt.sprintf('\n\n[Showing lines %d-%d of %d. Full output: %s]', start_line, end_line, truncated.total_lines, full_output_path)
