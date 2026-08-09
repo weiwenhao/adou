@@ -4,7 +4,7 @@ import adou.src.ai.providers.amazon_bedrock_models
 import adou.src.ai.types
 
 pub fn def(): types.provider_def_t {
-    return types.provider_def_t {id: 'amazon-bedrock', name: 'Amazon Bedrock', api: 'bedrock-converse-stream', base_url: 'https://bedrock-runtime.us-east-1.amazonaws.com', env_vars: [], headers: {},}
+    return types.provider_def_t {id: 'amazon-bedrock', name: 'Amazon Bedrock', api: 'bedrock-converse-stream', base_url: '', env_vars: [], headers: {},}
 }
 
 pub fn models(): [ref<types.model_t>] {
