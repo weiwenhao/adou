@@ -175,6 +175,8 @@ pub type stream_options_t = struct {
     int thinking_budget_tokens = 1024
     string thinking_display = 'summarized'
     string cache_retention = 'short'
+    float temperature = -1.0
+    string tool_choice
 }
 // assistant_event_t mirrors Pi's AssistantMessageEvent protocol. Only fields
 // meaningful for a particular event type are populated.

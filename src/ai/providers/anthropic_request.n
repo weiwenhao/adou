@@ -15,6 +15,12 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
     body['messages'] = convert_messages(context.messages, cache_control(model, options))
     body['max_tokens'] = max_tokens(model, options)
     body['stream'] = true
+    if options.temperature >= 0.0 {
+        body['temperature'] = options.temperature
+    }
+    if options.tool_choice != '' {
+        body['tool_choice'] = parse_tool_choice(options.tool_choice)
+    }
     var cache = cache_control(model, options)
     if context.system_prompt != '' {
         {string:any} block = {}
@@ -83,6 +89,32 @@ pub fn max_tokens(ref<types.model_t> model, ref<types.stream_options_t> options)
         return options.max_tokens
     }
     return model.max_tokens
+}
+
+// Pi maps the tool_choice string ('auto'|'none'|'required' or
+// 'tool:name') to the Anthropic shape.
+fn parse_tool_choice(string value): any {
+    if value == 'none' {
+        {string:any} none = {}
+        none['type'] = 'none'
+        return none
+    }
+    if value == 'required' {
+        {string:any} required = {}
+        required['type'] = 'any'
+        return required
+    }
+    if value.starts_with('tool:') {
+        {string:any} tool = {}
+        tool['type'] = 'tool'
+        {string:any} inner = {}
+        inner['name'] = value.slice(5, value.len())
+        tool['name'] = inner
+        return tool
+    }
+    {string:any} auto = {}
+    auto['type'] = 'auto'
+    return auto
 }
 
 #local
