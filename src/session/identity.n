@@ -2,20 +2,39 @@ import fmt
 import libc
 import time
 
+// Pi's uuid v7 keeps a per-millisecond sequence so ids stay time-ordered
+// when generated in the same millisecond; the sequence re-seeds randomly on
+// each new millisecond and rolls the timestamp forward on overflow.
+var uuid_sequence = 0
+var uuid_last_timestamp = -1
+
 pub fn uuid_v7(): string! {
     [u8] bytes = vec<u8>.new(0, 16)
     if libc.getentropy(bytes.ref(), bytes.len() as u64) != 0 {
         throw errorf('getentropy failed: %s', libc.error_string())
     }
     i64 timestamp = time.now().ms_timestamp()
+    int sequence = 0
+    if timestamp == uuid_last_timestamp {
+        sequence = uuid_sequence + 1
+    } else {
+        sequence = (bytes[6] as int) * 0x1000000 + (bytes[7] as int) * 0x10000 + (bytes[8] as int) * 0x100 + (bytes[9] as int)
+    }
+    if sequence == 0 {
+        timestamp += 1
+    }
+    uuid_last_timestamp = timestamp
+    uuid_sequence = sequence
     bytes[0] = ((timestamp >> 40) & 0xff) as u8
     bytes[1] = ((timestamp >> 32) & 0xff) as u8
     bytes[2] = ((timestamp >> 24) & 0xff) as u8
     bytes[3] = ((timestamp >> 16) & 0xff) as u8
     bytes[4] = ((timestamp >> 8) & 0xff) as u8
     bytes[5] = (timestamp & 0xff) as u8
-    bytes[6] = 0x70 | (bytes[6] & 0x0f)
-    bytes[8] = 0x80 | (bytes[8] & 0x3f)
+    bytes[6] = 0x70 | ((sequence >> 28) & 0x0f) as u8
+    bytes[7] = ((sequence >> 20) & 0xff) as u8
+    bytes[8] = 0x80 | ((sequence >> 14) & 0x3f) as u8
+    bytes[9] = ((sequence >> 6) & 0xff) as u8
     return fmt.sprintf('%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x', bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7], bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15])
 }
 

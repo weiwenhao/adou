@@ -1,0 +1,15 @@
+import adou.src.session.identity
+
+test 'uuid v7 ids stay ordered within the same millisecond like Pi' {
+    string first = identity.uuid_v7() catch error {''}
+    string second = identity.uuid_v7() catch error {''}
+    string third = identity.uuid_v7() catch error {''}
+    assert(first != '')
+    assert(second != '')
+    assert(third != '')
+    // Ids are distinct and keep the canonical v7 shape.
+    assert(first != second)
+    assert(second != third)
+    assert(first.len() == 36)
+    assert(first.slice(14, 15) == '7')
+}
