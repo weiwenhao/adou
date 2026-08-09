@@ -1,0 +1,42 @@
+import adou.src.agent.extension_runner
+import adou.src.agent.extensions
+import adou.src.context.skills
+
+test 'runner dispatches events to subscribed extension handlers' {
+    var runner = extension_runner.new_runner()
+    var ext = extensions.new_extension('/tmp/ext', '/tmp/ext', skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/tmp/ext'})
+    int received = 0
+    extensions.extension_handler_fn handler = fn(any event, any context) {
+        received += 1
+    }
+    ext.on('tool_execution_end', handler)
+    runner.add_extension(ext)
+    assert(runner.has_handlers('tool_execution_end'))
+    assert(!runner.has_handlers('agent_start'))
+    runner.emit('tool_execution_end', null, null)
+    assert(received == 1)
+}
+
+test 'runner aggregates registered tools and commands across extensions' {
+    var runner = extension_runner.new_runner()
+    var ext_a = extensions.new_extension('/tmp/a', '/tmp/a', skills.source_info_t {source: 'local', scope: 'user', origin: 'top-level', base_dir: '/tmp/a'})
+    var ext_b = extensions.new_extension('/tmp/b', '/tmp/b', skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/tmp/b'})
+    ext_a.register_tool('tool-a', 'A', 'Tool A', null, ext_a.source_info)
+    ext_a.register_command('cmd-a', 'Command A', ext_a.source_info)
+    ext_b.register_tool('tool-b', 'B', 'Tool B', null, ext_b.source_info)
+    runner.add_extension(ext_a)
+    runner.add_extension(ext_b)
+    var tools = runner.get_registered_tools()
+    assert(tools.len() == 2)
+    var commands = runner.get_registered_commands()
+    assert(commands.len() == 1 && commands[0].name == 'cmd-a')
+}
+
+test 'provider registrations queue and drain like Pi' {
+    var runner = extension_runner.new_runner()
+    runner.queue_provider_registration('ext-provider')
+    runner.queue_provider_registration('ext-provider-2')
+    var drained = runner.drain_provider_registrations()
+    assert(drained.len() == 2)
+    assert(runner.drain_provider_registrations().len() == 0)
+}

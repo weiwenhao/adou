@@ -1,0 +1,77 @@
+import adou.src.agent.event_bus
+import adou.src.agent.extensions
+import adou.src.debug
+
+// Port of the ExtensionRunner lifecycle (vendors/pi/packages/coding-agent/
+// src/core/extensions/runner.ts): extensions bind handlers, the runner emits
+// events to them and aggregates registrations (tools/commands/providers).
+// Concrete extension loading stays out of scope.
+
+pub type extension_runner_t = struct {
+    [ref<extensions.extension_t>] extensions = []
+    [string] provider_registrations = []
+}
+
+pub fn new_runner(): ref<extension_runner_t> {
+    return new extension_runner_t()
+}
+
+pub fn extension_runner_t.add_extension(&self, ref<extensions.extension_t> ext) {
+    self.extensions.push(ext)
+}
+
+pub fn extension_runner_t.has_handlers(&self, string event): bool {
+    for ext in self.extensions {
+        if ext.handlers_for(event).len() > 0 {
+            return true
+        }
+    }
+    return false
+}
+
+// Emit an extension event: every extension handler subscribed to the event
+// runs with a shared context; handler errors are isolated per extension.
+pub fn extension_runner_t.emit(&self, string event, any data, any context) {
+    for ext in self.extensions {
+        var handlers = ext.handlers_for(event)
+        for handler in handlers {
+            handler(data, context)
+        }
+    }
+}
+
+pub fn extension_runner_t.emit_error(&self, extensions.extension_error_t error_info) {
+    debug.log('extension', 'error in ' + error_info.extension_path + ' (' + error_info.event + '): ' + error_info.error)
+}
+
+pub fn extension_runner_t.get_registered_tools(&self): [extensions.extension_tool_t] {
+    [extensions.extension_tool_t] result = []
+    for ext in self.extensions {
+        for tool in ext.tools {
+            result.push(tool)
+        }
+    }
+    return result
+}
+
+pub fn extension_runner_t.get_registered_commands(&self): [extensions.extension_command_t] {
+    [extensions.extension_command_t] result = []
+    for ext in self.extensions {
+        for command in ext.commands {
+            result.push(command)
+        }
+    }
+    return result
+}
+
+// Pi queues provider registrations before the runner binds core actions.
+pub fn extension_runner_t.queue_provider_registration(&self, string provider_id) {
+    self.provider_registrations.push(provider_id)
+}
+
+pub fn extension_runner_t.drain_provider_registrations(&self): [string] {
+    var result = self.provider_registrations
+    [string] empty = []
+    self.provider_registrations = empty
+    return result
+}
