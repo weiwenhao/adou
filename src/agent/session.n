@@ -12,6 +12,7 @@ import adou.src.compaction.prepare
 import adou.src.compaction.token_estimate
 import adou.src.compaction.types as compaction_types
 import adou.src.config.auth
+import adou.src.config.auth_guidance
 import adou.src.config.models
 import adou.src.config.settings
 import adou.src.debug
@@ -120,7 +121,7 @@ pub fn runner_t.begin_prompt_operation(&self): void! {
         self.lock.lock()
         self.busy = false
         self.lock.unlock()
-        throw errorf('No API key for %s/%s. Run /login %s first.', provider, model_id, provider)
+        throw errorf('%s', auth_guidance.format_no_api_key_found_message(provider))
     }
     debug.log('agent', 'authentication available for ' + provider + '/' + model_id)
 
@@ -385,7 +386,7 @@ pub fn runner_t.set_model(&self, ref<ai_types.model_t> model): void! {
         api_key = self.agent_config.stream_options.api_key
     }
     if api_key == '' {
-        throw errorf('No API key for %s/%s. Run /login %s first.', model.provider, model.id, model.provider)
+        throw errorf('%s', auth_guidance.format_no_api_key_found_message(model.provider))
     }
     self.lock.lock()
     if self.busy {

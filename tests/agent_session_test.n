@@ -270,7 +270,8 @@ test 'prompt rejects missing authentication before starting an operation' {
     var runner = make_runner(manager, fixture, 1000, 100, 20)
     runner.agent_config.stream_options.api_key = ''
     string message = prompt_error(runner, 'missing credentials')
-    assert(message == 'No API key for mock/mock. Run /login mock first.')
+    assert(message.starts_with('No API key found for mock.'))
+    assert(message.contains('Use /login to log into a provider via OAuth or API key.'))
     assert(!runner.busy && fixture.agent_calls == 0 && runner.active_messages.len() == 0)
 }
 
