@@ -91,8 +91,108 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
     if max_tokens > 0 {
         generation_config['maxOutputTokens'] = max_tokens
     }
+    var thinking_config = google_thinking_config(model, options)
+    if thinking_config.len() > 0 {
+        generation_config['thinkingConfig'] = thinking_config
+    }
     body['generationConfig'] = generation_config
     return json.serialize(body)
+}
+
+// Pi google-generative-ai thinking mapping: Gemini 3 Pro/Flash and Gemma 4
+// use native thinkingLevel values, older Gemini 2.5 models use token budgets.
+fn google_thinking_config(ref<types.model_t> model, ref<types.stream_options_t> options): {string:any} {
+    {string:any} config = {}
+    if !model.reasoning {
+        return config
+    }
+    if options.thinking_enabled {
+        config['includeThoughts'] = true
+        string effort = options.reasoning_effort
+        if effort == '' || effort == 'off' {
+            effort = 'high'
+        }
+        if is_gemini3_pro(model) || is_gemini3_flash(model) || is_gemma4(model) {
+            config['thinkingLevel'] = google_thinking_level(effort, model)
+        } else {
+            config['thinkingBudget'] = google_thinking_budget(model, effort)
+        }
+        return config
+    }
+    // Thinking disabled: Gemini 3 cannot turn thinking fully off, so Pi asks
+    // for the lowest level with hidden thinking.
+    if is_gemini3_pro(model) {
+        config['thinkingLevel'] = 'LOW'
+    } else if is_gemini3_flash(model) || is_gemma4(model) {
+        config['thinkingLevel'] = 'MINIMAL'
+    }
+    return config
+}
+
+fn google_thinking_level(string effort, ref<types.model_t> model): string {
+    if is_gemini3_pro(model) {
+        if effort == 'minimal' || effort == 'low' {
+            return 'LOW'
+        }
+        return 'HIGH'
+    }
+    if is_gemma4(model) {
+        if effort == 'minimal' || effort == 'low' {
+            return 'MINIMAL'
+        }
+        return 'HIGH'
+    }
+    if effort == 'minimal' {
+        return 'MINIMAL'
+    }
+    if effort == 'low' {
+        return 'LOW'
+    }
+    if effort == 'medium' {
+        return 'MEDIUM'
+    }
+    return 'HIGH'
+}
+
+fn google_thinking_budget(ref<types.model_t> model, string effort): int {
+    if model.id.contains('2.5-pro') {
+        return budget_for(effort, 128, 2048, 8192, 32768)
+    }
+    if model.id.contains('2.5-flash-lite') {
+        return budget_for(effort, 512, 2048, 8192, 24576)
+    }
+    if model.id.contains('2.5-flash') {
+        return budget_for(effort, 128, 2048, 8192, 24576)
+    }
+    return budget_for(effort, 1024, 2048, 8192, 16384)
+}
+
+fn budget_for(string effort, int minimal, int low, int medium, int high): int {
+    if effort == 'minimal' {
+        return minimal
+    }
+    if effort == 'low' {
+        return low
+    }
+    if effort == 'medium' {
+        return medium
+    }
+    return high
+}
+
+fn is_gemini3_pro(ref<types.model_t> model): bool {
+    string id = model.id.to_lower()
+    return id.contains('gemini-3') && id.contains('-pro')
+}
+
+fn is_gemini3_flash(ref<types.model_t> model): bool {
+    string id = model.id.to_lower()
+    return (id.contains('gemini-3') && id.contains('-flash')) || id == 'gemini-flash-latest' || id == 'gemini-flash-lite-latest'
+}
+
+fn is_gemma4(ref<types.model_t> model): bool {
+    string id = model.id.to_lower()
+    return id.contains('gemma-4') || id.contains('gemma4')
 }
 
 #local
