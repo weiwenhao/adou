@@ -1,4 +1,5 @@
 import adou.src.tools.command
+import strings
 import syscall
 
 // Port of vendors/pi/packages/coding-agent/src/core/resolve-config-value.ts.
@@ -60,12 +61,97 @@ pub fn is_config_value_configured(string config): bool {
     return true
 }
 
+// The single env var name when a config value is exactly one environment
+// reference ("$VAR" or "${VAR}"); '' otherwise.  Pi's getConfigValueEnvVarName.
+pub fn get_config_value_env_var_name(string config): string {
+    var names = get_config_value_env_var_names(config)
+    if names.len() == 1 && single_env_reference(config) {
+        return names[0]
+    }
+    return ''
+}
+
+// Environment references in a config value that are not currently set.
+// Pi's getMissingConfigValueEnvVarNames.
+pub fn get_missing_config_value_env_var_names(string config): [string] {
+    [string] missing = []
+    var names = get_config_value_env_var_names(config)
+    for name in names {
+        if syscall.get_env(name) == '' {
+            missing.push(name)
+        }
+    }
+    return missing
+}
+
+// Resolve a config value without consulting the shell command cache.
+// Pi's resolveConfigValueUncached.
+pub fn resolve_config_value_uncached(string config): string {
+    if config.starts_with('!') {
+        return execute_command_uncached(config.slice(1, config.len()))
+    }
+    return resolve_template_value(config)
+}
+
+// Resolve a config value or throw with the given description, matching
+// Pi's resolveConfigValueOrThrow error text.
+pub fn resolve_config_value_or_throw(string config, string description): string! {
+    string resolved = resolve_config_value_uncached(config)
+    if resolved != '' {
+        return resolved
+    }
+    if config.starts_with('!') {
+        throw errorf('Failed to resolve %s from shell command: %s', description, config.slice(1, config.len()))
+    }
+    var missing = get_missing_config_value_env_var_names(config)
+    if missing.len() == 1 {
+        throw errorf('Failed to resolve %s from environment variable: %s', description, missing[0])
+    }
+    if missing.len() > 1 {
+        throw errorf('Failed to resolve %s from environment variables: %s', description, strings.join(missing, ', '))
+    }
+    throw errorf('Failed to resolve %s', description)
+}
+
+// Resolve every header value like Pi's resolveHeaders; unresolved or empty
+// values are dropped.
+pub fn resolve_headers({string:string} headers): {string:string} {
+    {string:string} resolved = {}
+    for name, value in headers {
+        string resolved_value = resolve_config_value(value)
+        if resolved_value != '' {
+            resolved[name] = resolved_value
+        }
+    }
+    return resolved
+}
+
+// Pi's resolveHeadersOrThrow: every header must resolve or the call throws.
+pub fn resolve_headers_or_throw({string:string} headers, string description): {string:string}! {
+    {string:string} resolved = {}
+    for name, value in headers {
+        resolved[name] = resolve_config_value_or_throw(value, description + ' header "' + name + '"')
+    }
+    return resolved
+}
+
+// Clear the shell command result cache.  Exported for testing like Pi.
+pub fn clear_config_value_cache() {
+    command_cache = {}
+}
+
 // Resolve a config value: run `!command` (cached), interpolate env vars, or
 // return the literal.  Returns '' when an env reference is missing.
 pub fn resolve_config_value(string config): string {
     if config.starts_with('!') {
         return execute_command(config.slice(1, config.len()))
     }
+    return resolve_template_value(config)
+}
+
+// Template interpolation shared by resolve_config_value and the uncached
+// variant; $$ and $! escape to a literal $ and !.
+fn resolve_template_value(string config): string {
     string result = ''
     int index = 0
     for index < config.len() {
@@ -121,6 +207,41 @@ pub fn resolve_config_value(string config): string {
     return result
 }
 
+// True when the whole config value is a single "$VAR"/"${VAR}" reference.
+fn single_env_reference(string config): bool {
+    int start = config.find('$')
+    if start != 0 || start < 0 {
+        return false
+    }
+    if start + 1 >= config.len() {
+        return false
+    }
+    u8 next = config[start + 1]
+    string name = ''
+    if next == '{'.char() {
+        int end = find_from(config, '}', start + 2)
+        if end < 0 {
+            return false
+        }
+        name = config.slice(start + 2, end)
+        if !valid_env_name(name) {
+            return false
+        }
+        if end != config.len() - 1 {
+            return false
+        }
+    } else {
+        name = env_name_prefix(config, start + 1)
+        if name == '' {
+            return false
+        }
+        if start + 1 + name.len() != config.len() {
+            return false
+        }
+    }
+    return true
+}
+
 // Cached shell command results, like Pi's commandResultCache.
 {string:string} command_cache = {}
 
@@ -128,13 +249,16 @@ fn execute_command(string cmd): string {
     if command_cache.contains(cmd) {
         return command_cache[cmd]
     }
-    var result = command.argv(syscall.get_env('HOME'), '/bin/sh', ['-c', cmd]) catch error {
-        command_cache[cmd] = ''
-        return ''
-    }
-    string value = result.stdout.trim([' ', '\t', '\n', '\r'])
+    string value = execute_command_uncached(cmd)
     command_cache[cmd] = value
     return value
+}
+
+fn execute_command_uncached(string cmd): string {
+    var result = command.argv(syscall.get_env('HOME'), '/bin/sh', ['-c', cmd]) catch error {
+        return ''
+    }
+    return result.stdout.trim([' ', '\t', '\n', '\r'])
 }
 
 fn valid_env_name(string name): bool {

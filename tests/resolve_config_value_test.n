@@ -39,6 +39,51 @@ test 'configured checks track missing variables like Pi' {
     syscall.set_env('ADOU_CFG_A', '')
 }
 
+test 'single env name and missing names like Pi' {
+    syscall.set_env('ADOU_CFG_C', 'set')
+    syscall.set_env('ADOU_CFG_D', '')
+    assert(resolve_config_value.get_config_value_env_var_name('$ADOU_CFG_C') == 'ADOU_CFG_C')
+    assert(resolve_config_value.get_config_value_env_var_name('${ADOU_CFG_C}') == 'ADOU_CFG_C')
+    assert(resolve_config_value.get_config_value_env_var_name('x-$ADOU_CFG_C') == '')
+    assert(resolve_config_value.get_config_value_env_var_name('!echo hi') == '')
+    var missing = resolve_config_value.get_missing_config_value_env_var_names('$ADOU_CFG_C-$ADOU_CFG_D')
+    assert(missing.len() == 1)
+    assert(missing[0] == 'ADOU_CFG_D')
+    syscall.set_env('ADOU_CFG_C', '')
+}
+
+test 'uncached and throwing resolution like Pi' {
+    syscall.set_env('ADOU_CFG_E', 'secret')
+    assert(resolve_config_value.resolve_config_value_uncached('!echo fresh') == 'fresh')
+    assert(resolve_config_value.resolve_config_value_or_throw('$ADOU_CFG_E', 'test value') == 'secret')
+    bool failed = false
+    try {
+        string value = resolve_config_value.resolve_config_value_or_throw('$ADOU_CFG_MISSING_XYZ', 'test value')
+    } catch e {
+        failed = true
+    }
+    assert(failed)
+    syscall.set_env('ADOU_CFG_E', '')
+}
+
+test 'resolve_headers resolves every value like Pi' {
+    syscall.set_env('ADOU_CFG_F', 'from-env')
+    {string:string} headers = {}
+    headers['X-Literal'] = 'plain'
+    headers['X-Env'] = '$ADOU_CFG_F'
+    headers['X-Command'] = '!echo via-shell'
+    var resolved = resolve_config_value.resolve_headers(headers)
+    assert(resolved.len() == 3)
+    string literal = resolved['X-Literal'] catch error {'missing'}
+    string env_value = resolved['X-Env'] catch error {'missing'}
+    string command_value = resolved['X-Command'] catch error {'missing'}
+    assert(literal == 'plain')
+    assert(env_value == 'from-env')
+    assert(command_value == 'via-shell')
+    resolve_config_value.clear_config_value_cache()
+    syscall.set_env('ADOU_CFG_F', '')
+}
+
 test 'env var name extraction like Pi' {
     var names = resolve_config_value.get_config_value_env_var_names('$A and ${B} and $A')
     assert(names.len() == 2)

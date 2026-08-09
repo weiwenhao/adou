@@ -3,6 +3,7 @@ import adou.src.ai.models_store
 import adou.src.ai.remote_catalog
 import adou.src.ai.types as ai_types
 import adou.src.config.models_json
+import adou.src.config.resolve_config_value
 import adou.src.config.paths as config_paths
 import adou.src.debug
 import adou.src.tools.path_utils
@@ -330,10 +331,13 @@ pub fn thinking_for(string reference, [string] patterns): string {
 
 // Deep-copy a parsed provider config into a fresh ref so compose can hand
 // the struct to ref-taking helpers without aliasing the cached entry.
+// Header values go through config-value resolution ("!cmd", "$VAR") like
+// Pi's resolveHeaders; unresolvable values are dropped.
 #local
 fn copy_provider(models_json.models_json_provider_t source): ref<models_json.models_json_provider_t> {
     var copy = new models_json.models_json_provider_t(name = source.name, base_url = source.base_url, api_key = source.api_key, api = source.api, auth_header = source.auth_header)
-    for name, value in source.headers {
+    var resolved_headers = resolve_config_value.resolve_headers(source.headers)
+    for name, value in resolved_headers {
         copy.headers[name] = value
     }
     for model_id, definition in source.models {
