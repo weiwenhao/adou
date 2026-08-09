@@ -65,7 +65,7 @@ test 'streams a real DeepSeek HTTP response through the completions provider' {
     server.post('/chat/completions', handler)
     go serve_fixture(server)
     co.sleep(500)
-    var options = new types.stream_options_t(api_key = 'deepseek-test-key', timeout_ms = 5000, max_retries = 0, thinking_enabled = true,)
+    var options = new types.stream_options_t(api_key = 'deepseek-test-key', timeout_ms = 5000, max_retries = 0, thinking_enabled = true, reasoning_effort = 'high',)
     var stream = openai_completions_provider.stream(fixture_model(DEEPSEEK_PORT), fixture_context(), options)
     co.sleep(800)
     [string] kinds = []
