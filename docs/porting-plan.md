@@ -94,7 +94,33 @@ marked/highlight vendor 资产无分发机制，保留静态 HTML + ANSI 渲染�
 footer 的 fs.watch 变更通知（无 fs.watch）、event-bus（无扩展单消费者流）、
 http-dispatcher（libc 直连无全局 dispatcher）。
 
-Phase 3 验收（2026-08-09）：24 个相关测试文件全部通过——skills 12/12 + e2e
+Phase 3 对照式验收（2026-08-10）：以 vendors/pi 逐项对照（导出面对齐/遗漏），
+发现"导出即死代码"缺口并按优先级补齐：models.json 整层接线（models.all() 合成 +
+resolve 取 catalog base_url/headers）、remote catalog 接线（Last-Modified 头解析修复
++ models-store.json 持久化 + 启动加载 + ADOU_CATALOG_NETWORK 刷新）、
+resolve-config-value 7 个导出补齐（models.json headers 支持 $ENV/!cmd 解析）、
+auth_guidance 接线、get_project_trust_options + /trust trust|no|parent、
+cache-stats 接线（/session 显示 Cache Re-billed）、extension runner 接线（session
+持有 + TUI 命令菜单并入 extension 命令）、event_bus on() 返回取消函数 + handler
+错误隔离、registry 认证状态查询面。架构性保留：composeModelProvider 合成层
+（models.json + register_provider + register_api_provider 静态等价）、OAuth。
+另有 Nature 扩展运行时：vendors/quickjs 经 #linkid + native/quickjs_bridge.c
+（static-inline 包装）接入，src/agent/extension_js.n 提供 adou.registerCommand/
+registerTool/on/emit JS API，.js 扩展从 .pi/extensions 与 agentDir/extensions
+加载，工具/命令/宿主事件（session_start/session_end/tool_call/tool_result/
+message）全链路接线；TS 需预编译、异步 handler 未支持（记录）。
+
+Phase 1 对照式验收（2026-08-10）：协议层 8 项、providers 17 家、顶层 12 模块
+逐项对照。高优先级遗漏：openai-codex WebSocket 传输（现仅 SSE）、bedrock
+thinking 配置（thinkingSignature/cache_control 缓存点）。中：model_t 缺 compat
+字段（per-model 标志）、图片输入缺失。低：cloudflare 网关仅单 API、bedrock
+bearer、modelsAreEqual 等。排除项核验成立（OAuth/lazy）；radius e2e 已补且通过。
+
+Phase 2 对照式验收（2026-08-10）：对照 packages/agent/src/harness/。image、
+tool-context 完全对齐；shell-output 尾截语义/清洗/footer 对齐（流式进度面
+getProgress/returnExecutionErrors 缺失）。memory-repo 缺多会话注册表面
+（open/list/delete）、fork position:"at"、appendActiveToolsChange、
+findEntries/getEntries 游标。——skills 12/12 + e2e
 （system prompt 注入）、prompt-templates 7/7、event-bus 3/3、telemetry +
 attribution 5/5、usage-totals 2/2、cache-stats 4/4、remote-catalog 6/6、
 provider-composer（models.json）5/5、auth-guidance + runtime-credentials 3/3、
