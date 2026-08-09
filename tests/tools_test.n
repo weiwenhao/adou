@@ -1,4 +1,5 @@
 import adou.src.ai.abort
+import adou.src.ai.types as types
 import adou.src.json_util
 import adou.src.agent.types as agent_types
 import adou.src.tools.command as command
@@ -156,12 +157,20 @@ test 'read rejects image content explicitly' {
     string root = '/tmp/adou-tools-test-image'
     os.rmdir(root, true) catch e {}
     write_fixture(root + '/value.bin', [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-    bool failed = false
-    read.execute(root, 'value.bin', false, 0.0, false, 0.0, abort.new()) catch e {
-        failed = e.msg().contains('does not support image reading')
-        tool_types.tool_result_t{}
-    }
-    assert(failed)
+    var result = read.execute(root, 'value.bin', false, 0.0, false, 0.0, abort.new())
+    assert(result.content.len() == 1)
+    assert(result.content[0].text == 'Read image file [image/png]')
+    os.rmdir(root, true)
+}
+
+test 'read reports Pi BMP hint without an image processor' {
+    string root = '/tmp/adou-tools-test-read-bmp'
+    os.rmdir(root, true) catch error {}
+    write_fixture(root + '/pic.bmp', [0x42, 0x4d, 30, 0, 0, 0, 0, 0, 0, 0, 26, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 1, 0, 24, 0])
+    var result = read.execute(root, 'pic.bmp', false, 0.0, false, 0.0, abort.new())
+    assert(result.content.len() == 1)
+    assert(result.content[0].text.find('image/bmp') >= 0)
+    assert(result.content[0].text.find('imageProcessor') >= 0)
     os.rmdir(root, true)
 }
 

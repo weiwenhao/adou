@@ -26,7 +26,12 @@ pub fn execute(string cwd, string input_path, bool has_offset, float offset, boo
     throw_if_aborted(cancellation)
     string mime = image_mime(raw as [u8])
     if mime != '' {
-        throw errorf('Current MVP does not support image reading: %s (%s)', input_path, mime)
+        // Pi omits the image data without an imageProcessor; BMP carries an
+        // explicit configure hint.
+        if mime == 'image/bmp' {
+            return tool_types.text_result('Read image file [image/bmp]\n[Image omitted: configure an imageProcessor to convert BMP images.]')
+        }
+        return tool_types.text_result('Read image file [' + mime + ']')
     }
     string content = utf8.replacement_decode(raw as [u8])
     [string] all_lines = truncate.split_all_lines(content)
