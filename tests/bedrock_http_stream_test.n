@@ -1,6 +1,7 @@
 import adou.src.ai.providers.bedrock_messages
 import adou.src.ai.providers.bedrock_provider
 import adou.src.ai.types
+import adou.src.json_util
 import co
 import fmt
 import base64
@@ -121,4 +122,64 @@ fn kinds_has([string] kinds, string kind): bool {
         }
     }
     return false
+}
+
+test 'bedrock thinking config and cache points match Pi' {
+    var model = new types.model_t(id = 'anthropic.claude-sonnet-4-5-v1:0', name = 'claude-sonnet-4-5', api = 'bedrock-converse-stream', provider = 'amazon-bedrock', base_url = 'https://bedrock-runtime.us-east-1.amazonaws.com', reasoning = true, max_tokens = 16)
+    var context = new types.context_t(system_prompt = 'Be concise')
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    var options = new types.stream_options_t(thinking_enabled = true, reasoning_effort = 'high', cache_retention = 'short')
+    var body = json_util.parse(bedrock_messages.build(model, context, options))
+    var additional = (body as {string:any})['additionalModelRequestFields'] as {string:any}
+    var thinking = additional['thinking'] as {string:any}
+    assert(thinking['type'] as string == 'enabled')
+    assert((thinking['budget_tokens'] as f64) == 16384.0)
+    assert(additional['anthropic_beta'] is [any])
+    // System prompt carries the cache point for supported Claude models.
+    var system = (body as {string:any})['system'] as [any]
+    assert(system.len() == 2)
+    var cache = system[1] as {string:any}
+    assert(cache['type'] as string == 'default')
+    // Last user message carries a cache point too.
+    var messages = (body as {string:any})['messages'] as [any]
+    var last = messages[messages.len() - 1] as {string:any}
+    var content = last['content'] as [any]
+    assert(content.len() == 2)
+    var point = content[1] as {string:any}
+    assert(point['type'] as string == 'default')
+}
+
+test 'bedrock adaptive thinking uses output_config effort like Pi' {
+    var model = new types.model_t(id = 'anthropic.claude-opus-4-6-v1:0', name = 'claude-opus-4-6', api = 'bedrock-converse-stream', provider = 'amazon-bedrock', base_url = 'https://bedrock-runtime.us-east-1.amazonaws.com', reasoning = true, max_tokens = 16)
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    var options = new types.stream_options_t(thinking_enabled = true, reasoning_effort = 'high', cache_retention = 'none')
+    var body = json_util.parse(bedrock_messages.build(model, context, options))
+    var additional = (body as {string:any})['additionalModelRequestFields'] as {string:any}
+    var thinking = additional['thinking'] as {string:any}
+    assert(thinking['type'] as string == 'adaptive')
+    assert(!additional.contains('anthropic_beta'))
+    var output_config = additional['output_config'] as {string:any}
+    assert(output_config['effort'] as string == 'high')
+}
+
+test 'bedrock replays thinking signatures like Pi' {
+    var model = new types.model_t(id = 'anthropic.claude-sonnet-4-5-v1:0', name = 'claude-sonnet-4-5', api = 'bedrock-converse-stream', provider = 'amazon-bedrock', base_url = 'https://bedrock-runtime.us-east-1.amazonaws.com', reasoning = true, max_tokens = 16)
+    var context = new types.context_t()
+    var thinking = new types.thinking_content_t(thinking = 'plan', thinking_signature = 'sig123')
+    types.content_t block = thinking
+    var assistant = new types.assistant_message_t(content = [block,])
+    types.message_t assistant_message = assistant
+    context.messages.push(assistant_message)
+    var options = new types.stream_options_t()
+    var body = json_util.parse(bedrock_messages.build(model, context, options))
+    var messages = (body as {string:any})['messages'] as [any]
+    var assistant_item = messages[0] as {string:any}
+    var content = assistant_item['content'] as [any]
+    var reasoning = (content[0] as {string:any})['reasoningContent'] as {string:any}
+    var text = reasoning['reasoningText'] as {string:any}
+    assert(text['text'] as string == 'plan')
+    assert(text['signature'] as string == 'sig123')
 }

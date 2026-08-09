@@ -103,6 +103,14 @@ pub fn processor_t.feed(&self, bedrock_messages.stream_event_t event): [types.as
                         events = self.append_thinking(text, events)
                     }
                 }
+                // Collect the signature that arrives with the final thinking
+                // delta so replayed reasoning blocks stay valid for Bedrock.
+                if reasoning.contains('signature') && reasoning['signature'] is string {
+                    string signature = reasoning['signature'] as string
+                    if signature != '' {
+                        events = self.append_thinking_signature(signature, events)
+                    }
+                }
             }
             if delta.contains('toolUse') && !json_util.is_null(delta['toolUse']) {
                 var tool_use = delta['toolUse'] as {string:any}
@@ -381,6 +389,17 @@ fn processor_t.append_thinking(&self, string value, [types.assistant_event_t] ev
         events.push(update_event(types.EVENT_THINKING_START, index, '', '', self.output))
     }
     events.push(update_event(types.EVENT_THINKING_DELTA, index, value, '', self.output))
+    return events
+}
+
+#local
+fn processor_t.append_thinking_signature(&self, string signature, [types.assistant_event_t] events): [types.assistant_event_t] {
+    for block in self.output.content {
+        if block is ref<types.thinking_content_t> existing {
+            existing.thinking_signature = existing.thinking_signature + signature
+            break
+        }
+    }
     return events
 }
 

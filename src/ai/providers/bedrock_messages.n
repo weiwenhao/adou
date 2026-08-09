@@ -48,12 +48,10 @@ pub fn region_for(ref<types.model_t> model): string {
 pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
     {string:any} body = {}
     body['modelId'] = model.id
-    [any] messages = convert_messages(model, context)
+    [any] messages = convert_messages(model, context, options)
     body['messages'] = messages
     if context.system_prompt != '' {
-        {string:any} system = {}
-        system['text'] = context.system_prompt
-        body['system'] = [system]
+        body['system'] = convert_system_prompt(context.system_prompt, model, options)
     }
     {string:any} inference = {}
     int max_tokens = options.max_tokens
@@ -67,7 +65,156 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
     if context.tools.len() > 0 {
         body['toolConfig'] = convert_tools(context.tools)
     }
+    var additional = additional_model_request_fields(model, options)
+    if additional.len() > 0 {
+        body['additionalModelRequestFields'] = additional
+    }
     return json.serialize(body)
+}
+
+// Pi's buildSystemPrompt: a text block plus a cache point for Claude models
+// when prompt caching is enabled (short retention or the PI_CACHE_RETENTION
+// long mode).
+fn convert_system_prompt(string system_prompt, ref<types.model_t> model, ref<types.stream_options_t> options): [any] {
+    [any] blocks = []
+    {string:any} text = {}
+    text['text'] = system_prompt
+    blocks.push(text)
+    string retention = options.cache_retention
+    if retention != 'none' && supports_prompt_caching(model) {
+        {string:any} point = {}
+        point['type'] = 'default'
+        if retention == 'long' {
+            point['ttl'] = 3600
+        }
+        blocks.push(point)
+    }
+    return blocks
+}
+
+// Pi's buildAdditionalModelRequestFields: Claude thinking configuration.
+// Adaptive-thinking models (Claude 4.6+ / 5) get {thinking: adaptive} plus
+// output_config.effort; budget-based models get thinking.enabled with a
+// per-level budget and the interleaved-thinking beta unless disabled.
+fn additional_model_request_fields(ref<types.model_t> model, ref<types.stream_options_t> options): {string:any} {
+    {string:any} result = {}
+    if !options.thinking_enabled || !model.reasoning {
+        return result
+    }
+    if !is_anthropic_claude_model(model) {
+        return result
+    }
+    string display = 'summarized'
+    if is_gov_cloud_target(model) {
+        display = ''
+    }
+    string level = options.reasoning_effort
+    if level == '' {
+        level = 'medium'
+    }
+    {string:any} thinking = {}
+    if supports_adaptive_thinking(model) {
+        thinking['type'] = 'adaptive'
+        if display != '' {
+            thinking['display'] = display
+        }
+        result['thinking'] = thinking
+        {string:any} output_config = {}
+        output_config['effort'] = map_thinking_level_to_effort(model, level)
+        result['output_config'] = output_config
+        return result
+    }
+    int budget = thinking_budget(model, level)
+    thinking['type'] = 'enabled'
+    thinking['budget_tokens'] = budget
+    if display != '' {
+        thinking['display'] = display
+    }
+    result['thinking'] = thinking
+    [any] beta = []
+    beta.push('interleaved-thinking-2025-05-14')
+    result['anthropic_beta'] = beta
+    return result
+}
+
+fn thinking_budget(ref<types.model_t> model, string level): int {
+    // Custom per-level budgets above; the default table caps xhigh/max at
+    // high (16384) like Pi.
+    int budget = 0
+    if level == 'minimal' {
+        budget = 1024
+    } else if level == 'low' {
+        budget = 2048
+    } else if level == 'medium' {
+        budget = 8192
+    } else if level == 'high' || level == 'xhigh' || level == 'max' {
+        budget = 16384
+    }
+    return budget
+}
+
+fn map_thinking_level_to_effort(ref<types.model_t> model, string level): string {
+    if level == 'xhigh' && supports_native_xhigh_effort(model) {
+        return 'xhigh'
+    }
+    if model.thinking_level_map.contains(level) {
+        string mapped = model.thinking_level_map[level]
+        if mapped != '' {
+            return mapped
+        }
+    }
+    if level == 'minimal' || level == 'low' {
+        return 'low'
+    }
+    if level == 'medium' {
+        return 'medium'
+    }
+    return 'high'
+}
+
+fn supports_adaptive_thinking(ref<types.model_t> model): bool {
+    string id = model.id.to_lower()
+    string name = model.name.to_lower()
+    return id.contains('opus-4-6') || id.contains('opus-4-7') || id.contains('opus-4-8') || id.contains('opus-5') || id.contains('sonnet-4-6') || id.contains('sonnet-5') || id.contains('fable-5') || name.contains('opus-4-6') || name.contains('opus-4-7') || name.contains('opus-4-8') || name.contains('opus-5') || name.contains('sonnet-4-6') || name.contains('sonnet-5') || name.contains('fable-5')
+}
+
+fn supports_native_xhigh_effort(ref<types.model_t> model): bool {
+    string id = model.id.to_lower()
+    string name = model.name.to_lower()
+    return id.contains('opus-4-7') || id.contains('opus-4-8') || id.contains('opus-5') || id.contains('sonnet-5') || id.contains('fable-5') || name.contains('opus-4-7') || name.contains('opus-4-8') || name.contains('opus-5') || name.contains('sonnet-5') || name.contains('fable-5')
+}
+
+fn is_anthropic_claude_model(ref<types.model_t> model): bool {
+    string id = model.id.to_lower()
+    string name = model.name.to_lower()
+    return id.contains('anthropic.claude') || id.contains('anthropic/claude') || name.contains('anthropic.claude') || name.contains('anthropic/claude') || name.contains('claude')
+}
+
+fn supports_prompt_caching(ref<types.model_t> model): bool {
+    string id = model.id.to_lower()
+    string name = model.name.to_lower()
+    bool has_claude_ref = id.contains('claude') || name.contains('claude')
+    if !has_claude_ref {
+        return syscall.get_env('AWS_BEDROCK_FORCE_CACHE') == '1'
+    }
+    if id.contains('fable-5') || id.contains('opus-5') || id.contains('sonnet-5') || name.contains('fable-5') || name.contains('opus-5') || name.contains('sonnet-5') {
+        return true
+    }
+    if id.contains('-4-') || name.contains('-4-') {
+        return true
+    }
+    if id.contains('claude-3-7-sonnet') || name.contains('claude-3-7-sonnet') {
+        return true
+    }
+    if id.contains('claude-3-5-haiku') || name.contains('claude-3-5-haiku') {
+        return true
+    }
+    return false
+}
+
+fn is_gov_cloud_target(ref<types.model_t> model): bool {
+    string id = model.id.to_lower()
+    return id.contains('us-gov') || id.contains('us-gov-west') || id.contains('us-gov-east')
 }
 
 // AWS SigV4 signing for the Bedrock Runtime. The canonical request covers the
@@ -146,7 +293,7 @@ fn hex_byte(u8 byte): string {
 }
 
 #local
-fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [any]! {
+fn convert_messages(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): [any]! {
     [any] result = []
     var replay = replay.tracker()
     for message in context.messages {
@@ -196,6 +343,26 @@ fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [an
     for missing in replay.finish() {
         result.push(tool_result_item(model, missing))
     }
+    // Pi adds a cache point to the last user message for supported Claude
+    // models when caching is enabled.
+    if options.cache_retention != 'none' && supports_prompt_caching(model) && result.len() > 0 {
+        var last = result[result.len() - 1] as {string:any}
+        bool is_user = false
+        if last.contains('role') && last['role'] is string {
+            is_user = last['role'] as string == 'user'
+        }
+        bool has_content = last.contains('content') && last['content'] is [any]
+        if is_user && has_content {
+            {string:any} point = {}
+            point['type'] = 'default'
+            if options.cache_retention == 'long' {
+                point['ttl'] = 3600
+            }
+            var content_array = last['content'] as [any]
+            content_array.push(point)
+            last['content'] = content_array
+        }
+    }
     return result
 }
 
@@ -219,6 +386,35 @@ fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> messa
             {string:any} item = {}
             item['text'] = text_block.text
             content.push(item)
+        } else if block is ref<types.thinking_content_t> thinking_block {
+            // Pi replays thinking as reasoningContent for Anthropic models;
+            // a missing signature falls back to plain text because Bedrock
+            // rejects unsigned reasoning blocks.
+            string thinking = thinking_block.thinking
+            if thinking.trim([' ', '\t', '\n', '\r']) != '' {
+                if is_anthropic_claude_model(model) && thinking_block.thinking_signature != '' {
+                    {string:any} reasoning = {}
+                    {string:any} reasoning_text = {}
+                    reasoning_text['text'] = thinking
+                    reasoning_text['signature'] = thinking_block.thinking_signature
+                    reasoning['reasoningText'] = reasoning_text
+                    {string:any} item = {}
+                    item['reasoningContent'] = reasoning
+                    content.push(item)
+                } else if is_anthropic_claude_model(model) {
+                    {string:any} item = {}
+                    item['text'] = thinking
+                    content.push(item)
+                } else {
+                    {string:any} reasoning = {}
+                    {string:any} reasoning_text = {}
+                    reasoning_text['text'] = thinking
+                    reasoning['reasoningText'] = reasoning_text
+                    {string:any} item = {}
+                    item['reasoningContent'] = reasoning
+                    content.push(item)
+                }
+            }
         } else if block is ref<types.tool_call_t> tool_call {
             {string:any} item = {}
             item['toolUse'] = json_util.parse(json.serialize(tool_call.arguments) catch error {'{}'})
