@@ -1,0 +1,85 @@
+import adou.src.ai.types as ai_types
+import adou.src.session.memory_repo
+import adou.src.session.repository
+import adou.src.session.types as session_types
+
+test 'memory repo create/open/list/delete mirror InMemorySessionRepo' {
+    var repo = memory_repo.new_memory_repo()
+    var first = repository.in_memory('/tmp/mem-repo-a')
+    var registered_first = repo.create(first, 'alpha') catch error {
+        assert(false)
+        first
+    }
+    var second = repository.in_memory('/tmp/mem-repo-b')
+    var registered_second = repo.create(second, 'beta') catch error {
+        assert(false)
+        second
+    }
+    var opened = repo.open('alpha') catch error {
+        assert(false)
+        first
+    }
+    assert(opened.get_session_id() == first.get_session_id())
+    var listed = repo.list()
+    assert(listed.len() == 2)
+    repo.delete('alpha') catch error {
+        assert(false)
+    }
+    assert(repo.list().len() == 1)
+    bool not_found = false
+    try {
+        var missing = repo.open('alpha')
+    } catch e {
+        not_found = true
+    }
+    assert(not_found)
+    bool duplicate = false
+    try {
+        repo.create(second, 'beta')
+    } catch e {
+        duplicate = true
+    }
+    assert(duplicate)
+}
+
+test 'memory repo fork registers the forked session like Pi' {
+    var repo = memory_repo.new_memory_repo()
+    var source = repository.in_memory('/tmp/mem-repo-source')
+    var registered_source = repo.create(source, 'source') catch error {
+        assert(false)
+        source
+    }
+    var user = new ai_types.user_message_t(content = 'hello')
+    string first_id = source.append_message(user)
+    var assistant = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'm', timestamp = 1)
+    ai_types.message_t assistant_message = assistant
+    string assistant_id = source.append_message(assistant_message)
+    var second = new ai_types.user_message_t(content = 'again')
+    string second_id = source.append_message(second)
+    // fork at the assistant message keeps it as the leaf.
+    var forked = repo.fork('source', assistant_id, 'at', 'forked-at') catch error {
+        assert(false)
+        source
+    }
+    var forked_context = forked.build_context()
+    assert(forked_context.messages.len() == 2)
+    var opened = repo.open('forked-at') catch error {
+        assert(false)
+        source
+    }
+    assert(opened.get_session_id() == forked.get_session_id())
+    // fork before the second user message.
+    var before = repo.fork('source', second_id, 'before', '') catch error {
+        assert(false)
+        source
+    }
+    var before_context = before.build_context()
+    assert(before_context.messages.len() == 2)
+    // full-session fork without an entry id.
+    var full = repo.fork('source', '', 'before', 'full-copy') catch error {
+        assert(false)
+        source
+    }
+    assert(full.build_context().messages.len() == 3)
+    assert(repo.list().len() == 4)
+}

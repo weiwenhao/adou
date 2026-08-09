@@ -1,0 +1,82 @@
+import adou.src.session.repository
+import adou.src.session.types
+import adou.src.session.identity
+import adou.src.tools.path_utils
+
+// Pi's InMemorySessionRepo (vendors/pi/packages/agent/src/harness/session/
+// memory-repo.ts): a multi-session in-memory registry on top of the manager
+// factory.  create/open/list/delete/fork mirror the SessionRepo contract.
+
+pub type memory_session_meta_t = struct {
+    string id
+    string created_at
+}
+
+pub type memory_repo_t = struct {
+    {string:ref<repository.manager_t>} sessions = {}
+}
+
+pub fn new_memory_repo(): ref<memory_repo_t> {
+    return new memory_repo_t()
+}
+
+// Register an in-memory manager under an explicit id (or its own header id).
+pub fn memory_repo_t.create(&self, ref<repository.manager_t> manager, string requested_id): ref<repository.manager_t>! {
+    string id = requested_id != '' ? requested_id : manager.get_session_id()
+    if id == '' {
+        id = identity.uuid_v7()
+    }
+    if self.sessions.contains(id) {
+        throw errorf('Session already exists: %s', id)
+    }
+    self.sessions[id] = manager
+    return manager
+}
+
+// Pi's open(metadata): fetch by id, not_found otherwise.
+pub fn memory_repo_t.open(&self, string id): ref<repository.manager_t>! {
+    if self.sessions.contains(id) {
+        return self.sessions[id]
+    }
+    throw errorf('Session not found: %s', id)
+}
+
+pub fn memory_repo_t.list(&self): [memory_session_meta_t] {
+    [memory_session_meta_t] result = []
+    for id, manager in self.sessions {
+        result.push(memory_session_meta_t {id: id, created_at: manager.header.timestamp})
+    }
+    return result
+}
+
+pub fn memory_repo_t.delete(&self, string id): void! {
+    if !self.sessions.contains(id) {
+        throw errorf('Session not found: %s', id)
+    }
+    self.sessions.del(id)
+}
+
+// Pi's fork(sourceMetadata, {entryId, position, id}): entryId absent copies
+// the full session, "before" requires a user message target, "at" keeps the
+// target as the fork's leaf.  The fork is registered in the repository.
+pub fn memory_repo_t.fork(&self, string source_id, string entry_id, string position, string requested_id): ref<repository.manager_t>! {
+    var source = self.open(source_id)
+    ref<repository.manager_t>? forked = null
+    if entry_id == '' {
+        // Pi forks the complete entry list when no entryId is given.
+        forked = source.has_leaf ? source.clone_path(true, source.leaf_id) : source.clone_path(false, '')
+    } else if position == 'at' {
+        forked = source.fork_at(entry_id)
+    } else {
+        forked = source.fork_before(entry_id)
+    }
+    if forked is ref<repository.manager_t> result {
+        var id = requested_id != '' ? requested_id : identity.uuid_v7()
+        if self.sessions.contains(id) {
+            throw errorf('Session already exists: %s', id)
+        }
+        self.sessions[id] = result
+        return result
+    }
+    throw errorf('Could not fork session %s', source_id)
+}
