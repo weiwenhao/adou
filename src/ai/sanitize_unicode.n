@@ -1,0 +1,35 @@
+import adou.src.json_util
+
+// Port of vendors/pi/packages/ai/src/utils/sanitize-unicode.ts.
+// Unpaired surrogate code points break JSON serialization on many provider
+// APIs.  In UTF-8 text they appear as ED A0-BF / ED B0-BF three-byte
+// sequences; properly paired high+low surrogate pairs are preserved.
+
+pub fn sanitize_surrogates(string text): string {
+    [u8] output = []
+    var bytes = text as [u8]
+    int index = 0
+    for index < bytes.len() {
+        u8 byte = bytes[index]
+        if byte == 0xed && index + 2 < bytes.len() {
+            u8 second = bytes[index + 1]
+            if second >= 0xa0 && second <= 0xbf {
+                // Surrogate-encoded sequence: high (ED A0-AF) or low (ED B0-BF).
+                bool is_low = second >= 0xb0
+                bool has_following_low = !is_low && index + 5 < bytes.len() && bytes[index + 3] == 0xed && bytes[index + 4] >= 0xb0 && bytes[index + 4] <= 0xbf
+                if !is_low && has_following_low {
+                    // Properly paired high+low: keep both three-byte sequences.
+                    output.append(bytes.slice(index, index + 6))
+                    index += 6
+                    continue
+                }
+                // Unpaired surrogate: drop the three-byte sequence.
+                index += 3
+                continue
+            }
+        }
+        output.push(byte)
+        index += 1
+    }
+    return output as string
+}

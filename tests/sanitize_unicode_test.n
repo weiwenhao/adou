@@ -1,0 +1,31 @@
+import adou.src.ai.sanitize_unicode
+
+test 'valid emoji with paired surrogates survives like Pi' {
+    string emoji = 'Hello 🙈 World'
+    string sanitized = sanitize_unicode.sanitize_surrogates(emoji)
+    assert(sanitized == emoji)
+}
+
+test 'unpaired high surrogate is removed like Pi' {
+    // High surrogate D83D without a low partner, encoded as UTF-8 (ED A0 BD).
+    [u8] bytes = []
+    bytes.append('Text ' as [u8])
+    bytes.append([0xed, 0xa0, 0xbd])
+    bytes.append(' here' as [u8])
+    string sanitized = sanitize_unicode.sanitize_surrogates(bytes as string)
+    assert(sanitized == 'Text  here')
+}
+
+test 'unpaired low surrogate is removed like Pi' {
+    [u8] bytes = []
+    bytes.append('a' as [u8])
+    bytes.append([0xed, 0xb0, 0x80])
+    bytes.append('b' as [u8])
+    string sanitized = sanitize_unicode.sanitize_surrogates(bytes as string)
+    assert(sanitized == 'ab')
+}
+
+test 'ordinary text and multibyte characters survive like Pi' {
+    string text = '你好, café — 中文'
+    assert(sanitize_unicode.sanitize_surrogates(text) == text)
+}

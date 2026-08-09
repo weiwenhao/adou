@@ -2,6 +2,7 @@ import adou.src.ai.types
 import adou.src.ai.providers.decorators
 import adou.src.ai.ids
 import adou.src.ai.providers.replay
+import adou.src.ai.sanitize_unicode
 import adou.src.json_util
 import fmt
 import json
@@ -186,7 +187,7 @@ fn summary_item(ref<types.compaction_summary_message_t> message): any {
 fn user_item(ref<types.user_message_t> message): any {
     {string:any} text = {}
     text['type'] = 'input_text'
-    text['text'] = message.content
+    text['text'] = sanitize_unicode.sanitize_surrogates(message.content)
     [any] content = []
     content.push(text)
     {string:any} item = {}
@@ -224,7 +225,7 @@ fn assistant_text_item(ref<types.text_content_t> text, int message_index, int te
     }
     {string:any} content = {}
     content['type'] = 'output_text'
-    content['text'] = text.text
+    content['text'] = sanitize_unicode.sanitize_surrogates(text.text)
     [any] annotations = []
     content['annotations'] = annotations
     [any] content_items = []
