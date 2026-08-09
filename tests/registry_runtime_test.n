@@ -1,0 +1,39 @@
+import adou.src.ai.providers.registry
+import adou.src.ai.types
+
+test 'register_provider makes a runtime provider findable like Pi' {
+    registry.unregister_provider('test-runtime') catch error {}
+    types.provider_def_t def = types.provider_def_t {id: 'test-runtime', name: 'Test Runtime', api: 'openai-completions', base_url: 'https://runtime.example.com', env_vars: ['TEST_RUNTIME_KEY']}
+    registry.register_provider(def)
+    var found = registry.find_def('test-runtime')
+    assert(!(found is null))
+    if !(found is null) {
+        var resolved = found as types.provider_def_t
+        assert(resolved.name == 'Test Runtime')
+        assert(resolved.base_url == 'https://runtime.example.com')
+    }
+    var ids = registry.registered_provider_ids()
+    bool has_runtime = false
+    for id in ids {
+        if id == 'test-runtime' {
+            has_runtime = true
+        }
+    }
+    assert(has_runtime)
+}
+
+test 'unregister_provider removes the runtime provider like Pi' {
+    registry.register_provider(types.provider_def_t {id: 'test-runtime-2', name: 'T2', api: 'openai-completions', base_url: 'https://t2.example.com',})
+    registry.unregister_provider('test-runtime-2')
+    assert(registry.find_def('test-runtime-2') is null)
+}
+
+test 'runtime providers do not shadow built-ins unless registered' {
+    // Built-in deepseek is still resolvable without registration.
+    var deepseek = registry.find_def('deepseek')
+    assert(!(deepseek is null))
+    if !(deepseek is null) {
+        var def = deepseek as types.provider_def_t
+        assert(def.name == 'DeepSeek')
+    }
+}

@@ -82,6 +82,11 @@ pub fn defs(): [types.provider_def_t] {
 }
 
 pub fn find_def(string id): types.provider_def_t? {
+    // Runtime-registered providers (extensions) win over the built-ins.
+    if runtime_defs.contains(id) {
+        var runtime = runtime_defs[id]
+        return runtime
+    }
     for def in defs() {
         if def.id == id {
             return def
@@ -89,6 +94,28 @@ pub fn find_def(string id): types.provider_def_t? {
     }
     return null
 }
+
+// Pi ModelRegistry registration surface: extensions register providers at
+// runtime with a name/baseUrl/api/apiKey shape.
+pub fn register_provider(types.provider_def_t def) {
+    runtime_defs[def.id] = def
+}
+
+pub fn unregister_provider(string id) {
+    if runtime_defs.contains(id) {
+        runtime_defs.del(id)
+    }
+}
+
+pub fn registered_provider_ids(): [string] {
+    [string] result = []
+    for id, def in runtime_defs {
+        result.push(id)
+    }
+    return result
+}
+
+{string:types.provider_def_t} runtime_defs = {}
 
 pub fn all_models(): [ref<types.model_t>] {
     [ref<types.model_t>] result = []
