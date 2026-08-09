@@ -135,6 +135,12 @@ word-navigation/stdin-buffer 已覆盖。新增 fuzzy 匹配（`src/tui/fuzzy.n`
 三档结论：Phase 1 已完成 26 / 行为不一致 15 / 缺失 4；Phase 2 已完成 13 / 行为不一致 9 /
 缺失 0；Phase 3 已完成 10 / 行为不一致 8 / 缺失 4。详见各阶段小节。
 
+最终复核（2026-08-09，三轮补缺后）：约 180 项模块中 ~94% 已完成；行为不一致 6
+（settings-manager 字段子集、export-html 已增强、footer git 已接线、bedrock 占位
+base_url、cloudflare credential.env 已补、images registry 已补）；缺失 3 已全部补齐
+（azure dispatch、legacy-api-aliases、images 运行时注册）。Phase 1 radius/pi-messages
+e2e（tests/e2e/radius-pi-messages.sh）验证通过。
+
 扩展接口面（extension ABI/钩子/注册点）按"接口齐全、具体扩展不移植"标准补齐：
 EventBus（`src/agent/event_bus.n`，emit/on/off/clear）、provider 钩子
 （before_provider_request/after_provider_response 挂在 agent config_t）、
