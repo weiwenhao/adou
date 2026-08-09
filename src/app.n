@@ -154,7 +154,8 @@ pub fn run(): void! {
     // Resolve cwd-bound settings after opening the session.  A --session or
     // --resume target may belong to another project, and Pi binds its runtime
     // to that target's .pi/settings.json rather than the launch directory.
-    var session_preferences = settings.load_for(session_cwd)
+    // Untrusted projects only get the global settings.
+    var session_preferences = config.project_trusted ? settings.load_for(session_cwd) : settings.load()
     config.steering_mode = session_preferences.steering_mode
     config.follow_up_mode = session_preferences.follow_up_mode
     config.compaction.enabled = arguments.no_compaction ? false : session_preferences.auto_compaction
@@ -245,7 +246,9 @@ pub fn run(): void! {
     command.configure_agent_environment(repository.get_session_id(), repository.get_session_file(), config.provider, config.model.id, config.thinking)
     config.stream_options.session_id = repository.get_session_id()
     [ref<project.file_t>] context_files = []
-    if !config.no_context_files {
+    // Untrusted projects skip their AGENTS.md/CLAUDE.md context, matching
+    // Pi's trust gate on project resource loading.
+    if !config.no_context_files && config.project_trusted {
         var loaded = project.load(session_cwd, '')
         context_files = loaded.files
     }

@@ -78,6 +78,7 @@ pub type config_t = struct {
     bool offline
     bool trust_override
     bool trust_override_explicit
+    bool project_trusted
     bool retry_enabled = true
     int retry_max_attempts = 3
     int retry_base_delay_ms = 2000
