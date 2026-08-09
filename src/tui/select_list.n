@@ -1,0 +1,130 @@
+import adou.src.tui.text_utils
+import fmt
+import strings
+
+// Port of vendors/pi/packages/tui/src/components/select-list.ts rendering.
+// Two-column list (label + description) with a scrolling window, selection
+// marker, scroll info and a no-match line.  Filtering is case-insensitive
+// prefix matching on the value, exactly like Pi's setFilter.
+
+pub type select_item_t = struct {
+    string value
+    string label
+    string description
+}
+
+pub const DEFAULT_PRIMARY_COLUMN_WIDTH = 32
+pub const PRIMARY_COLUMN_GAP = 2
+pub const MIN_DESCRIPTION_WIDTH = 10
+
+fn normalize_single_line(string text): string {
+    string result = text.replace('\r', ' ').replace('\n', ' ')
+    return result.trim([' ', '\t'])
+}
+
+fn clamp_int(int value, int min, int max): int {
+    if value < min {
+        return min
+    }
+    if value > max {
+        return max
+    }
+    return value
+}
+
+fn display_value(select_item_t item): string {
+    return item.label != '' ? item.label : item.value
+}
+
+fn column_width([select_item_t] items, int min_width, int max_width): int {
+    int widest = 0
+    for item in items {
+        int width = text_utils.visible_width(display_value(item)) catch error { 0 } + PRIMARY_COLUMN_GAP
+        if width > widest {
+            widest = width
+        }
+    }
+    return clamp_int(widest, min_width, max_width)
+}
+
+pub fn filtered_items([select_item_t] items, string filter): [select_item_t] {
+    [select_item_t] result = []
+    string needle = filter.to_lower()
+    for item in items {
+        if needle == '' || item.value.to_lower().starts_with(needle) {
+            result.push(item)
+        }
+    }
+    return result
+}
+
+pub fn select_list_render([select_item_t] items, int selected_index, int max_visible, int width, string filter, int min_column_width, int max_column_width): [string] {
+    [string] lines = []
+    var visible_items = filtered_items(items, filter)
+    if visible_items.len() == 0 {
+        lines.push('  No matching commands')
+        return lines
+    }
+    int selected = clamp_int(selected_index, 0, visible_items.len() - 1)
+    int primary_width = column_width(visible_items, min_column_width, max_column_width)
+    int start_index = selected - max_visible / 2
+    if start_index > visible_items.len() - max_visible {
+        start_index = visible_items.len() - max_visible
+    }
+    if start_index < 0 {
+        start_index = 0
+    }
+    int end_index = start_index + max_visible
+    if end_index > visible_items.len() {
+        end_index = visible_items.len()
+    }
+    for int index = start_index; index < end_index; index += 1 {
+        var item = visible_items[index]
+        bool is_selected = index == selected
+        string line = render_item(item, is_selected, width, primary_width)
+        lines.push(line)
+    }
+    if start_index > 0 || end_index < visible_items.len() {
+        string scroll_text = '  (' + fmt_int(selected + 1) + '/' + fmt_int(visible_items.len()) + ')'
+        lines.push(text_utils.truncate_to_width(scroll_text, width - 2, '', false) catch error { scroll_text })
+    }
+    return lines
+}
+
+fn render_item(select_item_t item, bool is_selected, int width, int primary_width): string {
+    string prefix = is_selected ? '→ ' : '  '
+    int prefix_width = text_utils.visible_width(prefix) catch error { 2 }
+    string description = normalize_single_line(item.description)
+    if description != '' && width > 40 {
+        int effective_width = clamp_int(primary_width, 1, width - prefix_width - 4)
+        int max_primary = clamp_int(effective_width - PRIMARY_COLUMN_GAP, 1, effective_width)
+        string truncated_value = text_utils.truncate_to_width(display_value(item), max_primary, '', false) catch error { display_value(item) }
+        int value_width = text_utils.visible_width(truncated_value) catch error { 0 }
+        string spacing = repeat_spaces(clamp_int(effective_width - value_width, 1, effective_width))
+        int description_start = prefix_width + value_width + spacing.len()
+        int remaining_width = width - description_start - 2
+        if remaining_width > MIN_DESCRIPTION_WIDTH {
+            string truncated_desc = text_utils.truncate_to_width(description, remaining_width, '', false) catch error { description }
+            if is_selected {
+                return prefix + truncated_value + spacing + truncated_desc
+            }
+            return prefix + truncated_value + spacing + truncated_desc
+        }
+    }
+    int max_width = width - prefix_width - 2
+    string value = text_utils.truncate_to_width(display_value(item), max_width, '', false) catch error { display_value(item) }
+    return prefix + value
+}
+
+fn repeat_spaces(int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += ' '
+    }
+    return result
+}
+
+fn fmt_int(int value): string {
+    return fmt.sprintf('%d', value)
+}
+

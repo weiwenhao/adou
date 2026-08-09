@@ -1,0 +1,49 @@
+import adou.src.tui.select_list
+import fmt
+
+pub fn items(): [select_list.select_item_t] {
+    [select_list.select_item_t] result = []
+    result.push(select_list.select_item_t {value: 'read', label: 'read', description: 'Read file contents'})
+    result.push(select_list.select_item_t {value: 'bash', label: 'bash', description: 'Execute shell commands'})
+    result.push(select_list.select_item_t {value: 'edit', label: 'edit', description: 'Apply exact text replacements'})
+    result.push(select_list.select_item_t {value: 'write', label: 'write', description: 'Create or overwrite files'})
+    return result
+}
+
+test 'filter matches case-insensitive prefixes like Pi' {
+    var filtered = select_list.filtered_items(items(), 'REA')
+    assert(filtered.len() == 1)
+    assert(filtered[0].value == 'read')
+    var empty = select_list.filtered_items(items(), '')
+    assert(empty.len() == 4)
+    var none = select_list.filtered_items(items(), 'zzz')
+    assert(none.len() == 0)
+}
+
+test 'no match renders the Pi message' {
+    var lines = select_list.select_list_render(items(), 0, 5, 80, 'zzz', 32, 32)
+    assert(lines.len() == 1)
+    assert(lines[0].find('No matching commands') >= 0)
+}
+
+test 'two-column layout shows description when wide enough' {
+    var lines = select_list.select_list_render(items(), 0, 5, 100, '', 20, 40)
+    assert(lines.len() == 4)
+    assert(lines[0].starts_with('→ read'))
+    assert(lines[0].find('Read file contents') >= 0)
+}
+
+test 'scroll window centers the selection like Pi' {
+    [select_list.select_item_t] many = []
+    for int index = 0; index < 10; index += 1 {
+        many.push(select_list.select_item_t {value: 'item' + fmt_int(index), label: 'item' + fmt_int(index), description: 'd' + fmt_int(index)})
+    }
+    var lines = select_list.select_list_render(many, 8, 5, 100, '', 20, 20)
+    assert(lines.len() == 6)
+    assert(lines[5].find('(9/10)') >= 0)
+}
+
+fn fmt_int(int value): string {
+    return fmt.sprintf('%d', value)
+}
+
