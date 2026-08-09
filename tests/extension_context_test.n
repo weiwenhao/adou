@@ -1,0 +1,31 @@
+import adou.src.agent.extensions
+
+test 'extension context carries state and bound actions' {
+    extensions.extension_is_idle_fn idle = fn(): bool {
+        return true
+    }
+    extensions.extension_abort_fn abort = fn() {
+    }
+    var context = new extensions.extension_context_t(mode = 'tui', has_ui = true, cwd = '/tmp/project', model_provider = 'deepseek', model_id = 'deepseek-v4-flash', thinking_level = 'high', project_trusted = true, session_id = 's1')
+    context.is_idle = idle
+    context.abort = abort
+    assert(context.cwd == '/tmp/project')
+    assert(context.model_id == 'deepseek-v4-flash')
+    bool idle_now = false
+    if context.is_idle is extensions.extension_is_idle_fn idle_fn {
+        idle_now = idle_fn()
+    }
+    assert(idle_now)
+    assert(context.mode == 'tui')
+}
+
+test 'ui context callbacks are interface placeholders' {
+    extensions.extension_ui_notify_fn notify = fn(string message, string message_type) {
+    }
+    var ui = new extensions.extension_ui_context_t()
+    extensions.extension_ui_set_status_fn set_status = fn(string key, string text) {
+    }
+    ui.notify_action = notify
+    ui.set_status_action = set_status
+    assert(!(ui.set_status_action is null))
+}

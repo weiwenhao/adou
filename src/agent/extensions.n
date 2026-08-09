@@ -19,6 +19,49 @@ pub fn extension_tool_executor_t.execute(&self, string call_id, any arguments, r
     return self.execute_fn(call_id, arguments, cancellation, on_update)
 }
 
+// Extension context surface (types.ts ExtensionContext /
+// ExtensionUIContext): state fields plus action callbacks bound by the
+// runtime; UI methods are interface placeholders.
+pub type extension_is_idle_fn = fn(): bool
+pub type extension_abort_fn = fn()
+pub type extension_shutdown_fn = fn()
+pub type extension_compact_fn = fn()
+pub type extension_get_system_prompt_fn = fn(): string
+pub type extension_has_pending_messages_fn = fn(): bool
+pub type extension_ui_select_fn = fn(string title, [string] options): string
+pub type extension_ui_confirm_fn = fn(string title, string message): bool
+pub type extension_ui_input_fn = fn(string title, string placeholder): string
+pub type extension_ui_notify_fn = fn(string message, string message_type)
+pub type extension_ui_set_status_fn = fn(string key, string text)
+pub type extension_ui_set_working_message_fn = fn(string message)
+
+pub type extension_ui_context_t = struct {
+    extension_ui_select_fn? select_action = null
+    extension_ui_confirm_fn? confirm_action = null
+    extension_ui_input_fn? input_action = null
+    extension_ui_notify_fn? notify_action = null
+    extension_ui_set_status_fn? set_status_action = null
+    extension_ui_set_working_message_fn? set_working_message_action = null
+}
+
+pub type extension_context_t = struct {
+    extension_ui_context_t ui
+    string mode
+    bool has_ui
+    string cwd
+    string model_provider
+    string model_id
+    string thinking_level
+    bool project_trusted
+    string session_id
+    extension_is_idle_fn? is_idle = null
+    extension_abort_fn? abort = null
+    extension_shutdown_fn? shutdown = null
+    extension_compact_fn? compact = null
+    extension_get_system_prompt_fn? get_system_prompt = null
+    extension_has_pending_messages_fn? has_pending_messages = null
+}
+
 pub type extension_handler_fn = fn(any event, any context)
 
 pub type extension_handler_registration_t = struct {
