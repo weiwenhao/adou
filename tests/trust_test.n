@@ -72,3 +72,24 @@ test 'has_trust_requiring_resources detects .pi resources and agents skills' {
 fn suffix(): string {
     return fmt.sprintf('%d', time.now().ms_timestamp())
 }
+
+test 'get_project_trust_options builds the Pi choice set' {
+    var options = trust.get_project_trust_options('/tmp/adou-trust-opt-' + suffix(), false)
+    assert(options.len() == 3)
+    assert(options[0].label == 'Trust')
+    assert(options[0].trusted)
+    assert(options[0].saved_path != '')
+    assert(options[1].label.starts_with('Trust parent folder'))
+    assert(options[1].updates.len() == 2)
+    assert(options[1].updates[0].decision)
+    assert(options[1].updates[1].remove)
+    assert(options[2].label == 'Do not trust')
+    assert(!options[2].trusted)
+    var session_options = trust.get_project_trust_options('/tmp/x/' + suffix(), true)
+    assert(session_options.len() == 5)
+    assert(session_options[2].label == 'Trust (this session only)')
+    assert(session_options[2].updates.len() == 0)
+    var root_options = trust.get_project_trust_options('/', false)
+    assert(root_options.len() == 2)
+    assert(root_options[1].label == 'Do not trust')
+}

@@ -857,6 +857,39 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         return null
     }
     if command == '/trust' {
+        string target = ''
+        if parts.len() > 1 {
+            target = parts[1]
+        }
+        if target == 'no' {
+            trust.save(self.runner.repository.cwd, false) catch error {
+                self.chat.error_message = error.msg()
+                self.redraw()
+                return null
+            }
+            self.chat.status = 'Saved project trust decision: not trusted. Restart Adou to reload project resources.'
+            self.redraw()
+            return null
+        }
+        if target == 'parent' {
+            string parent_path = trust.trust_parent_path(self.runner.repository.cwd)
+            if parent_path == '' {
+                self.chat.status = 'No parent folder to trust.'
+                self.redraw()
+                return null
+            }
+            [trust.trust_update_t] updates = []
+            updates.push(trust.trust_update_t {trust_path: parent_path, decision: true, remove: false})
+            updates.push(trust.trust_update_t {trust_path: self.runner.repository.cwd, decision: false, remove: true})
+            trust.set_many(updates) catch error {
+                self.chat.error_message = error.msg()
+                self.redraw()
+                return null
+            }
+            self.chat.status = 'Saved project trust decision: trusted via parent folder. Restart Adou to reload project resources.'
+            self.redraw()
+            return null
+        }
         trust.save(self.runner.repository.cwd, true) catch error {
             self.chat.error_message = error.msg()
             self.redraw()
@@ -1940,7 +1973,7 @@ pub fn view_t.show_help_overlay(&self) {
         '/skill        List skills or show one skill',
         '/reload       Reload project instructions and skills',
         '/share        Create a shareable local session artifact',
-        '/trust        Save project trust decision',
+        '/trust        Save project trust decision (trust|no|parent)',
         '/quit         Exit Adou',
     ]
     self.overlay = new overlay_t(kind = OVERLAY_HELP, title = 'Commands', options = options)

@@ -76,6 +76,44 @@ pub fn clear(string cwd): void! {
     }
 }
 
+// Pi's getProjectTrustOptions: the UI choice set for a project.  "Trust
+// parent folder" also clears the current project entry so the parent
+// decision governs it.  include_session_only adds the session-scoped
+// variants (no persisted update).
+pub type trust_option_t = struct {
+    string label
+    bool trusted
+    [trust_update_t] updates = []
+    string saved_path
+}
+
+pub fn get_project_trust_options(string cwd, bool include_session_only): [trust_option_t] {
+    [trust_option_t] options = []
+    string trust_path_value = normalize(cwd)
+    [trust_update_t] trust_updates = []
+    trust_updates.push(trust_update_t {trust_path: trust_path_value, decision: true, remove: false})
+    options.push(trust_option_t {label: 'Trust', trusted: true, updates: trust_updates, saved_path: trust_path_value})
+    string parent_path_value = trust_parent_path(cwd)
+    if parent_path_value != '' {
+        [trust_update_t] parent_updates = []
+        parent_updates.push(trust_update_t {trust_path: parent_path_value, decision: true, remove: false})
+        parent_updates.push(trust_update_t {trust_path: trust_path_value, decision: false, remove: true})
+        options.push(trust_option_t {label: 'Trust parent folder (' + parent_path_value + ')', trusted: true, updates: parent_updates, saved_path: parent_path_value})
+    }
+    if include_session_only {
+        [trust_update_t] session_updates = []
+        options.push(trust_option_t {label: 'Trust (this session only)', trusted: true, updates: session_updates, saved_path: ''})
+    }
+    [trust_update_t] no_updates = []
+    no_updates.push(trust_update_t {trust_path: trust_path_value, decision: false, remove: false})
+    options.push(trust_option_t {label: 'Do not trust', trusted: false, updates: no_updates, saved_path: trust_path_value})
+    if include_session_only {
+        [trust_update_t] no_session_updates = []
+        options.push(trust_option_t {label: 'Do not trust (this session only)', trusted: false, updates: no_session_updates, saved_path: ''})
+    }
+    return options
+}
+
 pub fn trust_parent_path(string cwd): string {
     string normalized = normalize(cwd)
     string parent = path.dir(normalized)
@@ -87,8 +125,7 @@ pub fn trust_parent_path(string cwd): string {
 
 // Pi's hasTrustRequiringProjectResources: project-local .pi resources or a
 // non-user .agents/skills directory in cwd or an ancestor require trust.
-pub fn has_trust_requiring_resources(string cwd): bool {
-    [string] resources = ['settings.json', 'extensions', 'skills', 'prompts', 'themes', 'SYSTEM.md', 'APPEND_SYSTEM.md']
+pub fn has_trust_requiring_resources(string cwd): bool {    [string] resources = ['settings.json', 'extensions', 'skills', 'prompts', 'themes', 'SYSTEM.md', 'APPEND_SYSTEM.md']
     string current = normalize(cwd)
     string config_dir = path.join(current, CONFIG_DIR_NAME)
     for resource in resources {
