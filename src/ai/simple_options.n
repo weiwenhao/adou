@@ -1,0 +1,63 @@
+import adou.src.ai.types
+import adou.src.compaction.token_estimate
+import adou.src.compaction.types as compaction_types
+
+// Port of vendors/pi/packages/ai/src/api/simple-options.ts: max-token
+// clamping against the context window and thinking budgets.
+
+pub const CONTEXT_SAFETY_TOKENS = 4096
+pub const MIN_MAX_TOKENS = 1
+
+pub fn clamp_max_tokens_to_context(ref<types.model_t> model, ref<types.context_t> context, int max_tokens): int {
+    if model.context_window <= 0 {
+        return max_tokens > MIN_MAX_TOKENS ? max_tokens : MIN_MAX_TOKENS
+    }
+    int context_tokens = 0
+    var estimate = token_estimate.estimate_context_tokens(context.messages) catch error {
+        compaction_types.context_estimate_t {}
+    }
+    context_tokens = estimate.tokens
+    int available = model.context_window - context_tokens - CONTEXT_SAFETY_TOKENS
+    if available < MIN_MAX_TOKENS {
+        available = MIN_MAX_TOKENS
+    }
+    if max_tokens < available {
+        return max_tokens > MIN_MAX_TOKENS ? max_tokens : MIN_MAX_TOKENS
+    }
+    return available
+}
+
+pub fn clamp_reasoning(string effort): string {
+    if effort == 'xhigh' || effort == 'max' {
+        return 'high'
+    }
+    return effort
+}
+
+pub fn adjust_max_tokens_for_thinking(int base_max_tokens, int model_max_tokens, string reasoning_level): (int, int)! {
+    string level = clamp_reasoning(reasoning_level)
+    int thinking_budget = 8192
+    if level == 'minimal' {
+        thinking_budget = 1024
+    } else if level == 'low' {
+        thinking_budget = 2048
+    } else if level == 'medium' {
+        thinking_budget = 8192
+    } else {
+        thinking_budget = 16384
+    }
+    int max_tokens = model_max_tokens
+    if base_max_tokens >= 0 {
+        max_tokens = base_max_tokens + thinking_budget
+        if max_tokens > model_max_tokens {
+            max_tokens = model_max_tokens
+        }
+    }
+    if max_tokens <= thinking_budget {
+        thinking_budget = max_tokens - 1024
+        if thinking_budget < 0 {
+            thinking_budget = 0
+        }
+    }
+    return (max_tokens, thinking_budget)
+}

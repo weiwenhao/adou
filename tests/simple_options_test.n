@@ -1,0 +1,29 @@
+import adou.src.ai.simple_options
+import adou.src.ai.types
+
+test 'clamp_reasoning folds xhigh and max like Pi' {
+    assert(simple_options.clamp_reasoning('xhigh') == 'high')
+    assert(simple_options.clamp_reasoning('max') == 'high')
+    assert(simple_options.clamp_reasoning('medium') == 'medium')
+}
+
+test 'clamp_max_tokens_to_context reserves safety margin like Pi' {
+    var model = new types.model_t(id = 'm', api = 'openai-completions', provider = 't', base_url = 'https://t.example.com', reasoning = true, context_window = 10000, max_tokens = 4000)
+    var context = new types.context_t()
+    // No usage yet: available = 10000 - 0 - 4096 = 5904; max 4000 fits.
+    int clamped = simple_options.clamp_max_tokens_to_context(model, context, 4000)
+    assert(clamped == 4000)
+    // A huge cap clamps to the window minus safety.
+    int clamped_big = simple_options.clamp_max_tokens_to_context(model, context, 20000)
+    assert(clamped_big == 5904)
+}
+
+test 'adjust_max_tokens_for_thinking fits budgets inside the model cap like Pi' {
+    var adjusted = simple_options.adjust_max_tokens_for_thinking(2000, 16000, 'medium')
+    assert(adjusted[1] == 8192)
+    assert(adjusted[0] == 10192)
+    var tight = simple_options.adjust_max_tokens_for_thinking(4000, 8192, 'high')
+    // 4000 + 16384 > 8192 -> capped at 8192, budget shrinks to keep output.
+    assert(tight[0] == 8192)
+    assert(tight[1] == 7168)
+}
