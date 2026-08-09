@@ -1,0 +1,8 @@
+import adou.src.ai.provider_retry
+
+test 'truncate_error_text caps with a truncated count like Pi' {
+    string short = provider_retry.truncate_error_text('small body', 100)
+    assert(short == 'small body')
+    string long = provider_retry.truncate_error_text('xxxxxxxxxx', 4)
+    assert(long == 'xxxx... [truncated 6 chars]')
+}

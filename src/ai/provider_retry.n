@@ -1,5 +1,6 @@
 import adou.src.ai.abort
 import co
+import fmt
 import libc
 import time
 pub const DEFAULT_MAX_DELAY_MS = 60000
@@ -14,6 +15,16 @@ pub type header_t = struct {
 // must normalize this transport spelling before handing the body to the SSE
 // decoder; otherwise a perfectly valid final `[DONE]` frame is surfaced as a
 // failed assistant turn.
+pub const MAX_PROVIDER_ERROR_BODY_CHARS = 4000
+
+// Pi's truncateErrorText: cap provider error bodies with a truncated count.
+pub fn truncate_error_text(string text, int max_chars): string {
+    if text.len() <= max_chars {
+        return text
+    }
+    return text.slice(0, max_chars) + '... [truncated ' + fmt.sprintf('%d', text.len() - max_chars) + ' chars]'
+}
+
 pub fn is_clean_eof(string message): bool {
     string normalized = message.to_lower()
     return normalized == 'eof' || normalized == 'end of file' || normalized.find('end of file') >= 0

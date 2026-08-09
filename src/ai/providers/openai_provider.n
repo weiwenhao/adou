@@ -167,7 +167,7 @@ pub fn response_headers(ref<client.response_t> response): [provider_retry.header
     return result
 }
 pub fn format_http_error(int status, string message, string body): string {
-    return fmt.sprintf('OpenAI API error: HTTP %d %s: %s', status, message, body)
+    return fmt.sprintf('OpenAI API error: HTTP %d %s: %s', status, message, provider_retry.truncate_error_text(body, provider_retry.MAX_PROVIDER_ERROR_BODY_CHARS))
 }
 pub fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
     debug.log('provider', 'openai-responses terminal failure: ' + message)
