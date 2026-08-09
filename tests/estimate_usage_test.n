@@ -1,0 +1,38 @@
+import adou.src.ai.types as ai_types
+import adou.src.compaction.token_estimate
+import adou.src.compaction.types as compaction_types
+
+test 'usage before a newer prefix message does not apply like Pi' {
+    [ai_types.message_t] messages = []
+    // A compaction summary (new timestamp) sits before an older assistant;
+    // the assistant's usage cannot describe the current prefix.
+    var summary = new ai_types.compaction_summary_message_t(summary = 'compacted', tokens_before = 100, timestamp = 200)
+    ai_types.message_t summary_message = summary
+    messages.push(summary_message)
+    var old_assistant = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'm', timestamp = 100)
+    old_assistant.usage.input = 100
+    old_assistant.usage.cache_read = 50
+    old_assistant.usage.total_tokens = 160
+    ai_types.message_t old_message = old_assistant
+    messages.push(old_message)
+    var estimate = token_estimate.estimate_context_tokens(messages) catch error {
+        compaction_types.context_estimate_t {}
+    }
+    assert(estimate.last_usage_index < 0)
+}
+
+test 'usage after an older prefix applies like Pi' {
+    [ai_types.message_t] messages = []
+    var assistant = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'm', timestamp = 300)
+    assistant.usage.input = 100
+    assistant.usage.total_tokens = 100
+    ai_types.message_t message = assistant
+    messages.push(message)
+    var newer_user = new ai_types.user_message_t(content = 'after', timestamp = 400)
+    ai_types.message_t newer_message = newer_user
+    messages.push(newer_message)
+    var estimate = token_estimate.estimate_context_tokens(messages) catch error {
+        compaction_types.context_estimate_t {}
+    }
+    assert(estimate.last_usage_index == 0)
+}

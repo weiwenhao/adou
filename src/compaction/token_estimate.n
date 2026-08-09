@@ -45,16 +45,24 @@ pub fn estimate_tokens(types.message_t message): int! {
 }
 
 pub fn estimate_context_tokens([types.message_t] messages): compaction_types.context_estimate_t! {
+    // Pi's usageAppliesToPrefix check: a newer prefix message (e.g. a
+    // compaction summary) invalidates an older assistant's usage for the
+    // current prefix.  The timestamp accumulates forward over the messages
+    // seen so far, so an assistant's own timestamp never disqualifies it.
+    int latest_prefix_timestamp = -1
     int last_usage_index = -1
     types.usage_t last_usage = types.usage_t{}
-    for int index = messages.len() - 1; index >= 0; index -= 1 {
+    for int index = 0; index < messages.len(); index += 1 {
         if messages[index] is ref<types.assistant_message_t> assistant {
             int tokens = calculate_context_tokens(assistant.usage)
-            if assistant.stop_reason != types.STOP_ABORTED && assistant.stop_reason != types.STOP_ERROR && tokens > 0 {
+            if assistant.stop_reason != types.STOP_ABORTED && assistant.stop_reason != types.STOP_ERROR && tokens > 0 && assistant.timestamp >= latest_prefix_timestamp {
                 last_usage_index = index
                 last_usage = assistant.usage
-                break
             }
+        }
+        int message_timestamp = message_timestamp_of(messages[index])
+        if message_timestamp > latest_prefix_timestamp {
+            latest_prefix_timestamp = message_timestamp
         }
     }
     if last_usage_index < 0 {
@@ -70,6 +78,31 @@ pub fn estimate_context_tokens([types.message_t] messages): compaction_types.con
         trailing_tokens += estimate_tokens(messages[index])
     }
     return compaction_types.context_estimate_t {tokens: usage_tokens + trailing_tokens, usage_tokens: usage_tokens, trailing_tokens: trailing_tokens, last_usage_index: last_usage_index,}
+}
+
+fn message_timestamp_of(types.message_t message): int {
+    if message is ref<types.user_message_t> user {
+        return user.timestamp
+    }
+    if message is ref<types.assistant_message_t> assistant {
+        return assistant.timestamp
+    }
+    if message is ref<types.tool_result_message_t> tool_result {
+        return tool_result.timestamp
+    }
+    if message is ref<types.compaction_summary_message_t> summary {
+        return summary.timestamp
+    }
+    if message is ref<types.branch_summary_message_t> branch {
+        return branch.timestamp
+    }
+    if message is ref<types.custom_message_t> custom {
+        return custom.timestamp
+    }
+    if message is ref<types.bash_execution_message_t> bash {
+        return bash.timestamp
+    }
+    return -1
 }
 
 pub fn should_compact(int context_tokens, int context_window, compaction_types.settings_t settings): bool {
