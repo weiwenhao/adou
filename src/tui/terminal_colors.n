@@ -1,0 +1,157 @@
+import adou.src.json_util
+
+// Port of vendors/pi/packages/tui/src/terminal-colors.ts.
+// OSC 11 background-color responses and the 997 color-scheme report.
+
+pub type rgb_color_t = struct {
+    int r
+    int g
+    int b
+}
+
+fn hex_channel(string channel): int {
+    if channel == '' {
+        return -1
+    }
+    for byte in channel as [u8] {
+        bool hex = byte >= '0'.char() && byte <= '9'.char()
+        hex = hex || byte >= 'a'.char() && byte <= 'f'.char()
+        hex = hex || byte >= 'A'.char() && byte <= 'F'.char()
+        if !hex {
+            return -1
+        }
+    }
+    int parsed = hex_value(channel)
+    int max = 1
+    for int index = 0; index < channel.len(); index += 1 {
+        max *= 16
+    }
+    max -= 1
+    if max <= 0 {
+        return -1
+    }
+    return ((parsed * 255) + max / 2) / max
+}
+
+fn hex_value(string channel): int {
+    int result = 0
+    for byte in channel as [u8] {
+        result *= 16
+        int digit = byte as int
+        if byte >= '0'.char() && byte <= '9'.char() {
+            result += digit - ('0'.char() as int)
+        } else if byte >= 'a'.char() && byte <= 'f'.char() {
+            result += digit - ('a'.char() as int) + 10
+        } else if byte >= 'A'.char() && byte <= 'F'.char() {
+            result += digit - ('A'.char() as int) + 10
+        }
+    }
+    return result
+}
+
+fn hex_to_rgb(string hex): rgb_color_t {
+    string normalized = hex
+    if normalized.starts_with('#') {
+        normalized = normalized.slice(1, normalized.len())
+    }
+    return rgb_color_t {r: hex_value(normalized.slice(0, 2)), g: hex_value(normalized.slice(2, 4)), b: hex_value(normalized.slice(4, 6))}
+}
+
+pub fn is_osc11_background_color_response(string data): bool {
+    if !data.starts_with('\x1b]11;') {
+        return false
+    }
+    return data.ends_with('\x07') || data.ends_with('\x1b\\')
+}
+
+pub fn parse_osc11_background_color(string data): rgb_color_t? {
+    if !is_osc11_background_color_response(data) {
+        return null
+    }
+    string value = data.slice(5, data.len())
+    if value.ends_with('\x07') {
+        value = value.slice(0, value.len() - 1)
+    } else if value.ends_with('\x1b\\') {
+        value = value.slice(0, value.len() - 2)
+    }
+    value = value.trim([' ', '\t'])
+    if value.starts_with('#') {
+        string hex = value.slice(1, value.len())
+        if hex.len() == 6 && all_hex(hex) {
+            return hex_to_rgb(value)
+        }
+        if hex.len() == 12 && all_hex(hex) {
+            int r = hex_channel(hex.slice(0, 4))
+            int g = hex_channel(hex.slice(4, 8))
+            int b = hex_channel(hex.slice(8, 12))
+            if r >= 0 && g >= 0 && b >= 0 {
+                return rgb_color_t {r: r, g: g, b: b}
+            }
+        }
+        return null
+    }
+    string rgb_value = value
+    if rgb_value.starts_with('rgb:') || rgb_value.starts_with('rgba:') {
+        int colon = rgb_value.find(':')
+        rgb_value = rgb_value.slice(colon + 1, rgb_value.len())
+    }
+    int first_slash = rgb_value.find('/')
+    if first_slash < 0 {
+        return null
+    }
+    int second_slash = find_from(rgb_value, '/', first_slash + 1)
+    if second_slash < 0 {
+        return null
+    }
+    string red = rgb_value.slice(0, first_slash)
+    string green = rgb_value.slice(first_slash + 1, second_slash)
+    string blue = ''
+    int third_slash = find_from(rgb_value, '/', second_slash + 1)
+    if third_slash >= 0 {
+        blue = rgb_value.slice(second_slash + 1, third_slash)
+    } else {
+        blue = rgb_value.slice(second_slash + 1, rgb_value.len())
+    }
+    int r = hex_channel(red)
+    int g = hex_channel(green)
+    int b = hex_channel(blue)
+    if r >= 0 && g >= 0 && b >= 0 {
+        return rgb_color_t {r: r, g: g, b: b}
+    }
+    return null
+}
+
+pub fn parse_terminal_color_scheme_report(string data): string {
+    // Pi returns "light" for 2, "dark" otherwise.
+    if data.starts_with('\x1b[?997;') && data.ends_with('n') {
+        string payload = data.slice(7, data.len() - 1)
+        if payload == '2' {
+            return 'light'
+        }
+        if payload == '1' {
+            return 'dark'
+        }
+    }
+    return ''
+}
+
+fn all_hex(string value): bool {
+    for byte in value as [u8] {
+        bool hex = byte >= '0'.char() && byte <= '9'.char()
+        hex = hex || byte >= 'a'.char() && byte <= 'f'.char()
+        hex = hex || byte >= 'A'.char() && byte <= 'F'.char()
+        if !hex {
+            return false
+        }
+    }
+    return true
+}
+
+fn find_from(string content, string needle, int start): int {
+    for int cursor = start; cursor + needle.len() <= content.len(); cursor += 1 {
+        if content.slice(cursor, cursor + needle.len()) == needle {
+            return cursor
+        }
+    }
+    return -1
+}
