@@ -46,7 +46,9 @@ pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.
     if runtime is ref<api_provider_t> runtime_provider {
         return runtime_provider.stream(model, context, options)
     }
-    if model.api == 'openai-responses' {
+    if model.api == 'openai-responses' || model.api == 'azure-openai-responses' {
+        // Azure OpenAI Responses reuses the responses payload builder with
+        // the api-key header and deployment-based endpoint.
         return openai_provider.stream(model, context, options)
     }
     if model.api == 'openai-completions' {

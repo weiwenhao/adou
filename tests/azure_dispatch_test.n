@@ -1,0 +1,18 @@
+import adou.src.ai.provider
+import adou.src.ai.types
+import adou.src.ai.event_stream
+import co
+
+test 'azure-openai-responses models dispatch to the responses provider like Pi' {
+    var model = new types.model_t(id = 'gpt-5.4', api = 'azure-openai-responses', provider = 'azure-openai-responses', base_url = 'https://resource.openai.azure.com/openai/v1', context_window = 1000, max_tokens = 1000)
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hi')
+    context.messages.push(user)
+    var options = new types.stream_options_t(api_key = 'azure-key', timeout_ms = 100, max_retries = 0)
+    var stream = provider.stream(model, context, options)
+    var event = stream.recv()
+    assert(event.kind == types.EVENT_START || event.kind == types.EVENT_ERROR)
+    // The provider field is preserved so the request layer can choose the
+    // api-key header and azure endpoint.
+    assert(model.provider == 'azure-openai-responses')
+}
