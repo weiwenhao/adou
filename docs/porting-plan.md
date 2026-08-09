@@ -143,10 +143,14 @@ CredentialStore 完整接口（`src/config/auth.n`：credential_t/oauth 形状�
 register/unregister）、compat API 注册面（`src/ai/provider.n` runtime api
 分派优先）、动态 slash 命令注册（`src/context/slash_commands.n`，RPC
 get_commands 返回 prompt/skill 来源）、扩展注册集合（`src/agent/extensions.n`：
-Extension/tool/command/flag/shortcut 集合、ExtensionError、LoadExtensionsResult）。
-剩余接口面：ExtensionRunner 生命周期（emit*/bindCore）、.pi/extensions 发现
-loader、ExtensionAPI 全量方法、ToolDefinition 扩展字段（promptSnippet/
-constrainedSampling/renderCall 等）——作为后续扩展接入的骨架。
+Extension/tool/command/flag/shortcut 集合、ExtensionError、LoadExtensionsResult）、
+ToolDefinition 扩展字段（promptSnippet/promptGuidelines/constrainedSampling/
+renderShell）、ExtensionRunner 生命周期（`src/agent/extension_runner.n`：
+handler 分发、bindCore 会话动作、provider 注册排队）、扩展发现规则
+（`src/agent/extension_loader.n`：直接文件/子目录 index/package.json
+pi.extensions manifest）、扩展工具执行器与绑定（`src/agent/extension_bindings.n`）、
+ExtensionContext/UIContext 类型面（状态字段 + 动作闭包占位）。
+扩展 UI 组件的完整渲染、jiti 动态加载由静态链接替代——接口面保留。
 
 本轮验证补上的缺口（每项独立 commit）：
 - Phase 1：mistral `promptMode:"reasoning"`；google thinkingConfig（Gemini 3 level /
