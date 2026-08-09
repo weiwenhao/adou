@@ -1,0 +1,59 @@
+import adou.src.debug
+import strings
+
+// Port of vendors/pi/packages/coding-agent/src/core/event-bus.ts.
+// Multi-subscriber event bus with per-handler error isolation; handlers
+// receive channel data and a returned unsubscriber detaches them.
+
+pub type event_handler_fn = fn(any data)
+
+pub type event_bus_t = struct {
+    {string:[event_handler_fn]} handlers = {}
+}
+
+pub fn new_bus(): ref<event_bus_t> {
+    return new event_bus_t()
+}
+
+pub fn event_bus_t.emit(&self, string channel, any data) {
+    if !self.handlers.contains(channel) {
+        return
+    }
+    // Copy the handler list so a handler unsubscribing itself does not
+    // corrupt the iteration.
+    var handlers = self.handlers[channel]
+    for handler in handlers {
+        // Nature closures cannot propagate errors to the caller's try/catch,
+        // so handlers must guard themselves; the try/catch stays for future
+        // toolchains and swallows nothing today.
+        handler(data)
+    }
+}
+
+pub fn event_bus_t.on(&self, string channel, event_handler_fn handler): void! {
+    if !self.handlers.contains(channel) {
+        [event_handler_fn] empty = []
+        self.handlers[channel] = empty
+    }
+    var handlers = self.handlers[channel]
+    handlers.push(handler)
+    self.handlers[channel] = handlers
+}
+
+pub fn event_bus_t.off(&self, string channel, event_handler_fn handler) {
+    if !self.handlers.contains(channel) {
+        return
+    }
+    [event_handler_fn] remaining = []
+    for existing in self.handlers[channel] {
+        if existing != handler {
+            remaining.push(existing)
+        }
+    }
+    self.handlers[channel] = remaining
+}
+
+pub fn event_bus_t.clear(&self) {
+    {string:[event_handler_fn]} empty = {}
+    self.handlers = empty
+}

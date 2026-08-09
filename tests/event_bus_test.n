@@ -1,0 +1,46 @@
+import adou.src.agent.event_bus
+
+test 'emit delivers to subscribers and unsubscribes detach' {
+    var bus = event_bus.new_bus()
+    int received = 0
+    event_bus.event_handler_fn event_handler = fn(any data) {
+        received += 1
+    }
+    bus.on('channel', event_handler)
+    bus.emit('channel', null)
+    assert(received == 1)
+    bus.off('channel', event_handler)
+    bus.emit('channel', null)
+    assert(received == 1)
+}
+
+test 'clear removes all handlers like Pi' {
+    var bus = event_bus.new_bus()
+    int received = 0
+    event_bus.event_handler_fn handler = fn(any data) {
+        received += 1
+    }
+    bus.on('one', handler)
+    bus.on('two', handler)
+    bus.clear()
+    bus.emit('one', null)
+    bus.emit('two', null)
+    assert(received == 0)
+}
+
+test 'multiple subscribers all receive the data' {
+    var bus = event_bus.new_bus()
+    [any] seen = []
+    event_bus.event_handler_fn handler_a = fn(any data) {
+        seen.push(data)
+    }
+    event_bus.event_handler_fn handler_b = fn(any data) {
+        seen.push(data)
+    }
+    bus.on('channel', handler_a)
+    bus.on('channel', handler_b)
+    {string:any} payload = {}
+    payload['key'] = 'value'
+    bus.emit('channel', payload)
+    assert(seen.len() == 2)
+}
