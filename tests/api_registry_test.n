@@ -1,0 +1,41 @@
+import adou.src.ai.event_stream
+import adou.src.ai.provider
+import adou.src.ai.types
+import co
+
+test 'register_api_provider routes streams through the runtime implementation' {
+    provider.unregister_api_providers(['test-api']) catch error {}
+    int called = 0
+    provider.api_provider_stream_fn stream_fn = fn(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+        called += 1
+        var result = event_stream.new()
+        var message = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, stop_reason = types.STOP_STOP)
+        var event = types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,}
+        result.push(event) catch e {}
+        result.end() catch e {}
+        return result
+    }
+    provider.register_api_provider('test-api', stream_fn)
+    var model = new types.model_t(id = 'm', api = 'test-api', provider = 'test', base_url = 'https://test.example.com', context_window = 1000, max_tokens = 1000)
+    var context = new types.context_t()
+    var options = new types.stream_options_t(api_key = 'k')
+    var stream = provider.stream(model, context, options)
+    var first = stream.recv()
+    assert(first.kind == types.EVENT_DONE)
+    assert(called == 1)
+}
+
+test 'unregister_api_providers restores the built-in dispatch' {
+    provider.unregister_api_providers(['test-api'])
+    var runtime = provider.get_api_provider('test-api')
+    assert(runtime is null)
+    // Built-in apis still resolve through the static dispatch.
+    var deepseek = new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = 'https://api.deepseek.com', context_window = 1000, max_tokens = 1000)
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hi')
+    context.messages.push(user)
+    var options = new types.stream_options_t(api_key = 'k', timeout_ms = 100, max_retries = 0)
+    var stream = provider.stream(deepseek, context, options)
+    var event = stream.recv()
+    assert(event.kind == types.EVENT_START || event.kind == types.EVENT_ERROR)
+}
