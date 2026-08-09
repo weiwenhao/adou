@@ -1,4 +1,5 @@
 import adou.src.ai.providers.cloudflare_ai_gateway
+import adou.src.ai.providers.anthropic_provider
 import adou.src.ai.providers.openai_completions_provider
 import adou.src.ai.types
 import co
@@ -37,6 +38,17 @@ pub fn kinds_has([string] kinds, string kind): bool {
         }
     }
     return false
+}
+
+pub fn anthropic_success_sse(): string {
+    string body = ''
+    body += 'event: message_start\ndata: {"type":"message_start","message":{"id":"m1","type":"message","role":"assistant","content":[],"model":"claude","usage":{"input_tokens":1,"output_tokens":1}}}\n\n'
+    body += 'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+    body += 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n'
+    body += 'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
+    body += 'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":1}}\n\n'
+    body += 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    return body
 }
 
 pub fn success_sse(): string {
@@ -91,4 +103,33 @@ test 'cloudflare-ai-gateway provider metadata matches Pi' {
     var models = cloudflare_ai_gateway.models()
     assert(models.len() > 0)
     assert(models[0].id == 'claude-3-5-haiku')
+}
+
+test 'anthropic-messages models stream through the gateway with cf-aig auth' {
+    var capture = new capture_t()
+    var server = http.server()
+    server.port = PORT + 2
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        capture.endpoint = request.path
+        capture.authorization = request.headers['cf-aig-authorization'] catch e {''}
+        response.content_type = 'text/event-stream'
+        response.send(anthropic_success_sse())
+        server.close()
+    }
+    server.post('/anthropic/v1/messages', handler)
+    go serve_fixture(server)
+    co.sleep(500)
+    var model = new types.model_t(id = 'claude-3-5-haiku', api = 'anthropic-messages', provider = 'cloudflare-ai-gateway', base_url = fmt.sprintf('http://127.0.0.1:%d/anthropic/v1', PORT + 2), max_tokens = 128)
+    var options = new types.stream_options_t(api_key = 'test-key', timeout_ms = 5000, max_retries = 0,)
+    var context = fixture_context()
+    var stream = anthropic_provider.stream(model, context, options)
+    co.sleep(800)
+    [string] kinds = []
+    for true {
+        var event = stream.recv() catch error {break}
+        kinds.push(event.kind)
+    }
+    assert(kinds[kinds.len() - 1] == types.EVENT_DONE)
+    assert(capture.endpoint == '/anthropic/v1/messages')
+    assert(capture.authorization.contains('Bearer'))
 }
