@@ -1,0 +1,75 @@
+import adou.src.ai.types as ai_types
+import adou.src.ai.types as types
+import adou.src.session.repository
+import adou.src.session.types as session_types
+// Phase 2 acceptance: Pi InMemorySessionRepo behavior mapped onto the
+// in-memory manager (create/open/fork/list semantics, leaf and label state).
+
+test 'in-memory sessions create headers and append entries like Pi' {
+    var manager = repository.in_memory('/tmp/mem-repo')
+    assert(manager.header.id != '')
+    assert(manager.header.cwd == '/tmp/mem-repo')
+    types.message_t user = new types.user_message_t(content = 'hello')
+    string entry_id = manager.append_message(user)
+    assert(entry_id != '')
+    assert(manager.get_leaf_id() == entry_id)
+    var context = manager.build_context()
+    assert(context.messages.len() == 1)
+}
+
+test 'in-memory sessions fork before the first user message like Pi' {
+    var manager = repository.in_memory('/tmp/mem-fork')
+    types.message_t user = new types.user_message_t(content = 'first')
+    string first_id = manager.append_message(user)
+    // Pi: fork_before the first user message creates an empty child session.
+    var forked = manager.fork_before(first_id) catch error {
+        assert(false)
+        var empty = repository.in_memory('/tmp')
+        empty
+    }
+    assert(forked.header.id != manager.header.id)
+}
+
+test 'in-memory sessions fork from a later user message keeping history like Pi' {
+    var manager = repository.in_memory('/tmp/mem-fork-2')
+    types.message_t first = new types.user_message_t(content = 'first')
+    string first_id = manager.append_message(first)
+    var assistant = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'm', timestamp = 1)
+    ai_types.message_t assistant_message = assistant
+    manager.append_message(assistant_message)
+    types.message_t second = new types.user_message_t(content = 'second')
+    string second_id = manager.append_message(second)
+    var forked = manager.fork_before(second_id) catch error {
+        assert(false)
+        var empty = repository.in_memory('/tmp')
+        empty
+    }
+    // Adou rechains entry ids in the fork; the content is preserved and the
+    // leaf resolves to the re-chained second user message.
+    assert(forked.get_leaf_id() != '')
+    var forked_context = forked.build_context()
+    assert(forked_context.messages.len() == 2)
+}
+
+test 'in-memory sessions track labels and session names like Pi' {
+    var manager = repository.in_memory('/tmp/mem-label')
+    types.message_t user = new types.user_message_t(content = 'hi')
+    string entry_id = manager.append_message(user)
+    manager.append_label_change(entry_id, 'important')
+    assert(manager.get_label(entry_id) == 'important')
+    manager.append_session_info('My Session')
+    assert(manager.get_session_name() == 'My Session')
+}
+
+test 'in-memory sessions survive branch navigation like Pi' {
+    var manager = repository.in_memory('/tmp/mem-branch')
+    types.message_t user = new types.user_message_t(content = 'branch root')
+    string root_id = manager.append_message(user)
+    types.message_t follow = new types.user_message_t(content = 'follow up')
+    manager.append_message(follow)
+    // Move back to the root user message.
+    manager.set_leaf(root_id)
+    assert(manager.get_leaf_id() == root_id)
+    var context = manager.build_context()
+    assert(context.messages.len() == 1)
+}
