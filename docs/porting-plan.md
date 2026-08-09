@@ -141,6 +141,13 @@ base_url、cloudflare credential.env 已补、images registry 已补）；缺失
 （azure dispatch、legacy-api-aliases、images 运行时注册）。Phase 1 radius/pi-messages
 e2e（tests/e2e/radius-pi-messages.sh）验证通过。
 
+工具链适配（2026-08-09）：nature master 修复了 #289-#292 与 #263 等，本地编译新
+编译器 + 重建 libruntime + 同步 std（含已合入的 #288），安装到 /usr/local/nature。
+适配后：trust set_many 恢复直接 map 修改（删除重建 workaround）；terminal_image 测试
+恢复 == 比较；其余 workaround（any-as-string 中间变量、map 参数值合并）经验证仍为
+必要，保留。Phase 1 补充：settings compaction 子对象（reserveTokens/keepRecentTokens）、
+images api key 解析（getAuth 语义）、bedrock def 去占位 base_url。
+
 扩展接口面（extension ABI/钩子/注册点）按"接口齐全、具体扩展不移植"标准补齐：
 EventBus（`src/agent/event_bus.n`，emit/on/off/clear）、provider 钩子
 （before_provider_request/after_provider_response 挂在 agent config_t）、
