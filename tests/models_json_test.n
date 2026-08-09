@@ -1,4 +1,5 @@
 import adou.src.ai.types
+import adou.src.config.models as config_models
 import adou.src.config.models_json
 import adou.src.json_util
 import fmt
@@ -106,4 +107,26 @@ test 'model_from_json requires baseUrl for custom models like Pi' {
 
 fn suffix(): string {
     return fmt.sprintf('%d', time.now().ms_timestamp())
+}
+
+test 'config models.all() composes models.json over the built-in catalog' {
+    string dir = path.join('/tmp', 'adou-models-json-wiring-' + suffix())
+    syscall.set_env('PI_CODING_AGENT_DIR', dir)
+    os.mkdirs(dir, 0o700)
+    write_file(path.join(dir, 'models.json'), '{"providers":{"custom":{"baseUrl":"https://gateway.example.com","models":[{"id":"wired-extra","api":"openai-completions","baseUrl":"https://custom.example.com"}]},"deepseek":{"modelOverrides":{"deepseek-v4-flash":{"contextWindow":777777}}}}}')
+    [ref<types.model_t>] catalog = config_models.all()
+    bool found_extra = false
+    for model in catalog {
+        if model.id == 'wired-extra' {
+            found_extra = true
+            assert(model.base_url == 'https://custom.example.com')
+        }
+    }
+    assert(found_extra)
+    ref<types.model_t>? overridden = config_models.find('deepseek/deepseek-v4-flash')
+    assert(overridden is ref<types.model_t>)
+    if overridden is ref<types.model_t> selected {
+        assert(selected.context_window == 777777)
+    }
+    syscall.set_env('PI_CODING_AGENT_DIR', '')
 }

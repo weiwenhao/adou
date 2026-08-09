@@ -1,5 +1,10 @@
 import adou.src.ai.providers.registry
 import adou.src.ai.types as ai_types
+import adou.src.config.models_json
+import adou.src.config.paths as config_paths
+import adou.src.debug
+import adou.src.tools.path_utils
+import path
 import strings
 
 // A resolved --models entry.  Pi resolves scope patterns once, preserves the
@@ -13,11 +18,44 @@ pub type scoped_model_t = struct {
 // The full Pi-style catalog (generated from models.dev + OpenRouter + Vercel
 // AI Gateway through scripts/generate-model-catalog.py) followed by the MVP
 // defaults for ids the live catalog does not carry (e.g. gpt-5.1-codex).
+// User-configured <agentDir>/models.json providers/models/modelOverrides
+// compose over the built-in catalog once per process (Pi composes them at
+// ModelRuntime construction); the parsed provider configs are cached, while
+// the base catalog and the composed copies are rebuilt per call so runtime
+// provider registrations stay visible.
 pub fn all(): [ref<ai_types.model_t>] {
+    ensure_models_json()
     [ref<ai_types.model_t>] result = []
     var catalog = registry.all_models()
     for model in catalog {
         result.push(model)
+    }
+    [string] provider_ids = []
+    for provider_id, config in models_json_providers {
+        provider_ids.push(provider_id)
+    }
+    for provider_id in provider_ids {
+        var cfg = copy_provider(models_json_providers[provider_id])
+        [ref<ai_types.model_t>] base = []
+        for model in catalog {
+            if model.provider == provider_id {
+                base.push(model)
+            }
+        }
+        var composed = models_json.compose_provider_models(provider_id, base, cfg) catch error {
+            debug.log('config', 'models.json provider ' + provider_id + ' skipped: ' + error.msg())
+            continue
+        }
+        [ref<ai_types.model_t>] kept = []
+        for model in result {
+            if model.provider != provider_id {
+                kept.push(model)
+            }
+        }
+        result = kept
+        for model in composed {
+            result.push(model)
+        }
     }
     for fallback in [openai_default()] {
         if !catalog_contains(result, fallback) {
@@ -279,6 +317,44 @@ pub fn thinking_for(string reference, [string] patterns): string {
     }
     return ''
 }
+
+// Deep-copy a parsed provider config into a fresh ref so compose can hand
+// the struct to ref-taking helpers without aliasing the cached entry.
+#local
+fn copy_provider(models_json.models_json_provider_t source): ref<models_json.models_json_provider_t> {
+    var copy = new models_json.models_json_provider_t(name = source.name, base_url = source.base_url, api_key = source.api_key, api = source.api, auth_header = source.auth_header)
+    for name, value in source.headers {
+        copy.headers[name] = value
+    }
+    for model_id, definition in source.models {
+        copy.models[model_id] = definition
+    }
+    for model_id, override in source.model_overrides {
+        copy.model_overrides[model_id] = override
+    }
+    return copy
+}
+
+#local
+fn ensure_models_json() {
+    if models_json_loaded {
+        return
+    }
+    models_json_loaded = true
+    string file = path.join(config_paths.agent_dir(), 'models.json')
+    if !path_utils.exists(file) {
+        return
+    }
+    var providers = models_json.load_models_json(file)
+    for provider_id, config in providers {
+        models_json_providers[provider_id] = config
+    }
+}
+
+// Parsed once per process; composing happens per all() call so runtime
+// registrations (extensions) remain visible in the catalog.
+{string:models_json.models_json_provider_t} models_json_providers = {}
+bool models_json_loaded = false
 
 #local
 fn scope_contains([scoped_model_t] values, ref<ai_types.model_t> candidate): bool {
