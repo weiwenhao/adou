@@ -3,9 +3,43 @@ import adou.src.ai.images_models
 import adou.src.ai.types
 
 // Pi's images facade: resolve the registered API provider and generate.
-// The MVP registry carries the OpenRouter images provider only.
+// The runtime registry lets extensions register images APIs (Pi
+// images-api-registry.ts); the built-in registry carries OpenRouter.
+
+pub type images_generate_fn = fn(images_models.image_model_t model, openrouter_images.images_context_t context, string api_key, int timeout_ms): ref<openrouter_images.assistant_images_t>
+
+pub type images_api_provider_t = struct {
+    string api
+    images_generate_fn generate_images
+}
+
+pub fn register_images_api_provider(string api, images_generate_fn generate_fn) {
+    runtime_images_providers[api] = images_api_provider_t {api: api, generate_images: generate_fn}
+}
+
+pub fn unregister_images_api_providers([string] source_apis) {
+    for api in source_apis {
+        if runtime_images_providers.contains(api) {
+            runtime_images_providers.del(api)
+        }
+    }
+}
+
+pub fn get_images_api_provider(string api): ref<images_api_provider_t>? {
+    if runtime_images_providers.contains(api) {
+        var provider = runtime_images_providers[api]
+        return new images_api_provider_t(api = provider.api, generate_images = provider.generate_images)
+    }
+    return null
+}
+
+{string:images_api_provider_t} runtime_images_providers = {}
 
 pub fn generate_images(string api, images_models.image_model_t model, openrouter_images.images_context_t context, string api_key, int timeout_ms): ref<openrouter_images.assistant_images_t> {
+    var runtime = get_images_api_provider(api)
+    if runtime is ref<images_api_provider_t> runtime_provider {
+        return runtime_provider.generate_images(model, context, api_key, timeout_ms)
+    }
     if api == 'openrouter-images' {
         return openrouter_images.generate_images(model, context, api_key, timeout_ms)
     }

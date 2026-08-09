@@ -1,0 +1,25 @@
+import adou.src.ai.images
+import adou.src.ai.images_models
+import adou.src.ai.providers.openrouter_images
+
+test 'register_images_api_provider routes generation like Pi' {
+    images.unregister_images_api_providers(['test-images']) catch error {}
+    int called = 0
+    images.images_generate_fn generate_fn = fn(images_models.image_model_t model, openrouter_images.images_context_t context, string api_key, int timeout_ms): ref<openrouter_images.assistant_images_t> {
+        called += 1
+        return new openrouter_images.assistant_images_t(api = 'test-images', provider = 'test', model = model.id, stop_reason = 'stop', timestamp = 1)
+    }
+    images.register_images_api_provider('test-images', generate_fn)
+    var provider = images.get_images_api_provider('test-images')
+    assert(provider is ref<images.images_api_provider_t>)
+    images_models.image_model_t model = images_models.image_model_t {id: 'test-model', name: 'Test', api: 'test-images', provider: 'test', base_url: 'https://t.example.com'}
+    openrouter_images.images_context_t context = openrouter_images.images_context_t {}
+    var output = images.generate_images('test-images', model, context, 'key', 30000)
+    assert(called == 1)
+    assert(output.stop_reason == 'stop')
+}
+
+test 'unregister_images_api_providers restores the builtin registry like Pi' {
+    images.unregister_images_api_providers(['test-images'])
+    assert(images.get_images_api_provider('test-images') is null)
+}
