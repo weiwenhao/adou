@@ -1,0 +1,100 @@
+import adou.src.tui.path_completion
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+pub fn write_file(string file_path, string content): void! {
+    var parent = path.dir(file_path)
+    os.mkdirs(parent, 0o700)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644) catch error {
+        throw error
+    }
+    file.write(content as [u8])
+    file.close()
+}
+
+pub fn fixture_base(): string {
+    string root = path.join('/tmp', 'adou-complete-' + suffix())
+    write_file(path.join(root, 'main.n'), '') catch error {}
+    write_file(path.join(root, 'README.md'), '') catch error {}
+    write_file(path.join(root, 'src', 'app.n'), '') catch error {}
+    write_file(path.join(root, 'src', 'tools.n'), '') catch error {}
+    write_file(path.join(root, 'src', 'nested', 'deep.n'), '') catch error {}
+    write_file(path.join(root, 'with space.txt'), '') catch error {}
+    return root
+}
+
+test 'find_last_delimiter and quote extraction like Pi' {
+    assert(path_completion.find_last_delimiter('hello world') == 5)
+    assert(path_completion.find_last_delimiter('hello') == -1)
+    assert(path_completion.find_unclosed_quote_start('open "src/app') == 5)
+    assert(path_completion.find_unclosed_quote_start('"closed"') == -1)
+    assert(path_completion.extract_quoted_prefix('open "src/app') == '"src/app')
+}
+
+test 'parse_path_prefix distinguishes at and quoted forms like Pi' {
+    var plain = path_completion.parse_path_prefix('src/')
+    assert(!plain.is_at_prefix && !plain.is_quoted_prefix)
+    var at = path_completion.parse_path_prefix('@src/')
+    assert(at.is_at_prefix && !at.is_quoted_prefix)
+    var quoted = path_completion.parse_path_prefix('"src/')
+    assert(!quoted.is_at_prefix && quoted.is_quoted_prefix)
+    var at_quoted = path_completion.parse_path_prefix('@"src/')
+    assert(at_quoted.is_at_prefix && at_quoted.is_quoted_prefix)
+}
+
+test 'get_file_suggestions lists directory contents with directories first like Pi' {
+    string base = fixture_base()
+    var suggestions = path_completion.get_file_suggestions('', base, '/tmp')
+    assert(suggestions.len() >= 3)
+    // Directories sort before files.
+    assert(suggestions[0].label.ends_with('/'))
+    assert(suggestions[0].label == 'src/')
+    os.rmdir(base, true)
+}
+
+test 'prefix filtering matches case-insensitively like Pi' {
+    string base = fixture_base()
+    var suggestions = path_completion.get_file_suggestions('MA', base, '/tmp')
+    assert(suggestions.len() == 1)
+    assert(suggestions[0].label == 'main.n')
+    os.rmdir(base, true)
+}
+
+test 'directory prefix completes children like Pi' {
+    string base = fixture_base()
+    var suggestions = path_completion.get_file_suggestions('src/', base, '/tmp')
+    assert(suggestions.len() == 3)
+    bool has_nested = false
+    for suggestion in suggestions {
+        if suggestion.label == 'nested/' {
+            has_nested = true
+        }
+    }
+    assert(has_nested)
+    os.rmdir(base, true)
+}
+
+test 'values quote paths with spaces like Pi' {
+    string base = fixture_base()
+    var suggestions = path_completion.get_file_suggestions('with', base, '/tmp')
+    assert(suggestions.len() == 1)
+    assert(suggestions[0].value == '"with space.txt"')
+    os.rmdir(base, true)
+}
+
+test 'apply_completion replaces the prefix and moves the cursor like Pi' {
+    var (new_line, new_col) = path_completion.apply_completion('open src/a', 9, path_completion.completion_item_t {value: 'src/app.n', label: 'app.n'}, 'src/a')
+    assert(new_line == 'open src/app.n')
+    assert(new_col == 13)
+    var (quoted_line, quoted_col) = path_completion.apply_completion('open "src/a"', 10, path_completion.completion_item_t {value: '"src/app.n"', label: 'app.n'}, '"src/a')
+    assert(quoted_line == 'open "src/app.n"')
+    assert(quoted_col == 14)
+}
+
+fn suffix(): string {
+    return fmt.sprintf('%d', time.now().ms_timestamp())
+}

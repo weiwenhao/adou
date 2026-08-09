@@ -1,0 +1,286 @@
+import adou.src.tools.path_utils
+import os
+import path
+import strings
+import syscall
+
+// Port of the file-path completion from
+// vendors/pi/packages/tui/src/autocomplete.ts (CombinedAutocompleteProvider's
+// extractPathPrefix/getFileSuggestions/applyCompletion/buildCompletionValue).
+// The fd-based fuzzy file search stays optional: directory listing works
+// without the fd binary.
+
+pub const PATH_DELIMITERS = ' \t"\'='
+
+pub type completion_item_t = struct {
+    string value
+    string label
+    string description
+}
+
+pub type path_prefix_t = struct {
+    string raw_prefix
+    bool is_at_prefix
+    bool is_quoted_prefix
+}
+
+fn is_delimiter(u8 byte): bool {
+    return byte == ' '.char() || byte == '\t'.char() || byte == '"'.char() || byte == "'".char() || byte == '='.char()
+}
+
+pub fn find_last_delimiter(string text): int {
+    for int index = text.len() - 1; index >= 0; index -= 1 {
+        if is_delimiter(text[index]) {
+            return index
+        }
+    }
+    return -1
+}
+
+fn is_token_start(string text, int index): bool {
+    return index == 0 || is_delimiter(text[index - 1])
+}
+
+pub fn find_unclosed_quote_start(string text): int {
+    bool in_quotes = false
+    int quote_start = -1
+    for int index = 0; index < text.len(); index += 1 {
+        if text[index] == '"'.char() {
+            in_quotes = !in_quotes
+            if in_quotes {
+                quote_start = index
+            }
+        }
+    }
+    if in_quotes {
+        return quote_start
+    }
+    return -1
+}
+
+pub fn extract_quoted_prefix(string text): string {
+    int quote_start = find_unclosed_quote_start(text)
+    if quote_start < 0 {
+        return ''
+    }
+    if quote_start > 0 && text[quote_start - 1] == '@'.char() {
+        if !is_token_start(text, quote_start - 1) {
+            return ''
+        }
+        return text.slice(quote_start - 1, text.len())
+    }
+    if !is_token_start(text, quote_start) {
+        return ''
+    }
+    return text.slice(quote_start, text.len())
+}
+
+pub fn parse_path_prefix(string prefix): path_prefix_t {
+    if prefix.starts_with('@"') {
+        return path_prefix_t {raw_prefix: prefix.slice(2, prefix.len()), is_at_prefix: true, is_quoted_prefix: true}
+    }
+    if prefix.starts_with('"') {
+        return path_prefix_t {raw_prefix: prefix.slice(1, prefix.len()), is_at_prefix: false, is_quoted_prefix: true}
+    }
+    if prefix.starts_with('@') {
+        return path_prefix_t {raw_prefix: prefix.slice(1, prefix.len()), is_at_prefix: true, is_quoted_prefix: false}
+    }
+    return path_prefix_t {raw_prefix: prefix, is_at_prefix: false, is_quoted_prefix: false}
+}
+
+pub fn extract_path_prefix(string text, bool force_extract): string {
+    string quoted = extract_quoted_prefix(text)
+    if quoted != '' {
+        return quoted
+    }
+    int last_delimiter = find_last_delimiter(text)
+    string path_prefix = last_delimiter < 0 ? text : text.slice(last_delimiter + 1, text.len())
+    if force_extract {
+        return path_prefix
+    }
+    if path_prefix.contains('/') || path_prefix.starts_with('.') || path_prefix.starts_with('~/') {
+        return path_prefix
+    }
+    if path_prefix == '' && text.ends_with(' ') {
+        return path_prefix
+    }
+    return ''
+}
+
+pub fn extract_at_prefix(string text): string {
+    string quoted = extract_quoted_prefix(text)
+    if quoted.starts_with('@"') {
+        return quoted
+    }
+    int last_delimiter = find_last_delimiter(text)
+    int token_start = last_delimiter < 0 ? 0 : last_delimiter + 1
+    if token_start < text.len() && text[token_start] == '@'.char() {
+        return text.slice(token_start, text.len())
+    }
+    return ''
+}
+
+pub fn build_completion_value(string completion_path, bool is_directory, bool is_at_prefix, bool is_quoted_prefix): string {
+    bool needs_quotes = is_quoted_prefix || completion_path.contains(' ')
+    string prefix = is_at_prefix ? '@' : ''
+    if !needs_quotes {
+        return prefix + completion_path
+    }
+    return prefix + '"' + completion_path + '"'
+}
+
+fn expand_home_path(string input_path, string home): string {
+    if input_path.starts_with('~/') {
+        string expanded = home + input_path.slice(1, input_path.len())
+        if input_path.ends_with('/') && !expanded.ends_with('/') {
+            return expanded + '/'
+        }
+        return expanded
+    }
+    if input_path == '~' {
+        return home
+    }
+    return input_path
+}
+
+pub fn get_file_suggestions(string prefix, string base_path, string home): [completion_item_t] {
+    [completion_item_t] suggestions = []
+    var parsed = parse_path_prefix(prefix)
+    string raw_prefix = parsed.raw_prefix
+    string expanded_prefix = expand_home_path(raw_prefix, home)
+    string search_dir = ''
+    string search_prefix = ''
+    bool is_root = raw_prefix == '' || raw_prefix == './' || raw_prefix == '../' || raw_prefix == '~' || raw_prefix == '~/' || raw_prefix == '/' || (parsed.is_at_prefix && raw_prefix == '')
+    if is_root {
+        if raw_prefix.starts_with('~') || expanded_prefix.starts_with('/') {
+            search_dir = expanded_prefix
+        } else {
+            search_dir = path.join(base_path, expanded_prefix)
+        }
+        search_prefix = ''
+    } else if raw_prefix.ends_with('/') {
+        if raw_prefix.starts_with('~') || expanded_prefix.starts_with('/') {
+            search_dir = expanded_prefix
+        } else {
+            search_dir = path.join(base_path, expanded_prefix)
+        }
+        search_prefix = ''
+    } else {
+        string dir = path.dir(expanded_prefix)
+        string file = path.base(expanded_prefix)
+        if raw_prefix.starts_with('~') || expanded_prefix.starts_with('/') {
+            search_dir = dir
+        } else if dir == '.' {
+            // path.join(dst, '.') indexes past a single-char argument in the
+            // current toolchain; keep the base directory as-is.
+            search_dir = base_path
+        } else {
+            search_dir = path.join(base_path, dir)
+        }
+        search_prefix = file
+    }
+    [string] names = os.listdir(search_dir) catch error {
+        return suggestions
+    }
+    string lower_prefix = search_prefix.to_lower()
+    for name in names {
+        if !name.to_lower().starts_with(lower_prefix) {
+            continue
+        }
+        string full_path = path.join(search_dir, name)
+        bool is_directory = is_directory_path(full_path)
+        string relative_path = build_relative_path(raw_prefix, name)
+        string path_value = is_directory ? relative_path + '/' : relative_path
+        string value = build_completion_value(path_value, is_directory, parsed.is_at_prefix, parsed.is_quoted_prefix)
+        suggestions.push(completion_item_t {value: value, label: name + (is_directory ? '/' : '')})
+    }
+    // Directories first, then alphabetically.
+    for int index = 1; index < suggestions.len(); index += 1 {
+        var current = suggestions[index]
+        int cursor = index - 1
+        for cursor >= 0 && order_before(suggestions[cursor], current) {
+            suggestions[cursor + 1] = suggestions[cursor]
+            cursor -= 1
+        }
+        suggestions[cursor + 1] = current
+    }
+    return suggestions
+}
+
+fn build_relative_path(string display_prefix, string name): string {
+    if display_prefix.ends_with('/') {
+        return display_prefix + name
+    }
+    if display_prefix.contains('/') {
+        if display_prefix.starts_with('~/') {
+            string home_relative = display_prefix.slice(2, display_prefix.len())
+            string dir = path.dir(home_relative)
+            if dir == '.' {
+                return '~/' + name
+            }
+            return '~/' + path.join(dir, name)
+        }
+        if display_prefix.starts_with('/') {
+            string dir = path.dir(display_prefix)
+            if dir == '/' {
+                return '/' + name
+            }
+            return dir + '/' + name
+        }
+        string joined = path.join(path.dir(display_prefix), name)
+        if display_prefix.starts_with('./') && !joined.starts_with('./') {
+            return './' + joined
+        }
+        return joined
+    }
+    if display_prefix.starts_with('~') {
+        return '~/' + name
+    }
+    return name
+}
+
+fn order_before(completion_item_t left, completion_item_t right): bool {
+    bool left_dir = left.value.ends_with('/')
+    bool right_dir = right.value.ends_with('/')
+    if left_dir && !right_dir {
+        return false
+    }
+    if !left_dir && right_dir {
+        return true
+    }
+    return left.label.to_lower() > right.label.to_lower()
+}
+
+fn is_directory_path(string full_path): bool {
+    var stat = syscall.stat(full_path) catch error {
+        return false
+    }
+    return syscall.stat_is_dir(stat.mode)
+}
+
+// Pi's applyCompletion for the file-path branch: replace the prefix with the
+// item value, dropping a closing quote when the item already carries one.
+pub fn apply_completion(string line, int cursor_col, completion_item_t item, string prefix): (string, int) {
+    int prefix_length = prefix.len()
+    int before = cursor_col - prefix_length
+    if before < 0 {
+        before = 0
+    }
+    string before_prefix = line.slice(0, before)
+    string after_cursor = line.slice(cursor_col, line.len())
+    bool is_quoted = prefix.starts_with('"') || prefix.starts_with('@"')
+    bool leading_quote = after_cursor.starts_with('"')
+    bool trailing_quote_in_item = item.value.ends_with('"')
+    string adjusted_after = after_cursor
+    if is_quoted && trailing_quote_in_item && leading_quote {
+        adjusted_after = after_cursor.slice(1, after_cursor.len())
+    }
+    string new_line = before_prefix + item.value + adjusted_after
+    bool is_directory = item.label.ends_with('/')
+    bool has_trailing_quote = item.value.ends_with('"')
+    int cursor_offset = item.value.len()
+    if is_directory && has_trailing_quote {
+        cursor_offset = item.value.len() - 1
+    }
+    return (new_line, before + cursor_offset)
+}
