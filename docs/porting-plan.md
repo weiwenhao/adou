@@ -94,6 +94,15 @@ marked/highlight vendor 资产无分发机制，保留静态 HTML + ANSI 渲染�
 footer 的 fs.watch 变更通知（无 fs.watch）、event-bus（无扩展单消费者流）、
 http-dispatcher（libc 直连无全局 dispatcher）。
 
+Phase 3 验收（2026-08-09）：24 个相关测试文件全部通过——skills 12/12 + e2e
+（system prompt 注入）、prompt-templates 7/7、event-bus 3/3、telemetry +
+attribution 5/5、usage-totals 2/2、cache-stats 4/4、remote-catalog 6/6、
+provider-composer（models.json）5/5、auth-guidance + runtime-credentials 3/3、
+trust-manager 5/5、export-html（markdown/ansi）4/4+7/7、diagnostics 4/4、
+footer git 4/4+2/2、resolve-config-value 6/6、扩展接口面 6 模块全绿；
+slash-commands 的 RPC get_commands 返回 prompt/skill 动态命令（已验证）；
+skills/slash-commands 满足 e2e 验收。Phase 3 验收完成。
+
 ### Phase 4｜TUI 补全
 - autocomplete、fuzzy、kill-ring、native-modifiers、terminal-image、undo-stack、
   editor-component 全量、tui/components/
