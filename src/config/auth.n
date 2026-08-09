@@ -126,6 +126,124 @@ pub fn auth_path(): string {
     return paths.auth_path()
 }
 
+// Pi CredentialStore interface surface: one type-tagged credential per
+// provider, serialized read-modify-write via modify, and secret-free list.
+pub type credential_t = struct {
+    string credential_type
+    string key
+    string refresh
+    string access
+    int expires
+    {string:string} env = {}
+}
+
+pub type credential_info_t = struct {
+    string provider_id
+    string credential_type
+}
+
+pub fn read_credential(string provider): ref<credential_t>? {
+    string file_path = auth_path()
+    if !path_utils.exists(file_path) {
+        return null
+    }
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        return null
+    }
+    string content = input.content() catch error {
+        input.close()
+        return null
+    }
+    input.close()
+    var root = json_util.parse(content) catch error {
+        return null
+    }
+    if !json_util.is_obj(root) {
+        return null
+    }
+    var object = root as {string:any}
+    if !object.contains(provider) || !json_util.is_obj(object[provider]) {
+        return null
+    }
+    var credential = object[provider] as {string:any}
+    string credential_type = json_util.opt_string(credential, 'type')
+    if credential_type == '' {
+        credential_type = 'api_key'
+    }
+    var result = new credential_t(credential_type = credential_type)
+    string key = json_util.opt_string(credential, 'key')
+    if key == '' {
+        key = json_util.opt_string(credential, 'apiKey')
+    }
+    result.key = key
+    result.refresh = json_util.opt_string(credential, 'refresh')
+    result.access = json_util.opt_string(credential, 'access')
+    result.expires = json_util.opt_int(credential, 'expires')
+    return result
+}
+
+pub fn list_credentials(): [credential_info_t] {
+    [credential_info_t] result = []
+    string file_path = auth_path()
+    if !path_utils.exists(file_path) {
+        return result
+    }
+    var root = read_root(file_path)
+    if !json_util.is_obj(root) {
+        return result
+    }
+    var object = root as {string:any}
+    for provider_id, value in object {
+        if !json_util.is_obj(value) {
+            continue
+        }
+        var credential = value as {string:any}
+        string credential_type = json_util.opt_string(credential, 'type')
+        if credential_type == '' {
+            credential_type = 'api_key'
+        }
+        result.push(credential_info_t {provider_id: provider_id, credential_type: credential_type})
+    }
+    return result
+}
+
+pub type credential_modify_fn = fn(ref<credential_t>? current): ref<credential_t>?
+
+// Serialized read-modify-write: the only write path, like Pi's modify.  The
+// callback sees the current credential and returns the replacement (null
+// keeps the entry unchanged).
+pub fn modify_credential(string provider, credential_modify_fn modify_fn): ref<credential_t>?! {
+    var current = read_credential(provider)
+    var next = modify_fn(current)
+    if next is ref<credential_t> replacement {
+        string file_path = auth_path()
+        os.mkdirs(path.dir(file_path), 0o700)
+        var root = read_root(file_path)
+        {string:any} object = json_util.is_obj(root) ? root as {string:any} : {}
+        {string:any} credential = {}
+        credential['type'] = replacement.credential_type
+        if replacement.key != '' {
+            credential['key'] = replacement.key
+        }
+        if replacement.refresh != '' {
+            credential['refresh'] = replacement.refresh
+        }
+        if replacement.access != '' {
+            credential['access'] = replacement.access
+        }
+        if replacement.expires > 0 {
+            credential['expires'] = replacement.expires
+        }
+        for name, value in replacement.env {
+            credential[name] = value
+        }
+        object[provider] = credential
+        write_file(file_path, json.serialize(object))
+        return replacement
+    }
+    return current
+}
+
 #local
 fn read_root(string file_path): any {
     if !path_utils.exists(file_path) {

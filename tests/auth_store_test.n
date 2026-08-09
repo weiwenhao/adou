@@ -1,0 +1,71 @@
+import adou.src.config.auth
+import adou.src.config.paths
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+pub fn isolated_auth_path(): string {
+    string dir = '/tmp/adou-auth-store-' + suffix()
+    os.mkdirs(dir, 0o700) catch error {}
+    return path.join(dir, 'auth.json')
+}
+
+test 'read_credential returns type-tagged credentials like Pi' {
+    auth.save('deepseek', 'secret-key') catch error {}
+    var credential = auth.read_credential('deepseek')
+    assert(credential is ref<auth.credential_t>)
+    if credential is ref<auth.credential_t> stored {
+        assert(stored.credential_type == 'api_key')
+        assert(stored.key == 'secret-key')
+    }
+    assert(auth.read_credential('nope-provider') is null)
+}
+
+test 'list_credentials exposes metadata without secrets' {
+    auth.save('deepseek', 'key-1') catch error {}
+    auth.save('openai', 'key-2') catch error {}
+    var listed = auth.list_credentials()
+    bool has_deepseek = false
+    bool has_openai = false
+    for info in listed {
+        if info.provider_id == 'deepseek' {
+            has_deepseek = true
+            assert(info.credential_type == 'api_key')
+        }
+        if info.provider_id == 'openai' {
+            has_openai = true
+        }
+    }
+    assert(has_deepseek && has_openai)
+}
+
+test 'modify_credential serializes read-modify-write like Pi' {
+    auth.save('deepseek', 'old-key') catch error {}
+    auth.credential_modify_fn rotate = fn(ref<auth.credential_t>? current): ref<auth.credential_t>? {
+        if current is ref<auth.credential_t> existing {
+            return new auth.credential_t(credential_type = 'api_key', key = 'new-key')
+        }
+        return new auth.credential_t(credential_type = 'api_key', key = 'fresh-key')
+    }
+    ref<auth.credential_t>? updated = null
+    bool modify_failed = false
+    try {
+        updated = auth.modify_credential('deepseek', rotate)
+    } catch e {
+        modify_failed = true
+    }
+    assert(!modify_failed)
+    if updated is ref<auth.credential_t> stored {
+        assert(stored.key == 'new-key')
+    } else {
+        assert(false)
+    }
+    assert(auth.read('deepseek') == 'new-key')
+}
+
+fn suffix(): string {
+    return fmt.sprintf('%d', time.now().ms_timestamp())
+}
