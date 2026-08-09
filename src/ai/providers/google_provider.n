@@ -1,4 +1,5 @@
 import adou.src.ai.abort
+import adou.src.ai.diagnostics
 import adou.src.ai.event_stream
 import adou.src.ai.provider_retry
 import adou.src.ai.providers.decorators
@@ -152,6 +153,13 @@ pub fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state,
     debug.log('provider', 'google terminal failure: ' + message)
     state.processor.output.stop_reason = stream.is_aborted() ? types.STOP_ABORTED : types.STOP_ERROR
     state.processor.output.error_message = message
+    if !stream.is_aborted() {
+        {string:any} details = {}
+        details['provider'] = state.model.provider
+        details['model'] = state.model.id
+        var diagnostic = diagnostics.create_assistant_message_diagnostic('google-generative-ai_response_failure', errorf('%s', message), details)
+        diagnostics.append_assistant_message_diagnostic(state.processor.output, diagnostic)
+    }
     var event = types.assistant_event_t {kind: types.EVENT_ERROR, reason: state.processor.output.stop_reason, error: state.processor.output,}
     stream.push(event) catch error {}
     stream.end() catch error {}
