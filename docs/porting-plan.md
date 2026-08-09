@@ -129,7 +129,28 @@ word-navigation/stdin-buffer 已覆盖。新增 fuzzy 匹配（`src/tui/fuzzy.n`
 - pi-harness + smoke.eval（extensions.eval 排除），作为全量回归基准
 - 验收：harness 跑通全量用例
 
-## 横切工作
+## 完成度验证（2026-08-09，vs vendors/pi 同步对比）
+
+对 Phase 1-3 做了逐模块/逐功能对照（Pi packages/ai、agent/harness、coding-agent/src），
+三档结论：Phase 1 已完成 26 / 行为不一致 15 / 缺失 4；Phase 2 已完成 13 / 行为不一致 9 /
+缺失 0；Phase 3 已完成 10 / 行为不一致 8 / 缺失 4。详见各阶段小节。
+
+本轮验证补上的缺口（每项独立 commit）：
+- Phase 1：mistral `promptMode:"reasoning"`；google thinkingConfig（Gemini 3 level /
+  2.5 budget）；thinking_level_map 驱动的 clamp/available；unpaired surrogate 清理
+  （sanitize_unicode.n，接入 OpenAI responses 文本）；openai-completions 按 provider
+  分发 thinkingFormat（deepseek/zai/qwen/openrouter/together/ant-ling）
+- Phase 2：bash 输出剥 `\r`；bash 截断 footer 补 `(line is X)`；read 图片路径返回
+  Pi 占位文案（含 BMP 提示）
+- Phase 3：settings save 读-改-写合并（未知字段不再被抹掉）；session-cwd 缺失校验；
+  resolve-config-value（`!command`/`$ENV` 模板 + auth 存储接线）；experimental 开关；
+  项目信任门控（--approve/--no-approve 消费 + 未信任跳过 .pi 设置与项目上下文）
+- 记录的工具链缺陷：Nature map 参数按值拷贝（子函数修改不生效）、含 ESC 字符串 `==`
+  不稳定、嵌套 json map key 前导空格、`path.join(dst, '.')` 越界、单 token split 失效
+
+剩余已知缺口（记录不补）：deferred-tools 接线、codex WebSocket 传输、model compat
+标志、temperature/toolChoice 等可选字段、compaction retainedTail 持久化、leaf 条目
+targetId 语义、keybindings 注册表、视觉行包装。
 
 - models 目录数据量巨大：用脚本从 Pi `models.generated.ts` 生成 Nature 数据文件
 - provider 适配器模板化：先做一个参考实现（如 deepseek），其余按模板批量
