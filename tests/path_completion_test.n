@@ -90,8 +90,10 @@ test 'apply_completion replaces the prefix and moves the cursor like Pi' {
     var (new_line, new_col) = path_completion.apply_completion('open src/a', 9, path_completion.completion_item_t {value: 'src/app.n', label: 'app.n'}, 'src/a')
     assert(new_line == 'open src/app.n')
     assert(new_col == 13)
-    var (quoted_line, quoted_col) = path_completion.apply_completion('open "src/a"', 10, path_completion.completion_item_t {value: '"src/app.n"', label: 'app.n'}, '"src/a')
-    assert(quoted_line == 'open "src/app.n"')
+    // Pi's quoted scenario: the closing quote sits right after the cursor
+    // and the whole text before it is the quoted prefix.
+    var (quoted_line, quoted_col) = path_completion.apply_completion('"src/a"', 6, path_completion.completion_item_t {value: '"src/app.n"', label: 'app.n'}, '"src/a')
+    assert(quoted_line == '"src/app.n"')
     assert(quoted_col == 14)
 }
 
