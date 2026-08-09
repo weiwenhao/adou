@@ -1,0 +1,47 @@
+import adou.src.ai.types as ai_types
+import adou.src.session.repository
+import adou.src.session.types as session_types
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+test 'leaf entries resolve the active leaf through targetId like Pi' {
+    string dir = path.join('/tmp', 'adou-leaf-test-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    string file_path = path.join(dir, 'session.jsonl')
+    os.mkdirs(dir, 0o700) catch error {}
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    // Pi-shaped session: header, message, leaf entry pointing at the message.
+    string content = '{"type":"session","version":3,"id":"leaf-session","timestamp":"2026-08-09T00:00:00.000Z","cwd":"/tmp","parentSession":""}\n'
+    content += '{"type":"message","id":"m1","parentId":"","timestamp":"2026-08-09T00:00:01.000Z","message":{"role":"user","content":"hi","timestamp":1}}\n'
+    content += '{"type":"leaf","id":"leaf-1","parentId":"m1","timestamp":"2026-08-09T00:00:02.000Z","targetId":"m1"}\n'
+    file.write(content as [u8])
+    file.close()
+    var manager = repository.open(file_path) catch error {
+        assert(false)
+        var empty = repository.in_memory('/tmp')
+        empty
+    }
+    assert(manager.get_leaf_id() == 'm1')
+    os.rmdir(dir, true)
+}
+
+test 'a missing leaf target falls back to the entry id like Pi' {
+    string dir = path.join('/tmp', 'adou-leaf-test-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    string file_path = path.join(dir, 'session.jsonl')
+    os.mkdirs(dir, 0o700) catch error {}
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    string content = '{"type":"session","version":3,"id":"leaf-session-2","timestamp":"2026-08-09T00:00:00.000Z","cwd":"/tmp","parentSession":""}\n'
+    content += '{"type":"leaf","id":"leaf-1","parentId":"","timestamp":"2026-08-09T00:00:01.000Z","targetId":"missing-id"}\n'
+    file.write(content as [u8])
+    file.close()
+    var manager = repository.open(file_path) catch error {
+        assert(false)
+        var empty = repository.in_memory('/tmp')
+        empty
+    }
+    assert(manager.get_leaf_id() == 'leaf-1')
+    os.rmdir(dir, true)
+}

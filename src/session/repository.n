@@ -344,6 +344,22 @@ pub fn manager_t.rebuild_index(&self) {
     self.leaf_id = ''
     for entry in self.entries {
         self.by_id[entry.id] = entry
+        if entry.kind == types.ENTRY_LEAF {
+            // Pi's leaf entries record the active leaf via targetId; the
+            // entry's own id is just a pointer.
+            if json_util.is_obj(entry.raw) {
+                var leaf_object = entry.raw as {string:any}
+                string target_id = json_util.opt_string(leaf_object, 'targetId')
+                if target_id != '' && self.by_id.contains(target_id) {
+                    self.has_leaf = true
+                    self.leaf_id = target_id
+                    continue
+                }
+            }
+            self.has_leaf = true
+            self.leaf_id = entry.id
+            continue
+        }
         self.has_leaf = true
         self.leaf_id = entry.id
         if entry.kind == types.ENTRY_LABEL {
