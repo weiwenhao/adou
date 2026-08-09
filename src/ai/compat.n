@@ -24,6 +24,39 @@ pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.
     return provider.stream(model, context, resolved)
 }
 
+// Pi legacy-api-aliases: per-api stream entry points for compatibility.
+pub fn stream_anthropic(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    return stream(model, context, options)
+}
+
+pub fn stream_azure_openai_responses(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    return stream(model, context, options)
+}
+
+pub fn stream_google(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    return stream(model, context, options)
+}
+
+pub fn stream_google_vertex(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    return stream(model, context, options)
+}
+
+pub fn stream_mistral(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    return stream(model, context, options)
+}
+
+pub fn stream_openai_codex_responses(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    return stream(model, context, options)
+}
+
+pub fn stream_openai_completions(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    return stream(model, context, options)
+}
+
+pub fn stream_openai_responses(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    return stream(model, context, options)
+}
+
 // Synchronous completion: collect the streamed events into the final text.
 pub fn complete(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
     var stream = stream(model, context, options)
