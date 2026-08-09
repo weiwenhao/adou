@@ -581,6 +581,24 @@ pub fn manager_t.append_thinking_change(&self, string level): string! {
     return entry.id
 }
 
+// Pi's appendActiveToolsChange: record the active tool name set at a point
+// in the session timeline.
+pub fn manager_t.append_active_tools_change(&self, [string] active_tool_names): string! {
+    self.lock.lock()
+    {string:any} object = self.entry_base(types.ENTRY_ACTIVE_TOOLS_CHANGE)
+    [any] names = []
+    for name in active_tool_names {
+        names.push(name)
+    }
+    object['activeToolNames'] = names
+    var entry = self.append_object_locked(object) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.unlock()
+    return entry.id
+}
+
 pub fn manager_t.append_session_info(&self, string name): string! {
     self.lock.lock()
     {string:any} object = self.entry_base(types.ENTRY_SESSION_INFO)
@@ -860,6 +878,17 @@ pub fn manager_t.build_context(&self): types.context_t! {
         } else if entry.kind == types.ENTRY_THINKING_CHANGE {
             result.thinking_level = json_util.opt_string(entry.raw as {string:any}, 'thinkingLevel')
             result.has_thinking_level = result.thinking_level != ''
+        } else if entry.kind == types.ENTRY_ACTIVE_TOOLS_CHANGE {
+            [string] names = []
+            var object = entry.raw as {string:any}
+            if object.contains('activeToolNames') && object['activeToolNames'] is [any] {
+                for name_value in object['activeToolNames'] as [any] {
+                    if name_value is string {
+                        names.push(name_value as string)
+                    }
+                }
+            }
+            result.active_tool_names = names
         } else if entry.kind == types.ENTRY_MESSAGE {
             var object = entry.raw as {string:any}
             if object.contains('message') && object['message'] is {string:any} {

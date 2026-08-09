@@ -6,6 +6,7 @@ pub const ENTRY_COMPACTION = 'compaction'
 pub const ENTRY_BRANCH_SUMMARY = 'branch_summary'
 pub const ENTRY_MODEL_CHANGE = 'model_change'
 pub const ENTRY_THINKING_CHANGE = 'thinking_level_change'
+pub const ENTRY_ACTIVE_TOOLS_CHANGE = 'active_tools_change'
 pub const ENTRY_SESSION_INFO = 'session_info'
 pub const ENTRY_LABEL = 'label'
 pub const ENTRY_LEAF = 'leaf'
@@ -39,6 +40,9 @@ pub type context_t = struct {
     bool has_model
     string provider
     string model_id
+    // Pi SessionContext.activeToolNames: the active tool set recorded by the
+    // last active_tools_change entry.
+    [string] active_tool_names = []
 }
 
 pub type load_result_t = struct {

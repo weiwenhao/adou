@@ -130,3 +130,19 @@ test 'find_entries and get_entries_after mirror Pi cursor semantics' {
     var past_end = manager.get_entries_after(999, 0)
     assert(past_end.len() == 0)
 }
+
+test 'active tools change entries feed SessionContext.activeToolNames like Pi' {
+    var manager = repository.in_memory('/tmp/mem-active-tools')
+    types.message_t user = new types.user_message_t(content = 'run')
+    manager.append_message(user)
+    manager.append_active_tools_change(['bash', 'grep'])
+    var context = manager.build_context()
+    assert(context.active_tool_names.len() == 2)
+    assert(context.active_tool_names[0] == 'bash')
+    assert(context.active_tool_names[1] == 'grep')
+    // A later change replaces the set (Pi keeps the last recorded set).
+    manager.append_active_tools_change(['edit'])
+    var updated = manager.build_context()
+    assert(updated.active_tool_names.len() == 1)
+    assert(updated.active_tool_names[0] == 'edit')
+}
