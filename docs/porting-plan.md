@@ -120,7 +120,21 @@ Phase 2 对照式验收（2026-08-10）：对照 packages/agent/src/harness/。i
 tool-context 完全对齐；shell-output 尾截语义/清洗/footer 对齐（流式进度面
 getProgress/returnExecutionErrors 缺失）。memory-repo 缺多会话注册表面
 （open/list/delete）、fork position:"at"、appendActiveToolsChange、
-findEntries/getEntries 游标。——skills 12/12 + e2e
+findEntries/getEntries 游标。
+
+Phase 1/2 缺口补齐（2026-08-10）：全部验收缺口已处理——
+Phase 2：fork_at（position "at" 保留目标为叶）、find_entries + get_entries_after
+（游标语义）、active_tools_change 条目 + SessionContext.activeToolNames、
+memory_repo.n 多会话注册表面（create/open/list/delete/fork 含全量复制）。
+Phase 1：compat 字段（model_t.compat + model_compat.n 运行时检测移植 Pi 生成器
+规则 + thinking_format/requires_reasoning_content/max_tokens_field 消费）、
+bedrock thinking 配置（adaptive/output_config.effort/budget 表/interleaved
+beta/cachePoint 缓存点/thinkingSignature 收集与回放/GovCloud）、codex
+WebSocket 传输（RFC 6455 客户端 + auto 回退 SSE + 3 个 debug 导出）、
+session-resources 错误聚合、models_are_equal、bedrock bearer/skip-auth、
+cloudflare 网关多 API 验证（anthropic-messages 流 + cf-aig 认证测试）。
+图片输入确认是 mvp-implementation-spec.md 记录的 MVP 排除项（read 工具
+"Image omitted" 占位语义已实现），不做实现。——skills 12/12 + e2e
 （system prompt 注入）、prompt-templates 7/7、event-bus 3/3、telemetry +
 attribution 5/5、usage-totals 2/2、cache-stats 4/4、remote-catalog 6/6、
 provider-composer（models.json）5/5、auth-guidance + runtime-credentials 3/3、
