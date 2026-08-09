@@ -105,6 +105,58 @@ fn message_timestamp_of(types.message_t message): int {
     return -1
 }
 
+// Pi's estimateContextTokens adds system prompt and tool definitions to
+// the prefix when no assistant usage describes it, and counts tools added
+// by trailing tool results.
+pub fn estimate_context_tokens_full(string system_prompt, [ref<types.tool_t>] tools, [types.message_t] messages): compaction_types.context_estimate_t! {
+    var estimate = estimate_context_tokens(messages)
+    int added_tool_tokens = 0
+    if estimate.last_usage_index >= 0 {
+        {string:bool} added_names = {}
+        for int index = estimate.last_usage_index + 1; index < messages.len(); index += 1 {
+            if messages[index] is ref<types.tool_result_message_t> tool_result {
+                for name in tool_result.added_tool_names {
+                    added_names[name] = true
+                }
+            }
+        }
+        for tool in tools {
+            if added_names.contains(tool.name) {
+                added_tool_tokens += estimate_text_tokens(safe_json(tool.parameters))
+            }
+        }
+        estimate.tokens += added_tool_tokens
+        estimate.trailing_tokens += added_tool_tokens
+        return estimate
+    }
+    int prefix_tokens = 0
+    if system_prompt != '' {
+        prefix_tokens += estimate_text_tokens(system_prompt)
+    }
+    for tool in tools {
+        prefix_tokens += estimate_text_tokens(safe_json(tool.parameters))
+    }
+    estimate.tokens += prefix_tokens
+    estimate.trailing_tokens += prefix_tokens
+    return estimate
+}
+
+fn estimate_text_tokens(string text): int {
+    int chars = 0
+    for byte in text as [u8] {
+        if byte < 0x80 {
+            chars += 1
+        }
+    }
+    return (chars + 3) / 4
+}
+
+fn safe_json(any value): string {
+    return json_util.stringify(value) catch error {
+        '{}'
+    }
+}
+
 pub fn should_compact(int context_tokens, int context_window, compaction_types.settings_t settings): bool {
     if !settings.enabled || context_window <= 0 {
         return false

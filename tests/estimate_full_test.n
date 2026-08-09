@@ -1,0 +1,35 @@
+import adou.src.ai.types as types
+import adou.src.compaction.token_estimate
+import adou.src.compaction.types as compaction_types
+
+test 'prefix tokens count system prompt and tools when usage is absent like Pi' {
+    var context = new types.context_t(system_prompt = 'system instructions here')
+    var tool = new types.tool_t(name = 'read', description = 'r', parameters = '{"type":"object"}')
+    [ref<types.tool_t>] tools = [tool]
+    [types.message_t] messages = []
+    var estimate = token_estimate.estimate_context_tokens_full('system instructions here', tools, messages) catch error {
+        compaction_types.context_estimate_t {}
+    }
+    // system prompt is 26 chars -> 7 tokens; tools json ~19 chars -> 5 tokens.
+    assert(estimate.tokens >= 10)
+}
+
+test 'added tool tokens count toward trailing like Pi' {
+    var tool_bash = new types.tool_t(name = 'bash', description = 'b', parameters = '{"type":"object","properties":{}}')
+    [ref<types.tool_t>] tools = [tool_bash]
+    [types.message_t] messages = []
+    var assistant = new types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'm', timestamp = 100)
+    assistant.usage.input = 100
+    assistant.usage.total_tokens = 100
+    types.message_t assistant_message = assistant
+    messages.push(assistant_message)
+    var result = new types.tool_result_message_t(tool_call_id = 'c1', tool_name = 'bash', is_error = false, timestamp = 200)
+    result.added_tool_names.push('bash')
+    types.message_t result_message = result
+    messages.push(result_message)
+    var estimate = token_estimate.estimate_context_tokens_full('', tools, messages) catch error {
+        compaction_types.context_estimate_t {}
+    }
+    // usage 100 + trailing (result message + added tool tokens).
+    assert(estimate.tokens > 100)
+}
