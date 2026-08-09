@@ -78,8 +78,26 @@ fn load_file(string file_path, settings_t initial): settings_t {
     return result
 }
 
+
+#local
+fn read_raw(): {string:any} {
+    string file_path = settings_path()
+    if !path_utils.exists(file_path) {return {}}
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return {}}
+    string content = input.content() catch error {
+        input.close()
+        return {}
+    }
+    input.close()
+    var root = json_util.parse(content) catch error {return {}}
+    if !json_util.is_obj(root) {return {}}
+    return root as {string:any}
+}
 pub fn save(settings_t settings): void! {
-    {string:any} object = {}
+    // Merge over the existing file so unknown keys (theme, packages,
+    // transport, ...) survive a save; Pi's settings manager keeps the full
+    // document shape.
+    {string:any} object = read_raw()
     object['defaultProvider'] = settings.default_provider
     object['defaultModel'] = settings.default_model
     object['defaultThinkingLevel'] = settings.default_thinking_level
@@ -96,6 +114,8 @@ pub fn save(settings_t settings): void! {
             enabled.push(model_id)
         }
         object['enabledModels'] = enabled
+    } else if object.contains('enabledModels') {
+        object.del('enabledModels')
     }
     string file_path = settings_path()
     os.mkdirs(path.dir(file_path), 0o700)
