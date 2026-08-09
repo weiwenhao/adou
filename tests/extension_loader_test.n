@@ -1,0 +1,69 @@
+import adou.src.agent.extension_loader
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+pub fn write_file(string file_path, string content): void! {
+    var parent = path.dir(file_path)
+    os.mkdirs(parent, 0o700)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644) catch error {
+        throw error
+    }
+    file.write(content as [u8])
+    file.close()
+}
+
+pub fn fixture_dir(): string {
+    string root = path.join('/tmp', 'adou-ext-loader-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    os.mkdirs(root, 0o700) catch error {}
+    return root
+}
+
+test 'direct extension files are discovered like Pi' {
+    string root = fixture_dir()
+    write_file(path.join(root, 'simple.ts'), '') catch error {}
+    write_file(path.join(root, 'other.js'), '') catch error {}
+    write_file(path.join(root, 'notes.md'), '') catch error {}
+    write_file(path.join(root, 'readme.txt'), '') catch error {}
+    var discovered = extension_loader.discover_extensions_in_dir(root)
+    assert(discovered.len() == 2)
+    assert(extension_loader.is_extension_file('simple.ts'))
+    assert(!extension_loader.is_extension_file('notes.md'))
+    os.rmdir(root, true)
+}
+
+test 'subdirectory index entries resolve like Pi' {
+    string root = fixture_dir()
+    write_file(path.join(root, 'pack', 'index.ts'), '') catch error {}
+    var discovered = extension_loader.discover_extensions_in_dir(root)
+    assert(discovered.len() == 1)
+    assert(discovered[0].ends_with('pack/index.ts'))
+    os.rmdir(root, true)
+}
+
+test 'package.json pi.extensions manifest wins over index like Pi' {
+    string root = fixture_dir()
+    write_file(path.join(root, 'pack', 'index.ts'), '') catch error {}
+    write_file(path.join(root, 'pack', 'package.json'), '{"pi":{"extensions":["src/main.ts"]}}') catch error {}
+    write_file(path.join(root, 'pack', 'src', 'main.ts'), '') catch error {}
+    var discovered = extension_loader.discover_extensions_in_dir(root)
+    assert(discovered.len() == 1)
+    assert(discovered[0].ends_with('src/main.ts'))
+    os.rmdir(root, true)
+}
+
+test 'no recursion beyond one level like Pi' {
+    string root = fixture_dir()
+    write_file(path.join(root, 'a', 'b', 'index.ts'), '') catch error {}
+    var discovered = extension_loader.discover_extensions_in_dir(root)
+    assert(discovered.len() == 0)
+    os.rmdir(root, true)
+}
+
+test 'missing directories discover nothing like Pi' {
+    var discovered = extension_loader.discover_extensions_in_dir('/tmp/adou-ext-missing-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    assert(discovered.len() == 0)
+}

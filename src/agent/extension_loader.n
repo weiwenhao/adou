@@ -1,0 +1,110 @@
+import adou.src.json_util
+import adou.src.tools.path_utils
+import fs
+import os
+import path
+import syscall
+
+// Extension discovery rules (vendors/pi/packages/coding-agent/src/core/
+// extensions/loader.ts): direct .ts/.js files, subdirectory index files and
+// package.json pi.extensions manifests, no recursion beyond one level.
+// Dynamic loading itself is replaced by static linking in Nature; the
+// discovery surface stays faithful.
+
+pub fn is_extension_file(string name): bool {
+    return name.ends_with('.ts') || name.ends_with('.js')
+}
+
+// Resolve a subdirectory's entry points: package.json pi.extensions declared
+// paths first, then index.ts/index.js.
+pub fn resolve_extension_entries(string dir): [string] {
+    [string] entries = []
+    string package_json = path.join(dir, 'package.json')
+    if path_utils.exists(package_json) {
+        var declared = read_pi_manifest(package_json)
+        if declared.len() > 0 {
+            for ext_path in declared {
+                string resolved = path_utils.resolve_to_cwd(ext_path, dir)
+                if path_utils.exists(resolved) {
+                    entries.push(resolved)
+                }
+            }
+            if entries.len() > 0 {
+                return entries
+            }
+        }
+    }
+    string index_ts = path.join(dir, 'index.ts')
+    if path_utils.exists(index_ts) {
+        entries.push(index_ts)
+        return entries
+    }
+    string index_js = path.join(dir, 'index.js')
+    if path_utils.exists(index_js) {
+        entries.push(index_js)
+    }
+    return entries
+}
+
+pub fn discover_extensions_in_dir(string dir): [string] {
+    [string] discovered = []
+    if !path_utils.exists(dir) {
+        return discovered
+    }
+    [string] names = os.listdir(dir) catch error {
+        return discovered
+    }
+    for name in names {
+        string entry_path = path.join(dir, name)
+        bool is_file = !is_directory(entry_path)
+        if is_file && is_extension_file(name) {
+            discovered.push(entry_path)
+            continue
+        }
+        if is_directory(entry_path) {
+            for entry in resolve_extension_entries(entry_path) {
+                discovered.push(entry)
+            }
+        }
+    }
+    return discovered
+}
+
+fn read_pi_manifest(string package_json): [string] {
+    [string] result = []
+    var input = fs.open(package_json, syscall.O_RDONLY, 0) catch error {
+        return result
+    }
+    string content = input.content() catch error {
+        input.close()
+        return result
+    }
+    input.close()
+    var root = json_util.parse(content) catch error {
+        return result
+    }
+    if !json_util.is_obj(root) {
+        return result
+    }
+    var object = root as {string:any}
+    if !object.contains('pi') || !json_util.is_obj(object['pi']) {
+        return result
+    }
+    var pi = object['pi'] as {string:any}
+    if !pi.contains('extensions') || !json_util.is_arr(pi['extensions']) {
+        return result
+    }
+    for item in pi['extensions'] as [any] {
+        if item is string {
+            result.push(item as string)
+        }
+    }
+    return result
+}
+
+fn is_directory(string full_path): bool {
+    var stat = syscall.stat(full_path) catch error {
+        return false
+    }
+    return syscall.stat_is_dir(stat.mode)
+}
