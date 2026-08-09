@@ -29,7 +29,7 @@ test 'clamps invalid one-hour cache counts to the total cache write count' {
 }
 
 test 'clamps DeepSeek V4 thinking levels like Pi' {
-    var model = new types.model_t(id = 'deepseek-v4-flash', reasoning = true)
+    var model = config_models.find('deepseek/deepseek-v4-flash') as ref<types.model_t>
     assert(config_models.clamp_thinking_level(model, 'off') == 'off')
     assert(config_models.clamp_thinking_level(model, 'medium') == 'high')
     assert(config_models.clamp_thinking_level(model, 'xhigh') == 'max')
@@ -42,7 +42,9 @@ test 'reports Pi supported thinking levels per model' {
     var deepseek_levels = config_models.available_thinking_levels(deepseek)
     var openai_levels = config_models.available_thinking_levels(openai)
     assert(deepseek_levels.len() == 3 && deepseek_levels[0] == 'off' && deepseek_levels[1] == 'high' && deepseek_levels[2] == 'max')
-    assert(openai_levels.len() == 7 && openai_levels[0] == 'off' && openai_levels[6] == 'max')
+    // The gpt-5.1-codex fallback carries no thinkingLevelMap, so xhigh/max
+    // are unsupported exactly like Pi's undefined-map semantics.
+    assert(openai_levels.len() == 5 && openai_levels[0] == 'off' && openai_levels[4] == 'high')
 }
 
 test 'resolves Pi model scopes in pattern order with per-entry thinking' {

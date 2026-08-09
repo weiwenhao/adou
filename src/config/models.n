@@ -121,37 +121,46 @@ pub fn clamp_thinking_level(ref<ai_types.model_t> model, string requested): stri
     if !model.reasoning {
         return 'off'
     }
-    // The DeepSeek V4 catalog entry in Pi maps minimal/low/medium/xhigh to
-    // null and keeps high/max. Keep this explicit until model metadata grows
-    // a first-class thinkingLevelMap in Nature.
-    bool deepseek_v4 = model.id == 'deepseek-v4-flash' || model.id == 'deepseek-v4-pro'
-    if !deepseek_v4 {
-        return value == '' ? 'off' : value
+    if thinking_level_supported(model, value) {
+        return value
     }
     for int index = requested_index; index < levels.len(); index += 1 {
-        if thinking_level_supported(levels[index], true) {
+        if thinking_level_supported(model, levels[index]) {
             return levels[index]
         }
     }
     for int index = requested_index - 1; index >= 0; index -= 1 {
-        if thinking_level_supported(levels[index], true) {
+        if thinking_level_supported(model, levels[index]) {
             return levels[index]
         }
     }
     return 'off'
 }
 
-// Match Pi's getSupportedThinkingLevels() for the built-in MVP catalog. The
-// DeepSeek V4 models expose only off/high/max; ordinary reasoning models keep
-// the full public level sequence, while non-reasoning models expose off only.
+// Match Pi's getSupportedThinkingLevels(): the catalog thinkingLevelMap
+// marks unsupported levels with an empty value, xhigh/max only exist when
+// explicitly mapped, and ordinary reasoning models keep the full sequence.
 pub fn available_thinking_levels(ref<ai_types.model_t> model): [string] {
+    [string] result = []
+    for level in ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'] {
+        if thinking_level_supported(model, level) {
+            result.push(level)
+        }
+    }
+    return result
+}
+
+fn thinking_level_supported(ref<ai_types.model_t> model, string level): bool {
     if !model.reasoning {
-        return ['off']
+        return level == 'off'
     }
-    if model.id == 'deepseek-v4-flash' || model.id == 'deepseek-v4-pro' {
-        return ['off', 'high', 'max']
+    if level == 'xhigh' || level == 'max' {
+        return model.thinking_level_map.contains(level) && model.thinking_level_map[level] != ''
     }
-    return ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
+    if model.thinking_level_map.contains(level) {
+        return model.thinking_level_map[level] != ''
+    }
+    return true
 }
 
 pub fn list(): string {
@@ -302,14 +311,6 @@ fn anthropic_default(): ref<ai_types.model_t> {
 
 pub fn valid_thinking(string value): bool {
     return value == 'off' || value == 'minimal' || value == 'low' || value == 'medium' || value == 'high' || value == 'xhigh' || value == 'max'
-}
-
-#local
-fn thinking_level_supported(string value, bool deepseek_v4): bool {
-    if !deepseek_v4 {
-        return true
-    }
-    return value == 'off' || value == 'high' || value == 'max'
 }
 
 #local
