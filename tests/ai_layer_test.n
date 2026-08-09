@@ -45,7 +45,7 @@ test 'models store keeps per-provider catalogs' {
 test 'session resources register and run cleanups' {
     var resources = session_resources.new()
     int ran = 0
-    session_resources.session_cleanup_fn cleanup = fn(string session_id) {
+    session_resources.session_cleanup_fn cleanup = fn(string session_id): void! {
         ran += 1
     }
     resources.register(cleanup)
@@ -54,6 +54,28 @@ test 'session resources register and run cleanups' {
     resources.unregister(cleanup)
     resources.cleanup('session-2')
     assert(ran == 1)
+}
+
+test 'session cleanup aggregates failures after all cleanups run' {
+    var resources = session_resources.new()
+    int ran = 0
+    session_resources.session_cleanup_fn failing = fn(string session_id): void! {
+        ran += 1
+        throw errorf('boom %s', session_id)
+    }
+    session_resources.session_cleanup_fn healthy = fn(string session_id): void! {
+        ran += 1
+    }
+    resources.register(failing)
+    resources.register(healthy)
+    string message = ''
+    try {
+        resources.cleanup('s')
+    } catch error {
+        message = error.msg()
+    }
+    assert(ran == 2)
+    assert(message.contains('boom s'))
 }
 
 test 'auth resolution prefers stored credentials then env' {

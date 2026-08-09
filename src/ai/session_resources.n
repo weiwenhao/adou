@@ -1,6 +1,10 @@
 // Pi registers per-session resource cleanups (process trees, temp files)
 // that run when a session ends. Nature's callbacks are fn references.
-pub type session_cleanup_fn = fn(string session_id)
+// Cleanup failures are aggregated and reported after every registered
+// cleanup has run, mirroring Pi's AggregateError semantics.
+import strings
+
+pub type session_cleanup_fn = fn(string session_id): void!
 
 pub type session_resources_t = struct {
     [session_cleanup_fn] cleanups = []
@@ -25,7 +29,13 @@ pub fn session_resources_t.unregister(&self, session_cleanup_fn cleanup) {
 }
 
 pub fn session_resources_t.cleanup(&self, string session_id): void! {
+    [string] failures = []
     for cleanup in self.cleanups {
-        cleanup(session_id)
+        cleanup(session_id) catch error {
+            failures.push(error.msg())
+        }
+    }
+    if failures.len() > 0 {
+        throw errorf('Session cleanup failed: %s', strings.join(failures, '; '))
     }
 }
