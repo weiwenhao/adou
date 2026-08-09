@@ -37,6 +37,7 @@ import adou.src.ai.providers.xiaomi_token_plan_sgp
 import adou.src.ai.providers.zai
 import adou.src.ai.providers.zai_coding_cn
 import adou.src.ai.types
+import adou.src.config.auth
 
 pub fn defs(): [types.provider_def_t] {
     [types.provider_def_t] result = []
@@ -113,6 +114,37 @@ pub fn registered_provider_ids(): [string] {
         result.push(id)
     }
     return result
+}
+
+// Pi ModelRegistry auth query surface, backed by the same credential
+// sources the request layer uses (runtime override > stored auth.json >
+// environment variable).
+pub type auth_status_t = struct {
+    string status
+    string provider
+}
+
+pub fn get_provider_auth_status(string provider): auth_status_t {
+    if auth.has_runtime_api_key(provider) {
+        return auth_status_t {status: 'runtime', provider: provider}
+    }
+    if auth.read(provider) != '' || auth.environment(provider) != '' {
+        return auth_status_t {status: 'configured', provider: provider}
+    }
+    return auth_status_t {status: 'unconfigured', provider: provider}
+}
+
+pub fn has_configured_auth(string provider): bool {
+    return auth.effective(provider) != ''
+}
+
+pub fn get_api_key_for_provider(string provider): string {
+    return auth.effective(provider)
+}
+
+// Adou has no OAuth credential store; Pi's isUsingOAuth stays false.
+pub fn is_using_oauth(string provider): bool {
+    return false
 }
 
 {string:types.provider_def_t} runtime_defs = {}

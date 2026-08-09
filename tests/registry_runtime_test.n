@@ -1,4 +1,6 @@
 import adou.src.ai.providers.registry
+import adou.src.config.auth
+import syscall
 import adou.src.ai.types
 
 test 'register_provider makes a runtime provider findable like Pi' {
@@ -36,4 +38,22 @@ test 'runtime providers do not shadow built-ins unless registered' {
         var def = deepseek as types.provider_def_t
         assert(def.name == 'DeepSeek')
     }
+}
+
+test 'provider auth status surface mirrors the credential sources' {
+    syscall.set_env('DEEPSEEK_API_KEY', '')
+    assert(registry.has_configured_auth('deepseek') == false)
+    var unconfigured = registry.get_provider_auth_status('deepseek')
+    assert(unconfigured.status == 'unconfigured')
+    syscall.set_env('DEEPSEEK_API_KEY', 'env-key')
+    assert(registry.has_configured_auth('deepseek'))
+    var configured = registry.get_provider_auth_status('deepseek')
+    assert(configured.status == 'configured')
+    assert(registry.get_api_key_for_provider('deepseek') == 'env-key')
+    auth.set_runtime_api_key('deepseek', 'runtime-key')
+    var runtime = registry.get_provider_auth_status('deepseek')
+    assert(runtime.status == 'runtime')
+    assert(registry.get_api_key_for_provider('deepseek') == 'runtime-key')
+    auth.remove_runtime_api_key('deepseek')
+    syscall.set_env('DEEPSEEK_API_KEY', '')
 }
