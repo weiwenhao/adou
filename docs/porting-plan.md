@@ -98,6 +98,17 @@ http-dispatcher（libc 直连无全局 dispatcher）。
   editor-component 全量、tui/components/
 - 验收：input/renderer 测试全绿 + PTY e2e
 
+Phase 4 状态（2026-08-09）：kill-ring 与 undo-stack 已内嵌 editor.n（行为对齐），
+word-navigation/stdin-buffer 已覆盖。新增 fuzzy 匹配（`src/tui/fuzzy.n`：评分/
+多 token/排序，6/6）、terminal-colors（`src/tui/terminal_colors.n`：OSC 11 + 997
+报告，5/5）、select-list 渲染（`src/tui/select_list.n`：两列/滚动/过滤，4/4）、
+文件路径补全（`src/tui/path_completion.n`：引号/@ 前缀、目录优先排序、闭合引号
+去重，7/7）。
+进行中：编辑器视觉行包装（editor.n 目前物理行近似）、keybindings 注册表
+（键位硬编码）、terminal-image 纯逻辑（能力检测/kitty 编码/尺寸解析）、markdown
+增强（表格/嵌套块）；native-modifiers 按 darwin 原生模块排除（kitty 协议覆盖
+Shift+Enter）；PTY e2e 目前仅 tui-auth-overlay.sh。
+
 ### Phase 5｜Interactive 模式 UI 组件全量
 - interactive-mode + 40 个组件（diff、session-selector、model-search、login-dialog、
   oauth-selector、theme-selector、settings-selector、tree-selector、visual-truncate、
