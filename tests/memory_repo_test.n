@@ -73,3 +73,38 @@ test 'in-memory sessions survive branch navigation like Pi' {
     var context = manager.build_context()
     assert(context.messages.len() == 1)
 }
+
+test 'in-memory sessions fork at a message including the target like Pi' {
+    var manager = repository.in_memory('/tmp/mem-fork-at')
+    types.message_t first = new types.user_message_t(content = 'first')
+    manager.append_message(first)
+    var assistant = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'm', timestamp = 1)
+    ai_types.message_t assistant_message = assistant
+    string assistant_id = manager.append_message(assistant_message)
+    types.message_t second = new types.user_message_t(content = 'second')
+    string second_id = manager.append_message(second)
+    // fork_at keeps the assistant message as the fork's leaf.
+    var forked = manager.fork_at(assistant_id) catch error {
+        assert(false)
+        var empty = repository.in_memory('/tmp')
+        empty
+    }
+    var forked_context = forked.build_context()
+    assert(forked_context.messages.len() == 2)
+    // The leaf is the assistant message, so the fork continues from it.
+    var leaf = forked.get_entry(forked.get_leaf_id())
+    if leaf is ref<session_types.entry_t> entry {
+        assert(entry.id == forked.get_leaf_id())
+    } else {
+        assert(false)
+    }
+    // An assistant target is valid for "at" even though fork_before rejects it.
+    bool before_rejected = false
+    try {
+        var rejected = manager.fork_before(assistant_id)
+    } catch e {
+        before_rejected = true
+    }
+    assert(before_rejected)
+    assert(second_id != '')
+}

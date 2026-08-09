@@ -717,6 +717,15 @@ pub fn manager_t.fork_before(&self, string entry_id): ref<manager_t>! {
     return self.clone_path(selected.has_parent, selected.parent_id)
 }
 
+// Pi's fork position "at": fork through the target entry itself, keeping it
+// as the fork's leaf.  Unlike fork_before the target may be any message.
+pub fn manager_t.fork_at(&self, string entry_id): ref<manager_t>! {
+    if !self.by_id.contains(entry_id) {
+        throw errorf('Session entry %s not found', entry_id)
+    }
+    return self.clone_path(true, entry_id)
+}
+
 pub fn manager_t.clone_path(&self, bool has_target, string target_id): ref<manager_t>! {
     return self.clone_path_to(has_target, target_id, self.cwd, self.session_dir, '')
 }
