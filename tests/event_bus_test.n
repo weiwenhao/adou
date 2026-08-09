@@ -3,21 +3,36 @@ import adou.src.agent.event_bus
 test 'emit delivers to subscribers and unsubscribes detach' {
     var bus = event_bus.new_bus()
     int received = 0
-    event_bus.event_handler_fn event_handler = fn(any data) {
+    event_bus.event_handler_fn event_handler = fn(any data): void! {
         received += 1
     }
-    bus.on('channel', event_handler)
+    var unsubscribe = bus.on('channel', event_handler)
     bus.emit('channel', null)
     assert(received == 1)
-    bus.off('channel', event_handler)
+    unsubscribe()
     bus.emit('channel', null)
     assert(received == 1)
+}
+
+test 'a failing handler does not silence the rest like Pi' {
+    var bus = event_bus.new_bus()
+    [string] seen = []
+    event_bus.event_handler_fn failing = fn(any data): void! {
+        throw errorf('boom')
+    }
+    event_bus.event_handler_fn healthy = fn(any data): void! {
+        seen.push('healthy')
+    }
+    bus.on('channel', failing)
+    bus.on('channel', healthy)
+    bus.emit('channel', null)
+    assert(seen.len() == 1)
 }
 
 test 'clear removes all handlers like Pi' {
     var bus = event_bus.new_bus()
     int received = 0
-    event_bus.event_handler_fn handler = fn(any data) {
+    event_bus.event_handler_fn handler = fn(any data): void! {
         received += 1
     }
     bus.on('one', handler)
@@ -31,10 +46,10 @@ test 'clear removes all handlers like Pi' {
 test 'multiple subscribers all receive the data' {
     var bus = event_bus.new_bus()
     [any] seen = []
-    event_bus.event_handler_fn handler_a = fn(any data) {
+    event_bus.event_handler_fn handler_a = fn(any data): void! {
         seen.push(data)
     }
-    event_bus.event_handler_fn handler_b = fn(any data) {
+    event_bus.event_handler_fn handler_b = fn(any data): void! {
         seen.push(data)
     }
     bus.on('channel', handler_a)

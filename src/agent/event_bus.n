@@ -5,7 +5,7 @@ import strings
 // Multi-subscriber event bus with per-handler error isolation; handlers
 // receive channel data and a returned unsubscriber detaches them.
 
-pub type event_handler_fn = fn(any data)
+pub type event_handler_fn = fn(any data): void!
 
 pub type event_bus_t = struct {
     {string:[event_handler_fn]} handlers = {}
@@ -23,14 +23,16 @@ pub fn event_bus_t.emit(&self, string channel, any data) {
     // corrupt the iteration.
     var handlers = self.handlers[channel]
     for handler in handlers {
-        // Nature closures cannot propagate errors to the caller's try/catch,
-        // so handlers must guard themselves; the try/catch stays for future
-        // toolchains and swallows nothing today.
-        handler(data)
+        // Pi isolates per-handler failures so one broken subscriber never
+        // silences the rest of the bus.
+        handler(data) catch error {
+            debug.log('event-bus', 'handler failed for ' + channel + ': ' + error.msg())
+        }
     }
 }
 
-pub fn event_bus_t.on(&self, string channel, event_handler_fn handler): void! {
+// Subscribe and return the unsubscriber, matching Pi's on() contract.
+pub fn event_bus_t.on(&self, string channel, event_handler_fn handler): fn() {
     if !self.handlers.contains(channel) {
         [event_handler_fn] empty = []
         self.handlers[channel] = empty
@@ -38,6 +40,9 @@ pub fn event_bus_t.on(&self, string channel, event_handler_fn handler): void! {
     var handlers = self.handlers[channel]
     handlers.push(handler)
     self.handlers[channel] = handlers
+    return fn() {
+        self.off(channel, handler)
+    }
 }
 
 pub fn event_bus_t.off(&self, string channel, event_handler_fn handler) {
