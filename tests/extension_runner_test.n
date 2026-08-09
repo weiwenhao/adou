@@ -21,15 +21,36 @@ test 'runner aggregates registered tools and commands across extensions' {
     var runner = extension_runner.new_runner()
     var ext_a = extensions.new_extension('/tmp/a', '/tmp/a', skills.source_info_t {source: 'local', scope: 'user', origin: 'top-level', base_dir: '/tmp/a'})
     var ext_b = extensions.new_extension('/tmp/b', '/tmp/b', skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/tmp/b'})
-    ext_a.register_tool('tool-a', 'A', 'Tool A', null, ext_a.source_info)
+    ext_a.register_tool('tool-a', 'A', 'Tool A', null, ext_a.source_info, null)
     ext_a.register_command('cmd-a', 'Command A', ext_a.source_info)
-    ext_b.register_tool('tool-b', 'B', 'Tool B', null, ext_b.source_info)
+    ext_b.register_tool('tool-b', 'B', 'Tool B', null, ext_b.source_info, null)
     runner.add_extension(ext_a)
     runner.add_extension(ext_b)
     var tools = runner.get_registered_tools()
     assert(tools.len() == 2)
     var commands = runner.get_registered_commands()
     assert(commands.len() == 1 && commands[0].name == 'cmd-a')
+}
+
+test 'bind_core exposes session actions to extensions' {
+    var runner = extension_runner.new_runner()
+    string sent = ''
+    extension_runner.extension_send_message_fn send = fn(string text) {
+        sent = text
+    }
+    extension_runner.extension_core_actions_t actions = extension_runner.extension_core_actions_t {}
+    actions.send_message = send
+    runner.bind_core(actions)
+    runner.send_message('hello from extension')
+    assert(sent == 'hello from extension')
+    [string] tools = ['read', 'bash']
+    string last_tools = ''
+    extension_runner.extension_set_active_tools_fn set_tools = fn([string] tool_names) {
+        last_tools = tool_names.len() > 0 ? tool_names[0] : ''
+    }
+    runner.core_actions.set_active_tools = set_tools
+    runner.set_active_tools(tools)
+    assert(last_tools == 'read')
 }
 
 test 'provider registrations queue and drain like Pi' {

@@ -7,9 +7,53 @@ import adou.src.debug
 // events to them and aggregates registrations (tools/commands/providers).
 // Concrete extension loading stays out of scope.
 
+// Core session actions bound by the host (Pi bindCore).
+pub type extension_send_message_fn = fn(string text)
+pub type extension_set_active_tools_fn = fn([string] tool_names)
+pub type extension_set_model_fn = fn(string provider, string model_id)
+pub type extension_set_thinking_level_fn = fn(string level)
+pub type extension_get_commands_fn = fn(): [extensions.extension_command_t]
+
+pub type extension_core_actions_t = struct {
+    extension_send_message_fn? send_message = null
+    extension_set_active_tools_fn? set_active_tools = null
+    extension_set_model_fn? set_model = null
+    extension_set_thinking_level_fn? set_thinking_level = null
+    extension_get_commands_fn? get_commands = null
+}
+
 pub type extension_runner_t = struct {
     [ref<extensions.extension_t>] extensions = []
     [string] provider_registrations = []
+    extension_core_actions_t core_actions
+}
+
+pub fn extension_runner_t.bind_core(&self, extension_core_actions_t actions) {
+    self.core_actions = actions
+}
+
+pub fn extension_runner_t.send_message(&self, string text) {
+    if self.core_actions.send_message is extension_send_message_fn action {
+        action(text)
+    }
+}
+
+pub fn extension_runner_t.set_active_tools(&self, [string] tool_names) {
+    if self.core_actions.set_active_tools is extension_set_active_tools_fn action {
+        action(tool_names)
+    }
+}
+
+pub fn extension_runner_t.set_model(&self, string provider, string model_id) {
+    if self.core_actions.set_model is extension_set_model_fn action {
+        action(provider, model_id)
+    }
+}
+
+pub fn extension_runner_t.set_thinking_level(&self, string level) {
+    if self.core_actions.set_thinking_level is extension_set_thinking_level_fn action {
+        action(level)
+    }
 }
 
 pub fn new_runner(): ref<extension_runner_t> {
