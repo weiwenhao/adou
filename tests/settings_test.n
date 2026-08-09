@@ -1,4 +1,4 @@
-import adou.src.config.settings
+import adou.src.config.settings as config_settings
 import fs
 import os
 import path
@@ -16,9 +16,9 @@ test 'settings round trip preserves core Pi preferences' {
     string home = '/tmp/adou-settings-test'
     os.rmdir(home, true) catch error {}
     syscall.set_env('HOME', home)
-    var original = settings.settings_t {default_provider: 'deepseek', default_model: 'deepseek-v4-flash', default_thinking_level: 'high', auto_compaction: false, steering_mode: 'one-at-a-time', follow_up_mode: 'all', hide_thinking: true, retry_enabled: false, retry_max_attempts: 5, retry_base_delay_ms: 2500, enabled_model_ids: ['deepseek/deepseek-v4-flash', 'openai/gpt-5.1-codex'],}
-    settings.save(original)
-    var loaded = settings.load()
+    var original = config_settings.settings_t {default_provider: 'deepseek', default_model: 'deepseek-v4-flash', default_thinking_level: 'high', auto_compaction: false, steering_mode: 'one-at-a-time', follow_up_mode: 'all', hide_thinking: true, retry_enabled: false, retry_max_attempts: 5, retry_base_delay_ms: 2500, enabled_model_ids: ['deepseek/deepseek-v4-flash', 'openai/gpt-5.1-codex'],}
+    config_settings.save(original)
+    var loaded = config_settings.load()
     assert(loaded.default_provider == 'deepseek' && loaded.default_model == 'deepseek-v4-flash')
     assert(loaded.default_thinking_level == 'high')
     assert(!loaded.auto_compaction)
@@ -29,7 +29,7 @@ test 'settings round trip preserves core Pi preferences' {
     assert(loaded.enabled_model_ids[0] == 'deepseek/deepseek-v4-flash')
     assert(loaded.enabled_model_ids[1] == 'openai/gpt-5.1-codex')
     os.rmdir(home, true)
-    var defaults = settings.load()
+    var defaults = config_settings.load()
     assert(defaults.default_thinking_level == 'medium')
     assert(defaults.steering_mode == 'one-at-a-time' && defaults.follow_up_mode == 'one-at-a-time')
 }
@@ -38,13 +38,13 @@ test 'Pi preference setters persist one setting without replacing the others' {
     string home = '/tmp/adou-settings-setters-test'
     os.rmdir(home, true) catch error {}
     syscall.set_env('HOME', home)
-    var original = settings.settings_t {default_provider: 'openai', default_model: 'gpt-5.1-codex', default_thinking_level: 'high', auto_compaction: true, steering_mode: 'one-at-a-time', follow_up_mode: 'one-at-a-time', hide_thinking: true, retry_enabled: true, retry_max_attempts: 7, retry_base_delay_ms: 3000, enabled_model_ids: ['openai/gpt-5.1-codex'],}
-    settings.save(original)
-    settings.set_auto_compaction(false)
-    settings.set_steering_mode('all')
-    settings.set_follow_up_mode('all')
-    settings.set_retry_enabled(false)
-    var loaded = settings.load()
+    var original = config_settings.settings_t {default_provider: 'openai', default_model: 'gpt-5.1-codex', default_thinking_level: 'high', auto_compaction: true, steering_mode: 'one-at-a-time', follow_up_mode: 'one-at-a-time', hide_thinking: true, retry_enabled: true, retry_max_attempts: 7, retry_base_delay_ms: 3000, enabled_model_ids: ['openai/gpt-5.1-codex'],}
+    config_settings.save(original)
+    config_settings.set_auto_compaction(false)
+    config_settings.set_steering_mode('all')
+    config_settings.set_follow_up_mode('all')
+    config_settings.set_retry_enabled(false)
+    var loaded = config_settings.load()
     assert(!loaded.auto_compaction && loaded.steering_mode == 'all' && loaded.follow_up_mode == 'all' && !loaded.retry_enabled)
     assert(loaded.default_provider == 'openai' && loaded.default_model == 'gpt-5.1-codex')
     assert(loaded.default_thinking_level == 'high' && loaded.hide_thinking)
@@ -57,11 +57,11 @@ test 'project .pi settings override global settings field by field' {
     string home = '/tmp/adou-settings-project-test'
     os.rmdir(home, true) catch error {}
     syscall.set_env('HOME', home)
-    var global = settings.settings_t {default_provider: 'openai', default_model: 'gpt-5.1-codex', default_thinking_level: 'high', auto_compaction: false, steering_mode: 'all', follow_up_mode: 'one-at-a-time', hide_thinking: true, retry_enabled: false, retry_max_attempts: 7, retry_base_delay_ms: 3000, enabled_model_ids: ['openai/gpt-5.1-codex'],}
-    settings.save(global)
+    var global = config_settings.settings_t {default_provider: 'openai', default_model: 'gpt-5.1-codex', default_thinking_level: 'high', auto_compaction: false, steering_mode: 'all', follow_up_mode: 'one-at-a-time', hide_thinking: true, retry_enabled: false, retry_max_attempts: 7, retry_base_delay_ms: 3000, enabled_model_ids: ['openai/gpt-5.1-codex'],}
+    config_settings.save(global)
     string cwd = path.join(home, 'project')
     write_settings_file(path.join(cwd, '.pi/settings.json'), '{"defaultProvider":"deepseek","defaultThinkingLevel":"low","autoCompaction":true,"enabledModels":["deepseek/deepseek-v4-flash"]}')
-    var loaded = settings.load_for(cwd)
+    var loaded = config_settings.load_for(cwd)
     assert(loaded.default_provider == 'deepseek' && loaded.default_model == 'gpt-5.1-codex')
     assert(loaded.default_thinking_level == 'low' && loaded.auto_compaction)
     assert(loaded.steering_mode == 'all' && loaded.follow_up_mode == 'one-at-a-time')
@@ -72,16 +72,16 @@ test 'project .pi settings override global settings field by field' {
 }
 
 test 'compaction sub-settings round trip like Pi' {
-    var settings = settings.load()
-    int original_reserve = settings.reserve_tokens
-    int original_keep = settings.keep_recent_tokens
-    settings.reserve_tokens = 20000
-    settings.keep_recent_tokens = 30000
-    settings.save(settings) catch error {}
-    var reloaded = settings.load()
+    var local_settings = config_settings.load()
+    int original_reserve = local_settings.reserve_tokens
+    int original_keep = local_settings.keep_recent_tokens
+    local_settings.reserve_tokens = 20000
+    local_settings.keep_recent_tokens = 30000
+    config_settings.save(local_settings) catch error {}
+    var reloaded = config_settings.load()
     assert(reloaded.reserve_tokens == 20000)
     assert(reloaded.keep_recent_tokens == 30000)
-    settings.reserve_tokens = original_reserve
-    settings.keep_recent_tokens = original_keep
-    settings.save(settings) catch error {}
+    local_settings.reserve_tokens = original_reserve
+    local_settings.keep_recent_tokens = original_keep
+    config_settings.save(local_settings) catch error {}
 }
