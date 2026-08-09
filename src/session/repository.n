@@ -937,6 +937,35 @@ pub fn manager_t.get_entries(&self): [ref<types.entry_t>] {
     return self.entries.slice(0, self.entries.len())
 }
 
+// Pi's findEntries: entries of a given kind (message/session_info/...).
+pub fn manager_t.find_entries(&self, string kind): [ref<types.entry_t>] {
+    [ref<types.entry_t>] result = []
+    for entry in self.entries {
+        if entry.kind == kind {
+            result.push(entry)
+        }
+    }
+    return result
+}
+
+// Pi's getEntries({afterEntrySeq, limit}): entries starting at the given
+// sequence (array index) with an optional cap; limit <= 0 means unbounded.
+pub fn manager_t.get_entries_after(&self, int after_entry_seq, int limit): [ref<types.entry_t>] {
+    int start = after_entry_seq
+    if start < 0 {
+        start = 0
+    }
+    int end = self.entries.len()
+    if limit > 0 && start + limit < end {
+        end = start + limit
+    }
+    if start >= end {
+        [ref<types.entry_t>] empty = []
+        return empty
+    }
+    return self.entries.slice(start, end)
+}
+
 pub fn manager_t.get_warnings(&self): [string] {
     return self.warnings.slice(0, self.warnings.len())
 }

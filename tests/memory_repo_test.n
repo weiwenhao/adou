@@ -108,3 +108,25 @@ test 'in-memory sessions fork at a message including the target like Pi' {
     assert(before_rejected)
     assert(second_id != '')
 }
+
+test 'find_entries and get_entries_after mirror Pi cursor semantics' {
+    var manager = repository.in_memory('/tmp/mem-cursor')
+    types.message_t first = new types.user_message_t(content = 'one')
+    manager.append_message(first)
+    manager.append_session_info('Named')
+    types.message_t second = new types.user_message_t(content = 'two')
+    manager.append_message(second)
+    var messages = manager.find_entries(session_types.ENTRY_MESSAGE)
+    assert(messages.len() == 2)
+    var infos = manager.find_entries(session_types.ENTRY_SESSION_INFO)
+    assert(infos.len() == 1)
+    // Header is entry 0, so the first message starts at seq 1.
+    var from_one = manager.get_entries_after(1, 2)
+    assert(from_one.len() == 2)
+    var limited = manager.get_entries_after(1, 1)
+    assert(limited.len() == 1)
+    var unbounded = manager.get_entries_after(2, 0)
+    assert(unbounded.len() == manager.get_entries().len() - 2)
+    var past_end = manager.get_entries_after(999, 0)
+    assert(past_end.len() == 0)
+}
