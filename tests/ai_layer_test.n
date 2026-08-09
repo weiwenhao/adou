@@ -1,6 +1,7 @@
 import adou.src.ai.auth
 import adou.src.config.auth as credential_store
 import adou.src.ai.env_api_keys
+import adou.src.ai.models
 import adou.src.ai.models_store
 import adou.src.ai.session_resources
 import adou.src.ai.types
