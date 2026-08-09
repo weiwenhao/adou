@@ -169,6 +169,15 @@ ExtensionContext/UIContext 类型面（状态字段 + 动作闭包占位）。
 标志、temperature/toolChoice 等可选字段、compaction retainedTail 持久化、leaf 条目
 targetId 语义、keybindings 注册表、视觉行包装。
 
+已补的行为缺口（2026-08-09 持续推进）：
+simple-options（max_tokens 上下文钳制/thinking budgets）、deferred-tools（kimi
+deferredToolsMode 接线）、temperature/toolChoice（stream_options_t + 三个请求层）、
+compaction retainedTail 持久化与上下文重建、leaf 条目 targetId 语义、estimate
+usageAppliesToPrefix 时间戳 + prefix/added-tool token、provider error-body 统一
+截断（4000 chars + [truncated N chars]）、uuid_v7 同毫秒序号、diagnostics 全
+provider 接入。session-resources 的错误汇总受 Nature 闭包无错误传播限制（接口
+已就位）。
+
 - models 目录数据量巨大：用脚本从 Pi `models.generated.ts` 生成 Nature 数据文件
 - provider 适配器模板化：先做一个参考实现（如 deepseek），其余按模板批量
 - 全程遵守：串行编译、不跑 nature fmt、vendors/ 只读、延续 pi-core-module-map.md 验收规则
