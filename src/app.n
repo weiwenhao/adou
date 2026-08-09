@@ -141,6 +141,12 @@ pub fn run(): void! {
         return
     }
     var repository = open_repository(config, cwd)
+    if repository.persisted && !path_utils.exists(repository.cwd) {
+        // Pi's assertSessionCwdExists: opening a session whose stored cwd is
+        // gone would silently bind every tool to a missing directory.
+        string session_file = repository.session_file != '' ? '\nSession file: ' + repository.session_file : ''
+        throw errorf('Stored session working directory does not exist: %s%s\nCurrent working directory: %s', repository.cwd, session_file, cwd)
+    }
     // A selected Pi session carries its own working directory.  All project
     // resources, built-in tool executors, and footer paths must follow that
     // session cwd rather than the directory from which Adou was launched.
