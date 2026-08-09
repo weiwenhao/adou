@@ -1,0 +1,48 @@
+import adou.src.ai.providers.model_compat
+import adou.src.ai.types
+
+pub fn model(string api, string provider, string base_url, string id): ref<types.model_t> {
+    return new types.model_t(id = id, api = api, provider = provider, base_url = base_url, reasoning = true)
+}
+
+test 'runtime compat detection matches Pi for provider families' {
+    var deepseek = model('openai-completions', 'deepseek', 'https://api.deepseek.com', 'deepseek-v4-flash')
+    model_compat.apply(deepseek)
+    assert(deepseek.compat.thinking_format == 'deepseek')
+    assert(deepseek.compat.requires_reasoning_content_on_assistant_messages)
+    assert(deepseek.compat.max_tokens_field == 'max_completion_tokens')
+    assert(deepseek.compat.supports_reasoning_effort)
+
+    var zai = model('openai-completions', 'zai', 'https://api.z.ai', 'glm-4')
+    model_compat.apply(zai)
+    assert(zai.compat.thinking_format == 'zai')
+    assert(!zai.compat.supports_reasoning_effort)
+    assert(zai.compat.max_tokens_field == 'max_tokens')
+
+    var openai_compat = model('openai-completions', 'openai', 'https://api.openai.com/v1', 'gpt-5')
+    model_compat.apply(openai_compat)
+    assert(openai_compat.compat.thinking_format == 'openai')
+    assert(openai_compat.compat.supports_store)
+    assert(openai_compat.compat.max_tokens_field == 'max_completion_tokens')
+    assert(openai_compat.compat.supports_developer_role)
+
+    var xiaomi = model('openai-completions', 'xiaomi', 'https://api.xiaomimimo.com/v1', 'mi-model')
+    model_compat.apply(xiaomi)
+    assert(xiaomi.compat.requires_reasoning_content_on_assistant_messages)
+    assert(xiaomi.compat.thinking_format == 'deepseek')
+}
+
+test 'non completions models keep the default compat' {
+    var anthropic = model('anthropic-messages', 'anthropic', 'https://api.anthropic.com', 'claude')
+    model_compat.apply(anthropic)
+    assert(anthropic.compat.thinking_format == '')
+    var responses = model('openai-responses', 'openai', 'https://api.openai.com/v1', 'gpt-5.1-codex')
+    model_compat.apply(responses)
+    assert(responses.compat.thinking_format == '')
+}
+
+test 'catalog models carry detected compat through the registry' {
+    var deepseek = new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = 'https://api.deepseek.com', reasoning = true)
+    model_compat.apply(deepseek)
+    assert(deepseek.compat.thinking_format == 'deepseek')
+}

@@ -132,6 +132,26 @@ pub type context_t = struct {
     [message_t] messages = []
     [ref<tool_t>] tools = []
 }
+// Pi's per-model compat flags (compat.ts OpenAICompletionsCompat family).
+// The request builders consume the fields that change request shape; the
+// rest is carried for catalog parity.
+pub type compat_t = struct {
+    bool supports_store
+    bool supports_developer_role
+    bool supports_reasoning_effort
+    bool supports_usage_in_streaming
+    string max_tokens_field
+    bool requires_tool_result_name
+    bool requires_assistant_after_tool_result
+    bool requires_thinking_as_text
+    bool requires_reasoning_content_on_assistant_messages
+    string thinking_format
+    bool zai_tool_stream
+    bool supports_strict_mode
+    bool supports_openai_grammar_tools
+    bool send_session_affinity_headers
+    string cache_control_format
+}
 pub type model_t = struct {
     string id
     string name
@@ -149,6 +169,7 @@ pub type model_t = struct {
     // level the model does not support (Pi's null).
     {string:string} thinking_level_map = {}
     {string:string} headers = {}
+    compat_t compat
 }
 
 // A registered provider. The openai-completions / anthropic-messages /

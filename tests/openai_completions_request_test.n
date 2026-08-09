@@ -4,7 +4,11 @@ import adou.src.json_util
 import json
 
 pub fn model(): ref<types.model_t> {
-    return new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = 'https://api.deepseek.com', reasoning = true, context_window = 1000000, max_tokens = 384000)
+    var model = new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = 'https://api.deepseek.com', reasoning = true, context_window = 1000000, max_tokens = 384000)
+    model.compat.thinking_format = 'deepseek'
+    model.compat.requires_reasoning_content_on_assistant_messages = true
+    model.compat.max_tokens_field = 'max_tokens'
+    return model
 }
 
 test 'builds DeepSeek OpenAI Completions request with reasoning and tools' {

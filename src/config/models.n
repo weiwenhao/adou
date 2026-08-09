@@ -438,6 +438,11 @@ fn deepseek_v4_flash(): ref<ai_types.model_t> {
     model.cost.input = 0.14
     model.cost.output = 0.28
     model.cost.cache_read = 0.0028
+    model.compat.thinking_format = 'deepseek'
+    model.compat.requires_reasoning_content_on_assistant_messages = true
+    model.compat.max_tokens_field = 'max_tokens'
+    model.compat.supports_reasoning_effort = true
+    model.compat.supports_usage_in_streaming = true
     return model
 }
 

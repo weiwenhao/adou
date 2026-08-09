@@ -22,7 +22,11 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
     body['stream_options'] = stream_options
     int output_tokens = options.max_tokens > 0 ? options.max_tokens : model.max_tokens
     if output_tokens > 0 {
-        body['max_tokens'] = output_tokens
+        string max_tokens_field = model.compat.max_tokens_field
+        if max_tokens_field == '' {
+            max_tokens_field = 'max_completion_tokens'
+        }
+        body[max_tokens_field] = output_tokens
     }
     if context.tools.len() > 0 {
         // Kimi's deferredToolsMode keeps tools announced by addedToolNames
@@ -52,10 +56,14 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
 
 // Pi's openai-completions compat thinkingFormat variants: each provider
 // family expects its own thinking shape, and the catalog thinkingLevelMap
-// translates pi levels to provider values.
+// translates pi levels to provider values.  The format is detected at
+// runtime (model_compat) and carried per model.
 fn thinking_fields_for(ref<types.model_t> model, ref<types.stream_options_t> options): {string:any} {
     {string:any} fields = {}
-    string format = thinking_format(model.provider)
+    string format = model.compat.thinking_format
+    if format == '' {
+        format = 'openai'
+    }
     if format == 'zai' {
         {string:any} thinking = {}
         if options.thinking_enabled && options.reasoning_effort != '' {
@@ -110,28 +118,6 @@ fn thinking_fields_for(ref<types.model_t> model, ref<types.stream_options_t> opt
         }
     }
     return fields
-}
-
-fn thinking_format(string provider): string {
-    if provider == 'deepseek' {
-        return 'deepseek'
-    }
-    if provider == 'zai' || provider == 'zai-coding-cn' {
-        return 'zai'
-    }
-    if provider == 'qwen-token-plan' || provider == 'qwen-token-plan-cn' {
-        return 'qwen'
-    }
-    if provider == 'openrouter' {
-        return 'openrouter'
-    }
-    if provider == 'together' {
-        return 'together'
-    }
-    if provider == 'ant-ling' {
-        return 'ant-ling'
-    }
-    return 'openai'
 }
 
 fn mapped_effort(ref<types.model_t> model, string level): string {
@@ -253,7 +239,7 @@ pub fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> m
     } else {
         item['content'] = null
     }
-    if model.reasoning {
+    if model.compat.requires_reasoning_content_on_assistant_messages {
         item['reasoning_content'] = reasoning
     }
     if calls.len() > 0 {

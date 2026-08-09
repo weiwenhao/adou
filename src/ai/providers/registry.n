@@ -36,6 +36,7 @@ import adou.src.ai.providers.xiaomi_token_plan_cn
 import adou.src.ai.providers.xiaomi_token_plan_sgp
 import adou.src.ai.providers.zai
 import adou.src.ai.providers.zai_coding_cn
+import adou.src.ai.providers.model_compat
 import adou.src.ai.types
 import adou.src.config.auth
 
@@ -154,6 +155,7 @@ pub fn all_models(): [ref<types.model_t>] {
     for def in defs() {
         var models = models_for(def.id)
         for model in models {
+            model_compat.apply(model)
             result.push(model)
         }
     }

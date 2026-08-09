@@ -1,0 +1,72 @@
+import adou.src.ai.types
+
+// Runtime equivalent of Pi's compat detection (vendors/pi/packages/ai/scripts/
+// generate-models.ts detectOpenAICompletionsCompat).  Adou's generated
+// catalogs keep the compat flags out of the data files; applying the same
+// provider/baseUrl rules at runtime keeps the request builders compatible
+// without a regenerate-from-network cycle.
+
+pub fn apply(ref<types.model_t> model) {
+    if model.api != 'openai-completions' {
+        return
+    }
+    string provider = model.provider
+    string base_url = model.base_url
+    bool is_zai = provider == 'zai' || provider == 'zai-coding-cn' || base_url.contains('api.z.ai') || base_url.contains('open.bigmodel.cn')
+    bool is_together = provider == 'together' || base_url.contains('api.together.ai') || base_url.contains('api.together.xyz')
+    bool is_moonshot = provider == 'moonshotai' || provider == 'moonshotai-cn' || base_url.contains('api.moonshot.')
+    bool is_openrouter = provider == 'openrouter' || base_url.contains('openrouter.ai')
+    bool is_cloudflare_workers_ai = provider == 'cloudflare-workers-ai' || base_url.contains('api.cloudflare.com')
+    bool is_cloudflare_ai_gateway = provider == 'cloudflare-ai-gateway' || base_url.contains('gateway.ai.cloudflare.com')
+    bool is_nvidia = provider == 'nvidia' || base_url.contains('integrate.api.nvidia.com')
+    bool is_ant_ling = provider == 'ant-ling' || base_url.contains('api.ant-ling.com')
+    bool is_deep_seek = provider == 'deepseek' || base_url.contains('deepseek.com')
+
+    bool is_non_standard = is_nvidia || provider == 'cerebras' || base_url.contains('cerebras.ai') || provider == 'xai' || base_url.contains('api.x.ai') || is_together || base_url.contains('chutes.ai') || is_deep_seek || is_zai || is_moonshot || provider == 'opencode' || base_url.contains('opencode.ai') || is_cloudflare_workers_ai || is_cloudflare_ai_gateway || is_ant_ling
+    bool use_max_tokens = base_url.contains('chutes.ai') || is_moonshot || is_cloudflare_ai_gateway || is_together || is_nvidia || is_ant_ling || is_zai
+    bool is_grok = provider == 'xai' || base_url.contains('api.x.ai')
+    bool is_openrouter_developer_role_model = is_openrouter && (model.id.starts_with('anthropic/') || model.id.starts_with('openai/'))
+
+    string thinking_format = 'openai'
+    if is_deep_seek {
+        thinking_format = 'deepseek'
+    } else if is_zai {
+        thinking_format = 'zai'
+    } else if is_together {
+        thinking_format = 'together'
+    } else if is_ant_ling {
+        thinking_format = 'ant-ling'
+    } else if is_openrouter {
+        thinking_format = 'openrouter'
+    }
+
+    model.compat.supports_store = !is_non_standard
+    model.compat.supports_developer_role = is_openrouter_developer_role_model || (!is_non_standard && !is_openrouter)
+    model.compat.supports_reasoning_effort = !(is_grok || is_zai || is_moonshot || is_together || is_cloudflare_ai_gateway || is_nvidia || is_ant_ling)
+    model.compat.supports_usage_in_streaming = true
+    model.compat.max_tokens_field = use_max_tokens ? 'max_tokens' : 'max_completion_tokens'
+    model.compat.requires_tool_result_name = false
+    model.compat.requires_assistant_after_tool_result = false
+    model.compat.requires_thinking_as_text = false
+    model.compat.requires_reasoning_content_on_assistant_messages = is_deep_seek
+    model.compat.thinking_format = thinking_format
+    model.compat.zai_tool_stream = false
+    model.compat.supports_strict_mode = !(is_moonshot || is_together || is_cloudflare_ai_gateway || is_nvidia)
+    model.compat.supports_openai_grammar_tools = false
+    model.compat.send_session_affinity_headers = false
+    if is_openrouter && (model.id.starts_with('~anthropic/') || model.id.starts_with('anthropic/')) {
+        model.compat.cache_control_format = 'anthropic'
+    }
+
+    // Provider-level overrides the generator applies on top of detection
+    // (XIAOMI_COMPAT / QWEN_TOKEN_PLAN_COMPAT in generate-model-catalog.py).
+    if provider == 'xiaomi' || provider == 'xiaomi-token-plan-ams' || provider == 'xiaomi-token-plan-cn' || provider == 'xiaomi-token-plan-sgp' {
+        model.compat.requires_reasoning_content_on_assistant_messages = true
+        model.compat.thinking_format = 'deepseek'
+    }
+    if provider == 'qwen-token-plan' || provider == 'qwen-token-plan-cn' {
+        model.compat.thinking_format = 'qwen'
+        model.compat.supports_developer_role = false
+        model.compat.supports_store = false
+    }
+}
