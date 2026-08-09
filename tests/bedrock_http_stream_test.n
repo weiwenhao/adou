@@ -183,3 +183,24 @@ test 'bedrock replays thinking signatures like Pi' {
     assert(text['text'] as string == 'plan')
     assert(text['signature'] as string == 'sig123')
 }
+
+test 'bedrock bearer token and skip-auth behave like Pi' {
+    syscall.set_env('AWS_BEARER_TOKEN_BEDROCK', 'bt-123')
+    syscall.set_env('AWS_ACCESS_KEY_ID', '')
+    syscall.set_env('AWS_SECRET_ACCESS_KEY', '')
+    var model = new types.model_t(id = 'anthropic.claude-sonnet-4-5-v1:0', api = 'bedrock-converse-stream', provider = 'amazon-bedrock', base_url = 'https://bedrock-runtime.us-east-1.amazonaws.com', max_tokens = 16)
+    var bearer = bedrock_messages.authorization(model, '{}', '20150830T123600Z')
+    assert(bearer == 'Bearer bt-123')
+    syscall.set_env('AWS_BEARER_TOKEN_BEDROCK', '')
+    syscall.set_env('AWS_BEDROCK_SKIP_AUTH', '1')
+    var dummy = bedrock_messages.authorization(model, '{}', '20150830T123600Z')
+    assert(dummy.contains('Credential=dummy-access-key/'))
+    syscall.set_env('AWS_BEDROCK_SKIP_AUTH', '')
+    bool failed = false
+    try {
+        var missing = bedrock_messages.authorization(model, '{}', '20150830T123600Z')
+    } catch e {
+        failed = true
+    }
+    assert(failed)
+}
