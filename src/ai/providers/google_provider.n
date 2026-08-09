@@ -6,6 +6,7 @@ import adou.src.ai.providers.decorators
 import adou.src.ai.providers.google_messages
 import adou.src.ai.providers.google_processor
 import adou.src.ai.sse
+import adou.src.ai.request_headers
 import adou.src.ai.types
 import adou.src.debug
 import fmt
@@ -138,6 +139,7 @@ pub fn send_once(ref<run_state_t> state): ref<client.response_t>! {
             request.header('Authorization', auth)
         }
     }
+    request_headers.apply(request, state.model)
     return request.send()
 }
 

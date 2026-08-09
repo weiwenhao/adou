@@ -163,6 +163,9 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
         api = catalog.api
         reasoning = catalog.reasoning
         adaptive_thinking = catalog.adaptive_thinking
+        if arguments.base_url == '' {
+            base_url = catalog.base_url
+        }
         if context_window == 0 {
             context_window = catalog.context_window
         }
@@ -187,6 +190,9 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
     var model = new ai_types.model_t(id = model_id, name = model_id, api = api, provider = provider, base_url = base_url, reasoning = reasoning, adaptive_thinking = adaptive_thinking, context_window = context_window, max_tokens = max_tokens)
     if catalog_model is ref<ai_types.model_t> catalog {
         model.cost = catalog.cost
+        for header_name, header_value in catalog.headers {
+            model.headers[header_name] = header_value
+        }
     }
     if provider == 'deepseek' && model_id == 'deepseek-v4-flash' {
         model.cost.input = 0.14

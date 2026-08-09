@@ -7,6 +7,7 @@ import adou.src.ai.providers.decorators
 import adou.src.ai.providers.openai_request
 import adou.src.ai.providers.openai_responses
 import adou.src.ai.sse
+import adou.src.ai.request_headers
 import adou.src.ai.types
 import adou.src.debug
 import fmt
@@ -155,6 +156,7 @@ pub fn send_once(ref<run_state_t> state): ref < client.response_t > ! {
         request.header('session_id', state.options.session_id)
         request.header('x-client-request-id', state.options.session_id)
     }
+    request_headers.apply(request, state.model)
     return request.send()
 }
 pub fn response_headers(ref<client.response_t> response): [provider_retry.header_t]{

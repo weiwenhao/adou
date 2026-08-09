@@ -105,6 +105,20 @@ test 'model_from_json requires baseUrl for custom models like Pi' {
     assert(failed)
 }
 
+test 'compose carries provider headers onto every model like Pi' {
+    var provider = new models_json.models_json_provider_t(base_url = 'https://gateway.example.com')
+    {string:string} provider_headers = {}
+    provider_headers['X-Custom-Provider'] = 'yes'
+    provider.headers = provider_headers
+    var composed = models_json.compose_provider_models('custom', base_models(), provider) catch error {
+        assert(false)
+        []
+    }
+    assert(composed.len() == 1)
+    string value = composed[0].headers['X-Custom-Provider'] catch error {'missing'}
+    assert(value == 'yes')
+}
+
 fn suffix(): string {
     return fmt.sprintf('%d', time.now().ms_timestamp())
 }

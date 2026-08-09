@@ -100,6 +100,9 @@ pub fn compose_provider_models(string provider_id, [ref<types.model_t>] base_mod
         if config.base_url != '' {
             copy.base_url = config.base_url
         }
+        for name, value in config.headers {
+            copy.headers[name] = value
+        }
         models.push(copy)
     }
     for model_id, definition in config.models {

@@ -1,0 +1,11 @@
+import adou.src.ai.types
+import http.client as client
+
+// Apply user-configured model headers (models.json provider/override
+// headers) to an outgoing request.  Applied last so user values override
+// the defaults each stream implementation sets.
+pub fn apply(ref<client.request_t> request, ref<types.model_t> model) {
+    for name, value in model.headers {
+        request.header(name, value)
+    }
+}
