@@ -1,5 +1,6 @@
 import adou.src.agent.loop
 import adou.src.agent.event_stream as agent_stream
+import adou.src.agent.extension_runner
 import adou.src.agent.session_stream
 import adou.src.agent.types as agent_types
 import adou.src.ai.abort
@@ -35,6 +36,10 @@ pub type runner_t = struct {
     ref<agent_types.config_t> agent_config
     agent_types.stream_fn stream_function
     compaction_types.settings_t compaction_settings
+    // Pi's session exposes the extension runner for tools, commands and
+    // provider registrations; adou keeps an empty static registry until
+    // concrete extensions are linked in.
+    ref<extension_runner.extension_runner_t> extensions = extension_runner.new_runner()
     [ai_types.message_t] active_messages = []
     // Pi retries transient assistant failures at the session layer, after the
     // provider's own request retry budget is exhausted. These are deliberately

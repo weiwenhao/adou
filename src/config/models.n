@@ -333,7 +333,6 @@ pub fn thinking_for(string reference, [string] patterns): string {
 // the struct to ref-taking helpers without aliasing the cached entry.
 // Header values go through config-value resolution ("!cmd", "$VAR") like
 // Pi's resolveHeaders; unresolvable values are dropped.
-#local
 fn copy_provider(models_json.models_json_provider_t source): ref<models_json.models_json_provider_t> {
     var copy = new models_json.models_json_provider_t(name = source.name, base_url = source.base_url, api_key = source.api_key, api = source.api, auth_header = source.auth_header)
     var resolved_headers = resolve_config_value.resolve_headers(source.headers)

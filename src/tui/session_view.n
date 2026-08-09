@@ -1,3 +1,4 @@
+import adou.src.agent.extensions
 import adou.src.agent.session
 import adou.src.agent.session_stream
 import adou.src.agent.types as agent_types
@@ -320,7 +321,7 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
             return null
         }
         if key == 'down' {
-            int count = matching_command_names(self.editor.get_text()).len()
+            int count = matching_command_names(self.editor.get_text(), self.runner.extensions.get_registered_commands()).len()
             self.command_index += 1
             if self.command_index >= count {
                 self.command_index = count - 1
@@ -1025,6 +1026,17 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         }
         return stream
     }
+    var extension_commands = self.runner.extensions.get_registered_commands()
+    for ext_command in extension_commands {
+        if ext_command.name == command {
+            // Static extension registrations carry no executable handler in
+            // this build; surface the registration instead of an unknown
+            // command error.
+            self.chat.error_message = 'Extension command ' + command + ' is registered but has no executable handler: ' + ext_command.description
+            self.redraw()
+            return null
+        }
+    }
     self.chat.error_message = 'Unknown command: ' + text
     self.redraw()
     return null
@@ -1536,7 +1548,7 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     if self.overlay is ref<overlay_t> active_overlay {
         editor_lines = render_overlay(active_overlay, width)
     } else {
-        editor_lines = render_editor(self.editor, width, self.command_menu, self.command_index, self.chat.thinking, height)
+        editor_lines = render_editor(self.editor, width, self.command_menu, self.command_index, self.chat.thinking, height, self.runner.extensions.get_registered_commands())
     }
     lines.append(editor_lines)
     return lines
@@ -1834,7 +1846,7 @@ fn read_input(ref<view_t> view, chan<terminal_input_t> input, chan<input_t> outp
 }
 
 #local
-fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int command_index, string thinking, int terminal_rows): [string]! {
+fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int command_index, string thinking, int terminal_rows, [extensions.extension_command_t] extension_commands): [string]! {
     [string] result = vec<string>.cap_of(16)
     bool bash_mode = editor.get_text().starts_with('!')
     result.push(theme.editor_border_line(thinking, bash_mode, width))
@@ -1870,26 +1882,27 @@ fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int 
     }
     result.push(theme.editor_border_line(thinking, bash_mode, width))
     if command_menu {
-        result.append(render_command_menu(editor.get_text(), command_index, width))
+        result.append(render_command_menu(editor.get_text(), command_index, width, extension_commands))
     }
     return result
 }
 
 pub fn view_t.update_command_menu(&self) {
     string text = self.editor.get_text()
-    self.command_menu = text.starts_with('/') && !text.contains(' ') && matching_command_names(text).len() > 0
+    var extension_commands = self.runner.extensions.get_registered_commands()
+    self.command_menu = text.starts_with('/') && !text.contains(' ') && matching_command_names(text, extension_commands).len() > 0
     if !self.command_menu {
         self.command_index = 0
         return
     }
-    int count = matching_command_names(text).len()
+    int count = matching_command_names(text, extension_commands).len()
     if self.command_index >= count {
         self.command_index = count - 1
     }
 }
 
 pub fn view_t.complete_command(&self): string {
-    var matches = matching_command_names(self.editor.get_text())
+    var matches = matching_command_names(self.editor.get_text(), self.runner.extensions.get_registered_commands())
     if matches.len() == 0 || self.command_index < 0 || self.command_index >= matches.len() {
         return ''
     }
@@ -3221,22 +3234,44 @@ fn builtin_command_names(): [string] {
 }
 
 #local
-fn matching_command_names(string prefix): [string] {
+fn matching_command_names(string prefix, [extensions.extension_command_t] extension_commands): [string] {
     [string] result = vec<string>.cap_of(9)
     for command in builtin_command_names() {
         if prefix == '' || command.starts_with(prefix) {
             result.push(command)
         }
     }
+    // Extension commands follow the built-ins, deduplicated against them
+    // like Pi's autocomplete feed.
+    for ext_command in extension_commands {
+        if list_contains(builtin_command_names(), ext_command.name) {
+            continue
+        }
+        if list_contains(result, ext_command.name) {
+            continue
+        }
+        if prefix == '' || ext_command.name.starts_with(prefix) {
+            result.push(ext_command.name)
+        }
+    }
     return result
 }
 
+fn list_contains([string] values, string target): bool {
+    for value in values {
+        if value == target {
+            return true
+        }
+    }
+    return false
+}
+
 #local
-fn render_command_menu(string prefix, int selected_index, int width): [string]! {
+fn render_command_menu(string prefix, int selected_index, int width, [extensions.extension_command_t] extension_commands): [string]! {
     [string] result = vec<string>.cap_of(10)
-    var matches = matching_command_names(prefix)
+    var matches = matching_command_names(prefix, extension_commands)
     for index, command in matches {
-        string description = command_description(command)
+        string description = command_description(command, extension_commands)
         string line = index == selected_index ? theme.fg(theme.ACCENT, '→ ' + command) : '  ' + theme.fg(theme.TEXT, command)
         line += '  ' + theme.fg(theme.MUTED, description)
         result.push(text_utils.truncate_to_width(line, width, '...', false))
@@ -3245,7 +3280,12 @@ fn render_command_menu(string prefix, int selected_index, int width): [string]! 
 }
 
 #local
-fn command_description(string command): string {
+fn command_description(string command, [extensions.extension_command_t] extension_commands): string {
+    for ext_command in extension_commands {
+        if ext_command.name == command {
+            return ext_command.description
+        }
+    }
     if command == '/help' {return 'Show commands'}
     if command == '/settings' {return 'Open settings'}
     if command == '/scoped-models' {return 'Select configured models'}
