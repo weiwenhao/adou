@@ -1,0 +1,53 @@
+import adou.src.tui.fuzzy
+
+test 'fuzzy_match requires ordered characters like Pi' {
+    var result = fuzzy.fuzzy_match('abc', 'axbxc')
+    assert(result.matches)
+    assert(!fuzzy.fuzzy_match('abc', 'acb').matches)
+    assert(fuzzy.fuzzy_match('', 'anything').matches)
+    assert(!fuzzy.fuzzy_match('longer', 'short').matches)
+}
+
+test 'exact matches score best like Pi' {
+    var exact = fuzzy.fuzzy_match('openai', 'openai')
+    var partial = fuzzy.fuzzy_match('openai', 'open-ai-provider')
+    assert(exact.matches && partial.matches)
+    assert(exact.score < partial.score)
+}
+
+test 'word boundary and consecutive matches score better like Pi' {
+    var boundary = fuzzy.fuzzy_match('os', 'open-session')
+    var scattered = fuzzy.fuzzy_match('os', 'xyz-o-s')
+    assert(boundary.matches && scattered.matches)
+    // Both hits land on word boundaries in the scattered case, which the
+    // Pi scoring rewards more than the consecutive bonus.
+    assert(scattered.score < boundary.score)
+    var plain = fuzzy.fuzzy_match('os', 'opensesame')
+    assert(plain.score > boundary.score)
+}
+
+test 'alpha numeric swap fallback like Pi' {
+    var swapped = fuzzy.fuzzy_match('3openai', 'openai3')
+    assert(swapped.matches)
+}
+
+test 'fuzzy_filter_strings sorts by score and requires all tokens like Pi' {
+    [string] items = ['openai/gpt-5', 'anthropic/claude', 'openai/embed-3', 'deepseek']
+    var filtered = fuzzy.fuzzy_filter_strings(items, 'openai 3')
+    assert(filtered.len() == 1)
+    assert(filtered[0] == 'openai/embed-3')
+    var slash = fuzzy.fuzzy_filter_strings(items, 'openai/gpt')
+    assert(slash.len() == 1)
+    assert(slash[0] == 'openai/gpt-5')
+    var none = fuzzy.fuzzy_filter_strings(items, 'qxyz')
+    assert(none.len() == 0)
+    var all = fuzzy.fuzzy_filter_strings(items, '')
+    assert(all.len() == 4)
+}
+
+test 'fuzzy_filter_strings orders best matches first like Pi' {
+    [string] items = ['gpt-4', 'gpt-4-turbo', 'gpt-4o', 'gpt-3.5']
+    var filtered = fuzzy.fuzzy_filter_strings(items, 'gpt4')
+    assert(filtered.len() >= 2)
+    assert(filtered[0] == 'gpt-4')
+}

@@ -1,0 +1,161 @@
+import adou.src.json_util
+import strings
+
+// Port of vendors/pi/packages/tui/src/fuzzy.ts.
+// All query characters must appear in order; lower score is better.
+
+pub type fuzzy_match_t = struct {
+    bool matches
+    float score
+}
+
+pub fn fuzzy_match(string query, string text): fuzzy_match_t {
+    string query_lower = query.to_lower()
+    string text_lower = text.to_lower()
+    var primary = match_query(query_lower, text_lower)
+    if primary.matches {
+        return primary
+    }
+    // Alpha/numeric swap fallback: `openai3` matches `3openai`.
+    string swapped = ''
+    int digit_start = -1
+    int letter_start = -1
+    for int index = 0; index < query_lower.len(); index += 1 {
+        bool digit = query_lower[index] >= '0'.char() && query_lower[index] <= '9'.char()
+        bool letter = query_lower[index] >= 'a'.char() && query_lower[index] <= 'z'.char()
+        if digit && digit_start < 0 && letter_start < 0 {
+            digit_start = index
+        } else if letter && letter_start < 0 && digit_start >= 0 {
+            letter_start = index
+        }
+        if !digit && !letter && digit_start >= 0 {
+            break
+        }
+    }
+    if digit_start >= 0 && letter_start > digit_start && letter_start > 0 {
+        string letters = query_lower.slice(0, letter_start)
+        string digits = query_lower.slice(letter_start, query_lower.len())
+        swapped = digits + letters
+    } else if letter_start < 0 && digit_start > 0 {
+        string letters = query_lower.slice(0, digit_start)
+        string digits = query_lower.slice(digit_start, query_lower.len())
+        swapped = digits + letters
+    }
+    if swapped == '' {
+        return primary
+    }
+    var swapped_match = match_query(swapped, text_lower)
+    if !swapped_match.matches {
+        return primary
+    }
+    return fuzzy_match_t {matches: true, score: swapped_match.score + 5}
+}
+
+fn match_query(string query, string text): fuzzy_match_t {
+    if query == '' {
+        return fuzzy_match_t {matches: true, score: 0}
+    }
+    if query.len() > text.len() {
+        return fuzzy_match_t {matches: false, score: 0}
+    }
+    int query_index = 0
+    float score = 0.0
+    int last_match_index = -1
+    int consecutive_matches = 0
+    for int index = 0; index < text.len() && query_index < query.len(); index += 1 {
+        if text[index] == query[query_index] {
+            bool word_boundary = index == 0 || is_boundary_char(text[index - 1])
+            if last_match_index == index - 1 {
+                consecutive_matches += 1
+                score -= (consecutive_matches * 5) as float
+            } else {
+                consecutive_matches = 0
+                if last_match_index >= 0 {
+                    score += ((index - last_match_index - 1) * 2) as float
+                }
+            }
+            if word_boundary {
+                score -= 10
+            }
+            score += (index as float) * 0.1
+            last_match_index = index
+            query_index += 1
+        }
+    }
+    if query_index < query.len() {
+        return fuzzy_match_t {matches: false, score: 0}
+    }
+    if query == text {
+        score -= 100
+    }
+    return fuzzy_match_t {matches: true, score: score}
+}
+
+fn is_boundary_char(u8 byte): bool {
+    return byte == ' '.char() || byte == '-'.char() || byte == '_'.char() || byte == '/'.char() || byte == '.'.char() || byte == ':'.char()
+}
+
+pub type fuzzy_item_t = struct {
+    string text
+    float score
+    ref<any>? value = null
+}
+
+pub fn fuzzy_filter_strings([string] items, string query): [string] {
+    if query.trim([' ', '\t']) == '' {
+        return items
+    }
+    // Whitespace- and slash-separated tokens: all must match.
+    [string] tokens = []
+    string trimmed = query.trim([' ', '\t'])
+    string current = ''
+    for int cursor = 0; cursor < trimmed.len(); cursor += 1 {
+        if trimmed[cursor] == ' '.char() || trimmed[cursor] == '/'.char() {
+            if current != '' {
+                tokens.push(current)
+                current = ''
+            }
+        } else {
+            current += trimmed.slice(cursor, cursor + 1)
+        }
+    }
+    if current != '' {
+        tokens.push(current)
+    }
+    if tokens.len() == 0 {
+        return items
+    }
+    [fuzzy_item_t] scored = []
+    for item in items {
+        float total_score = 0.0
+        bool all_match = true
+        for token in tokens {
+            var token_match = fuzzy_match(token, item)
+            if token_match.matches {
+                total_score += token_match.score
+            } else {
+                all_match = false
+                break
+            }
+        }
+        if all_match {
+            scored.push(fuzzy_item_t {text: item, score: total_score})
+        }
+    }
+    // Stable insertion sort by score ascending.
+    for int index = 1; index < scored.len(); index += 1 {
+        var current = scored[index]
+        int cursor = index - 1
+        for cursor >= 0 && scored[cursor].score > current.score {
+            scored[cursor + 1] = scored[cursor]
+            cursor -= 1
+        }
+        scored[cursor + 1] = current
+    }
+    [string] result = []
+    for item in scored {
+        result.push(item.text)
+    }
+    return result
+}
+
