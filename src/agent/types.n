@@ -39,6 +39,14 @@ pub type agent_tool_t = struct {
     optional_prepare_arguments_fn prepare_arguments = null
     string execution_mode = EXECUTION_PARALLEL
     tool_executor_t executor
+    // Extension ToolDefinition surface: prompt hints and rendering metadata
+    // are carried but only consumed by future extension tool renderers.
+    string prompt_snippet
+    [string] prompt_guidelines = []
+    any constrained_sampling = false
+    string render_shell = 'default'
+    bool has_render_call
+    bool has_render_result
 }
 
 pub type context_t = struct {
