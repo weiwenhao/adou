@@ -54,19 +54,14 @@ pub fn set_many([trust_update_t] updates): void! {
     {string:any} object = read_object(file_path)
     for update in updates {
         string key = normalize(update.trust_path)
-        // Rebuild the map for every update: mutating a parsed map in place
-        // corrupts neighboring entries in the current toolchain.
-        {string:any} rebuilt = {}
-        for existing_key, value in object {
-            if !(update.remove && existing_key == key) {
-                rebuilt[existing_key] = value
+        if update.remove {
+            if object.contains(key) {
+                object.del(key)
             }
-        }
-        if !update.remove {
+        } else {
             bool value = update.decision
-            rebuilt[key] = value
+            object[key] = value
         }
-        object = rebuilt
     }
     write_object(file_path, object)
 }
