@@ -3,6 +3,7 @@ import adou.src.ai.types
 import adou.src.json_util
 import adou.src.tools.path_utils
 import adou.src.config.paths
+import adou.src.config.resolve_config_value
 import fs
 import json
 import os
@@ -79,10 +80,13 @@ pub fn read(string provider): string {
         return ''
     }
     if credential.contains('key') && credential['key'] is string {
-        return credential['key'] as string
+        string stored = credential['key'] as string
+        // Pi resolves `!command` / `$ENV` templates in stored credentials.
+        return resolve_config_value.resolve_config_value(stored)
     }
     if credential.contains('apiKey') && credential['apiKey'] is string {
-        return credential['apiKey'] as string
+        string stored = credential['apiKey'] as string
+        return resolve_config_value.resolve_config_value(stored)
     }
     return ''
 }

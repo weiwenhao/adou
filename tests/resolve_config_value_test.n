@@ -1,0 +1,47 @@
+import adou.src.config.resolve_config_value
+import syscall
+
+test 'literal and env template resolution like Pi' {
+    syscall.set_env('ADOU_TEST_KEY', 'secret-value')
+    assert(resolve_config_value.resolve_config_value('plain') == 'plain')
+    assert(resolve_config_value.resolve_config_value('$ADOU_TEST_KEY') == 'secret-value')
+    assert(resolve_config_value.resolve_config_value('pre-${ADOU_TEST_KEY}-post') == 'pre-secret-value-post')
+    syscall.set_env('ADOU_TEST_KEY', '')
+}
+
+test 'dollar escapes behave like Pi' {
+    assert(resolve_config_value.resolve_config_value('$$ADOU_TEST_KEY') == '$ADOU_TEST_KEY')
+    assert(resolve_config_value.resolve_config_value('$!ADOU_TEST_KEY') == '!ADOU_TEST_KEY')
+}
+
+test 'missing env references resolve to empty like Pi' {
+    syscall.set_env('ADOU_NOPE_VAR', '')
+    assert(resolve_config_value.resolve_config_value('$ADOU_NOPE_VAR') == '')
+    assert(resolve_config_value.resolve_config_value('x$ADOU_NOPE_VAR') == '')
+}
+
+test 'command values execute and cache like Pi' {
+    string value = resolve_config_value.resolve_config_value('!echo hello-world')
+    assert(value == 'hello-world')
+    // Cached: the command runs once.
+    string again = resolve_config_value.resolve_config_value('!echo hello-world')
+    assert(again == 'hello-world')
+    assert(resolve_config_value.is_command_config_value('!echo x'))
+    assert(!resolve_config_value.is_command_config_value('echo x'))
+}
+
+test 'configured checks track missing variables like Pi' {
+    syscall.set_env('ADOU_CFG_A', 'set')
+    syscall.set_env('ADOU_CFG_B', '')
+    assert(resolve_config_value.is_config_value_configured('$ADOU_CFG_A'))
+    assert(!resolve_config_value.is_config_value_configured('$ADOU_CFG_B'))
+    assert(resolve_config_value.is_config_value_configured('literal'))
+    syscall.set_env('ADOU_CFG_A', '')
+}
+
+test 'env var name extraction like Pi' {
+    var names = resolve_config_value.get_config_value_env_var_names('$A and ${B} and $A')
+    assert(names.len() == 2)
+    var none = resolve_config_value.get_config_value_env_var_names('!command')
+    assert(none.len() == 0)
+}

@@ -1,0 +1,201 @@
+import adou.src.tools.command
+import syscall
+
+// Port of vendors/pi/packages/coding-agent/src/core/resolve-config-value.ts.
+// Configuration values (API keys, header values) may be shell commands
+// (`!cmd`), environment templates ($VAR / ${VAR}, $$ and $! escapes) or
+// literals.
+
+pub fn is_command_config_value(string config): bool {
+    return config.starts_with('!')
+}
+
+pub fn get_config_value_env_var_names(string config): [string] {
+    [string] names = []
+    if config.starts_with('!') {
+        return names
+    }
+    int index = 0
+    for index < config.len() {
+        if config[index] != '$'.char() {
+            index += 1
+            continue
+        }
+        if index + 1 >= config.len() {
+            break
+        }
+        u8 next = config[index + 1]
+        if next == '$'.char() || next == '!'.char() {
+            index += 2
+            continue
+        }
+        if next == '{'.char() {
+            int end = find_from(config, '}', index + 2)
+            if end < 0 {
+                break
+            }
+            string name = config.slice(index + 2, end)
+            if valid_env_name(name) && !contains(names, name) {
+                names.push(name)
+            }
+            index = end + 1
+            continue
+        }
+        string name = env_name_prefix(config, index + 1)
+        if name != '' && !contains(names, name) {
+            names.push(name)
+        }
+        index += 1 + name.len()
+    }
+    return names
+}
+
+pub fn is_config_value_configured(string config): bool {
+    var names = get_config_value_env_var_names(config)
+    for name in names {
+        if syscall.get_env(name) == '' {
+            return false
+        }
+    }
+    return true
+}
+
+// Resolve a config value: run `!command` (cached), interpolate env vars, or
+// return the literal.  Returns '' when an env reference is missing.
+pub fn resolve_config_value(string config): string {
+    if config.starts_with('!') {
+        return execute_command(config.slice(1, config.len()))
+    }
+    string result = ''
+    int index = 0
+    for index < config.len() {
+        if config[index] != '$'.char() {
+            result += config.slice(index, index + 1)
+            index += 1
+            continue
+        }
+        if index + 1 >= config.len() {
+            result += '$'
+            break
+        }
+        u8 next = config[index + 1]
+        if next == '$'.char() || next == '!'.char() {
+            result += config.slice(index + 1, index + 2)
+            index += 2
+            continue
+        }
+        if next == '{'.char() {
+            int end = find_from(config, '}', index + 2)
+            if end < 0 {
+                result += '$'
+                index += 1
+                continue
+            }
+            string name = config.slice(index + 2, end)
+            if valid_env_name(name) {
+                string value = syscall.get_env(name)
+                if value == '' {
+                    return ''
+                }
+                result += value
+                index = end + 1
+                continue
+            }
+            result += config.slice(index, end + 1)
+            index = end + 1
+            continue
+        }
+        string name = env_name_prefix(config, index + 1)
+        if name != '' {
+            string value = syscall.get_env(name)
+            if value == '' {
+                return ''
+            }
+            result += value
+            index += 1 + name.len()
+            continue
+        }
+        result += '$'
+        index += 1
+    }
+    return result
+}
+
+// Cached shell command results, like Pi's commandResultCache.
+{string:string} command_cache = {}
+
+fn execute_command(string cmd): string {
+    if command_cache.contains(cmd) {
+        return command_cache[cmd]
+    }
+    var result = command.argv(syscall.get_env('HOME'), '/bin/sh', ['-c', cmd]) catch error {
+        command_cache[cmd] = ''
+        return ''
+    }
+    string value = result.stdout.trim([' ', '\t', '\n', '\r'])
+    command_cache[cmd] = value
+    return value
+}
+
+fn valid_env_name(string name): bool {
+    if name == '' {
+        return false
+    }
+    u8 first = name[0]
+    bool ok = first >= 'A'.char() && first <= 'Z'.char()
+    ok = ok || first >= 'a'.char() && first <= 'z'.char()
+    ok = ok || first == '_'.char()
+    if !ok {
+        return false
+    }
+    for int index = 1; index < name.len(); index += 1 {
+        u8 byte = name[index]
+        bool member = byte >= 'A'.char() && byte <= 'Z'.char()
+        member = member || byte >= 'a'.char() && byte <= 'z'.char()
+        member = member || byte >= '0'.char() && byte <= '9'.char()
+        member = member || byte == '_'.char()
+        if !member {
+            return false
+        }
+    }
+    return true
+}
+
+fn env_name_prefix(string config, int start): string {
+    int cursor = start
+    for cursor < config.len() {
+        u8 byte = config[cursor]
+        bool member = byte >= 'A'.char() && byte <= 'Z'.char()
+        member = member || byte >= 'a'.char() && byte <= 'z'.char()
+        member = member || byte >= '0'.char() && byte <= '9'.char()
+        member = member || byte == '_'.char()
+        if cursor == start {
+            member = byte >= 'A'.char() && byte <= 'Z'.char()
+            member = member || byte >= 'a'.char() && byte <= 'z'.char()
+            member = member || byte == '_'.char()
+        }
+        if !member {
+            break
+        }
+        cursor += 1
+    }
+    return config.slice(start, cursor)
+}
+
+fn find_from(string content, string needle, int start): int {
+    for int cursor = start; cursor + needle.len() <= content.len(); cursor += 1 {
+        if content.slice(cursor, cursor + needle.len()) == needle {
+            return cursor
+        }
+    }
+    return -1
+}
+
+fn contains([string] values, string target): bool {
+    for value in values {
+        if value == target {
+            return true
+        }
+    }
+    return false
+}
