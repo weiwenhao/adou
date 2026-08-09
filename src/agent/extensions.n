@@ -1,8 +1,30 @@
+import adou.src.agent.types as agent_types
 import adou.src.context.skills
+import adou.src.tools.types as tool_types
+import adou.src.ai.abort
 
 // Extension interface surface (vendors/pi/packages/coding-agent/src/core/
 // extensions/types.ts).  Types and registration collections are kept so
 // extensions can bind; concrete extension implementations are out of scope.
+
+pub type extension_tool_execute_fn = fn(string call_id, any arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t!
+
+// Implements the agent tool executor interface by delegating to the
+// extension-provided callback.
+pub type extension_tool_executor_t: agent_types.tool_executor_t = struct {
+    extension_tool_execute_fn execute_fn
+}
+
+pub fn extension_tool_executor_t.execute(&self, string call_id, any arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+    return self.execute_fn(call_id, arguments, cancellation, on_update)
+}
+
+pub type extension_handler_fn = fn(any event, any context)
+
+pub type extension_handler_registration_t = struct {
+    string event
+    extension_handler_fn handler
+}
 
 pub type extension_error_t = struct {
     string extension_path
@@ -37,7 +59,10 @@ pub type extension_tool_t = struct {
     string description
     any parameters
     skills.source_info_t source_info
+    extension_tool_execute_fn? execute_fn = null
 }
+
+pub type optional_extension_tool_execute_fn = extension_tool_execute_fn|null
 
 pub type extension_t = struct {
     string path
@@ -47,6 +72,7 @@ pub type extension_t = struct {
     [extension_command_t] commands = []
     [extension_flag_t] flags = []
     [extension_shortcut_t] shortcuts = []
+    [extension_handler_registration_t] handlers = []
 }
 
 pub type extension_load_error_t = struct {
@@ -70,8 +96,8 @@ pub fn new_extension(string path, string resolved_path, skills.source_info_t sou
     return new extension_t(path = path, resolved_path = resolved_path, source_info = source_info)
 }
 
-pub fn extension_t.register_tool(&self, string name, string label, string description, any parameters, skills.source_info_t source_info) {
-    self.tools.push(extension_tool_t {name: name, label: label, description: description, parameters: parameters, source_info: source_info})
+pub fn extension_t.register_tool(&self, string name, string label, string description, any parameters, skills.source_info_t source_info, optional_extension_tool_execute_fn execute_fn) {
+    self.tools.push(extension_tool_t {name: name, label: label, description: description, parameters: parameters, source_info: source_info, execute_fn: execute_fn})
 }
 
 pub fn extension_t.register_command(&self, string name, string description, skills.source_info_t source_info) {
@@ -84,4 +110,18 @@ pub fn extension_t.register_flag(&self, string name, string description, string 
 
 pub fn extension_t.register_shortcut(&self, string shortcut, string description) {
     self.shortcuts.push(extension_shortcut_t {shortcut: shortcut, description: description, extension_path: self.path})
+}
+
+pub fn extension_t.on(&self, string event, extension_handler_fn handler) {
+    self.handlers.push(extension_handler_registration_t {event: event, handler: handler})
+}
+
+pub fn extension_t.handlers_for(&self, string event): [extension_handler_fn] {
+    [extension_handler_fn] result = []
+    for registration in self.handlers {
+        if registration.event == event {
+            result.push(registration.handler)
+        }
+    }
+    return result
 }

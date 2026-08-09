@@ -3,7 +3,7 @@ import adou.src.context.skills
 
 test 'extension registration collections mirror Pi shapes' {
     var ext = extensions.new_extension('/tmp/ext', '/tmp/ext', skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/tmp/ext'})
-    ext.register_tool('my-tool', 'My Tool', 'Does things', null, ext.source_info)
+    ext.register_tool('my-tool', 'My Tool', 'Does things', null, ext.source_info, null)
     ext.register_command('my-command', 'Runs the command', ext.source_info)
     ext.register_flag('verbose', 'Verbose mode', 'boolean', 'false')
     ext.register_shortcut('ctrl+shift+m', 'Toggle mode')

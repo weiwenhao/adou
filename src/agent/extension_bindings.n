@@ -1,0 +1,18 @@
+import adou.src.agent.extensions
+import adou.src.agent.types as agent_types
+
+// Bind extension registrations into the agent runtime: extension tools
+// become agent tools with the extension executor, commands and providers are
+// handed to the caller for registration.
+
+pub fn bind_extension_tools([extensions.extension_tool_t] tools): [ref<agent_types.agent_tool_t>] {
+    [ref<agent_types.agent_tool_t>] result = []
+    for tool in tools {
+        if tool.execute_fn is extensions.extension_tool_execute_fn fn_value {
+            var executor = new extensions.extension_tool_executor_t(execute_fn = fn_value)
+            var agent_tool = new agent_types.agent_tool_t(name = tool.name, label = tool.label, description = tool.description, parameters = tool.parameters, execution_mode = agent_types.EXECUTION_SEQUENTIAL, executor = executor)
+            result.push(agent_tool)
+        }
+    }
+    return result
+}

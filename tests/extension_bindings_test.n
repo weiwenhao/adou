@@ -1,0 +1,25 @@
+import adou.src.agent.extension_bindings
+import adou.src.agent.extensions
+import adou.src.agent.types as agent_types
+import adou.src.ai.abort
+import adou.src.context.skills
+import adou.src.tools.types as tool_types
+
+test 'extension tools bind to agent tools with the extension executor' {
+    var ext = extensions.new_extension('/tmp/ext', '/tmp/ext', skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/tmp/ext'})
+    int executed = 0
+    agent_types.tool_update_fn noop_update = fn(tool_types.tool_result_t result) {
+    }
+    extensions.extension_tool_execute_fn execute_fn = fn(string call_id, any arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+        executed += 1
+        return tool_types.text_result('ran')
+    }
+    ext.register_tool('ext-tool', 'Ext Tool', 'Runs', null, ext.source_info, execute_fn)
+    var agent_tools = extension_bindings.bind_extension_tools(ext.tools)
+    assert(agent_tools.len() == 1)
+    assert(agent_tools[0].name == 'ext-tool')
+    // Execute through the bound executor.
+    var result = agent_tools[0].executor.execute('call-1', null, abort.new(), noop_update)
+    assert(executed == 1)
+    assert(result.content.len() == 1)
+}
