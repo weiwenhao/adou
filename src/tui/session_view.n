@@ -19,6 +19,7 @@ import adou.src.debug
 import adou.src.json_util
 import adou.src.session.message_json
 import adou.src.session.identity
+import adou.src.session.cache_stats
 import adou.src.session.export_html as session_export
 import adou.src.session.repository
 import adou.src.session.types as session_types
@@ -1380,6 +1381,16 @@ pub fn view_t.show_session_info_overlay(&self, repository.stats_t stats) {
     ]
     if stats.usage.cost.total > 0.0 {
         options.append(['', 'Cost', 'Total: ' + fmt.sprintf('$%.3f', stats.usage.cost.total)])
+    }
+    var cache_waste = cache_stats.compute_cache_waste(self.runner.repository.get_entries())
+    if cache_waste.missed_tokens > 0 {
+        string miss_label = cache_waste.miss_count == 1 ? '1 miss' : fmt.sprintf('%d misses', cache_waste.miss_count)
+        string detail = fmt.sprintf('%d tokens, %s', cache_waste.missed_tokens, miss_label)
+        if cache_waste.missed_cost >= 0.0001 {
+            options.append(['', 'Cache Re-billed: ' + fmt.sprintf('$%.3f', cache_waste.missed_cost) + ' (' + detail + ')'])
+        } else {
+            options.append(['', 'Cache Re-billed: ' + detail])
+        }
     }
     if stats.context_window > 0 {
         options.append(['', 'Context', fmt.sprintf('Current: %d / %d', stats.context_tokens, stats.context_window)])
