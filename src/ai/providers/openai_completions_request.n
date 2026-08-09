@@ -1,3 +1,4 @@
+import adou.src.ai.deferred_tools
 import adou.src.ai.types
 import adou.src.ai.providers.decorators
 import adou.src.ai.ids
@@ -21,7 +22,13 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
         body['max_tokens'] = output_tokens
     }
     if context.tools.len() > 0 {
-        body['tools'] = convert_tools(context.tools)
+        // Kimi's deferredToolsMode keeps tools announced by addedToolNames
+        // out of the request until their first tool result activates them.
+        [ref<types.tool_t>] request_tools = context.tools
+        if model.provider == 'kimi-coding' {
+            request_tools = deferred_tools.filter_deferred_tools(context.tools, deferred_tools.deferred_tool_names(context.messages))
+        }
+        body['tools'] = convert_tools(request_tools)
     } else if has_tool_history(context) {
         // Pi keeps an explicit empty tools array when replaying tool history.
         // Some OpenAI-compatible gateways reject tool-call messages unless

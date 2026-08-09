@@ -1,0 +1,42 @@
+import adou.src.ai.deferred_tools
+import adou.src.ai.types
+
+test 'split_deferred_tools keeps activated tools immediate like Pi' {
+    var tool_a = new types.tool_t(name = 'a', description = 'A', parameters = null)
+    var tool_b = new types.tool_t(name = 'b', description = 'B', parameters = null)
+    var context = new types.context_t(tools = [tool_a, tool_b])
+    // A tool result announced 'b' as added; nothing used it yet.
+    var result = new types.tool_result_message_t(tool_call_id = 'c1', tool_name = 'a', is_error = false, timestamp = 1)
+    result.added_tool_names.push('b')
+    types.message_t message = result
+    context.messages.push(message)
+    var split = deferred_tools.split_deferred_tools(context, true)
+    assert(split.immediate.len() == 1)
+    assert(split.immediate[0].name == 'a')
+    assert(split.deferred.contains('b'))
+}
+
+test 'split_deferred_tools with disabled keeps everything immediate like Pi' {
+    var tool_a = new types.tool_t(name = 'a', description = 'A', parameters = null)
+    var context = new types.context_t(tools = [tool_a])
+    var split = deferred_tools.split_deferred_tools(context, false)
+    assert(split.immediate.len() == 1)
+    assert(split.deferred.len() == 0)
+}
+
+test 'kimi deferred tool names come from addedToolNames like Pi' {
+    var first = new types.tool_result_message_t(tool_call_id = 'c1', tool_name = 'read', is_error = false, timestamp = 1)
+    first.added_tool_names.push('bash')
+    first.added_tool_names.push('edit')
+    types.message_t message = first
+    [types.message_t] messages = [message]
+    var names = deferred_tools.deferred_tool_names(messages)
+    assert(names.contains('bash'))
+    assert(names.contains('edit'))
+    var tool_bash = new types.tool_t(name = 'bash', description = 'B', parameters = null)
+    var tool_read = new types.tool_t(name = 'read', description = 'R', parameters = null)
+    [ref<types.tool_t>] tools = [tool_bash, tool_read]
+    var filtered = deferred_tools.filter_deferred_tools(tools, names)
+    assert(filtered.len() == 1)
+    assert(filtered[0].name == 'read')
+}

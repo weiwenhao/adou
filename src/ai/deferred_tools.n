@@ -1,0 +1,76 @@
+import adou.src.ai.types
+import adou.src.json_util
+
+// Port of vendors/pi/packages/ai/src/utils/deferred-tools.ts.
+// Tools loaded mid-conversation (addedToolNames on tool results) are kept
+// out of the request until their first tool result activates them.
+
+pub type deferred_split_t = struct {
+    [ref<types.tool_t>] immediate = []
+    {string:ref<types.tool_t>} deferred = {}
+}
+
+pub fn split_deferred_tools(ref<types.context_t> context, bool enabled): deferred_split_t {
+    deferred_split_t result = deferred_split_t {}
+    {string:ref<types.tool_t>} unique = {}
+    for tool in context.tools {
+        if !unique.contains(tool.name) {
+            unique[tool.name] = tool
+        }
+    }
+    if !enabled {
+        for name, tool in unique {
+            result.immediate.push(tool)
+        }
+        return result
+    }
+    {string:bool} deferred_names = {}
+    {string:bool} used_names = {}
+    for message in context.messages {
+        if message is ref<types.assistant_message_t> assistant {
+            for block in assistant.content {
+                if block is ref<types.tool_call_t> call {
+                    used_names[call.name] = true
+                }
+            }
+        } else if message is ref<types.tool_result_message_t> tool_result {
+            for name in tool_result.added_tool_names {
+                if !used_names.contains(name) {
+                    deferred_names[name] = true
+                }
+            }
+        }
+    }
+    for name, tool in unique {
+        if deferred_names.contains(name) {
+            result.deferred[name] = tool
+        } else {
+            result.immediate.push(tool)
+        }
+    }
+    return result
+}
+
+// Kimi's deferredToolsMode: tool names announced by addedToolNames in the
+// history are excluded from the current request.
+pub fn deferred_tool_names([types.message_t] messages): {string:bool} {
+    {string:bool} names = {}
+    for message in messages {
+        if message is ref<types.tool_result_message_t> tool_result {
+            for name in tool_result.added_tool_names {
+                names[name] = true
+            }
+        }
+    }
+    return names
+}
+
+pub fn filter_deferred_tools([ref<types.tool_t>] tools, {string:bool} deferred_names): [ref<types.tool_t>] {
+    [ref<types.tool_t>] result = []
+    for tool in tools {
+        if !deferred_names.contains(tool.name) {
+            result.push(tool)
+        }
+    }
+    return result
+}
