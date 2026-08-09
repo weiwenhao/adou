@@ -1,6 +1,7 @@
 import adou.src.ai.types as ai_types
 import adou.src.json_util
 import adou.src.session.ansi_to_html
+import adou.src.session.export_markdown
 import adou.src.session.message_json
 import adou.src.session.repository
 import adou.src.session.types as session_types
@@ -46,7 +47,7 @@ fn render_message(ai_types.message_t message): string {
         string content = ''
         for block in assistant.content {
             if block is ref<ai_types.text_content_t> text {
-                content += '<pre>' + escape(text.text) + '</pre>'
+                content += export_markdown.render_markdown(text.text)
             } else if block is ref<ai_types.thinking_content_t> thinking {
                 content += '<details class="thinking"><summary>Thinking</summary><pre>' + escape(thinking.thinking) + '</pre></details>'
             } else if block is ref<ai_types.tool_call_t> call {

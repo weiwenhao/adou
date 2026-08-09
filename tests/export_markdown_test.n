@@ -1,0 +1,28 @@
+import adou.src.session.export_markdown
+
+test 'inline code and bold render like a marked subset' {
+    string html = export_markdown.render_inline('use `code` and **bold** here')
+    assert(html.find('<code>code</code>') >= 0)
+    assert(html.find('<strong>bold</strong>') >= 0)
+    assert(html.find('&lt;') < 0)
+}
+
+test 'headings and lists render structurally' {
+    string html = export_markdown.render_markdown('# Title\n\n## Sub\n\n- item one\n- item two')
+    assert(html.find('<h1>Title</h1>') >= 0)
+    assert(html.find('<h2>Sub</h2>') >= 0)
+    assert(html.find('<li>item one</li>') >= 0)
+    assert(html.find('<li>item two</li>') >= 0)
+}
+
+test 'fenced code blocks escape their content' {
+    string html = export_markdown.render_markdown('```\nif a < b {\n  run()\n}\n```')
+    assert(html.find('<pre><code>') >= 0)
+    assert(html.find('if a &lt; b {') >= 0)
+    assert(html.find('run()') >= 0)
+}
+
+test 'plain text becomes paragraphs with escaped html' {
+    string html = export_markdown.render_markdown('hello <world>')
+    assert(html.find('<p>hello &lt;world&gt;</p>') >= 0)
+}

@@ -1,0 +1,126 @@
+import adou.src.session.ansi_to_html
+import strings
+
+// Minimal markdown -> HTML for exports (Pi uses marked + highlight.js;
+// Nature has no DOM, so a faithful subset keeps exports readable).
+
+pub fn escape_text(string text): string {
+    string result = text
+    result = result.replace('&', '&amp;')
+    result = result.replace('<', '&lt;')
+    result = result.replace('>', '&gt;')
+    result = result.replace('"', '&quot;')
+    return result
+}
+
+pub fn render_inline(string text): string {
+    // Code spans first so their content is not treated as formatting.
+    string result = ''
+    int cursor = 0
+    for cursor < text.len() {
+        if text[cursor] == '`'.char() {
+            int close = find_from(text, '`', cursor + 1)
+            if close > cursor {
+                result += '<code>' + escape_text(text.slice(cursor + 1, close)) + '</code>'
+                cursor = close + 1
+                continue
+            }
+        }
+        result += escape_text(text.slice(cursor, cursor + 1))
+        cursor += 1
+    }
+    // Bold and emphasis on the escaped text.
+    result = replace_bold(result)
+    return replace_emphasis(result)
+}
+
+pub fn render_markdown(string content): string {
+    [string] lines = content.split('\n')
+    string result = ''
+    int index = 0
+    bool in_code_block = false
+    for index < lines.len() {
+        string line = lines[index]
+        if line.starts_with('```') {
+            if !in_code_block {
+                in_code_block = true
+                result += '<pre><code>'
+            } else {
+                in_code_block = false
+                result += '</code></pre>\n'
+            }
+            index += 1
+            continue
+        }
+        if in_code_block {
+            result += escape_text(line) + '\n'
+            index += 1
+            continue
+        }
+        string trimmed = line.trim([' ', '\t'])
+        if trimmed.starts_with('### ') {
+            result += '<h3>' + render_inline(trimmed.slice(4, trimmed.len())) + '</h3>\n'
+        } else if trimmed.starts_with('## ') {
+            result += '<h2>' + render_inline(trimmed.slice(3, trimmed.len())) + '</h2>\n'
+        } else if trimmed.starts_with('# ') {
+            result += '<h1>' + render_inline(trimmed.slice(2, trimmed.len())) + '</h1>\n'
+        } else if trimmed.starts_with('- ') || trimmed.starts_with('* ') {
+            result += '<li>' + render_inline(trimmed.slice(2, trimmed.len())) + '</li>\n'
+        } else if trimmed == '' {
+            result += '<br>\n'
+        } else {
+            result += '<p>' + render_inline(line) + '</p>\n'
+        }
+        index += 1
+    }
+    if in_code_block {
+        result += '</code></pre>\n'
+    }
+    return result
+}
+
+fn replace_bold(string text): string {
+    // **bold** spans.
+    string result = ''
+    int cursor = 0
+    for cursor < text.len() {
+        if cursor + 1 < text.len() && text[cursor] == '*'.char() && text[cursor + 1] == '*'.char() {
+            int close = find_from(text, '**', cursor + 2)
+            if close > cursor + 1 {
+                result += '<strong>' + text.slice(cursor + 2, close) + '</strong>'
+                cursor = close + 2
+                continue
+            }
+        }
+        result += text.slice(cursor, cursor + 1)
+        cursor += 1
+    }
+    return result
+}
+
+fn replace_emphasis(string text): string {
+    string result = ''
+    int cursor = 0
+    for cursor < text.len() {
+        if text[cursor] == '*'.char() {
+            int close = find_from(text, '*', cursor + 1)
+            if close > cursor {
+                result += '<em>' + text.slice(cursor + 1, close) + '</em>'
+                cursor = close + 1
+                continue
+            }
+        }
+        result += text.slice(cursor, cursor + 1)
+        cursor += 1
+    }
+    return result
+}
+
+fn find_from(string content, string needle, int start): int {
+    for int cursor = start; cursor + needle.len() <= content.len(); cursor += 1 {
+        if content.slice(cursor, cursor + needle.len()) == needle {
+            return cursor
+        }
+    }
+    return -1
+}
