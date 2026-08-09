@@ -40,6 +40,11 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
     if context.tools.len() > 0 {
         body['tools'] = convert_tools(context.tools)
     }
+    // Pi sends promptMode:"reasoning" for reasoning models with thinking
+    // enabled; without it Mistral reasoning models fall back to plain mode.
+    if model.reasoning && options.reasoning_effort != '' && options.reasoning_effort != 'off' {
+        body['promptMode'] = 'reasoning'
+    }
     if options.reasoning_effort != '' {
         body['reasoning_effort'] = options.reasoning_effort
     }

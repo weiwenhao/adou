@@ -65,9 +65,11 @@ pub fn sanitizer_t.clean(&self, [u8] value): [u8] {
                 self.state = SANITIZE_CSI
             } else if byte == 0x9c {
                 // String terminator outside a string: discard it.
-            } else if byte == 0x09 || byte == 0x0a || byte == 0x0d || byte >= 0x20 {
+            } else if byte == 0x09 || byte == 0x0a || byte >= 0x20 {
                 output.push(byte)
             }
+            // Pi strips carriage returns from captured output
+            // (shell-output.ts sanitizeBinaryOutput + replace(/\r/g, "")).
             continue
         }
         if self.state == SANITIZE_ESC {
