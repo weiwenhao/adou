@@ -31,3 +31,16 @@ pub fn calculate_cost(ref<types.model_t> model, types.usage_t usage): types.usag
     usage.cost.total = usage.cost.input + usage.cost.output + usage.cost.cache_read + usage.cost.cache_write
     return usage
 }
+
+// Pi's modelsAreEqual: identity by id + provider.
+pub fn models_are_equal(ref<types.model_t>? a, ref<types.model_t>? b): bool {
+    if a is null || b is null {
+        return false
+    }
+    if a is ref<types.model_t> left {
+        if b is ref<types.model_t> right {
+            return left.id == right.id && left.provider == right.provider
+        }
+    }
+    return false
+}

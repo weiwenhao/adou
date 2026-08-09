@@ -92,3 +92,12 @@ test 'auth resolution prefers stored credentials then env' {
     assert(!auth.is_configured('deepseek'))
     os.rmdir(home, true)
 }
+
+test 'models_are_equal matches Pi identity semantics' {
+    var a = new types.model_t(id = 'm', provider = 'deepseek')
+    var b = new types.model_t(id = 'm', provider = 'deepseek')
+    var c = new types.model_t(id = 'm', provider = 'openai')
+    assert(models.models_are_equal(a, b))
+    assert(!models.models_are_equal(a, c))
+    assert(!models.models_are_equal(a, null))
+}
