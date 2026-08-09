@@ -12,6 +12,7 @@ import adou.src.config.trust as trust
 import adou.src.config.types
 import adou.src.context.project
 import adou.src.context.prompt_templates
+import adou.src.context.git_paths
 import adou.src.context.skills
 import adou.src.context.system_prompt
 import adou.src.debug
@@ -1576,6 +1577,15 @@ fn authenticated_provider_count(ref<session.runner_t> runner): int {
 
 #local
 fn detect_git_branch(string cwd): string {
+    // Prefer the CLI-free metadata walk (Pi findGitPaths + HEAD parsing);
+    // fall back to git branch --show-current when git is available.
+    var paths = git_paths.find_git_paths(cwd)
+    if paths is ref<git_paths.git_paths_t> found {
+        string branch = git_paths.read_head_branch(found.head_path)
+        if branch != '' {
+            return branch
+        }
+    }
     var result = command.argv(cwd, '/usr/bin/git', ['branch', '--show-current']) catch error {return ''}
     if result.exit_code != 0 {
         return ''

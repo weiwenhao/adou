@@ -1,0 +1,40 @@
+import adou.src.context.git_paths
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+pub fn write_file(string file_path, string content): void! {
+    var parent = path.dir(file_path)
+    os.mkdirs(parent, 0o700)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644) catch error {
+        throw error
+    }
+    file.write(content as [u8])
+    file.close()
+}
+
+test 'detect_git_branch resolves from the HEAD file without git' {
+    // A bare repo with .git/HEAD; no git binary involvement needed.
+    string root = path.join('/tmp', 'adou-git-detect-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    write_file(path.join(root, '.git', 'HEAD'), 'ref: refs/heads/main\n') catch error {}
+    var paths = git_paths.find_git_paths(root)
+    assert(paths is ref<git_paths.git_paths_t>)
+    if paths is ref<git_paths.git_paths_t> found {
+        assert(git_paths.read_head_branch(found.head_path) == 'main')
+    }
+    os.rmdir(root, true)
+}
+
+test 'detect_git_branch handles detached heads like Pi' {
+    string root = path.join('/tmp', 'adou-git-detect-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    write_file(path.join(root, '.git', 'HEAD'), 'abc123def456\n') catch error {}
+    var paths = git_paths.find_git_paths(root)
+    assert(paths is ref<git_paths.git_paths_t>)
+    if paths is ref<git_paths.git_paths_t> found {
+        assert(git_paths.read_head_branch(found.head_path) == '')
+    }
+    os.rmdir(root, true)
+}
