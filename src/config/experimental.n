@@ -1,0 +1,7 @@
+import syscall
+
+// Port of vendors/pi/packages/coding-agent/src/core/experimental.ts.
+
+pub fn are_experimental_features_enabled(): bool {
+    return syscall.get_env('PI_EXPERIMENTAL') == '1'
+}
