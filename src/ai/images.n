@@ -1,10 +1,22 @@
 import adou.src.ai.providers.openrouter_images
 import adou.src.ai.images_models
 import adou.src.ai.types
+import adou.src.ai.env_api_keys
+import adou.src.config.auth as credential_store
 
 // Pi's images facade: resolve the registered API provider and generate.
 // The runtime registry lets extensions register images APIs (Pi
 // images-api-registry.ts); the built-in registry carries OpenRouter.
+
+// Pi ImagesModels.getAuth: a stored credential wins, then the provider's
+// known env var; image providers follow the same resolution as chat.
+pub fn resolve_images_api_key(string provider): string {
+    var stored = credential_store.read(provider)
+    if stored != '' {
+        return stored
+    }
+    return env_api_keys.get_env_api_key(provider)
+}
 
 pub type images_generate_fn = fn(images_models.image_model_t model, openrouter_images.images_context_t context, string api_key, int timeout_ms): ref<openrouter_images.assistant_images_t>
 

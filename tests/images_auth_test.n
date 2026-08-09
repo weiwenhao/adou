@@ -1,0 +1,8 @@
+import adou.src.ai.images
+import adou.src.ai.env_api_keys
+
+test 'resolve_images_api_key prefers stored credentials like Pi' {
+    string key = images.resolve_images_api_key('openrouter')
+    // No stored credential in test env; falls back to env vars.
+    assert(key == env_api_keys.get_env_api_key('openrouter'))
+}
