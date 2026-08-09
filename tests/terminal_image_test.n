@@ -10,18 +10,6 @@ pub fn base64_of([u8] bytes): string {
     return encoded as string
 }
 
-pub fn bytes_equal(string left, string right): bool {
-    if left.len() != right.len() {
-        return false
-    }
-    for int index = 0; index < left.len(); index += 1 {
-        if left[index] != right[index] {
-            return false
-        }
-    }
-    return true
-}
-
 pub fn repeat_char(string char, int count): string {
     string result = ''
     for int index = 0; index < count; index += 1 {
@@ -37,14 +25,14 @@ test 'kitty encoding splits chunks like Pi' {
     assert(encoded.contains('\x1b_Gm=1;'))
     string expected_tail = '\x1b_Gm=0;' + data.slice(8192, 9000) + '\x1b\\'
     string actual_tail = encoded.slice(encoded.len() - expected_tail.len(), encoded.len())
-    assert(bytes_equal(actual_tail, expected_tail))
+    assert(actual_tail == expected_tail)
     string small = terminal_image.encode_kitty('abc', 5, 3, 7, false)
-    assert(bytes_equal(small, '\x1b_Ga=T,f=100,q=2,C=1,c=5,r=3,i=7;abc\x1b\\'))
+    assert(small == '\x1b_Ga=T,f=100,q=2,C=1,c=5,r=3,i=7;abc\x1b\\')
 }
 
 test 'kitty delete sequences like Pi' {
-    assert(bytes_equal(terminal_image.delete_kitty_image(42), '\x1b_Ga=d,d=I,i=42,q=2\x1b\\'))
-    assert(bytes_equal(terminal_image.delete_all_kitty_images(), '\x1b_Ga=d,d=A,q=2\x1b\\'))
+    assert(terminal_image.delete_kitty_image(42) == '\x1b_Ga=d,d=I,i=42,q=2\x1b\\')
+    assert(terminal_image.delete_all_kitty_images() == '\x1b_Ga=d,d=A,q=2\x1b\\')
 }
 
 test 'iterm2 encoding like Pi' {
