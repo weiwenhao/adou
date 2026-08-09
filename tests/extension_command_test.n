@@ -1,0 +1,166 @@
+// Extension command execution: JS command handlers bound through
+// registerCommand, the runner/TUI entry point, error reporting for unknown
+// commands and throwing handlers, and host lifecycle events reaching JS
+// handlers with the command read-back pattern.
+import adou.src.agent.extension_js
+import adou.src.agent.extension_runner
+import adou.src.agent.extensions
+import adou.src.context.skills
+import fs
+import fmt
+import os
+import path
+import strings
+import syscall
+
+fn write_extension_file(string file_path, string content): string! {
+    os.mkdirs(path.dir(file_path), 0o700)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    int written = file.write(content as [u8])
+    file.close()
+    assert(written == content.len())
+    return file_path
+}
+
+fn extension_source_info(string dir): skills.source_info_t {
+    return skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: dir,}
+}
+
+fn unique_dir(string name): string {
+    int pid = syscall.getpid() catch error {0}
+    return '/tmp/adou-extension-command-test-' + name + '-' + fmt.sprintf('%d', pid)
+}
+
+fn load_extension_runner(string dir, string script): ref<extension_runner.extension_runner_t>! {
+    string file_path = write_extension_file(path.join(dir, 'ext.js'), script)
+    var js = extension_js.extension_js_new()
+    var ext = js.load(file_path, extension_source_info(dir))
+    var runner = extension_runner.new_runner()
+    runner.add_extension(ext)
+    return runner
+}
+
+test 'command handler executes with arguments and returns its result' {
+    string dir = unique_dir('echo')
+    var runner = load_extension_runner(dir, "adou.registerCommand({name: 'echo', description: 'Echo the arguments', handler: function (args) { return 'echo:' + args }})")
+    var commands = runner.get_registered_commands()
+    assert(commands.len() == 1)
+    assert(commands[0].name == 'echo')
+    assert(!(commands[0].execute_fn is null))
+    assert(extension_js.call_command_handler(runner.extensions[0], 'echo', 'hello world') == 'echo:hello world')
+    assert(runner.run_command('echo', 'again') == 'echo:again')
+}
+
+test 'unknown command reports an explicit error' {
+    string dir = unique_dir('unknown')
+    var runner = load_extension_runner(dir, "adou.registerCommand({name: 'known', description: 'Registered', handler: function () { return 'ok' }})")
+    bool failed = false
+    try {
+        var result = extension_js.call_command_handler(runner.extensions[0], 'missing', '')
+        assert(result == '')
+    } catch error {
+        failed = true
+        assert(error.msg().find('missing') >= 0)
+    }
+    assert(failed)
+    bool runner_failed = false
+    try {
+        var other = runner.run_command('missing', '')
+        assert(other == '')
+    } catch error {
+        runner_failed = true
+        assert(error.msg().find('not found') >= 0)
+    }
+    assert(runner_failed)
+}
+
+test 'command registered without a handler reports an explicit error' {
+    string dir = unique_dir('no-handler')
+    var runner = load_extension_runner(dir, "adou.registerCommand({name: 'static-only', description: 'No handler attached'})")
+    assert(runner.extensions[0].commands.len() == 1)
+    assert(runner.extensions[0].commands[0].execute_fn is null)
+    bool failed = false
+    try {
+        var result = runner.run_command('static-only', '')
+        assert(result == '')
+    } catch error {
+        failed = true
+        assert(error.msg().find('handler') >= 0)
+    }
+    assert(failed)
+}
+
+test 'throwing command handler surfaces the error string without crashing' {
+    string dir = unique_dir('throws')
+    var runner = load_extension_runner(dir, "adou.registerCommand({name: 'boom', description: 'Throws', handler: function () { throw new Error('boom message') }})")
+    bool failed = false
+    try {
+        var result = runner.run_command('boom', '')
+        assert(result == '')
+    } catch error {
+        failed = true
+        assert(error.msg().find('boom message') >= 0)
+    }
+    assert(failed)
+    // The runtime stays usable after a throwing handler.
+    string recovered = runner.run_command('boom', '') catch error {'<threw>'}
+    assert(recovered == '<threw>')
+}
+
+test 'host lifecycle events reach js handlers and the side effect is read back' {
+    string dir = unique_dir('events')
+    [string] lines = [
+        'let sessionCount = 0',
+        'let toolCallCount = 0',
+        'let toolResultCount = 0',
+        "adou.on('session_start', function (eventJson) { sessionCount += 1 })",
+        "adou.on('tool_call', function (eventJson) { toolCallCount += 1 })",
+        "adou.on('tool_result', function (eventJson) { toolResultCount += 1 })",
+        "adou.registerCommand({name: 'counts', description: 'Event counts', handler: function () { return 'sessions=' + sessionCount + ' calls=' + toolCallCount + ' results=' + toolResultCount }})",
+    ]
+    string script = strings.join(lines, '\n')
+    var runner = load_extension_runner(dir, script)
+    {string:any} session_data = {}
+    session_data['type'] = 'session_start'
+    session_data['reason'] = 'turn'
+    {string:any} call_data = {}
+    call_data['type'] = 'tool_call'
+    call_data['toolCallId'] = 'call-1'
+    call_data['toolName'] = 'read'
+    call_data['input'] = '{}'
+    {string:any} result_data = {}
+    result_data['type'] = 'tool_result'
+    result_data['toolCallId'] = 'call-1'
+    result_data['toolName'] = 'read'
+    result_data['isError'] = false
+    [any] content = []
+    content.push('file content')
+    result_data['content'] = content
+    runner.emit('session_start', session_data, null)
+    runner.emit('tool_call', call_data, null)
+    runner.emit('tool_result', result_data, null)
+    assert(runner.run_command('counts', '') == 'sessions=1 calls=1 results=1')
+}
+
+test 'host event data payload is visible to js handlers as json' {
+    string dir = unique_dir('payload')
+    [string] lines = [
+        'let lastToolName = \'\'',
+        'let lastToolCallId = \'\'',
+        'let lastInput = \'\'',
+        "adou.on('tool_call', function (eventJson) { var event = JSON.parse(eventJson); lastToolName = event.toolName; lastToolCallId = event.toolCallId; lastInput = JSON.stringify(event.input) })",
+        "adou.registerCommand({name: 'last-tool', description: 'Last tool seen', handler: function () { return lastToolName + '/' + lastToolCallId + '/' + lastInput }})",
+    ]
+    string script = strings.join(lines, '\n')
+    var runner = load_extension_runner(dir, script)
+    {string:any} call_data = {}
+    call_data['type'] = 'tool_call'
+    call_data['toolCallId'] = 'call-9'
+    call_data['toolName'] = 'edit'
+    {string:any} input = {}
+    input['file_path'] = 'notes.md'
+    input['old_string'] = 'a'
+    call_data['input'] = input
+    runner.emit('tool_call', call_data, null)
+    assert(runner.run_command('last-tool', '') == 'edit/call-9/{"file_path":"notes.md","old_string":"a"}')
+}

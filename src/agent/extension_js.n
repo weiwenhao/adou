@@ -1,0 +1,625 @@
+import adou.src.agent.extensions
+import adou.src.agent.quickjs_ffi
+import adou.src.agent.types as agent_types
+import adou.src.ai.abort
+import adou.src.ai.types as ai_types
+import adou.src.context.skills
+import adou.src.debug
+import adou.src.json_util
+import adou.src.tools.types as tool_types
+import fmt
+import fs
+import libc
+import strings
+import syscall
+
+// QuickJS-backed extension runtime.  Pi executes extensions as TypeScript
+// modules with an `api` injected from @pi/extension; Adou runs plain
+// JavaScript inside QuickJS and injects the same registration surface as the
+// globals `adou` (and the `pi` alias).  Scripts declare registrations through
+// those globals into a JS-side registry object; the host then reads the
+// registry back over a JSON bridge (JSON.stringify on the JS side, parsed
+// with json_util on the host side), so no complex JSValue construction is
+// needed in Nature.
+//
+// Bridge conventions:
+//   - host -> JS arguments are JSON strings (JSON.stringify(any) on the host
+//     side); JS handlers receive one string argument and may JSON.parse it.
+//   - JS -> host results are JSON strings produced by the __adou_call_tool /
+//     __adou_call_event / __adou_call_command wrappers; tool results may be a
+//     JSON string, a {text: ...} object, or a {content: [{type: 'text', text:
+//     ...}]} object.  Command results are unwrapped into a plain string.
+//   - One runtime+context hosts every script loaded through it (the prelude
+//     and the JS registry are shared).  extension_loader.load_extensions_from_dir
+//     creates one instance per directory, giving project and user extensions
+//     isolated contexts.
+//   - JSValue lifetime: handler functions read from the registry are dup'd
+//     once when their host closure is created and intentionally never freed,
+//     and the runtime/context is never freed either: QuickJS's JS_FreeRuntime
+//     asserts that every allocated object has been released, which is not
+//     practical for a process-lifetime registry (the app holds the runtime
+//     for the whole process; tests leak it until the test process exits).
+
+pub type extension_js_t = struct {
+    anyptr rt
+    anyptr ctx
+    quickjs_ffi.JSValue registry
+}
+
+// Create a runtime+context and evaluate the `adou`/`pi` prelude once.  Every
+// script subsequently loaded through extension_js_t.load() shares this
+// context and registry.
+pub fn extension_js_new(): ref<extension_js_t>! {
+    anyptr rt = quickjs_ffi.runtime_new()
+    if rt == 0 {
+        throw errorf('quickjs runtime creation failed')
+    }
+    anyptr ctx = quickjs_ffi.context_new(rt)
+    if ctx == 0 {
+        quickjs_ffi.runtime_free(rt)
+        throw errorf('quickjs context creation failed')
+    }
+    string prelude = prelude_script()
+    var prelude_cstr = prelude.to_cstr()
+    var result = quickjs_ffi.eval_raw(ctx, prelude_cstr as anyptr, prelude.len(), 'adou-prelude'.to_cstr() as anyptr, 0)
+    if quickjs_ffi.is_exception(result) != 0 {
+        var exception = quickjs_ffi.get_exception(ctx)
+        string message = exception_message(ctx, exception)
+        quickjs_ffi.free_value(ctx, exception)
+        quickjs_ffi.free_value(ctx, result)
+        quickjs_ffi.context_free(ctx)
+        quickjs_ffi.runtime_free(rt)
+        throw errorf('adou extension prelude failed: %s', message)
+    }
+    quickjs_ffi.free_value(ctx, result)
+    quickjs_ffi.JSValue registry = registry_value(ctx)
+    return new extension_js_t(rt = rt, ctx = ctx, registry = registry)
+}
+
+// Evaluate one extension script in this context and fill a new extension_t
+// with the registrations the script made since the last load().
+pub fn extension_js_t.load(&self, string file_path, skills.source_info_t source_info): ref<extensions.extension_t>! {
+    var file = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        throw error
+    }
+    string script = file.content() catch error {
+        file.close()
+        throw error
+    }
+    file.close()
+    var extension = extensions.new_extension(file_path, file_path, source_info)
+    var script_cstr = script.to_cstr()
+    var filename_cstr = file_path.to_cstr()
+    var result = quickjs_ffi.eval_raw(self.ctx, script_cstr as anyptr, script.len(), filename_cstr as anyptr, 0)
+    if quickjs_ffi.is_exception(result) != 0 {
+        var exception = quickjs_ffi.get_exception(self.ctx)
+        string message = exception_message(self.ctx, exception)
+        quickjs_ffi.free_value(self.ctx, exception)
+        quickjs_ffi.free_value(self.ctx, result)
+        throw errorf('%s', message)
+    }
+    quickjs_ffi.free_value(self.ctx, result)
+    read_new_registrations(self, extension)
+    debug.log('extension', 'loaded ' + file_path + ' (' + fmt.sprintf('%d', extension.tools.len()) + ' tools, ' + fmt.sprintf('%d', extension.commands.len()) + ' commands)')
+    return extension
+}
+
+// Read every registration the JS registry accumulated since the last load()
+// and materialize it into the extension_t.  The consumed watermark lives in
+// JS, so the extension_js_t itself stays stateless.
+#local
+fn read_new_registrations(ref<extension_js_t> js, ref<extensions.extension_t> extension): void! {
+    var snapshot = eval_json_value(js.ctx, registry_snapshot_script()) catch error {
+        throw errorf('adou extension registry read failed: %s', error.msg())
+    }
+    if !json_util.is_obj(snapshot) {
+        throw errorf('adou extension registry read failed: unexpected value')
+    }
+    var object = snapshot as {string:any}
+    int command_start = json_util.as_int(object['consumed_commands']) catch error {0}
+    int tool_start = json_util.as_int(object['consumed_tools']) catch error {0}
+    int handler_start = json_util.as_int(object['consumed_handlers']) catch error {0}
+    int command_total = json_util.as_int(object['commands']) catch error {0}
+    int tool_total = json_util.as_int(object['tools']) catch error {0}
+    int handler_total = json_util.as_int(object['handlers']) catch error {0}
+
+    var command_entries = json_util.as_arr(object['command_entries']) catch error {[]}
+    for int index = command_start; index < command_entries.len() && index < command_total; index += 1 {
+        var entry = json_util.as_obj(command_entries[index]) catch error {continue}
+        string name = json_util.as_string(entry['name']) catch error {continue}
+        extensions.optional_extension_command_execute_fn execute_fn = null
+        if handler_is_function(js.ctx, 'commands', index) {
+            var handler = entry_handler_value(js.ctx, js.registry, 'commands', index)
+            execute_fn = command_execute_fn(js.ctx, name, handler)
+        } else {
+            debug.log('extension', 'command ' + name + ' has no handler function; execution registration skipped')
+        }
+        extension.register_command(name, json_util.opt_string(entry, 'description'), extension.source_info, execute_fn)
+    }
+
+    var tool_entries = json_util.as_arr(object['tool_entries']) catch error {[]}
+    for int index = tool_start; index < tool_entries.len() && index < tool_total; index += 1 {
+        var entry = json_util.as_obj(tool_entries[index]) catch error {continue}
+        string name = json_util.as_string(entry['name']) catch error {continue}
+        string label = json_util.opt_string(entry, 'label')
+        if label == '' {
+            label = name
+        }
+        any parameters = entry.contains('parameters') ? entry['parameters'] : null
+        extensions.optional_extension_tool_execute_fn execute_fn = null
+        if handler_is_function(js.ctx, 'tools', index) {
+            var handler = entry_handler_value(js.ctx, js.registry, 'tools', index)
+            execute_fn = tool_execute_fn(js.ctx, name, handler)
+        } else {
+            debug.log('extension', 'tool ' + name + ' has no handler function; execution registration skipped')
+        }
+        extension.register_tool(name, label, json_util.opt_string(entry, 'description'), parameters, extension.source_info, execute_fn)
+    }
+
+    var handler_entries = json_util.as_arr(object['handler_entries']) catch error {[]}
+    for int index = handler_start; index < handler_entries.len() && index < handler_total; index += 1 {
+        var entry = json_util.as_obj(handler_entries[index]) catch error {continue}
+        string event_name = json_util.as_string(entry['event']) catch error {continue}
+        if handler_is_function(js.ctx, 'handlers', index) {
+            var handler = entry_handler_value(js.ctx, js.registry, 'handlers', index)
+            extension.on(event_name, event_handler_fn(js.ctx, handler))
+        } else {
+            debug.log('extension', 'event handler for ' + event_name + ' is not a function; registration skipped')
+        }
+    }
+
+    // Advance the JS-side consumed watermark so a later load() only sees
+    // registrations made by its own script.
+    string watermark = 'globalThis.__adou_registry.consumed.commands=' + fmt.sprintf('%d', command_total) + ';globalThis.__adou_registry.consumed.tools=' + fmt.sprintf('%d', tool_total) + ';globalThis.__adou_registry.consumed.handlers=' + fmt.sprintf('%d', handler_total)
+    var watermark_result = eval_raw_string(js.ctx, watermark) catch error {
+        throw error
+    }
+}
+
+// Build the tool execute closure for one registered JS handler.  Arguments
+// arrive as the parsed JSON `any`, are stringified back to a JSON string and
+// handed to the JS handler as a single string argument; the handler's return
+// value is converted to a JSON string by the __adou_call_tool wrapper and
+// parsed into a tool_result_t on this side.
+#local
+fn tool_execute_fn(anyptr ctx, string name, quickjs_ffi.JSValue handler): extensions.extension_tool_execute_fn {
+    var handler_dup = quickjs_ffi.dup_value(ctx, handler)
+    var captured_ctx = ctx
+    var captured_name = name
+    extensions.extension_tool_execute_fn execute = fn(string call_id, any arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
+        if cancellation.is_aborted() {
+            throw errorf('Operation aborted')
+        }
+        string payload = to_json_string(arguments)
+        var payload_cstr = payload.to_cstr()
+        var payload_value = quickjs_ffi.new_string(captured_ctx, payload_cstr as anyptr)
+        var wrapper = wrapper_value(captured_ctx, '__adou_call_tool')
+        [quickjs_ffi.JSValue] argv = [handler_dup, payload_value]
+        quickjs_ffi.JSValue undefined = quickjs_ffi.JSValue { u: 0, tag: 3 }
+        var result = quickjs_ffi.call(captured_ctx, wrapper, undefined, 2, argv.ref())
+        quickjs_ffi.free_value(captured_ctx, wrapper)
+        quickjs_ffi.free_value(captured_ctx, payload_value)
+        if quickjs_ffi.is_exception(result) != 0 {
+            var exception = quickjs_ffi.get_exception(captured_ctx)
+            string message = exception_message(captured_ctx, exception)
+            quickjs_ffi.free_value(captured_ctx, exception)
+            quickjs_ffi.free_value(captured_ctx, result)
+            throw errorf('extension tool %s failed: %s', captured_name, message)
+        }
+        string text = js_value_to_string(captured_ctx, result)
+        quickjs_ffi.free_value(captured_ctx, result)
+        var parsed = json_util.parse(text) catch error {
+            return tool_types.text_result(text)
+        }
+        if json_util.is_obj(parsed) {
+            var object = parsed as {string:any}
+            string failure = json_util.opt_string(object, 'error')
+            if failure != '' {
+                throw errorf('extension tool %s failed: %s', captured_name, failure)
+            }
+            if json_util.opt_bool(object, 'async') {
+                return tool_types.text_result('Extension tool ' + captured_name + ' returned a Promise; asynchronous extension handlers are not supported yet')
+            }
+            if object.contains('value') {
+                return parse_tool_result(object['value'])
+            }
+        }
+        return tool_types.text_result(text)
+    }
+    return execute
+}
+
+// Build the command-execution closure for one registered JS handler.  The
+// host hands the raw argument string (everything after the command name) to
+// the JS handler as a single string argument; the handler's return value is
+// converted to a JSON string by the __adou_call_command wrapper and unwrapped
+// into the result string on this side.
+#local
+fn command_execute_fn(anyptr ctx, string name, quickjs_ffi.JSValue handler): extensions.extension_command_execute_fn {
+    var handler_dup = quickjs_ffi.dup_value(ctx, handler)
+    var captured_ctx = ctx
+    var captured_name = name
+    extensions.extension_command_execute_fn execute = fn(string arguments): string! {
+        var arguments_cstr = arguments.to_cstr()
+        var arguments_value = quickjs_ffi.new_string(captured_ctx, arguments_cstr as anyptr)
+        var wrapper = wrapper_value(captured_ctx, '__adou_call_command')
+        [quickjs_ffi.JSValue] argv = [handler_dup, arguments_value]
+        quickjs_ffi.JSValue undefined = quickjs_ffi.JSValue { u: 0, tag: 3 }
+        var result = quickjs_ffi.call(captured_ctx, wrapper, undefined, 2, argv.ref())
+        quickjs_ffi.free_value(captured_ctx, wrapper)
+        quickjs_ffi.free_value(captured_ctx, arguments_value)
+        if quickjs_ffi.is_exception(result) != 0 {
+            var exception = quickjs_ffi.get_exception(captured_ctx)
+            string message = exception_message(captured_ctx, exception)
+            quickjs_ffi.free_value(captured_ctx, exception)
+            quickjs_ffi.free_value(captured_ctx, result)
+            throw errorf('extension command %s failed: %s', captured_name, message)
+        }
+        string text = js_value_to_string(captured_ctx, result)
+        quickjs_ffi.free_value(captured_ctx, result)
+        var parsed = json_util.parse(text) catch error {
+            return text
+        }
+        if json_util.is_obj(parsed) {
+            var object = parsed as {string:any}
+            string failure = json_util.opt_string(object, 'error')
+            if failure != '' {
+                throw errorf('extension command %s failed: %s', captured_name, failure)
+            }
+            if object.contains('value') {
+                any value = object['value']
+                if value is string {
+                    return value as string
+                }
+                return to_json_string(value)
+            }
+        }
+        return text
+    }
+    return execute
+}
+
+// Execute one registered command of a single extension by name.  Unknown
+// commands and commands without an executable handler are reported as
+// explicit errors so TUI/RPC callers can surface them as diagnostics.
+pub fn call_command_handler(ref<extensions.extension_t> extension, string name, string arguments): string! {
+    for command in extension.commands {
+        if command.name == name {
+            if command.execute_fn is extensions.extension_command_execute_fn execute {
+                return execute(arguments)
+            }
+            throw errorf('Extension command %s is registered without an executable handler', name)
+        }
+    }
+    throw errorf('Extension command %s not found', name)
+}
+
+// Build the event-handler closure for one registered JS handler.  runner.emit
+// passes the raw event value; it is stringified and handed to the JS handler.
+// Handler errors are isolated per handler (logged, never propagated), matching
+// the runner's per-extension error isolation.
+#local
+fn event_handler_fn(anyptr ctx, quickjs_ffi.JSValue handler): extensions.extension_handler_fn {
+    var handler_dup = quickjs_ffi.dup_value(ctx, handler)
+    var captured_ctx = ctx
+    extensions.extension_handler_fn registered = fn(any event, any context) {
+        string payload = to_json_string(event)
+        var payload_cstr = payload.to_cstr()
+        var payload_value = quickjs_ffi.new_string(captured_ctx, payload_cstr as anyptr)
+        var wrapper = wrapper_value(captured_ctx, '__adou_call_event')
+        [quickjs_ffi.JSValue] argv = [handler_dup, payload_value]
+        quickjs_ffi.JSValue undefined = quickjs_ffi.JSValue { u: 0, tag: 3 }
+        var result = quickjs_ffi.call(captured_ctx, wrapper, undefined, 2, argv.ref())
+        quickjs_ffi.free_value(captured_ctx, wrapper)
+        quickjs_ffi.free_value(captured_ctx, payload_value)
+        if quickjs_ffi.is_exception(result) != 0 {
+            var exception = quickjs_ffi.get_exception(captured_ctx)
+            string message = exception_message(captured_ctx, exception)
+            quickjs_ffi.free_value(captured_ctx, exception)
+            quickjs_ffi.free_value(captured_ctx, result)
+            debug.log('extension', 'event handler error: ' + message)
+            return
+        }
+        string text = js_value_to_string(captured_ctx, result)
+        quickjs_ffi.free_value(captured_ctx, result)
+        var parsed = json_util.parse(text) catch error {
+            return
+        }
+        if json_util.is_obj(parsed) {
+            var object = parsed as {string:any}
+            string failure = json_util.opt_string(object, 'error')
+            if failure != '' {
+                debug.log('extension', 'event handler error: ' + failure)
+            }
+        }
+    }
+    return registered
+}
+
+// Convert a parsed JSON value into the tool result shapes the agent loop
+// consumes: a bare string, a {text: ...} object, or a Pi-style
+// {content: [{type: 'text', text: ...}]} object.
+#local
+fn parse_tool_result(any value): tool_types.tool_result_t {
+    if value is string {
+        return tool_types.text_result(value as string)
+    }
+    if json_util.is_obj(value) {
+        var object = value as {string:any}
+        if object.contains('content') && json_util.is_arr(object['content']) {
+            [ref<ai_types.text_content_t>] content = []
+            for item in object['content'] as [any] {
+                if json_util.is_obj(item) {
+                    var item_object = item as {string:any}
+                    string text = json_util.opt_string(item_object, 'text')
+                    if text != '' {
+                        content.push(new ai_types.text_content_t(text = text))
+                    }
+                }
+            }
+            if content.len() > 0 {
+                return tool_types.tool_result_t {content: content,}
+            }
+        }
+        string text = json_util.opt_string(object, 'text')
+        if text != '' {
+            return tool_types.text_result(text)
+        }
+        string serialized = json_util.stringify(value) catch error {
+            return tool_types.text_result('')
+        }
+        return tool_types.text_result(serialized)
+    }
+    if json_util.is_null(value) {
+        return tool_types.text_result('')
+    }
+    string json_text = json_util.stringify(value) catch error {
+        return tool_types.text_result('')
+    }
+    return tool_types.text_result(json_text)
+}
+
+#local
+fn to_json_string(any value): string {
+    if json_util.is_null(value) {
+        return 'null'
+    }
+    return json_util.stringify(value) catch error {
+        return 'null'
+    }
+}
+
+#local
+fn registry_value(anyptr ctx): quickjs_ffi.JSValue {
+    var global = quickjs_ffi.get_global_object(ctx)
+    var registry = quickjs_ffi.get_property_str(ctx, global, '__adou_registry'.to_cstr() as anyptr)
+    quickjs_ffi.free_value(ctx, global)
+    return registry
+}
+
+#local
+fn wrapper_value(anyptr ctx, string name): quickjs_ffi.JSValue {
+    var global = quickjs_ffi.get_global_object(ctx)
+    var wrapper = quickjs_ffi.get_property_str(ctx, global, name.to_cstr() as anyptr)
+    quickjs_ffi.free_value(ctx, global)
+    return wrapper
+}
+
+#local
+fn entry_handler_value(anyptr ctx, quickjs_ffi.JSValue registry, string category, int index): quickjs_ffi.JSValue {
+    var category_value = quickjs_ffi.get_property_str(ctx, registry, category.to_cstr() as anyptr)
+    var index_cstr = fmt.sprintf('%d', index)
+    var entry = quickjs_ffi.get_property_str(ctx, category_value, index_cstr.to_cstr() as anyptr)
+    quickjs_ffi.free_value(ctx, category_value)
+    var handler = quickjs_ffi.get_property_str(ctx, entry, 'handler'.to_cstr() as anyptr)
+    quickjs_ffi.free_value(ctx, entry)
+    return handler
+}
+
+#local
+fn handler_is_function(anyptr ctx, string category, int index): bool {
+    string script = 'typeof globalThis.__adou_registry.' + category + '[' + fmt.sprintf('%d', index) + '].handler'
+    string type_name = eval_raw_string(ctx, script) catch error {
+        return false
+    }
+    return type_name == 'function'
+}
+
+// Evaluate a script that must produce a JSON value and parse it.
+#local
+fn eval_json_value(anyptr ctx, string script): any! {
+    string text = eval_raw_string(ctx, script) catch error {
+        throw error
+    }
+    return json_util.parse(text) catch error {
+        throw errorf('adou extension internal result was not JSON: %s', text)
+    }
+}
+
+// Evaluate a script and return its raw string form.
+#local
+fn eval_raw_string(anyptr ctx, string script): string! {
+    var script_cstr = script.to_cstr()
+    var result = quickjs_ffi.eval_raw(ctx, script_cstr as anyptr, script.len(), 'adou-internal'.to_cstr() as anyptr, 0)
+    if quickjs_ffi.is_exception(result) != 0 {
+        var exception = quickjs_ffi.get_exception(ctx)
+        string message = exception_message(ctx, exception)
+        quickjs_ffi.free_value(ctx, exception)
+        quickjs_ffi.free_value(ctx, result)
+        throw errorf('adou extension internal script failed: %s', message)
+    }
+    string text = js_value_to_string(ctx, result)
+    quickjs_ffi.free_value(ctx, result)
+    return text
+}
+
+// Format a JS exception value through the prelude's __adou_format_error so
+// the diagnostic carries both the message and the stack.
+#local
+fn exception_message(anyptr ctx, quickjs_ffi.JSValue exception): string {
+    var wrapper = wrapper_value(ctx, '__adou_format_error')
+    if quickjs_ffi.is_exception(wrapper) != 0 {
+        var inner = quickjs_ffi.get_exception(ctx)
+        string fallback = js_value_to_string(ctx, inner)
+        quickjs_ffi.free_value(ctx, inner)
+        quickjs_ffi.free_value(ctx, wrapper)
+        return fallback
+    }
+    [quickjs_ffi.JSValue] argv = [exception]
+    quickjs_ffi.JSValue undefined = quickjs_ffi.JSValue { u: 0, tag: 3 }
+    var result = quickjs_ffi.call(ctx, wrapper, undefined, 1, argv.ref())
+    quickjs_ffi.free_value(ctx, wrapper)
+    if quickjs_ffi.is_exception(result) != 0 {
+        var inner = quickjs_ffi.get_exception(ctx)
+        string fallback = js_value_to_string(ctx, inner)
+        quickjs_ffi.free_value(ctx, inner)
+        quickjs_ffi.free_value(ctx, result)
+        return fallback
+    }
+    string message = js_value_to_string(ctx, result)
+    quickjs_ffi.free_value(ctx, result)
+    return message
+}
+
+#local
+fn js_value_to_string(anyptr ctx, quickjs_ffi.JSValue value): string {
+    libc.cstr raw = quickjs_ffi.to_c_string_len2(ctx, 0, value, 0) as libc.cstr
+    if raw == 0 {
+        return ''
+    }
+    string result = raw.to_string()
+    quickjs_ffi.free_c_string(ctx, raw as anyptr)
+    return result
+}
+
+// The prelude installed once per context: the adou/pi registration API, the
+// __adou_registry staging object (with the consumed watermark), and the
+// JSON-bridge wrappers.  Extension scripts just call the globals; the host
+// reads the registry back after each script.
+#local
+fn prelude_script(): string {
+    [string] lines = [
+        '(function () {',
+        "  var registry = globalThis.__adou_registry",
+        '  if (registry === undefined) {',
+        '    registry = { commands: [], tools: [], handlers: [], consumed: { commands: 0, tools: 0, handlers: 0 } }',
+        '    globalThis.__adou_registry = registry',
+        '  }',
+        '  function requireObject(opts, apiName) {',
+        "    if (opts === null || typeof opts !== 'object') {",
+        "      throw new Error('adou.' + apiName + ': expected an options object')",
+        '    }',
+        '    return opts',
+        '  }',
+        '  var api = {',
+        '    registerCommand: function (opts) {',
+        "      var o = requireObject(opts, 'registerCommand')",
+        "      if (typeof o.name !== 'string' || o.name.length === 0) {",
+        "        throw new Error('adou.registerCommand: name is required')",
+        '      }',
+        '      registry.commands.push({',
+        '        name: o.name,',
+        "        description: typeof o.description === 'string' ? o.description : '',",
+        "        handler: typeof o.handler === 'function' ? o.handler : undefined,",
+        '      })',
+        '    },',
+        '    registerTool: function (opts) {',
+        "      var o = requireObject(opts, 'registerTool')",
+        "      if (typeof o.name !== 'string' || o.name.length === 0) {",
+        "        throw new Error('adou.registerTool: name is required')",
+        '      }',
+        '      registry.tools.push({',
+        '        name: o.name,',
+        "        label: typeof o.label === 'string' && o.label.length > 0 ? o.label : o.name,",
+        "        description: typeof o.description === 'string' ? o.description : '',",
+        '        parameters: o.parameters === undefined ? {} : o.parameters,',
+        "        handler: typeof o.handler === 'function' ? o.handler : undefined,",
+        '      })',
+        '    },',
+        '    on: function (event, handler) {',
+        "      if (typeof event !== 'string' || event.length === 0) {",
+        "        throw new Error('adou.on: event name is required')",
+        '      }',
+        "      if (typeof handler !== 'function') {",
+        "        throw new Error('adou.on: handler must be a function')",
+        '      }',
+        '      registry.handlers.push({ event: event, handler: handler })',
+        '    },',
+        '    emit: function (event, data) {',
+        "      if (typeof event !== 'string') {",
+        '        return',
+        '      }',
+        '      for (var i = 0; i < registry.handlers.length; i += 1) {',
+        '        if (registry.handlers[i].event === event) {',
+        '          try {',
+        '            registry.handlers[i].handler(data, {})',
+        '          } catch (e) {}',
+        '        }',
+        '      }',
+        '    },',
+        '  }',
+        '  globalThis.adou = api',
+        '  globalThis.pi = api',
+        '  globalThis.__adou_call_tool = function (handler, argsJson) {',
+        '    try {',
+        '      var value = handler(argsJson)',
+        "      if (value !== null && typeof value === 'object' && typeof value.then === 'function') {",
+        '        return JSON.stringify({ async: true })',
+        '      }',
+        '      return JSON.stringify({ value: value })',
+        '    } catch (e) {',
+        "      return JSON.stringify({ error: e && e.message ? e.message : String(e) })",
+        '    }',
+        '  }',
+        '  globalThis.__adou_call_event = function (handler, eventJson) {',
+        '    try {',
+        "      handler(eventJson, '{}')",
+        '      return JSON.stringify({ ok: true })',
+        '    } catch (e) {',
+        "      return JSON.stringify({ ok: false, error: e && e.message ? e.message : String(e) })",
+        '    }',
+        '  }',
+        '  globalThis.__adou_call_command = function (handler, argsJson) {',
+        '    try {',
+        '      var value = handler(argsJson)',
+        "      if (value === undefined || value === null) {",
+        "        return JSON.stringify({ value: '' })",
+        '      }',
+        '      return JSON.stringify({ value: value })',
+        '    } catch (e) {',
+        "      return JSON.stringify({ error: e && e.message ? e.message : String(e) })",
+        '    }',
+        '  }',
+        '  globalThis.__adou_format_error = function (e) {',
+        '    var message = e && e.message ? e.message : String(e)',
+        '    var stack = e && e.stack ? String(e.stack) : \'\'',
+        "    return stack !== '' ? message + '\\n' + stack : message",
+        '  }',
+        '})()',
+    ]
+    return strings.join(lines, '\n')
+}
+
+// Serialize the complete registry state: counts, the consumed watermark, and
+// the registration metadata lists (handlers stay in JS and are read
+// individually by index).
+#local
+fn registry_snapshot_script(): string {
+    [string] lines = [
+        'JSON.stringify((function () {',
+        '  var r = globalThis.__adou_registry',
+        '  return {',
+        '    commands: r.commands.length,',
+        '    tools: r.tools.length,',
+        '    handlers: r.handlers.length,',
+        '    consumed_commands: r.consumed.commands,',
+        '    consumed_tools: r.consumed.tools,',
+        '    consumed_handlers: r.consumed.handlers,',
+        '    command_entries: r.commands.slice(0).map(function (c) { return { name: c.name, description: c.description } }),',
+        '    tool_entries: r.tools.slice(0).map(function (t) { return { name: t.name, label: t.label, description: t.description, parameters: t.parameters } }),',
+        '    handler_entries: r.handlers.slice(0).map(function (h) { return { event: h.event } })',
+        '  }',
+        '}()))',
+    ]
+    return strings.join(lines, '\n')
+}

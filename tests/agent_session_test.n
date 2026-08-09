@@ -1,5 +1,6 @@
 import adou.src.agent.session
 import adou.src.agent.session_stream
+import adou.src.agent.extension_js
 import adou.src.agent.types as agent_types
 import adou.src.ai.abort
 import adou.src.ai.event_stream
@@ -8,15 +9,18 @@ import adou.src.ai.types as ai_types
 import adou.src.json_util
 import adou.src.compaction.serialize
 import adou.src.compaction.types as compaction_types
+import adou.src.context.skills
 import adou.src.session.repository
 import adou.src.session.types as session_types
 import adou.src.tools.types as tool_types
 import co
 import co.mutex
+import fmt
 import fs
 import json
 import os
 import path
+import strings
 import syscall
 import time
 
@@ -673,4 +677,40 @@ test 'abort_bash only cancels the active bash stream' {
     runner.abort_bash()
     assert(bash_stream.cancellation.is_aborted())
     runner.end_operation()
+}
+
+test 'host lifecycle events reach js extension handlers during a prompt' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant_tool('session-call'), assistant('final answer', ai_types.STOP_STOP, '', 2, 3)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    runner.base_context.tools.push(session_echo_tool())
+    string dir = '/tmp/adou-session-extension-events-' + fmt.sprintf('%d', syscall.getpid())
+    os.rmdir(dir, true) catch error {}
+    os.mkdirs(dir, 0o700)
+    [string] lines = [
+        'let sessionStarts = 0',
+        'let sessionEnds = 0',
+        'let toolCalls = 0',
+        'let toolResults = 0',
+        'let messages = 0',
+        "adou.on('session_start', function () { sessionStarts += 1 })",
+        "adou.on('session_end', function () { sessionEnds += 1 })",
+        "adou.on('tool_call', function () { toolCalls += 1 })",
+        "adou.on('tool_result', function () { toolResults += 1 })",
+        "adou.on('message', function () { messages += 1 })",
+        "adou.registerCommand({name: 'event-counts', description: 'Event counts', handler: function () { return 'start=' + sessionStarts + ' end=' + sessionEnds + ' call=' + toolCalls + ' result=' + toolResults + ' message=' + messages }})",
+    ]
+    string file_path = path.join(dir, 'events.js')
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    int written = output.write(strings.join(lines, '\n') as [u8])
+    output.close()
+    assert(written > 0)
+    var js = extension_js.extension_js_new()
+    var ext = js.load(file_path, skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: dir,})
+    runner.extensions.add_extension(ext)
+    var result = consume(runner.prompt('use the tool'))
+    assert(fixture.agent_calls == 2)
+    string counts = runner.extensions.run_command('event-counts', '') catch error {error.msg()}
+    assert(counts == 'start=2 end=2 call=1 result=1 message=2')
+    os.rmdir(dir, true) catch error {}
 }

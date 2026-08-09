@@ -1,6 +1,9 @@
 import adou.src.agent.session
 import adou.src.agent.session_stream
 import adou.src.agent.event_json
+import adou.src.agent.extension_bindings
+import adou.src.agent.extension_loader
+import adou.src.agent.extensions
 import adou.src.agent.types as agent_types
 import adou.src.ai.abort
 import adou.src.ai.provider
@@ -284,7 +287,23 @@ pub fn run(): void! {
         }
         append_prompt += skills_prompt
     }
+    // Pi loads project and user extensions before tools are assembled so
+    // extension tools appear in the model's tool surface.  Each directory is
+    // evaluated in its own QuickJS runtime; load diagnostics stay off the
+    // normal stdout/stderr protocols and go to the debug log.
+    var extensions_result = extension_loader.load_extensions_from_dir(path.join(session_cwd, skills.CONFIG_DIR_NAME, 'extensions'))
+    var user_extensions_result = extension_loader.load_extensions_from_dir(path.join(config_paths.agent_dir(), 'extensions'))
+    for load_error in extensions_result.errors {
+        debug.log('extension', load_error.path + ': ' + load_error.error)
+    }
+    for load_error in user_extensions_result.errors {
+        debug.log('extension', load_error.path + ': ' + load_error.error)
+    }
     var tools = builtins.select_tools(session_cwd, config.tool_names, config.exclude_tool_names, config.no_tools || config.no_builtin_tools)
+    var extension_tools = extension_bindings.bind_extension_tools(collect_extension_tools(extensions_result, user_extensions_result))
+    for extension_tool in extension_tools {
+        tools.push(extension_tool)
+    }
     [string] tool_names = []
     for tool in tools {
         tool_names.push(tool.name)
@@ -298,6 +317,12 @@ pub fn run(): void! {
     runner.retry_enabled = config.retry_enabled
     runner.retry_max_attempts = config.retry_max_attempts
     runner.retry_base_delay_ms = config.retry_base_delay_ms
+    for ext in extensions_result.extensions {
+        runner.extensions.add_extension(ext)
+    }
+    for ext in user_extensions_result.extensions {
+        runner.extensions.add_extension(ext)
+    }
 
     if config.mode == 'rpc' {
         // Keep the original CLI overrides for later RPC session switches;
@@ -365,6 +390,22 @@ pub fn run(): void! {
 fn stream_provider(): agent_types.stream_fn {
     agent_types.stream_fn result = fn(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> options): ref<ai_event_stream.assistant_stream_t> {
         return provider.stream(model, context, options)
+    }
+    return result
+}
+
+#local
+fn collect_extension_tools(extensions.load_extensions_result_t project_result, extensions.load_extensions_result_t user_result): [extensions.extension_tool_t] {
+    [extensions.extension_tool_t] result = []
+    for ext in project_result.extensions {
+        for tool in ext.tools {
+            result.push(tool)
+        }
+    }
+    for ext in user_result.extensions {
+        for tool in ext.tools {
+            result.push(tool)
+        }
     }
     return result
 }
@@ -701,7 +742,13 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
         } else if command == 'get_last_assistant_text' {
             rpc_write(output_lock, rpc_ok_data(id, command, rpc_text_data('text', last_assistant_text(runner.copy_active_messages()))))
         } else if command == 'get_commands' {
-            rpc_write(output_lock, rpc_ok_data(id, command, rpc_commands(runner.repository.cwd, runner.repository.cwd)))
+            rpc_write(output_lock, rpc_ok_data(id, command, rpc_commands(runner, runner.repository.cwd, runner.repository.cwd)))
+        } else if command == 'run_command' {
+            string result = runner.extensions.run_command(rpc_string(object, 'name'), rpc_string(object, 'args')) catch error {
+                rpc_write(output_lock, rpc_error(id, command, error.msg()))
+                continue
+            }
+            rpc_write(output_lock, rpc_ok_data(id, command, rpc_text_data('result', result)))
         } else if command == 'set_session_name' {
             string name = rpc_string(object, 'name').trim([' ', '\t', '\n', '\r'])
             if name == '' {
@@ -1326,7 +1373,7 @@ fn rpc_cancelled_data(bool cancelled): {string:any} {
 }
 
 #local
-fn rpc_commands(string cwd, string session_cwd): {string:any} {
+fn rpc_commands(ref<session.runner_t> runner, string cwd, string session_cwd): {string:any} {
     // Pi's get_commands composes prompt templates and skills as dynamic
     // slash commands with source metadata.
     [any] values = []
@@ -1349,6 +1396,15 @@ fn rpc_commands(string cwd, string session_cwd): {string:any} {
             object['description'] = info.description
         }
         object['source'] = info.source
+        values.push(object)
+    }
+    for ext_command in runner.extensions.get_registered_commands() {
+        {string:any} object = {}
+        object['name'] = ext_command.name
+        if ext_command.description != '' {
+            object['description'] = ext_command.description
+        }
+        object['source'] = 'extension:' + ext_command.source_info.scope
         values.push(object)
     }
     {string:any} result = {}

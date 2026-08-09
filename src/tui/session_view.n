@@ -1026,13 +1026,24 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         }
         return stream
     }
+    // Extension commands are invoked like built-ins: `/name` with the
+    // remainder as the raw argument string (Pi parses the command name by
+    // stripping the leading slash).
+    string extension_command_name = command.starts_with('/') ? command.slice(1, command.len()) : command
     var extension_commands = self.runner.extensions.get_registered_commands()
     for ext_command in extension_commands {
-        if ext_command.name == command {
-            // Static extension registrations carry no executable handler in
-            // this build; surface the registration instead of an unknown
-            // command error.
-            self.chat.error_message = 'Extension command ' + command + ' is registered but has no executable handler: ' + ext_command.description
+        if ext_command.name == extension_command_name {
+            string arguments = command_args_after(text, command)
+            string result = self.runner.extensions.run_command(extension_command_name, arguments) catch error {
+                self.chat.error_message = error.msg()
+                self.redraw()
+                return null
+            }
+            if result != '' {
+                self.chat.status = result
+            } else {
+                self.chat.status = 'Extension command ' + extension_command_name + ' completed'
+            }
             self.redraw()
             return null
         }
@@ -1494,6 +1505,16 @@ fn command_tokens(string text): [string] {
         }
     }
     return result
+}
+
+// Raw argument string handed to extension command handlers: everything after
+// the command name, trimmed, or '' when the command line has no arguments.
+#local
+fn command_args_after(string text, string command): string {
+    if text.len() <= command.len() + 1 || !text.starts_with(command + ' ') {
+        return ''
+    }
+    return text.slice(command.len() + 1, text.len()).trim([' ', '\t', '\n', '\r'])
 }
 
 // /export and /import accept the same quoted path convention as Pi.  The
@@ -3242,16 +3263,21 @@ fn matching_command_names(string prefix, [extensions.extension_command_t] extens
         }
     }
     // Extension commands follow the built-ins, deduplicated against them
-    // like Pi's autocomplete feed.
+    // like Pi's autocomplete feed.  They are invoked with a leading slash
+    // (`/name`), so completion surfaces the slash-prefixed spelling.
     for ext_command in extension_commands {
         if list_contains(builtin_command_names(), ext_command.name) {
             continue
         }
-        if list_contains(result, ext_command.name) {
+        string candidate = ext_command.name
+        if !candidate.starts_with('/') {
+            candidate = '/' + candidate
+        }
+        if list_contains(result, candidate) {
             continue
         }
-        if prefix == '' || ext_command.name.starts_with(prefix) {
-            result.push(ext_command.name)
+        if prefix == '' || candidate.starts_with(prefix) {
+            result.push(candidate)
         }
     }
     return result
@@ -3283,6 +3309,9 @@ fn render_command_menu(string prefix, int selected_index, int width, [extensions
 fn command_description(string command, [extensions.extension_command_t] extension_commands): string {
     for ext_command in extension_commands {
         if ext_command.name == command {
+            return ext_command.description
+        }
+        if command.starts_with('/') && ext_command.name == command.slice(1, command.len()) {
             return ext_command.description
         }
     }

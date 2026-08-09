@@ -108,6 +108,23 @@ pub fn extension_runner_t.get_registered_commands(&self): [extensions.extension_
     return result
 }
 
+// Execute a registered extension command by name with the raw argument
+// string; the handler result string is returned.  Unknown commands and
+// commands registered without a handler are reported as explicit errors.
+pub fn extension_runner_t.run_command(&self, string name, string arguments): string! {
+    for ext in self.extensions {
+        for command in ext.commands {
+            if command.name == name {
+                if command.execute_fn is extensions.extension_command_execute_fn execute {
+                    return execute(arguments)
+                }
+                throw errorf('Extension command %s is registered without an executable handler', name)
+            }
+        }
+    }
+    throw errorf('Extension command %s not found', name)
+}
+
 // Pi queues provider registrations before the runner binds core actions.
 pub fn extension_runner_t.queue_provider_registration(&self, string provider_id) {
     self.provider_registrations.push(provider_id)

@@ -1,0 +1,71 @@
+// Minimal QuickJS C API bridge.  JSValue is a 16-byte struct in QuickJS
+// 0.16.1 (an 8-byte JSValueUnion plus an int64 tag); the layout is mirrored
+// below so values can pass by value across the #linkid boundary on arm64.
+//
+// The QuickJS core functions are declared directly with #linkid.  A few API
+// entry points (JS_NewInt32, JS_NewString, JS_IsException, JS_ToCStringLen)
+// are static inline in quickjs.h and have no exported symbol, so they are
+// surfaced through the adou_js_* wrappers in native/quickjs_bridge.c.
+import libc
+
+pub type JSValue = struct {
+    i64 u
+    i64 tag
+}
+
+#linkid JS_NewRuntime
+pub fn runtime_new():anyptr
+
+#linkid JS_NewContext
+pub fn context_new(anyptr rt):anyptr
+
+#linkid JS_FreeContext
+pub fn context_free(anyptr ctx):void
+
+#linkid JS_FreeRuntime
+pub fn runtime_free(anyptr rt):void
+
+#linkid JS_Eval
+pub fn eval_raw(anyptr ctx, anyptr script, int script_len, anyptr filename, int eval_flags):JSValue
+
+#linkid JS_GetException
+pub fn get_exception(anyptr ctx):JSValue
+
+#linkid JS_ToInt32
+pub fn to_int32(anyptr ctx, ptr<i32> pres, JSValue value):int
+
+#linkid JS_ToCStringLen2
+pub fn to_c_string_len2(anyptr ctx, anyptr plen, JSValue value, int cesu8):anyptr
+
+#linkid JS_FreeCString
+pub fn free_c_string(anyptr ctx, anyptr str):void
+
+#linkid JS_GetGlobalObject
+pub fn get_global_object(anyptr ctx):JSValue
+
+#linkid JS_SetPropertyStr
+pub fn set_property_str(anyptr ctx, JSValue this_obj, anyptr prop, JSValue value):int
+
+#linkid JS_GetPropertyStr
+pub fn get_property_str(anyptr ctx, JSValue this_obj, anyptr prop):JSValue
+
+#linkid JS_DupValue
+pub fn dup_value(anyptr ctx, JSValue value):JSValue
+
+#linkid JS_FreeValue
+pub fn free_value(anyptr ctx, JSValue value):void
+
+#linkid JS_Call
+pub fn call(anyptr ctx, JSValue func, JSValue this_obj, int argc, anyptr argv):JSValue
+
+#linkid adou_js_new_int32
+pub fn new_int32(anyptr ctx, i32 value):JSValue
+
+#linkid adou_js_new_string
+pub fn new_string(anyptr ctx, anyptr str):JSValue
+
+#linkid adou_js_is_exception
+pub fn is_exception(JSValue value):int
+
+#linkid adou_js_to_c_string_len
+pub fn to_c_string_len(anyptr ctx, anyptr plen, JSValue value):anyptr

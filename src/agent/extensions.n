@@ -9,6 +9,10 @@ import adou.src.ai.abort
 
 pub type extension_tool_execute_fn = fn(string call_id, any arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t!
 
+// Command handlers receive the raw argument string (everything after the
+// command name) and return a status/result string.
+pub type extension_command_execute_fn = fn(string arguments): string!
+
 // Implements the agent tool executor interface by delegating to the
 // extension-provided callback.
 pub type extension_tool_executor_t: agent_types.tool_executor_t = struct {
@@ -94,6 +98,7 @@ pub type extension_command_t = struct {
     string name
     string description
     skills.source_info_t source_info
+    extension_command_execute_fn? execute_fn = null
 }
 
 pub type extension_tool_t = struct {
@@ -106,6 +111,7 @@ pub type extension_tool_t = struct {
 }
 
 pub type optional_extension_tool_execute_fn = extension_tool_execute_fn|null
+pub type optional_extension_command_execute_fn = extension_command_execute_fn|null
 
 pub type extension_t = struct {
     string path
@@ -143,8 +149,8 @@ pub fn extension_t.register_tool(&self, string name, string label, string descri
     self.tools.push(extension_tool_t {name: name, label: label, description: description, parameters: parameters, source_info: source_info, execute_fn: execute_fn})
 }
 
-pub fn extension_t.register_command(&self, string name, string description, skills.source_info_t source_info) {
-    self.commands.push(extension_command_t {name: name, description: description, source_info: source_info})
+pub fn extension_t.register_command(&self, string name, string description, skills.source_info_t source_info, optional_extension_command_execute_fn execute_fn) {
+    self.commands.push(extension_command_t {name: name, description: description, source_info: source_info, execute_fn: execute_fn})
 }
 
 pub fn extension_t.register_flag(&self, string name, string description, string flag_type, string default_value) {

@@ -1,0 +1,57 @@
+// Minimal QuickJS FFI verification: a runtime/context round trip, a plain
+// JS_Eval that must produce 3 from "1+2", and a JS_Call of a function defined
+// by script ("globalThis.add") that must produce 5 from 2+3.
+import libc
+import adou.src.agent.quickjs_ffi
+
+fn eval_or_throw(anyptr ctx, string script):quickjs_ffi.JSValue! {
+    quickjs_ffi.JSValue result = quickjs_ffi.eval_raw(ctx, script.to_cstr() as anyptr, script.len(), 'probe'.to_cstr() as anyptr, 0)
+    if quickjs_ffi.is_exception(result) != 0 {
+        quickjs_ffi.JSValue exception = quickjs_ffi.get_exception(ctx)
+        anyptr message = quickjs_ffi.to_c_string_len(ctx, 0, exception)
+        quickjs_ffi.free_value(ctx, exception)
+        throw errorf('quickjs eval failed: %s', message)
+    }
+    return result
+}
+
+test 'quickjs evaluates 1+2 to 3' {
+    anyptr rt = quickjs_ffi.runtime_new()
+    anyptr ctx = quickjs_ffi.context_new(rt)
+
+    quickjs_ffi.JSValue result = eval_or_throw(ctx, '1+2')
+    i32 out = 0
+    quickjs_ffi.to_int32(ctx, &out, result)
+    quickjs_ffi.free_value(ctx, result)
+
+    quickjs_ffi.context_free(ctx)
+    quickjs_ffi.runtime_free(rt)
+    assert(out == 3)
+}
+
+test 'quickjs calls a script-defined global function through JS_Call' {
+    anyptr rt = quickjs_ffi.runtime_new()
+    anyptr ctx = quickjs_ffi.context_new(rt)
+
+    quickjs_ffi.JSValue definition = eval_or_throw(ctx, 'globalThis.add = (a, b) => a + b')
+    quickjs_ffi.free_value(ctx, definition)
+
+    quickjs_ffi.JSValue global = quickjs_ffi.get_global_object(ctx)
+    quickjs_ffi.JSValue add = quickjs_ffi.get_property_str(ctx, global, 'add'.to_cstr() as anyptr)
+    assert(quickjs_ffi.is_exception(add) == 0)
+
+    [quickjs_ffi.JSValue] args = [quickjs_ffi.new_int32(ctx, 2), quickjs_ffi.new_int32(ctx, 3)]
+    quickjs_ffi.JSValue undefined = quickjs_ffi.JSValue { u: 0, tag: 3 }
+    quickjs_ffi.JSValue called = quickjs_ffi.call(ctx, add, undefined, 2, args.ref())
+    assert(quickjs_ffi.is_exception(called) == 0)
+
+    i32 out = 0
+    quickjs_ffi.to_int32(ctx, &out, called)
+
+    quickjs_ffi.free_value(ctx, called)
+    quickjs_ffi.free_value(ctx, add)
+    quickjs_ffi.free_value(ctx, global)
+    quickjs_ffi.context_free(ctx)
+    quickjs_ffi.runtime_free(rt)
+    assert(out == 5)
+}

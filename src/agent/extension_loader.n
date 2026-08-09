@@ -1,3 +1,7 @@
+import adou.src.agent.extension_js
+import adou.src.agent.extensions
+import adou.src.config.paths as config_paths
+import adou.src.context.skills
 import adou.src.json_util
 import adou.src.tools.path_utils
 import fs
@@ -8,8 +12,47 @@ import syscall
 // Extension discovery rules (vendors/pi/packages/coding-agent/src/core/
 // extensions/loader.ts): direct .ts/.js files, subdirectory index files and
 // package.json pi.extensions manifests, no recursion beyond one level.
-// Dynamic loading itself is replaced by static linking in Nature; the
-// discovery surface stays faithful.
+// TypeScript entries are discovered but not executed: Adou runs plain
+// JavaScript through QuickJS, so .ts files must be precompiled first.
+// Every directory gets its own QuickJS runtime+context (see extension_js.n);
+// project and user extension directories are therefore isolated from each
+// other while all scripts in one directory share a context.
+
+// Load every JavaScript extension found in dir into one shared QuickJS
+// runtime and return the loaded extensions plus load diagnostics.
+pub fn load_extensions_from_dir(string dir): extensions.load_extensions_result_t {
+    extensions.load_extensions_result_t result = extensions.load_extensions_result_t {}
+    if !path_utils.exists(dir) {
+        return result
+    }
+    var js = extension_js.extension_js_new() catch error {
+        result.errors.push(extensions.extension_load_error_t {path: dir, error: 'quickjs runtime unavailable: ' + error.msg()})
+        return result
+    }
+    var discovered = discover_extensions_in_dir(dir)
+    for entry in discovered {
+        if entry.ends_with('.ts') {
+            result.errors.push(extensions.extension_load_error_t {path: entry, error: 'TypeScript extensions must be precompiled to JavaScript; skipping'})
+            continue
+        }
+        var ext = js.load(entry, source_info_for(dir)) catch error {
+            result.errors.push(extensions.extension_load_error_t {path: entry, error: error.msg()})
+            continue
+        }
+        result.extensions.push(ext)
+    }
+    return result
+}
+
+#local
+fn source_info_for(string dir): skills.source_info_t {
+    string scope = 'project'
+    string agent_dir = config_paths.agent_dir()
+    if dir.starts_with(agent_dir) {
+        scope = 'user'
+    }
+    return skills.source_info_t {source: 'local', scope: scope, origin: 'top-level', base_dir: dir,}
+}
 
 pub fn is_extension_file(string name): bool {
     return name.ends_with('.ts') || name.ends_with('.js')

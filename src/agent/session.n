@@ -983,6 +983,23 @@ pub fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output,
             break
         }
         debug.log('agent', 'provider event=' + event.kind)
+        // Host lifecycle events flow to extension JS handlers.  Emits are
+        // isolated: a failing handler is logged by the bridge and can never
+        // interrupt the agent stream.
+        if event.kind == agent_types.EVENT_TURN_START {
+            emit_extension_event(self, 'session_start', turn_lifecycle_data('session_start'))
+        } else if event.kind == agent_types.EVENT_TURN_END {
+            emit_extension_event(self, 'session_end', turn_lifecycle_data('session_end'))
+        } else if event.kind == agent_types.EVENT_TOOL_START {
+            emit_extension_event(self, 'tool_call', tool_call_event_data(event))
+        } else if event.kind == agent_types.EVENT_TOOL_END {
+            emit_extension_event(self, 'tool_result', tool_result_event_data(event))
+        } else if event.kind == agent_types.EVENT_MESSAGE_END {
+            var finished = event.message()
+            if finished is ref<ai_types.assistant_message_t> assistant {
+                emit_extension_event(self, 'message', message_event_data(assistant))
+            }
+        }
         if event.kind == agent_types.EVENT_MESSAGE_END {
             var message = event.message()
             self.repository.append_message(message)
@@ -1025,6 +1042,67 @@ fn will_retry_after_agent_end(ref<runner_t> runner, agent_types.agent_event_t ag
         index -= 1
     }
     return false
+}
+
+// Emit a host lifecycle event to extension JS handlers.  The data is a
+// JSON-compatible object serialized by the bridge; failures are logged so an
+// extension can never break the agent stream.
+#local
+fn emit_extension_event(ref<runner_t> runner, string event_name, {string:any} data): void {
+    runner.extensions.emit(event_name, data, null) catch error {
+        debug.log('extension', 'event ' + event_name + ' emission failed: ' + error.msg())
+    }
+}
+
+// Per-turn session lifecycle events follow Pi's session_start/session_end
+// shape; adou emits one pair per turn.
+#local
+fn turn_lifecycle_data(string event_type): {string:any} {
+    {string:any} data = {}
+    data['type'] = event_type
+    data['reason'] = 'turn'
+    return data
+}
+
+#local
+fn tool_call_event_data(agent_types.agent_event_t event): {string:any} {
+    {string:any} data = {}
+    data['type'] = 'tool_call'
+    data['toolCallId'] = event.tool_call_id
+    data['toolName'] = event.tool_name
+    data['input'] = event.args
+    return data
+}
+
+#local
+fn tool_result_event_data(agent_types.agent_event_t event): {string:any} {
+    {string:any} data = {}
+    data['type'] = 'tool_result'
+    data['toolCallId'] = event.tool_call_id
+    data['toolName'] = event.tool_name
+    data['input'] = event.args
+    data['isError'] = event.is_error
+    [any] content = []
+    for text in event.tool_result.content {
+        content.push(text.text)
+    }
+    data['content'] = content
+    return data
+}
+
+#local
+fn message_event_data(ref<ai_types.assistant_message_t> assistant): {string:any} {
+    {string:any} data = {}
+    data['type'] = 'message'
+    data['role'] = 'assistant'
+    [any] content = []
+    for block in assistant.content {
+        if block is ref<ai_types.text_content_t> text {
+            content.push(text.text)
+        }
+    }
+    data['content'] = content
+    return data
 }
 
 pub fn runner_t.context_from_repository(&self): ref<agent_types.context_t>! {

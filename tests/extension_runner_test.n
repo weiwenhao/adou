@@ -22,7 +22,7 @@ test 'runner aggregates registered tools and commands across extensions' {
     var ext_a = extensions.new_extension('/tmp/a', '/tmp/a', skills.source_info_t {source: 'local', scope: 'user', origin: 'top-level', base_dir: '/tmp/a'})
     var ext_b = extensions.new_extension('/tmp/b', '/tmp/b', skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/tmp/b'})
     ext_a.register_tool('tool-a', 'A', 'Tool A', null, ext_a.source_info, null)
-    ext_a.register_command('cmd-a', 'Command A', ext_a.source_info)
+    ext_a.register_command('cmd-a', 'Command A', ext_a.source_info, null)
     ext_b.register_tool('tool-b', 'B', 'Tool B', null, ext_b.source_info, null)
     runner.add_extension(ext_a)
     runner.add_extension(ext_b)

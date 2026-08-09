@@ -1,0 +1,204 @@
+// JS extension runtime bridge: QuickJS script loading, registration surface
+// visibility, tool execution through the agent executor, event dispatch to
+// JS handlers, the pure-JS emit path, and load-error diagnostics.
+import adou.src.agent.extension_bindings
+import adou.src.agent.extension_js
+import adou.src.agent.extension_loader
+import adou.src.agent.extension_runner
+import adou.src.agent.extensions
+import adou.src.agent.types as agent_types
+import adou.src.ai.abort
+import adou.src.context.skills
+import adou.src.json_util
+import adou.src.tools.types as tool_types
+import fs
+import fmt
+import os
+import path
+import strings
+import syscall
+
+fn write_extension_file(string file_path, string content): string! {
+    os.mkdirs(path.dir(file_path), 0o700)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    int written = file.write(content as [u8])
+    file.close()
+    assert(written == content.len())
+    return file_path
+}
+
+fn extension_source_info(string dir): skills.source_info_t {
+    return skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: dir,}
+}
+
+fn unique_dir(string name): string {
+    int pid = syscall.getpid() catch error {0}
+    return '/tmp/adou-extension-js-test-' + name + '-' + fmt.sprintf('%d', pid)
+}
+
+fn parse_or_null(string json_string): any {
+    var parsed = json_util.parse(json_string) catch error {
+        return null
+    }
+    return parsed
+}
+
+fn execute_extension_tool(string dir, string script, string arguments_json): tool_types.tool_result_t! {
+    string file_path = write_extension_file(path.join(dir, 'ext.js'), script)
+    var js = extension_js.extension_js_new()
+    var ext = js.load(file_path, extension_source_info(dir))
+    var runner = extension_runner.new_runner()
+    runner.add_extension(ext)
+    var tools = runner.get_registered_tools()
+    assert(tools.len() == 1)
+    var bound = extension_bindings.bind_extension_tools(tools)
+    assert(bound.len() == 1)
+    var args = parse_or_null(arguments_json)
+    var cancellation = abort.new()
+    agent_types.tool_update_fn on_update = fn(tool_types.tool_result_t partial) {}
+    var result = bound[0].executor.execute('call-1', args, cancellation, on_update)
+    return result
+}
+
+test 'js extension registers commands visible to the runner' {
+    string dir = unique_dir('commands')
+    string file_path = write_extension_file(path.join(dir, 'commands.js'), "adou.registerCommand({name: 'hello', description: 'Greet the user', handler: function () { return 'Hello' }})")
+    var js = extension_js.extension_js_new()
+    var ext = js.load(file_path, extension_source_info(dir))
+    var runner = extension_runner.new_runner()
+    runner.add_extension(ext)
+    var commands = runner.get_registered_commands()
+    assert(commands.len() == 1)
+    assert(commands[0].name == 'hello')
+    assert(commands[0].description == 'Greet the user')
+    assert(commands[0].source_info.scope == 'project')
+}
+
+test 'js extension tool executes through the agent executor' {
+    string dir = unique_dir('tool')
+    var result = execute_extension_tool(dir, "adou.registerTool({name: 'add-numbers', label: 'Add Numbers', description: 'Sum two numbers', parameters: {type: 'object', properties: {a: {type: 'number'}, b: {type: 'number'}}, required: ['a', 'b']}, handler: function (argsJson) { var args = JSON.parse(argsJson); return args.a + args.b }})", '{"a":2,"b":3}')
+    assert(result.content.len() == 1)
+    assert(result.content[0].text == '5')
+}
+
+test 'js tool handler errors surface as tool failures' {
+    string dir = unique_dir('tool-throws')
+    bool failed = false
+    try {
+        var result = execute_extension_tool(dir, "adou.registerTool({name: 'boom', description: 'throws', handler: function () { throw new Error('boom message') }})", 'null')
+        assert(result.content.len() == 0)
+    } catch error {
+        failed = true
+        assert(error.msg().find('boom message') >= 0)
+    }
+    assert(failed)
+}
+
+test 'async js tool handlers return a diagnostic result' {
+    string dir = unique_dir('tool-async')
+    var result = execute_extension_tool(dir, "adou.registerTool({name: 'later', description: 'async', handler: function () { return Promise.resolve(1) }})", 'null')
+    assert(result.content[0].text.find('Promise') >= 0)
+}
+
+test 'js extension tool accepts text and Pi-style content results' {
+    string dir = unique_dir('tool-results')
+    [string] lines = [
+        "adou.registerTool({name: 'echo-text', description: 'echo', handler: function () { return 'plain text' }})",
+        "adou.registerTool({name: 'echo-object', description: 'echo', handler: function () { return {text: 'object text'} }})",
+        "adou.registerTool({name: 'echo-content', description: 'echo', handler: function () { return {content: [{type: 'text', text: 'content text'}]} }})",
+    ]
+    string script = strings.join(lines, '\n')
+    string file_path = write_extension_file(path.join(dir, 'ext.js'), script)
+    var js = extension_js.extension_js_new()
+    var ext = js.load(file_path, extension_source_info(dir))
+    var runner = extension_runner.new_runner()
+    runner.add_extension(ext)
+    var bound = extension_bindings.bind_extension_tools(runner.get_registered_tools())
+    assert(bound.len() == 3)
+    var cancellation = abort.new()
+    agent_types.tool_update_fn on_update = fn(tool_types.tool_result_t partial) {}
+    any empty = null
+    var first = bound[0].executor.execute('call-1', empty, cancellation, on_update)
+    assert(first.content[0].text == 'plain text')
+    var second = bound[1].executor.execute('call-2', empty, cancellation, on_update)
+    assert(second.content[0].text == 'object text')
+    var third = bound[2].executor.execute('call-3', empty, cancellation, on_update)
+    assert(third.content[0].text == 'content text')
+}
+
+test 'runner emit reaches js event handlers and the side effect is visible' {
+    string dir = unique_dir('events')
+    [string] lines = [
+        'let greetingCount = 0',
+        "adou.on('greet', function () { greetingCount += 1 })",
+        "adou.registerTool({name: 'greeting-count', label: 'Greeting Count', description: 'Number of greet events seen', handler: function () { return 'greetings=' + greetingCount }})",
+    ]
+    string script = strings.join(lines, '\n')
+    string file_path = write_extension_file(path.join(dir, 'events.js'), script)
+    var js = extension_js.extension_js_new()
+    var ext = js.load(file_path, extension_source_info(dir))
+    var runner = extension_runner.new_runner()
+    runner.add_extension(ext)
+    runner.emit('greet', null, null)
+    runner.emit('greet', null, null)
+    var bound = extension_bindings.bind_extension_tools(runner.get_registered_tools())
+    assert(bound.len() == 1)
+    var cancellation = abort.new()
+    agent_types.tool_update_fn on_update = fn(tool_types.tool_result_t partial) {}
+    any empty = null
+    var result = bound[0].executor.execute('call-1', empty, cancellation, on_update)
+    assert(result.content[0].text == 'greetings=2')
+}
+
+test 'js-to-js emit dispatches within the shared context' {
+    string dir = unique_dir('emit')
+    [string] lines = [
+        'let greeted = 0',
+        "adou.on('greet', function () { greeted += 1 })",
+        "adou.emit('greet', {})",
+        "adou.registerTool({name: 'greeted', description: 'count', handler: function () { return 'greeted=' + greeted }})",
+    ]
+    string script = strings.join(lines, '\n')
+    var result = execute_extension_tool(dir, script, 'null')
+    assert(result.content[0].text == 'greeted=1')
+}
+
+test 'js syntax errors produce a load diagnostic without crashing' {
+    string dir = unique_dir('syntax-error')
+    string file_path = write_extension_file(path.join(dir, 'broken.js'), 'function ( {')
+    var js = extension_js.extension_js_new()
+    bool failed = false
+    try {
+        var ext = js.load(file_path, extension_source_info(dir))
+        assert(ext.commands.len() == 0)
+    } catch error {
+        failed = true
+        assert(error.msg().len() > 0)
+    }
+    assert(failed)
+}
+
+test 'directory loader skips TypeScript and aggregates js extensions' {
+    string dir = unique_dir('loader')
+    write_extension_file(path.join(dir, 'hello.js'), "adou.registerCommand({name: 'hello', description: 'Greet the user', handler: function () { return 'Hello' }})")
+    write_extension_file(path.join(dir, 'typed.ts'), 'const value: number = 1')
+    var result = extension_loader.load_extensions_from_dir(dir)
+    assert(result.extensions.len() == 1)
+    assert(result.errors.len() == 1)
+    assert(result.errors[0].path.ends_with('.ts'))
+    assert(result.errors[0].error.find('precompiled') >= 0)
+    var runner = extension_runner.new_runner()
+    runner.add_extension(result.extensions[0])
+    assert(runner.get_registered_commands().len() == 1)
+}
+
+test 'shared context loads multiple scripts with independent registrations' {
+    string dir = unique_dir('multi')
+    var first_path = write_extension_file(path.join(dir, 'first.js'), "adou.registerCommand({name: 'first', description: 'First script', handler: function () { return 1 }})")
+    var second_path = write_extension_file(path.join(dir, 'second.js'), "adou.registerCommand({name: 'second', description: 'Second script', handler: function () { return 2 }})")
+    var js = extension_js.extension_js_new()
+    var first = js.load(first_path, extension_source_info(dir))
+    var second = js.load(second_path, extension_source_info(dir))
+    assert(first.commands.len() == 1 && first.commands[0].name == 'first')
+    assert(second.commands.len() == 1 && second.commands[0].name == 'second')
+}
