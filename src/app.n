@@ -17,6 +17,8 @@ import adou.src.config.settings
 import adou.src.config.types as config_types
 import adou.src.config.paths as config_paths
 import adou.src.context.project
+import adou.src.context.prompt_templates
+import adou.src.context.slash_commands
 import adou.src.context.skills
 import adou.src.context.system_prompt
 import adou.src.json_util
@@ -693,7 +695,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
         } else if command == 'get_last_assistant_text' {
             rpc_write(output_lock, rpc_ok_data(id, command, rpc_text_data('text', last_assistant_text(runner.copy_active_messages()))))
         } else if command == 'get_commands' {
-            rpc_write(output_lock, rpc_ok_data(id, command, rpc_commands()))
+            rpc_write(output_lock, rpc_ok_data(id, command, rpc_commands(runner.repository.cwd, runner.repository.cwd)))
         } else if command == 'set_session_name' {
             string name = rpc_string(object, 'name').trim([' ', '\t', '\n', '\r'])
             if name == '' {
@@ -1318,12 +1320,31 @@ fn rpc_cancelled_data(bool cancelled): {string:any} {
 }
 
 #local
-fn rpc_commands(): {string:any} {
-    // Pi's get_commands is the extension/prompt/skill registry, not the
-    // built-in slash-command help list.  Adou has no dynamic extensions in
-    // the MVP, so the protocol-compatible result is an empty array. Built-in
-    // commands remain available through the TUI completion menu and /help.
+fn rpc_commands(string cwd, string session_cwd): {string:any} {
+    // Pi's get_commands composes prompt templates and skills as dynamic
+    // slash commands with source metadata.
     [any] values = []
+    [string] no_extra = []
+    var templates = prompt_templates.load_prompt_templates(session_cwd, config_paths.agent_dir(), no_extra, true)
+    for info in slash_commands.prompt_commands(templates) {
+        {string:any} object = {}
+        object['name'] = info.name
+        if info.description != '' {
+            object['description'] = info.description
+        }
+        object['source'] = info.source
+        values.push(object)
+    }
+    var skills_result = skills.load_skills(session_cwd, config_paths.agent_dir(), no_extra, true)
+    for info in slash_commands.skill_commands(skills_result.skills) {
+        {string:any} object = {}
+        object['name'] = info.name
+        if info.description != '' {
+            object['description'] = info.description
+        }
+        object['source'] = info.source
+        values.push(object)
+    }
     {string:any} result = {}
     result['commands'] = values
     return result

@@ -1,0 +1,29 @@
+import adou.src.context.prompt_templates
+import adou.src.context.skills
+
+// Port of the get_commands composition in agent-session.ts: prompt templates
+// and skills register dynamic slash commands (skill names carry a skill:
+// prefix), complementing the built-in commands in the TUI.
+
+pub type slash_command_info_t = struct {
+    string name
+    string description
+    string source
+    skills.source_info_t source_info
+}
+
+pub fn prompt_commands([ref<prompt_templates.prompt_template_t>] templates): [slash_command_info_t] {
+    [slash_command_info_t] result = []
+    for template in templates {
+        result.push(slash_command_info_t {name: template.name, description: template.description, source: 'prompt', source_info: template.source_info})
+    }
+    return result
+}
+
+pub fn skill_commands([ref<skills.skill_t>] skills_list): [slash_command_info_t] {
+    [slash_command_info_t] result = []
+    for skill in skills_list {
+        result.push(slash_command_info_t {name: 'skill:' + skill.name, description: skill.description, source: 'skill', source_info: skill.source_info})
+    }
+    return result
+}
