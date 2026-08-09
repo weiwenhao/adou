@@ -70,3 +70,18 @@ test 'project .pi settings override global settings field by field' {
     assert(loaded.enabled_model_ids.len() == 1 && loaded.enabled_model_ids[0] == 'deepseek/deepseek-v4-flash')
     os.rmdir(home, true)
 }
+
+test 'compaction sub-settings round trip like Pi' {
+    var settings = settings.load()
+    int original_reserve = settings.reserve_tokens
+    int original_keep = settings.keep_recent_tokens
+    settings.reserve_tokens = 20000
+    settings.keep_recent_tokens = 30000
+    settings.save(settings) catch error {}
+    var reloaded = settings.load()
+    assert(reloaded.reserve_tokens == 20000)
+    assert(reloaded.keep_recent_tokens == 30000)
+    settings.reserve_tokens = original_reserve
+    settings.keep_recent_tokens = original_keep
+    settings.save(settings) catch error {}
+}

@@ -24,6 +24,9 @@ pub type settings_t = struct {
     bool retry_enabled = true
     int retry_max_attempts = 3
     int retry_base_delay_ms = 2000
+    // Pi compaction.reserveTokens / keepRecentTokens sub-settings.
+    int reserve_tokens = 16384
+    int keep_recent_tokens = 20000
     [string] enabled_model_ids = []
 }
 
@@ -63,6 +66,21 @@ fn load_file(string file_path, settings_t initial): settings_t {
     result.retry_enabled = bool_value(object, 'retryEnabled', result.retry_enabled)
     result.retry_max_attempts = positive_int(object, 'retryMaxAttempts', result.retry_max_attempts)
     result.retry_base_delay_ms = positive_int(object, 'retryBaseDelayMs', result.retry_base_delay_ms)
+    any compaction_value = null
+    if object.contains('compaction') {
+        compaction_value = object['compaction']
+    }
+    if json_util.is_obj(compaction_value) {
+        var compaction = compaction_value as {string:any}
+        int reserve = positive_int(compaction, 'reserveTokens', result.reserve_tokens)
+        if reserve > 0 {
+            result.reserve_tokens = reserve
+        }
+        int keep_recent = positive_int(compaction, 'keepRecentTokens', result.keep_recent_tokens)
+        if keep_recent > 0 {
+            result.keep_recent_tokens = keep_recent
+        }
+    }
     if object.contains('enabledModels') && object['enabledModels'] is [any] {
         // An explicitly configured project array replaces the global scope;
         // it is not appended to it.
@@ -108,6 +126,10 @@ pub fn save(settings_t settings): void! {
     object['retryEnabled'] = settings.retry_enabled
     object['retryMaxAttempts'] = settings.retry_max_attempts
     object['retryBaseDelayMs'] = settings.retry_base_delay_ms
+    {string:any} compaction_object = json_util.opt_obj(object, 'compaction')
+    compaction_object['reserveTokens'] = settings.reserve_tokens
+    compaction_object['keepRecentTokens'] = settings.keep_recent_tokens
+    object['compaction'] = compaction_object
     if settings.enabled_model_ids.len() > 0 {
         [any] enabled = []
         for model_id in settings.enabled_model_ids {
