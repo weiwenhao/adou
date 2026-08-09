@@ -486,7 +486,7 @@ pub fn manager_t.append_message(&self, ai_types.message_t message): string! {
     return entry.id
 }
 
-pub fn manager_t.append_compaction(&self, string summary, string first_kept_entry_id, int tokens_before, any details, ai_types.usage_t usage): string! {
+pub fn manager_t.append_compaction(&self, string summary, string first_kept_entry_id, int tokens_before, any details, ai_types.usage_t usage, [ai_types.message_t] retained_tail): string! {
     self.lock.lock()
     if !self.by_id.contains(first_kept_entry_id) {
         self.lock.unlock()
@@ -501,6 +501,13 @@ pub fn manager_t.append_compaction(&self, string summary, string first_kept_entr
     }
     if has_usage(usage) {
         object['usage'] = message_json.encode_usage(usage)
+    }
+    if retained_tail.len() > 0 {
+        [any] tail_values = []
+        for tail_message in retained_tail {
+            tail_values.push(message_json.encode(tail_message))
+        }
+        object['retainedTail'] = tail_values
     }
     var entry = self.append_object_locked(object) catch error {
         self.lock.unlock()
@@ -852,6 +859,14 @@ pub fn manager_t.build_context(&self): types.context_t! {
         int timestamp = iso_to_ms(compact_entry.timestamp)
         ai_types.message_t summary_message = new ai_types.compaction_summary_message_t(summary = summary, tokens_before = tokens_before, timestamp = timestamp)
         result.messages.push(summary_message)
+        if object.contains('retainedTail') && object['retainedTail'] is [any] {
+            for tail_value in object['retainedTail'] as [any] {
+                var tail_message = message_json.decode(tail_value) catch error {
+                    continue
+                }
+                result.messages.push(tail_message)
+            }
+        }
         string first_kept = json_util.required_string(object, 'firstKeptEntryId')
         start = find_entry_index(active, first_kept)
         if start < 0 || start >= compaction_index {

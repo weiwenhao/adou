@@ -1,0 +1,38 @@
+import adou.src.ai.types as ai_types
+import adou.src.session.repository
+import adou.src.session.types as session_types
+import adou.src.ai.types as types
+
+test 'compaction retained tail persists and rebuilds into context like Pi' {
+    var manager = repository.in_memory('/tmp')
+    types.message_t user = new types.user_message_t(content = 'hello')
+    string first_id = manager.append_message(user)
+    var assistant = new ai_types.assistant_message_t(api = 'openai-completions', provider = 'deepseek', model = 'deepseek-v4-flash', timestamp = 1)
+    ai_types.message_t assistant_message = assistant
+    manager.append_message(assistant_message)
+    // A second compaction with a retained tail.
+    var retained = new ai_types.user_message_t(content = 'retained tail message', timestamp = 2)
+    [ai_types.message_t] tail = []
+    ai_types.message_t retained_message = retained
+    tail.push(retained_message)
+    ai_types.message_t wrapped = retained_message
+    string second_id = manager.append_message(wrapped)
+    manager.append_compaction('summary', second_id, 20, null, ai_types.usage_t{}, tail)
+    var context = manager.build_context()
+    // The summary message plus the retained tail plus any post-compaction
+    // entries appear in context.
+    bool saw_summary = false
+    bool saw_retained = false
+    for message in context.messages {
+        if message is ref<ai_types.compaction_summary_message_t> summary {
+            saw_summary = true
+        }
+        if message is ref<ai_types.user_message_t> user_message {
+            if user_message.content == 'retained tail message' {
+                saw_retained = true
+            }
+        }
+    }
+    assert(saw_summary)
+    assert(saw_retained)
+}

@@ -1129,7 +1129,7 @@ pub fn runner_t.run_compaction(&self, ref<session_stream.stream_t> output, strin
         return false
     }
     any details = details_json(result.read_files, result.modified_files)
-    self.repository.append_compaction(result.summary, result.first_kept_entry_id, result.tokens_before, details, result.usage)
+    self.repository.append_compaction(result.summary, result.first_kept_entry_id, result.tokens_before, details, result.usage, result.retained_tail)
     var compacted_messages = self.repository.build_context().messages
     self.lock.lock()
     self.active_messages = compacted_messages

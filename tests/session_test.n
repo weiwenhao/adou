@@ -164,7 +164,7 @@ test 'usage totals include compacted history and summary entries' {
     compaction_usage.input = 11
     compaction_usage.output = 5
     compaction_usage.cost.total = 0.020
-    session.append_compaction('summary', first_id, 200, null, compaction_usage)
+    session.append_compaction('summary', first_id, 200, null, compaction_usage, [])
     ai_types.usage_t branch_usage = ai_types.usage_t{}
     branch_usage.input = 13
     branch_usage.output = 6
@@ -372,7 +372,7 @@ test 'compaction preserves JSONL history and rebuilds summary plus kept tail' {
     ai_types.message_t kept = new ai_types.user_message_t(content = 'keep', timestamp = 200)
     string kept_id = session.append_message(kept)
     int before = session.get_entries().len()
-    session.append_compaction('summary text', kept_id, 1234, null, ai_types.usage_t{})
+    session.append_compaction('summary text', kept_id, 1234, null, ai_types.usage_t{}, [])
     ai_types.message_t after = new ai_types.user_message_t(content = 'after', timestamp = 300)
     session.append_message(after)
     assert(session.get_entries().len() == before + 2)

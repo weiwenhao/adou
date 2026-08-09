@@ -21,7 +21,7 @@ test 'usage cost breakdown groups by model and tools like Pi' {
     second.usage.cost.total = 2.0
     ai_types.message_t second_message = second
     string kept_id = manager.append_message(second_message)
-    manager.append_compaction('summary', kept_id, 10, null, ai_types.usage_t {input: 50, output: 20, total_tokens: 70, cost: ai_types.cost_t {total: 0.5}})
+    manager.append_compaction('summary', kept_id, 10, null, ai_types.usage_t {input: 50, output: 20, total_tokens: 70, cost: ai_types.cost_t {total: 0.5}}, [])
     var breakdown = manager.usage_cost_breakdown()
     assert(breakdown.len() == 2)
     // deepseek cost 3.0 > tools/summaries 0.5, so it sorts first.
