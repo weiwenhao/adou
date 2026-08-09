@@ -1,0 +1,28 @@
+import adou.src.agent.extensions
+import adou.src.context.skills
+
+test 'extension registration collections mirror Pi shapes' {
+    var ext = extensions.new_extension('/tmp/ext', '/tmp/ext', skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/tmp/ext'})
+    ext.register_tool('my-tool', 'My Tool', 'Does things', null, ext.source_info)
+    ext.register_command('my-command', 'Runs the command', ext.source_info)
+    ext.register_flag('verbose', 'Verbose mode', 'boolean', 'false')
+    ext.register_shortcut('ctrl+shift+m', 'Toggle mode')
+    assert(ext.tools.len() == 1)
+    assert(ext.tools[0].name == 'my-tool')
+    assert(ext.commands.len() == 1)
+    assert(ext.commands[0].name == 'my-command')
+    assert(ext.flags.len() == 1)
+    assert(ext.flags[0].name == 'verbose')
+    assert(ext.flags[0].extension_path == '/tmp/ext')
+    assert(ext.shortcuts.len() == 1)
+    assert(ext.shortcuts[0].shortcut == 'ctrl+shift+m')
+}
+
+test 'extension error and load result shapes match Pi' {
+    extensions.extension_error_t err = extensions.extension_error_t {extension_path: '/tmp/x', event: 'tool_execution_end', error: 'boom', stack: ''}
+    assert(err.event == 'tool_execution_end')
+    extensions.load_extensions_result_t result = extensions.load_extensions_result_t {}
+    extensions.extension_load_error_t load_err = extensions.extension_load_error_t {path: '/tmp/x', error: 'load failed'}
+    result.errors.push(load_err)
+    assert(result.errors.len() == 1)
+}
