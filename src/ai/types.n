@@ -198,6 +198,11 @@ pub type stream_options_t = struct {
     string cache_retention = 'short'
     float temperature = -1.0
     string tool_choice
+    // Pi's transport option for the Codex Responses provider: 'auto'
+    // (default), 'sse', 'websocket' or 'websocket-cached'.  'websocket-cached'
+    // is treated as plain 'websocket' because connection reuse and
+    // previous_response_id continuation are not implemented.
+    string transport = 'auto'
 }
 // assistant_event_t mirrors Pi's AssistantMessageEvent protocol. Only fields
 // meaningful for a particular event type are populated.

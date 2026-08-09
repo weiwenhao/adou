@@ -1,0 +1,362 @@
+// Minimal RFC 6455 WebSocket client for the Codex Responses transport,
+// mirroring vendors/pi/packages/ai/src/api/openai-codex-responses.ts.
+//
+// Pi delegates framing to the runtime WebSocket; Adou speaks the protocol
+// directly over net.tcp / net.tls.  Client frames are always masked, ping
+// frames are answered automatically with a pong, and a close frame surfaces
+// as an ordinary frame for the caller to interpret.
+import base64
+import fmt
+import io.buf
+import net.dns
+import net.tcp
+import net.tls
+import net.types
+import net.url
+import net.utils
+import time
+
+pub const WEBSOCKET_GUID = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11'
+pub const OPCODE_CONTINUATION = 0x0
+pub const OPCODE_TEXT = 0x1
+pub const OPCODE_BINARY = 0x2
+pub const OPCODE_CLOSE = 0x8
+pub const OPCODE_PING = 0x9
+pub const OPCODE_PONG = 0xa
+pub const MAX_FRAME_PAYLOAD = 16 * 1024 * 1024
+
+pub type frame_t = struct {
+    int opcode
+    bool fin
+    [u8] payload
+}
+
+// conn_t is one client connection.  The buffered reader gives the handshake
+// parser and the frame decoder line- and exact-read primitives over the
+// underlying socket; the underlying connection stays reachable through the
+// reader's public rd field (the same pattern the HTTP client uses).
+pub type conn_t = struct {
+    ref<buf.reader<types.connable>> reader
+    bool closed
+}
+
+// A small self-contained LCG mixed with the wall clock.  RFC 6455 only
+// requires fresh unpredictable keys; avoiding libc's shared RNG keeps
+// concurrent provider coroutines from racing global state.
+u32 rng_state = 0x9e3779b9
+
+#linkid mbedtls_sha1
+fn mbedtls_sha1(anyptr input, int ilen, anyptr output): int
+
+// resolve an endpoint URL like https://host/backend-api/codex/responses to
+// the equivalent WebSocket URL (Pi's resolveCodexWebSocketUrl).
+pub fn websocket_url(string endpoint): string! {
+    if endpoint.starts_with('https://') {
+        return 'wss://' + endpoint.slice(8, endpoint.len())
+    }
+    if endpoint.starts_with('http://') {
+        return 'ws://' + endpoint.slice(7, endpoint.len())
+    }
+    throw errorf('Cannot resolve WebSocket URL from endpoint: %s', endpoint)
+}
+
+// sec_websocket_accept computes the server side of the upgrade handshake:
+// base64(SHA1(key + GUID)).  Exposed for tests.
+pub fn sec_websocket_accept(string key): string! {
+    [u8] input = (key + WEBSOCKET_GUID) as [u8]
+    [u8] digest = vec<u8>.new(0, 20)
+    int result = mbedtls_sha1(input.ref(), input.len(), digest.ref())
+    if result != 0 {
+        throw errorf('SHA-1 digest failed: %d', result)
+    }
+    return base64.encode(digest) as string
+}
+
+// encode_frame serializes one frame; mask must be true on client frames.
+pub fn encode_frame(int opcode, [u8] payload, bool mask): [u8] {
+    [u8] frame = []
+    frame.push((0x80 | opcode) as u8)
+    int length = payload.len()
+    if length <= 125 {
+        frame.push(mask ? (0x80 | length) as u8 : length as u8)
+    } else if length <= 65535 {
+        frame.push(mask ? (0x80 | 126) as u8 : 126 as u8)
+        frame.push(((length >> 8) & 0xff) as u8)
+        frame.push((length & 0xff) as u8)
+    } else {
+        frame.push(mask ? (0x80 | 127) as u8 : 127 as u8)
+        for int shift = 56; shift >= 0; shift -= 8 {
+            frame.push(((length >> shift) & 0xff) as u8)
+        }
+    }
+    [u8] mask_key = vec<u8>.new(0, 4)
+    if mask {
+        mask_key = random_bytes(4)
+        frame.append(mask_key)
+    }
+    for byte in payload {
+        frame.push(byte)
+    }
+    if mask {
+        int payload_start = frame.len() - length
+        for int i = 0; i < length; i += 1 {
+            frame[payload_start + i] = frame[payload_start + i] ^ mask_key[i % 4]
+        }
+    }
+    return frame
+}
+
+// decode_frame parses one frame from a buffered stream.  Both masked (client)
+// and unmasked (server) frames are accepted and unmasked as needed.  Exposed
+// for the local fixture servers in tests.
+pub fn decode_frame(ref<buf.reader<types.connable>> reader): frame_t! {
+    u8 b0 = reader.read_byte()
+    u8 b1 = reader.read_byte()
+    int opcode = (b0 & 0x0f) as int
+    bool fin = (b0 & 0x80) != 0
+    bool masked = (b1 & 0x80) != 0
+    int length = (b1 & 0x7f) as int
+    if length == 126 {
+        u8 hi = reader.read_byte()
+        u8 lo = reader.read_byte()
+        length = ((hi as int) << 8) | (lo as int)
+    } else if length == 127 {
+        [u8] eight = vec<u8>.new(0, 8)
+        reader.read_exact(eight)
+        if (eight[0] & 0x80) != 0 {
+            throw errorf('WebSocket frame length exceeds supported range')
+        }
+        length = 0
+        for int i = 0; i < 8; i += 1 {
+            length = (length << 8) | (eight[i] as int)
+        }
+    }
+    if length > MAX_FRAME_PAYLOAD {
+        throw errorf('WebSocket frame payload exceeds %d bytes', MAX_FRAME_PAYLOAD)
+    }
+    [u8] mask_key = vec<u8>.new(0, 4)
+    if masked {
+        reader.read_exact(mask_key)
+    }
+    [u8] payload = vec<u8>.new(0, length)
+    if length > 0 {
+        reader.read_exact(payload)
+        if masked {
+            for int i = 0; i < length; i += 1 {
+                payload[i] = payload[i] ^ mask_key[i % 4]
+            }
+        }
+    }
+    return frame_t {opcode: opcode, fin: fin, payload: payload}
+}
+
+// connect performs the TCP/TLS dial and the HTTP/1.1 upgrade handshake,
+// verifying the Sec-WebSocket-Accept header.  On any handshake failure the
+// socket is closed before the error propagates.
+pub fn connect(string ws_url, {string:string} headers, int timeout_ms): ref<conn_t>! {
+    var parsed = url.parse(ws_url)
+    if parsed.scheme != 'wss' && parsed.scheme != 'ws' {
+        throw errorf('Invalid WebSocket URL scheme: %s', parsed.scheme)
+    }
+    int port = parsed.port
+    if port == 0 {
+        port = parsed.scheme == 'wss' ? 443 : 80
+    }
+    string host = parsed.hostname
+    if !utils.is_ipv4(host) {
+        var ips = dns.lookup(host) catch error {
+            throw errorf('WebSocket DNS lookup failed for %s', host)
+        }
+        if ips.len() == 0 {
+            throw errorf('WebSocket DNS lookup failed for %s', host)
+        }
+        host = ips[0]
+    }
+    types.connable? temp = null
+    if parsed.scheme == 'wss' {
+        temp = tls.connect_timeout(fmt.sprintf('%s:%d', host, port), timeout_ms)
+    } else {
+        temp = tcp.connect_timeout(fmt.sprintf('%s:%d', host, port), timeout_ms)
+    }
+    var inner = temp as types.connable
+    var conn = new conn_t(reader = new buf.reader<types.connable>(rd = inner))
+    string key = random_websocket_key()
+    inner.write(build_request(parsed, headers, key) as [u8])
+    var response_headers = conn.read_handshake()
+    string expected = sec_websocket_accept(key)
+    string actual = header_lookup(response_headers, 'sec-websocket-accept')
+    if actual != expected {
+        inner.close()
+        throw errorf('WebSocket handshake failed: invalid Sec-WebSocket-Accept')
+    }
+    return conn
+}
+
+pub fn conn_t.set_read_timeout(&self, int timeout_ms) {
+    self.reader.rd.set_read_timeout(timeout_ms)
+}
+
+pub fn conn_t.send_text(&self, string text): void! {
+    self.send_frame(OPCODE_TEXT, text as [u8])
+}
+
+// read_message returns the next data frame, transparently answering pings and
+// reassembling fragments.  A close frame is returned as-is for the caller to
+// interpret.
+pub fn conn_t.read_message(&self): frame_t! {
+    var frame = self.read_frame()
+    if frame.fin {
+        return frame
+    }
+    int opcode = frame.opcode
+    if opcode != OPCODE_TEXT && opcode != OPCODE_BINARY {
+        return frame
+    }
+    [u8] payload = vec<u8>.cap_of(frame.payload.len())
+    payload.append(frame.payload)
+    bool fin = false
+    for !fin {
+        var next = self.read_frame()
+        if next.opcode == OPCODE_CLOSE {
+            return frame_t {opcode: OPCODE_CLOSE, fin: true, payload: next.payload}
+        }
+        if next.opcode != OPCODE_CONTINUATION {
+            throw errorf('WebSocket fragmented message interrupted by opcode %d', next.opcode)
+        }
+        payload.append(next.payload)
+        if payload.len() > MAX_FRAME_PAYLOAD {
+            throw errorf('WebSocket message exceeds %d bytes', MAX_FRAME_PAYLOAD)
+        }
+        fin = next.fin
+    }
+    return frame_t {opcode: opcode, fin: true, payload: payload}
+}
+
+// close sends a close frame with code 1000 and shuts the connection down.
+// Idempotent so the abort callback and the stream teardown may both call it.
+pub fn conn_t.close(&self) {
+    if self.closed {
+        return
+    }
+    self.closed = true
+    [u8] payload = vec<u8>.cap_of(2)
+    payload.push(0x03)
+    payload.push(0xe8)
+    self.send_frame(OPCODE_CLOSE, payload) catch error {}
+    self.reader.rd.close()
+}
+
+#local
+fn conn_t.read_frame(&self): frame_t! {
+    var frame = decode_frame(self.reader) catch error {
+        throw errorf('%s', normalize_read_error(error.msg()))
+    }
+    if frame.opcode == OPCODE_PING {
+        self.send_frame(OPCODE_PONG, frame.payload) catch error {}
+        return self.read_frame()
+    }
+    return frame
+}
+
+#local
+fn conn_t.send_frame(&self, int opcode, [u8] payload): void! {
+    self.reader.rd.write(encode_frame(opcode, payload, true))
+}
+
+#local
+fn conn_t.read_handshake(&self): {string:string}! {
+    {string:string} headers = {}
+    bool read_status = false
+    for true {
+        string line = self.reader.read_line() catch error {
+            string message = normalize_read_error(error.msg())
+            if message == 'WebSocket read timeout' {
+                throw errorf('WebSocket handshake timed out')
+            }
+            throw errorf('%s', message)
+        }
+        if !read_status {
+            read_status = true
+            var parts = line.split(' ')
+            if parts.len() < 2 {
+                throw errorf('WebSocket handshake failed: malformed status line')
+            }
+            int status = parts[1].to_int() catch error {
+                0
+            }
+            if status != 101 {
+                throw errorf('WebSocket handshake failed: HTTP %d %s', status, line)
+            }
+            continue
+        }
+        if line == '' {
+            break
+        }
+        int colon = line.find(':')
+        if colon > 0 {
+            string key = line.slice(0, colon).trim([' ', '\t'])
+            string value = line.slice(colon + 1, line.len()).trim([' ', '\t'])
+            headers[key] = value
+        }
+    }
+    return headers
+}
+
+#local
+fn build_request(url.url_t parsed, {string:string} headers, string key): string {
+    string request = 'GET ' + parsed.request_uri() + ' HTTP/1.1\r\n'
+    request += 'Host: ' + parsed.authority + '\r\n'
+    request += 'Upgrade: websocket\r\n'
+    request += 'Connection: Upgrade\r\n'
+    request += 'Sec-WebSocket-Key: ' + key + '\r\n'
+    request += 'Sec-WebSocket-Version: 13\r\n'
+    for k, v in headers {
+        request += k + ': ' + v + '\r\n'
+    }
+    request += '\r\n'
+    return request
+}
+
+#local
+fn header_lookup({string:string} headers, string lower_name): string {
+    for k, v in headers {
+        if k.to_lower() == lower_name {
+            return v
+        }
+    }
+    return ''
+}
+
+#local
+fn random_websocket_key(): string {
+    return base64.encode(random_bytes(16)) as string
+}
+
+#local
+fn random_bytes(int count): [u8] {
+    [u8] result = vec<u8>.cap_of(count)
+    for int i = 0; i < count; i += 1 {
+        result.push((next_random() & 0xff) as u8)
+    }
+    return result
+}
+
+#local
+fn next_random(): u32 {
+    rng_state = rng_state * 1664525 + 1013904223
+    u32 now = (time.now().ns_timestamp() as u32)
+    rng_state = rng_state ^ ((now << 13) | (now >> 19))
+    return rng_state
+}
+
+#local
+fn normalize_read_error(string message): string {
+    string lower = message.to_lower()
+    if lower.find('read timeout') >= 0 {
+        return 'WebSocket read timeout'
+    }
+    if lower == 'eof' || lower.find('end of file') >= 0 || lower == 'no progress' {
+        return 'WebSocket connection closed by peer'
+    }
+    return message
+}

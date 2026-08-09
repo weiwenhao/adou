@@ -2,15 +2,56 @@ import adou.src.ai.abort
 import adou.src.ai.event_stream
 import adou.src.ai.provider_retry
 import adou.src.ai.providers.codex_messages
+import adou.src.ai.providers.codex_websocket
 import adou.src.ai.providers.openai_responses
 import adou.src.ai.sse
 import adou.src.ai.types
 import adou.src.debug
+import adou.src.json_util
+import adou.src.session.identity
 import fmt
 import http.client as client
+import json
 import time
 
 pub const ERROR_BODY_LIMIT = 64 * 1024
+
+// Per-process WebSocket debug statistics.  Pi keeps these per session
+// (getOpenAICodexWebSocketDebugStats); Adou aggregates at the process level.
+pub type codex_websocket_stats_t = struct {
+    int requests
+    int connections_created
+    int connections_reused
+    int fallbacks
+}
+
+// Sessions whose WebSocket attempt failed; they skip the WebSocket transport
+// and go straight to SSE, mirroring Pi's websocketSseFallbackSessions.
+// Module-level state is shared by the provider coroutines; the map operations
+// are small and the consequences of a lost update are limited to an extra
+// WebSocket attempt.
+{string:bool} fallback_sessions = {}
+var websocket_requests = 0
+var websocket_connections_created = 0
+var websocket_fallbacks = 0
+
+pub fn get_codex_websocket_debug_stats(): codex_websocket_stats_t {
+    return codex_websocket_stats_t {requests: websocket_requests, connections_created: websocket_connections_created, connections_reused: 0, fallbacks: websocket_fallbacks,}
+}
+
+pub fn reset_codex_websocket_debug_stats() {
+    websocket_requests = 0
+    websocket_connections_created = 0
+    websocket_fallbacks = 0
+    fallback_sessions = {}
+}
+
+pub fn close_codex_websocket_sessions() {
+    // No connection pool exists: connection reuse and previous_response_id
+    // continuation are not implemented, so there is nothing to close.  Kept
+    // for parity with Pi's closeOpenAICodexWebSocketSessions.
+    debug.log('provider', 'codex websocket sessions: no pooled connections to close')
+}
 
 pub type run_state_t = struct {
     ref<event_stream.assistant_stream_t> stream
@@ -21,6 +62,8 @@ pub type run_state_t = struct {
     string body
     string account_id
     ref<client.response_t>? response = null
+    ref<codex_websocket.conn_t>? ws_conn = null
+    bool ws_started
 }
 
 pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
@@ -49,6 +92,40 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
         throw errorf('No account id in Codex token')
     }
     state.body = codex_messages.build(state.model, state.context, state.options)
+    string transport = state.options.transport
+    if transport == '' {
+        transport = 'auto'
+    }
+    if transport != 'sse' {
+        if transport == 'websocket' || transport == 'websocket-cached' {
+            // 'websocket-cached' only adds connection reuse and
+            // previous_response_id continuation, which are not implemented;
+            // both take the plain WebSocket path.
+            run_websocket(stream, state)
+            return
+        }
+        // transport 'auto': try the WebSocket, fall back to SSE when it fails
+        // before the first event.  The fallback is remembered per session.
+        string session_key = codex_session_key(state)
+        bool fallback_active = session_key != '' && fallback_sessions.contains(session_key) && fallback_sessions[session_key]
+        if fallback_active {
+            debug.log('provider', 'codex websocket disabled by session fallback memory')
+            websocket_fallbacks += 1
+        } else {
+            bool ws_ok = try_websocket(stream, state) catch error {
+                throw error
+            }
+            if ws_ok {
+                return
+            }
+            state.processor = openai_responses.processor(state.model, time.now().ms_timestamp())
+        }
+    }
+    run_sse(stream, state)
+}
+
+#local
+fn run_sse(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
     var current = send_with_retry(state, 0)
     debug.log('provider', 'codex response status=' + fmt.sprintf('%d', current.status))
     stream.push(state.processor.start())
@@ -89,6 +166,149 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     state.processor.finish()
     stream.end()
     debug.log('provider', 'codex stream end')
+}
+
+// try_websocket runs the WebSocket path and reports whether it completed.
+// Transport failures before the first event fall back to SSE; failures after
+// the stream started (or in forced 'websocket' transports) propagate.
+#local
+fn try_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): bool! {
+    run_websocket(stream, state) catch error {
+        debug.log('provider', 'codex websocket attempt failed: ' + error.msg())
+        string message = error.msg()
+        if stream.is_aborted() {
+            throw errorf('Request aborted')
+        }
+        if state.ws_started {
+            throw errorf('%s', message)
+        }
+        record_websocket_fallback(state)
+        return false
+    }
+    return true
+}
+
+#local
+fn record_websocket_fallback(ref<run_state_t> state) {
+    string session_key = codex_session_key(state)
+    if session_key != '' {
+        fallback_sessions[session_key] = true
+    }
+    websocket_fallbacks += 1
+}
+
+#local
+fn codex_session_key(ref<run_state_t> state): string {
+    if state.options.session_id == '' {
+        return ''
+    }
+    return clamp_key(state.options.session_id)
+}
+
+#local
+fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
+    if stream.is_aborted() {
+        throw errorf('Request aborted')
+    }
+    debug.log('provider', 'codex websocket request start')
+    string ws_url = codex_websocket.websocket_url(codex_messages.endpoint(state.model))
+    var conn = codex_websocket.connect(ws_url, websocket_headers(state), state.options.timeout_ms) catch error {
+        debug.log('provider', 'codex websocket connect failed: ' + error.msg())
+        throw error
+    }
+    websocket_requests += 1
+    websocket_connections_created += 1
+    state.ws_conn = conn
+    conn.set_read_timeout(state.options.timeout_ms)
+    abort.abort_callback_t close_ws = fn () {
+        conn.close()
+    }
+    stream.cancellation.on_abort(close_ws)
+    debug.log('provider', 'codex websocket connected')
+    // Pi sends JSON.stringify({type: 'response.create', ...requestBody}).
+    // The request body is already serialized JSON, so splice the type field
+    // into the leading brace instead of re-serializing.
+    conn.send_text('{"type":"response.create",' + state.body.slice(1, state.body.len()))
+    bool terminal = false
+    bool first = true
+    for !terminal {
+        if stream.is_aborted() {
+            throw errorf('Request aborted')
+        }
+        var frame = conn.read_message() catch error {
+            debug.log('provider', 'codex websocket read failed: ' + error.msg())
+            throw error
+        }
+        if frame.opcode == codex_websocket.OPCODE_CLOSE {
+            debug.log('provider', 'codex websocket closed by server')
+            break
+        }
+        if frame.opcode != codex_websocket.OPCODE_TEXT && frame.opcode != codex_websocket.OPCODE_BINARY {
+            continue
+        }
+        string data = normalize_ws_event(frame.payload as string) catch error {
+            throw errorf('Invalid Codex WebSocket JSON: %s', error.msg())
+        }
+        if first {
+            first = false
+            state.ws_started = true
+            stream.push(state.processor.start())
+        }
+        // The WebSocket message JSON has the same shape as an SSE record, so
+        // the Responses processor consumes it unchanged.
+        var events = state.processor.feed(sse.event_t {event: 'message', data: data,})
+        for event in events {
+            stream.push(event)
+            if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {
+                terminal = true
+                break
+            }
+        }
+    }
+    state.processor.finish() catch error {
+        throw errorf('Codex WebSocket stream closed before a terminal response event')
+    }
+    conn.close()
+    stream.end()
+    debug.log('provider', 'codex websocket stream end')
+}
+
+// Pi's mapCodexEvents treats response.done as response.completed; the
+// Responses processor only knows the latter spelling.
+#local
+fn normalize_ws_event(string text): string! {
+    var root = json_util.parse(text) catch error {
+        throw errorf('Invalid Codex WebSocket JSON: %s', error.msg())
+    }
+    if !json_util.is_obj(root) {
+        throw errorf('Invalid Codex WebSocket JSON: expected an object')
+    }
+    var object = root as {string:any}
+    if object.contains('type') && json_util.is_str(object['type']) && (object['type'] as string) == 'response.done' {
+        object['type'] = 'response.completed'
+        return json.serialize(object)
+    }
+    return text
+}
+
+#local
+fn websocket_headers(ref<run_state_t> state): {string:string} {
+    // Pi: x-client-request-id and session-id carry the codex session id when
+    // present, otherwise a fresh uuid (websocketRequestId).
+    string request_id = clamp_key(state.options.session_id)
+    if request_id == '' {
+        request_id = identity.uuid_v7() catch error {
+            ''
+        }
+    }
+    {string:string} headers = {}
+    headers['Authorization'] = 'Bearer ' + state.options.api_key
+    headers['chatgpt-account-id'] = state.account_id
+    headers['originator'] = 'pi'
+    headers['OpenAI-Beta'] = 'responses_websockets=2026-02-06'
+    headers['x-client-request-id'] = request_id
+    headers['session-id'] = request_id
+    return headers
 }
 
 #local
@@ -163,6 +383,9 @@ fn response_headers(ref<client.response_t> response): [provider_retry.header_t] 
 #local
 fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
     debug.log('provider', 'codex terminal failure: ' + message)
+    if state.ws_conn is ref<codex_websocket.conn_t> ws_conn {
+        ws_conn.close()
+    }
     state.processor.output.stop_reason = stream.is_aborted() ? types.STOP_ABORTED : types.STOP_ERROR
     state.processor.output.error_message = message
     clear_streaming_scratch(state.processor.output)

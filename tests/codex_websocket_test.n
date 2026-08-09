@@ -1,0 +1,469 @@
+// WebSocket transport tests for the Codex Responses provider, mirroring the
+// WebSocket path in vendors/pi/packages/ai/src/api/openai-codex-responses.ts.
+// The fixtures are plain TCP servers speaking the RFC 6455 wire protocol
+// directly; production uses net.tls for wss, tests use ws over net.tcp.
+import adou.src.ai.event_stream
+import adou.src.ai.providers.codex_messages
+import adou.src.ai.providers.codex_provider
+import adou.src.ai.providers.codex_websocket
+import adou.src.ai.types
+import co
+import fmt
+import io.buf
+import net.tcp
+import net.types as ntypes
+import strings
+
+pub const HANDSHAKE_PORT = 18960
+pub const TEXT_PORT = 18961
+pub const PING_PORT = 18962
+pub const STREAM_PORT = 18963
+pub const FALLBACK_PORT = 18964
+pub const IDLE_PORT = 18965
+
+type capture_t = struct {
+    string request_line
+    {string:string} headers = {}
+    string request_body
+    string accept_value
+    int ws_upgrades
+    int sse_requests
+    int pong_opcode = -1
+    string pong_payload
+    int close_opcode = -1
+}
+
+fn fixture_model(int port): ref<types.model_t> {
+    return new types.model_t(id = 'gpt-5.4', api = 'openai-codex-responses', provider = 'openai-codex', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
+}
+
+fn fixture_context(): ref<types.context_t> {
+    var context = new types.context_t()
+    types.message_t user = new types.user_message_t(content = 'hello')
+    context.messages.push(user)
+    return context
+}
+
+fn test_token(): string {
+    return 'eyJhbGciOiJIUzI1NiJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC0xMjMifX0.signature'
+}
+
+fn test_options(string session_id, string transport): ref<types.stream_options_t> {
+    return new types.stream_options_t(api_key = test_token(), timeout_ms = 5000, max_retries = 0, session_id = session_id, transport = transport,)
+}
+
+fn ws_url(int port): string {
+    return fmt.sprintf('ws://127.0.0.1:%d/codex/responses', port)
+}
+
+// --- fixture helpers (run on the server side, no asserts allowed) ---
+
+type ws_request_t = struct {
+    string request_line
+    {string:string} headers = {}
+}
+
+fn read_ws_request(ref<buf.reader<ntypes.connable>> reader): ws_request_t! {
+    var request_line = reader.read_line()
+    {string:string} headers = {}
+    for true {
+        string line = reader.read_line() catch error {
+            break
+        }
+        if line == '' {
+            break
+        }
+        int colon = line.find(':')
+        if colon > 0 {
+            string key = line.slice(0, colon).trim([' '])
+            string value = line.slice(colon + 1, line.len()).trim([' '])
+            headers[key] = value
+        }
+    }
+    return ws_request_t {request_line: request_line, headers: headers}
+}
+
+fn upgrade_response(string key): string! {
+    string accept_value = codex_websocket.sec_websocket_accept(key) catch error {
+        throw error
+    }
+    return 'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ' + accept_value + '\r\n\r\n'
+}
+
+fn header_value({string:string} headers, string name): string {
+    return headers[name] catch e {
+        ''
+    }
+}
+
+fn serve_handshake(int port, ref<capture_t> capture): void! {
+    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', port)) catch error {
+        return
+    }
+    var raw = server.accept() catch error {
+        server.close()
+        return
+    }
+    ntypes.connable? temp = raw
+    var conn = temp as ntypes.connable
+    var reader = new buf.reader<ntypes.connable>(rd = conn)
+    var request = read_ws_request(reader) catch error {
+        conn.close()
+        server.close()
+        return
+    }
+    capture.request_line = request.request_line
+    capture.headers = request.headers
+    string key = header_value(request.headers, 'Sec-WebSocket-Key')
+    capture.accept_value = codex_websocket.sec_websocket_accept(key) catch error {
+        ''
+    }
+    conn.write(upgrade_response(key) as [u8]) catch error {}
+    co.sleep(30)
+    conn.close()
+    co.sleep(30)
+    server.close()
+}
+
+fn serve_text_echo(int port, ref<capture_t> capture): void! {
+    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', port)) catch error {
+        return
+    }
+    var raw = server.accept() catch error {
+        server.close()
+        return
+    }
+    ntypes.connable? temp = raw
+    var conn = temp as ntypes.connable
+    var reader = new buf.reader<ntypes.connable>(rd = conn)
+    var request = read_ws_request(reader) catch error {
+        conn.close()
+        server.close()
+        return
+    }
+    conn.write(upgrade_response(header_value(request.headers, 'Sec-WebSocket-Key')) as [u8]) catch error {}
+    var frame = codex_websocket.decode_frame(reader) catch error {
+        conn.close()
+        server.close()
+        return
+    }
+    capture.request_body = frame.payload as string
+    conn.write(codex_websocket.encode_frame(codex_websocket.OPCODE_TEXT, 'hello back 你好' as [u8], false)) catch error {}
+    co.sleep(30)
+    conn.close()
+    co.sleep(30)
+    server.close()
+}
+
+fn serve_ping_pong(int port, ref<capture_t> capture): void! {
+    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', port)) catch error {
+        return
+    }
+    var raw = server.accept() catch error {
+        server.close()
+        return
+    }
+    ntypes.connable? temp = raw
+    var conn = temp as ntypes.connable
+    var reader = new buf.reader<ntypes.connable>(rd = conn)
+    var request = read_ws_request(reader) catch error {
+        conn.close()
+        server.close()
+        return
+    }
+    conn.write(upgrade_response(header_value(request.headers, 'Sec-WebSocket-Key')) as [u8]) catch error {}
+    conn.write(codex_websocket.encode_frame(codex_websocket.OPCODE_PING, 'probe' as [u8], false)) catch error {}
+    conn.write(codex_websocket.encode_frame(codex_websocket.OPCODE_TEXT, 'after ping' as [u8], false)) catch error {}
+    var pong = codex_websocket.decode_frame(reader) catch error {
+        conn.close()
+        server.close()
+        return
+    }
+    var close_frame = codex_websocket.decode_frame(reader) catch error {
+        conn.close()
+        server.close()
+        return
+    }
+    capture.pong_opcode = pong.opcode
+    capture.pong_payload = pong.payload as string
+    capture.close_opcode = close_frame.opcode
+    conn.close()
+    co.sleep(30)
+    server.close()
+}
+
+fn ws_stream_events(): [string] {
+    return [
+        '{"type":"response.created","response":{"id":"resp_ws"}}',
+        '{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_ws","content":[]}}',
+        '{"type":"response.output_text.delta","output_index":0,"delta":"codex ws ok"}',
+        '{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_ws","content":[{"type":"output_text","text":"codex ws ok"}]}}',
+        '{"type":"response.completed","response":{"id":"resp_ws","status":"completed","usage":{"input_tokens":2,"output_tokens":2,"total_tokens":4}}}',
+    ]
+}
+
+fn serve_stream(int port, ref<capture_t> capture): void! {
+    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', port)) catch error {
+        return
+    }
+    var raw = server.accept() catch error {
+        server.close()
+        return
+    }
+    ntypes.connable? temp = raw
+    var conn = temp as ntypes.connable
+    var reader = new buf.reader<ntypes.connable>(rd = conn)
+    var request = read_ws_request(reader) catch error {
+        conn.close()
+        server.close()
+        return
+    }
+    conn.write(upgrade_response(header_value(request.headers, 'Sec-WebSocket-Key')) as [u8]) catch error {}
+    var create = codex_websocket.decode_frame(reader) catch error {
+        conn.close()
+        server.close()
+        return
+    }
+    capture.request_body = create.payload as string
+    for event in ws_stream_events() {
+        conn.write(codex_websocket.encode_frame(codex_websocket.OPCODE_TEXT, event as [u8], false)) catch error {}
+    }
+    co.sleep(30)
+    conn.close()
+    co.sleep(30)
+    server.close()
+}
+
+fn success_sse(): string {
+    string body = ''
+    body += 'data: {"type":"response.created","response":{"id":"resp_sse"}}\n\n'
+    body += 'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_sse","content":[]}}\n\n'
+    body += 'data: {"type":"response.output_text.delta","output_index":0,"delta":"codex sse ok"}\n\n'
+    body += 'data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_sse","content":[{"type":"output_text","text":"codex sse ok"}]}}\n\n'
+    body += 'data: {"type":"response.completed","response":{"id":"resp_sse","status":"completed","usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}}\n\n'
+    return body
+}
+
+// The fallback fixture accepts three connections: one WebSocket upgrade
+// attempt (rejected with 400) and two SSE POST requests.
+fn serve_fallback(int port, ref<capture_t> capture): void! {    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', port)) catch error {
+        return
+    }
+    for capture.ws_upgrades + capture.sse_requests < 3 {
+        var raw = server.accept() catch error {
+            break
+        }
+        ntypes.connable? temp = raw
+        var conn = temp as ntypes.connable
+        var reader = new buf.reader<ntypes.connable>(rd = conn)
+        var request = read_ws_request(reader) catch error {
+            conn.close()
+            continue
+        }
+        if request.headers.contains('Upgrade') {
+            capture.ws_upgrades += 1
+            conn.write('HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n' as [u8]) catch error {}
+            conn.close()
+        } else {
+            capture.sse_requests += 1
+            conn.write(('HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n' + success_sse()) as [u8]) catch error {}
+            co.sleep(20)
+            conn.close()
+        }
+    }
+    server.close()
+}
+
+// Completes the handshake, then never sends a frame so the client blocks in
+// a read until it is aborted.
+fn serve_idle(int port): void! {
+    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', port)) catch error {
+        return
+    }
+    var raw = server.accept() catch error {
+        server.close()
+        return
+    }
+    ntypes.connable? temp = raw
+    var conn = temp as ntypes.connable
+    var reader = new buf.reader<ntypes.connable>(rd = conn)
+    var request = read_ws_request(reader) catch error {
+        conn.close()
+        server.close()
+        return
+    }
+    conn.write(upgrade_response(header_value(request.headers, 'Sec-WebSocket-Key')) as [u8]) catch error {}
+    co.sleep(2000)
+    conn.close()
+    server.close()
+}
+
+fn drain(ref<event_stream.assistant_stream_t> stream): [string] {
+    [string] kinds = []
+    for true {
+        var event = stream.recv() catch error {
+            break
+        }
+        kinds.push(event.kind)
+    }
+    return kinds
+}
+
+fn kinds_has([string] kinds, string kind): bool {
+    for existing in kinds {
+        if existing == kind {
+            return true
+        }
+    }
+    return false
+}
+
+// --- tests ---
+
+test 'computes the RFC 6455 Sec-WebSocket-Accept value' {
+    string accept = codex_websocket.sec_websocket_accept('dGhlIHNhbXBsZSBub25jZQ==') catch error {
+        assert(false)
+        ''
+    }
+    assert(accept == 's3pPLMBiTxaQ9kYGzzhZRbK+xOo=')
+}
+
+test 'completes the WebSocket upgrade handshake with the expected headers' {
+    var capture = new capture_t()
+    go serve_handshake(HANDSHAKE_PORT, capture)
+    co.sleep(100)
+    {string:string} headers = {}
+    headers['Authorization'] = 'Bearer test-token'
+    headers['OpenAI-Beta'] = 'responses_websockets=2026-02-06'
+    headers['session-id'] = 'ws-handshake-session'
+    var conn = codex_websocket.connect(ws_url(HANDSHAKE_PORT), headers, 2000) catch error {
+        assert(false)
+        return
+    }
+    conn.close()
+    co.sleep(100)
+    assert(capture.request_line == 'GET /codex/responses HTTP/1.1')
+    assert(header_value(capture.headers, 'Upgrade') == 'websocket')
+    assert(header_value(capture.headers, 'Connection') == 'Upgrade')
+    assert(header_value(capture.headers, 'Sec-WebSocket-Version') == '13')
+    assert(header_value(capture.headers, 'Authorization') == 'Bearer test-token')
+    assert(header_value(capture.headers, 'session-id') == 'ws-handshake-session')
+    assert(header_value(capture.headers, 'Sec-WebSocket-Key').len() == 24)
+    assert(capture.accept_value != '')
+    assert(conn.closed)
+}
+
+test 'round-trips masked text frames in both directions' {
+    var capture = new capture_t()
+    go serve_text_echo(TEXT_PORT, capture)
+    co.sleep(100)
+    var conn = codex_websocket.connect(ws_url(TEXT_PORT), {}, 2000) catch error {
+        assert(false)
+        return
+    }
+    conn.send_text('{"type":"response.create","model":"gpt-5.4"}') catch error {
+        assert(false)
+        return
+    }
+    var frame = conn.read_message() catch error {
+        assert(false)
+        return
+    }
+    conn.close()
+    co.sleep(100)
+    assert(capture.request_body == '{"type":"response.create","model":"gpt-5.4"}')
+    assert(frame.opcode == codex_websocket.OPCODE_TEXT)
+    assert(frame.payload as string == 'hello back 你好')
+}
+
+test 'answers server pings with pongs automatically' {
+    var capture = new capture_t()
+    go serve_ping_pong(PING_PORT, capture)
+    co.sleep(100)
+    var conn = codex_websocket.connect(ws_url(PING_PORT), {}, 2000) catch error {
+        assert(false)
+        return
+    }
+    var frame = conn.read_message() catch error {
+        assert(false)
+        return
+    }
+    conn.close()
+    co.sleep(100)
+    assert(frame.opcode == codex_websocket.OPCODE_TEXT)
+    assert(frame.payload as string == 'after ping')
+    assert(capture.pong_opcode == codex_websocket.OPCODE_PONG)
+    assert(capture.pong_payload == 'probe')
+    assert(capture.close_opcode == codex_websocket.OPCODE_CLOSE)
+}
+
+test 'streams Codex responses events over WebSocket' {
+    var capture = new capture_t()
+    go serve_stream(STREAM_PORT, capture)
+    co.sleep(100)
+    var stream = codex_provider.stream(fixture_model(STREAM_PORT), fixture_context(), test_options('ws-session', 'websocket'))
+    var kinds = drain(stream)
+    var result = stream.result()
+    co.sleep(50)
+    assert(kinds.len() == 5)
+    assert(kinds[0] == types.EVENT_START)
+    assert(kinds[1] == types.EVENT_TEXT_START)
+    assert(kinds[2] == types.EVENT_TEXT_DELTA)
+    assert(kinds[3] == types.EVENT_TEXT_END)
+    assert(kinds[4] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    assert(result.response_id == 'resp_ws')
+    assert(result.usage.total_tokens == 4)
+    var text = result.content[0] as ref<types.text_content_t>
+    assert(text.text == 'codex ws ok')
+    assert(capture.request_body.find('"type":"response.create"') >= 0)
+    assert(capture.request_body.find('"model":"gpt-5.4"') >= 0)
+}
+
+test 'falls back to SSE when the WebSocket handshake fails' {
+    codex_provider.reset_codex_websocket_debug_stats()
+    var capture = new capture_t()
+    go serve_fallback(FALLBACK_PORT, capture)
+    co.sleep(100)
+    var options = test_options('fallback-session', 'auto')
+    var stream = codex_provider.stream(fixture_model(FALLBACK_PORT), fixture_context(), options)
+    var kinds = drain(stream)
+    var result = stream.result()
+    co.sleep(100)
+    assert(kinds_has(kinds, types.EVENT_TEXT_DELTA))
+    assert(kinds[kinds.len() - 1] == types.EVENT_DONE)
+    assert(result.stop_reason == types.STOP_STOP)
+    var text = result.content[0] as ref<types.text_content_t>
+    assert(text.text == 'codex sse ok')
+    assert(capture.ws_upgrades == 1)
+    assert(capture.sse_requests == 1)
+    var stats = codex_provider.get_codex_websocket_debug_stats()
+    assert(stats.requests == 0)
+    assert(stats.connections_created == 0)
+    assert(stats.connections_reused == 0)
+    assert(stats.fallbacks == 1)
+    // The second call with the same session skips WebSocket entirely.
+    var stream2 = codex_provider.stream(fixture_model(FALLBACK_PORT), fixture_context(), options)
+    var kinds2 = drain(stream2)
+    var result2 = stream2.result()
+    co.sleep(100)
+    assert(kinds2[kinds2.len() - 1] == types.EVENT_DONE)
+    assert(result2.stop_reason == types.STOP_STOP)
+    assert(capture.ws_upgrades == 1)
+    assert(capture.sse_requests == 2)
+    var stats2 = codex_provider.get_codex_websocket_debug_stats()
+    assert(stats2.fallbacks == 2)
+}
+
+test 'abort closes a WebSocket stream with a pending read' {
+    go serve_idle(IDLE_PORT)
+    co.sleep(100)
+    var stream = codex_provider.stream(fixture_model(IDLE_PORT), fixture_context(), test_options('abort-session', 'websocket'))
+    co.sleep(300)
+    stream.abort()
+    var event = stream.recv()
+    var result = stream.result()
+    assert(event.kind == types.EVENT_ERROR)
+    assert(event.reason == types.STOP_ABORTED)
+    assert(result.stop_reason == types.STOP_ABORTED)
+}
