@@ -24,6 +24,25 @@ test 'read_credential returns type-tagged credentials like Pi' {
     assert(auth.read_credential('nope-provider') is null)
 }
 
+test 'credential env values restore like Pi' {
+    auth.save('deepseek', 'key-x') catch error {}
+    // Store an ambient value alongside the credential.
+    auth.credential_modify_fn add_env = fn(ref<auth.credential_t>? current): ref<auth.credential_t>? {
+        if current is ref<auth.credential_t> existing {
+            existing.env['CLOUDFLARE_ACCOUNT_ID'] = 'acct-1'
+            return existing
+        }
+        return new auth.credential_t(credential_type = 'api_key', key = 'key-x')
+    }
+    var updated = auth.modify_credential('deepseek', add_env)
+    var restored = auth.read_credential('deepseek')
+    if restored is ref<auth.credential_t> restored_value {
+        assert(restored_value.env['CLOUDFLARE_ACCOUNT_ID'] == 'acct-1')
+    } else {
+        assert(false)
+    }
+}
+
 test 'list_credentials exposes metadata without secrets' {
     auth.save('deepseek', 'key-1') catch error {}
     auth.save('openai', 'key-2') catch error {}

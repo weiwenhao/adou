@@ -179,6 +179,17 @@ pub fn read_credential(string provider): ref<credential_t>? {
     result.refresh = json_util.opt_string(credential, 'refresh')
     result.access = json_util.opt_string(credential, 'access')
     result.expires = json_util.opt_int(credential, 'expires')
+    // Pi stores ambient values (e.g. CLOUDFLARE_ACCOUNT_ID) with the
+    // credential; restore them for callers that merge env into requests.
+    for env_name, env_value in credential {
+        if env_name == 'type' || env_name == 'key' || env_name == 'apiKey' || env_name == 'refresh' || env_name == 'access' || env_name == 'expires' {
+            continue
+        }
+        if env_value is string {
+            string stored_value = env_value as string
+            result.env[env_name] = stored_value
+        }
+    }
     return result
 }
 
