@@ -111,6 +111,12 @@ def collect(until=None, timeout=4.0):
     return until is not None and until in output
 
 
+def key(key_bytes, until, timeout=4.0):
+    os.write(fd, key_bytes)
+    time.sleep(0.05)
+    return collect(until, timeout=timeout)
+
+
 def paste_text(text, until, timeout=4.0):
     # Query input goes through bracketed paste, sent in separate writes so
     # PTY read coalescing can never split the escape sequences.
