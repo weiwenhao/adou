@@ -3,6 +3,7 @@ import adou.src.agent.types as agent_types
 import adou.src.ai.types
 import adou.src.tools.types as tool_types
 import adou.src.tui.chat
+import fmt
 import strings
 import time
 
@@ -102,4 +103,48 @@ test 'footer marks post-compaction context usage unknown until a response report
     value.set_context_known(false)
     string rendered = strings.join(value.render(160), '\n')
     assert(rendered.contains('?/1M (auto)'))
+}
+
+test 'bash messages collapse to visual lines with expand and truncation hints' {
+    var value = chat.new('mock-model', '/tmp/project')
+    var started = session_stream.event_t {kind: session_stream.EVENT_BASH_START, bash_command: 'echo hi', bash_exclude_from_context: false,}
+    value.apply(started)
+    // 60 lines at width 40: the collapsed preview keeps the last 20 visual
+    // lines and reports the skipped count.
+    string output = ''
+    for int index = 1; index <= 60; index += 1 {
+        output += fmt.sprintf('line %d\n', index)
+    }
+    var ended = session_stream.event_t {kind: session_stream.EVENT_BASH_END, bash_command: 'echo hi', bash_output: output, bash_exit_code: 0, bash_cancelled: false, bash_truncated: false, bash_full_output_path: '', bash_exclude_from_context: false,}
+    value.apply(ended)
+    var lines = strings.join(value.render(40), '\n')
+    assert(lines.contains('more lines, press Ctrl+O to expand'))
+    assert(lines.contains('line 60'))
+    assert(!lines.contains('line 1'))
+    // Expanded state shows the full body.
+    value.toggle_tool_output()
+    var expanded = strings.join(value.render(40), '\n')
+    assert(expanded.contains('line 1'))
+    value.toggle_tool_output()
+}
+
+test 'truncated bash output surfaces the full output path like Pi' {
+    var value = chat.new('mock-model', '/tmp/project')
+    var started = session_stream.event_t {kind: session_stream.EVENT_BASH_START, bash_command: 'big command', bash_exclude_from_context: false,}
+    value.apply(started)
+    var ended = session_stream.event_t {kind: session_stream.EVENT_BASH_END, bash_command: 'big command', bash_output: 'some output', bash_exit_code: 0, bash_cancelled: false, bash_truncated: true, bash_full_output_path: '/tmp/adou-bash-x.log', bash_exclude_from_context: false,}
+    value.apply(ended)
+    var lines = strings.join(value.render(60), '\n')
+    assert(lines.contains('Output truncated. Full output: /tmp/adou-bash-x.log'))
+}
+
+test 'bash exit status is a short inline footer like Pi' {
+    var value = chat.new('mock-model', '/tmp/project')
+    var started = session_stream.event_t {kind: session_stream.EVENT_BASH_START, bash_command: 'failing', bash_exclude_from_context: false,}
+    value.apply(started)
+    var ended = session_stream.event_t {kind: session_stream.EVENT_BASH_END, bash_command: 'failing', bash_output: '', bash_exit_code: 3, bash_cancelled: false, bash_truncated: false, bash_full_output_path: '', bash_exclude_from_context: false,}
+    value.apply(ended)
+    var lines = strings.join(value.render(60), '\n')
+    assert(lines.contains('(exit 3)'))
+    assert(!lines.contains('Command exited with code'))
 }

@@ -1,278 +1,124 @@
-# Adou 全量移植规划（Pi 0.82.1，除扩展外）
+# Adou 全量移植计划（Pi 0.82.1，扩展机制暂缓）
 
-状态：规划中 — 2026-08-07
-基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（vendors/pi）
+状态：Phase 5 进行中 — 2026-08-10
+基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
 
-## 目标
+## 当前进度快照
 
-把 vendors/pi 中除 extensions 之外的全部模块完整移植为 Nature 实现，行为与 Pi 基线逐项对齐。
+- Adou 当前有 215 个 `src/**/*.n` 文件、约 4.0 万行 Nature 源码、132 个 Nature 单元测试文件和 33 个 e2e 脚本。
+- Phase 1–4 已完成并有源码差分、单元测试和跨模块验收记录；当前主线进入 Phase 5（Interactive UI）。
+- Phase 5 已覆盖主要会话交互，但尚未完成逐组件对照；Phase 6 已覆盖主要 CLI 路径，但尚未完成逐文件验收。
+- Phase 7（独立 storage/server）和 Phase 8（evals harness）尚未开始，且不阻塞当前本地 CLI agent 主业务。
+- Pi extension 已在生产入口停用：不扫描扩展目录、不初始化 QuickJS、不注册扩展工具/命令、不派发生命周期事件；默认构建不再链接 QuickJS。相关源码暂留作未来重新设计的参考。
 
-## 现状数字
+| 阶段 | 状态 | 当前结论 |
+|---|---|---|
+| Phase 1：AI 层 | 已完成 | 39 个 provider、请求/流协议、模型兼容、图片 API、重试与认证主链已覆盖 |
+| Phase 2：Agent harness | 已完成 | agent loop、工具、memory repo、shell 捕获、取消和 tool context 已覆盖 |
+| Phase 3：coding-agent core | 已完成（排除扩展） | session、compaction、配置、skills、prompts、模型目录、诊断与导出已覆盖 |
+| Phase 4：TUI 基础 | 已完成 | renderer、editor、autocomplete、fuzzy、路径补全、markdown、terminal image 逻辑已覆盖 |
+| Phase 5：Interactive UI | 进行中 | 核心 overlay/消息渲染已具备，待逐组件差分和 PTY 验收 |
+| Phase 6：CLI | 部分完成 | 主参数和启动路径已具备，待逐文件差分和边界 e2e |
+| Phase 7：storage + server | 未开始 | 当前使用 JSONL repository 与进程内 RPC；尚无 SQLite/IPC server |
+| Phase 8：evals | 未开始 | 尚未移植 pi-harness/smoke.eval |
 
-- Pi 全量：924 个 TS 文件；扩展相关 104 个 → **非扩展目标 820 个**
-- Adou 当前：82 个 .n 文件 / 约 2.4 万行，覆盖约 350-400 个 TS 的 MVP 核心
-- 剩余待移植：约 450 个 TS 文件 → 预估新增 100-140 个 .n、2.5-4 万行
+阶段完成度应按行为验收判断，不再用 Pi TypeScript 文件数推算百分比。当前可以确认 4/8 阶段关闭；Phase 5–6 的现有实现不能在逐项对照前提前计为完成。
 
-## 范围界定（排除项）
+## 目标与范围
 
-- `extensions/` ABI、loader、runner、事件总线
-- Llama 扩展 provider、扩展 UI 组件（extension-editor/input/selector）、扩展工具渲染器
-- 注意：`.pi/skills`、`.pi/prompts`、slash-commands 属核心功能，**不算扩展，必须移植**
+目标是用 Nature 实现 Pi 的可观察 coding-agent 行为，并保持 Adou 的单一 Make/Nature 构建链。模块可以合并实现，不要求 TypeScript 文件与 Nature 文件一一对应。
 
-## 验收闭环（每个阶段都必须满足）
+当前明确排除或暂缓：
 
-1. 固定 Pi 源码文件与测试 fixture 引用
-2. Nature 实现逐项行为差分记录
-3. Nature 单元测试（正常/错误/取消/边界/顺序）
-4. 至少一个跨模块集成测试（不许只用孤立 mock）
-5. `make build`、相关 `make test`、受影响的 `make e2e` 全绿
+- Pi extension ABI、动态 TypeScript/ESM 加载、npm/git 扩展包管理、扩展工具/命令/UI/provider。
+- OAuth/account 登录；当前认证边界为 API key、环境变量和已有 credential store 形状。
+- 图片读取/交互式图片渲染；当前仅保留图片类型检测、图片 API 和文本工具占位语义。
+- 远程分享服务；`/share` 当前只生成本地可分享 session artifact。
 
-## 分阶段规划（按依赖顺序）
+`.pi/skills`、`.pi/prompts`、slash commands、项目上下文和信任门控属于核心功能，已经实现，不在排除范围。
 
-### Phase 1｜AI 层完整化（最大块，模式化程度最高）
-- `api/`：azure-openai-responses、openai-codex-responses、bedrock-converse-stream、
-  google-generative-ai、google-vertex、mistral-conversations、cloudflare、
-  constrained-sampling、github-copilot-headers、lazy 加载器
-- `providers/`：deepseek、xai、qwen、zai、xiaomi（多区域）、together、cerebras、
-  openrouter、radius、amazon-bedrock、ant-ling、cloudflare/vercel 网关
-- 顶层：models 目录全量、models-store、oauth + auth（credential-store/resolve/oauth 子目录）、
-  images 图片生成、env-api-keys、session-resources、compat
-- 验收：每家 provider 有 HTTP 单测 + 至少一条 e2e
+## 已完成阶段
 
-Phase 1 状态（2026-08-09）：全部 39 个 provider 已注册（`src/ai/providers/registry.n`），
-每家都有 HTTP 单测 + 元数据对齐测试；新增 pi-messages 协议（radius 网关）、
-constrained-sampling 纯逻辑（扩展工具路径，10/10 单测）和 radius-config 动态目录。
-OAuth（credential-store/oauth 子目录）与 lazy 加载器按排除项处理：OAuth 认证不在 Adou
-范围（api-key 认证覆盖全部 provider）；lazy 是 Pi 的运行时动态 import 加载优化，Adou
-静态注册功能等价，不做移植。余下工作：为 `make e2e` 补充至少一条 radius/pi-messages e2e。
+### Phase 1｜AI 层
 
-### Phase 2｜Agent harness 补全
-- memory-repo/memory-storage、env/nodejs、tool-context、image tool、shell-output
-- 验收：memory session 单测 + 集成
+- 已注册全部 39 个 provider，并覆盖 OpenAI Responses/Completions、Anthropic Messages、Google、Mistral、Bedrock、Codex WebSocket、pi-messages 等协议分支。
+- 已补齐 model compat、thinking 配置、constrained sampling、deferred tools、temperature/tool choice、provider retry、错误体截断、remote catalog、models.json overlay 和运行时认证解析。
+- provider 使用 HTTP/协议单测验证；radius/pi-messages 有 e2e。
+- OAuth 与运行时 lazy import 按范围排除；Nature 使用静态 provider registry。
 
-Phase 2 状态（2026-08-09）：memory session 已由 `src/session/repository.n` 的
-`in_memory`/`in_memory_with_parent` 覆盖（Pi InMemorySessionRepo 等价物），session
-单测 27/27 与 agent 集成测试（agent_session_test 中 30+ 处 in-memory 场景）通过，
-验收专项 `tests/memory_repo_test.n`（create/fork-before 首条与后续消息/label/
-session name/分支导航，5/5）通过；shell-output 语义（tail 截断、full_output_path、
-退出码/footer、二进制与控制字符清洗 `command.n sanitizer_t`）已覆盖；env/nodejs 的
-ExecutionEnv 由 libc 直连的 `src/tools/command.n`/`shell_tools.n` 等价实现，不引入
-接口抽象；image tool 的 mime 检测/base64 由 `src/tools/image_detect.n`（含 read
-占位语义）覆盖。Phase 2 验收完成。
+### Phase 2｜Agent harness
 
-### Phase 3｜coding-agent core 补全
-- skills（.pi/skills 加载）、slash-commands、event-bus、telemetry、usage-totals、
-  cache-stats、source-info、http-dispatcher、package-manager、sdk、
-  remote-catalog-provider、provider-composer、provider-attribution、auth-guidance、
-  runtime-credentials、trust-manager、export-html 全量（交互式模板）、
-  diagnostics 全量、footer-data-provider、prompt-templates
-- 验收：每项行为差分单测；skills/slash-commands 有 e2e
+- agent loop、并发/顺序工具、队列、取消、schema 校验、tool stream repair 和 session stream 生命周期已对齐。
+- 内置 read/write/edit/bash/grep/find/ls、mutation queue、截断、输出清洗、流式 shell 捕获、完整输出落盘和临时文件能力已覆盖。
+- memory repo 已覆盖 create/open/list/delete/fork、游标查询、active tools change 和 `position: "at"`。
+- 图片工具维持 MVP 占位行为，不在本阶段继续扩展。
 
-Phase 3 状态（2026-08-09）：已完成 skills 资源层（`src/context/skills.n`，
-frontmatter 解析、Agent Skills 名称/描述校验、SKILL.md 根/递归发现、gitignore
-规则、collision 诊断、XML prompt 格式化、source_info 内联模型，12/12 单测），
-注入 system prompt（app 启动 + TUI `/reload`），TUI 新增 `/skill` 命令，
-`tests/e2e/skills-loading.sh` 验证系统提示注入（e2e 通过）。
-已完成 prompt-templates（`src/context/prompt_templates.n`：参数解析、占位符替换、
-.prompts 目录发现、TUI `/name` 展开，7/7 单测）、provider attribution 与
-telemetry（`src/ai/attribution.n`，5/5）、usage cost breakdown（`src/session/
-repository.n`，2/2）、assistant diagnostics（`src/ai/diagnostics.n`，4/4）、
-auth guidance 与 runtime credential overlay（`src/config/auth_guidance.n` +
-auth.n runtime keys，3/3）、cache waste accounting（`src/session/cache_stats.n`，
-4/4）、models.json provider 组合（`src/config/models_json.n`，5/5）、
-trust-manager 补全（`src/config/trust.n` set_many/clear/资源门控，5/5）。
-已完成 remote-catalog overlay（`src/ai/remote_catalog.n`：merge/etag/304/404 语义，
-6/6）、slash-commands 动态来源（TUI `/skill:name` 展开，skills.strip_frontmatter）、
-git 元数据检测（`src/context/git_paths.n`：.git 目录/worktree/commondir/HEAD 解析，
-4/4）、ansi-to-html（`src/session/ansi_to_html.n`：SGR 全量支持，7/7，已接入
-export_html 的 bash/tool 输出渲染）。
-按架构性差异排除（记录理由）：sdk（createAgentSession 是外部编程 API，Adou 为
-CLI 应用，其模型解析/session/工具装配由 app.n + runner_t 内部等价实现）、
-package-manager（npm/git 包安装依赖 Node 生态与扩展包机制，Adou 无包资源层，
-skills/prompts 为本地目录）、export-html 交互式模板（template.html/css/js +
-marked/highlight vendor 资产无分发机制，保留静态 HTML + ANSI 渲染）、
-footer 的 fs.watch 变更通知（无 fs.watch）、event-bus（无扩展单消费者流）、
-http-dispatcher（libc 直连无全局 dispatcher）。
+### Phase 3｜coding-agent core
 
-Phase 3 对照式验收（2026-08-10）：以 vendors/pi 逐项对照（导出面对齐/遗漏），
-发现"导出即死代码"缺口并按优先级补齐：models.json 整层接线（models.all() 合成 +
-resolve 取 catalog base_url/headers）、remote catalog 接线（Last-Modified 头解析修复
-+ models-store.json 持久化 + 启动加载 + ADOU_CATALOG_NETWORK 刷新）、
-resolve-config-value 7 个导出补齐（models.json headers 支持 $ENV/!cmd 解析）、
-auth_guidance 接线、get_project_trust_options + /trust trust|no|parent、
-cache-stats 接线（/session 显示 Cache Re-billed）、extension runner 接线（session
-持有 + TUI 命令菜单并入 extension 命令）、event_bus on() 返回取消函数 + handler
-错误隔离、registry 认证状态查询面。架构性保留：composeModelProvider 合成层
-（models.json + register_provider + register_api_provider 静态等价）、OAuth。
-另有 Nature 扩展运行时：vendors/quickjs 经 #linkid + native/quickjs_bridge.c
-（static-inline 包装）接入，src/agent/extension_js.n 提供 adou.registerCommand/
-registerTool/on/emit JS API，.js 扩展从 .pi/extensions 与 agentDir/extensions
-加载，工具/命令/宿主事件（session_start/session_end/tool_call/tool_result/
-message）全链路接线；TS 需预编译、异步 handler 未支持（记录）。
+- Pi v3 JSONL session、恢复/导入/导出、fork/clone/tree、自动压缩、branch summary、retained tail 与 usage/cost 统计已覆盖。
+- settings/auth/trust/model resolution、remote catalog、project context、skills、prompt templates、slash commands、system prompt 和 git metadata 已接线。
+- diagnostics、timings、output guard、静态 HTML/Markdown export 与 ANSI 转 HTML 已覆盖。
+- SDK、扩展 package manager、交互式 HTML 模板和全局 HTTP dispatcher 按架构边界不移植。
+- 早期 QuickJS 扩展实验已由 `98eef79` 停用：生产主链与默认构建不再依赖扩展运行时；`tests/e2e/rpc-extension-loading.sh` 现验证扩展 fixture 保持惰性。
 
-Phase 1 对照式验收（2026-08-10）：协议层 8 项、providers 17 家、顶层 12 模块
-逐项对照。高优先级遗漏：openai-codex WebSocket 传输（现仅 SSE）、bedrock
-thinking 配置（thinkingSignature/cache_control 缓存点）。中：model_t 缺 compat
-字段（per-model 标志）、图片输入缺失。低：cloudflare 网关仅单 API、bedrock
-bearer、modelsAreEqual 等。排除项核验成立（OAuth/lazy）；radius e2e 已补且通过。
+### Phase 4｜TUI 基础
 
-Phase 2 对照式验收（2026-08-10）：对照 packages/agent/src/harness/。image、
-tool-context 完全对齐；shell-output 尾截语义/清洗/footer 对齐（流式进度面
-getProgress/returnExecutionErrors 缺失）。memory-repo 缺多会话注册表面
-（open/list/delete）、fork position:"at"、appendActiveToolsChange、
-findEntries/getEntries 游标。
+- differential renderer、终端恢复、输入序列、Unicode/grapheme、视觉行折行与跨行移动已覆盖。
+- keybinding registry、kill ring、undo/history 快照、word navigation、Shift+Space 与滚动指示器已覆盖。
+- Tab 路径补全、`@` 附件搜索、fd 式递归模糊匹配、命令/skill/prompt completion 已接入。
+- Markdown 表格/引用/inline 样式和 terminal image 能力检测/协议编码/尺寸计算已覆盖。
+- 已有 editor wrapping 与 auth overlay 两条 PTY e2e；IME 原生集成和 extension UI 不在本阶段范围。
 
-Phase 2 收尾（2026-08-10）：验收报告低优先级项处理——shell 流式捕获进度面
-（execute_bash_with_capture：onChunk 带 progress、有界 tail 累积（字节上限 2 倍）、
-超限时完整输出落盘、return_execution_errors/execution_error 字段）、exec 的
-env/inheritEnv 选项（shell_abortable_env，inherit_env=false 用 env -i 隔离）、
-create_temp_file/create_temp_dir（src/tools/temp.n）、(no output) 占位、
-timeout footer %g 格式、sanitizer 增 U+FFF9-FFFB 剥离。truncate.result_t 经核对
-已含 Pi TruncationResult 全部字段。已知差异：TUI/RPC 交互 bash 流式更新
-（EVENT_BASH_UPDATE）不带 truncation/fullOutputPath（adou 的模型 bash 工具为
-非流式，流式路径是交互终端，无 details 消费方）。Phase 2 验收关闭。
+## 下一阶段实施计划
 
-Phase 1/2 缺口补齐（2026-08-10）：全部验收缺口已处理——
-Phase 2：fork_at（position "at" 保留目标为叶）、find_entries + get_entries_after
-（游标语义）、active_tools_change 条目 + SessionContext.activeToolNames、
-memory_repo.n 多会话注册表面（create/open/list/delete/fork 含全量复制）。
-Phase 1：compat 字段（model_t.compat + model_compat.n 运行时检测移植 Pi 生成器
-规则 + thinking_format/requires_reasoning_content/max_tokens_field 消费）、
-bedrock thinking 配置（adaptive/output_config.effort/budget 表/interleaved
-beta/cachePoint 缓存点/thinkingSignature 收集与回放/GovCloud）、codex
-WebSocket 传输（RFC 6455 客户端 + auto 回退 SSE + 3 个 debug 导出）、
-session-resources 错误聚合、models_are_equal、bedrock bearer/skip-auth、
-cloudflare 网关多 API 验证（anthropic-messages 流 + cf-aig 认证测试）。
-图片输入确认是 mvp-implementation-spec.md 记录的 MVP 排除项（read 工具
-"Image omitted" 占位语义已实现），不做实现。——skills 12/12 + e2e
-（system prompt 注入）、prompt-templates 7/7、event-bus 3/3、telemetry +
-attribution 5/5、usage-totals 2/2、cache-stats 4/4、remote-catalog 6/6、
-provider-composer（models.json）5/5、auth-guidance + runtime-credentials 3/3、
-trust-manager 5/5、export-html（markdown/ansi）4/4+7/7、diagnostics 4/4、
-footer git 4/4+2/2、resolve-config-value 6/6、扩展接口面 6 模块全绿；
-slash-commands 的 RPC get_commands 返回 prompt/skill 动态命令（已验证）；
-skills/slash-commands 满足 e2e 验收。Phase 3 验收完成。
+### Phase 5｜Interactive UI 组件全量
 
-### Phase 4｜TUI 补全
-- autocomplete、fuzzy、kill-ring、native-modifiers、terminal-image、undo-stack、
-  editor-component 全量、tui/components/
-- 验收：input/renderer 测试全绿 + PTY e2e
+当前已有：assistant/user/tool/bash/summary/status/footer 渲染，model/scoped-model/settings/login/logout/session/tree/fork/name/branch-summary/help/hotkeys/path-completion overlay，resume picker，以及外部编辑器入口。
 
-Phase 4 状态（2026-08-09）：kill-ring 与 undo-stack 已内嵌 editor.n（行为对齐），
-word-navigation/stdin-buffer 已覆盖。新增 fuzzy 匹配（`src/tui/fuzzy.n`：评分/
-多 token/排序，6/6）、terminal-colors（`src/tui/terminal_colors.n`：OSC 11 + 997
-报告，5/5）、select-list 渲染（`src/tui/select_list.n`：两列/滚动/过滤，4/4）、
-文件路径补全（`src/tui/path_completion.n`：引号/@ 前缀、目录优先排序、闭合引号
-去重，7/7）、terminal-image 纯逻辑（`src/tui/terminal_image.n`：能力检测/kitty
-分块编码/iTerm2/尺寸解析/单元格换算，7/7）。
+接下来按以下顺序收口：
 
-Phase 4 完成（2026-08-10）：keybindings 注册表（`src/tui/keybindings.n`：命名动作
-+ 别名 + 描述，handle_key 走注册表，2/2）、markdown 增强（表格对齐渲染/表头加粗/
-宽度收缩、嵌套引用层级 gutter，7/7）、编辑器视觉行包装（editor.width + visual_lines
-grapheme 折行/visual_cursor 折行边界归属/垂直移动跨视觉行，editor 17/17）。
-native-modifiers 按 darwin 原生模块排除（kitty 协议覆盖 Shift+Enter）。
-验收：input/renderer 单测全绿 + 2 个 PTY e2e（tui-auth-overlay.sh 原有 +
-tui-editor-wrapping.sh 新增：40 列终端长输入折行渲染 + 清空 + slash 退出）。
+1. 建立 `modes/interactive` 逐文件矩阵，将每个上游组件标为“等价实现 / 合并实现 / 排除 / 缺失”，避免用 `session_view.n` 文件大小代替行为验收。
+2. 补齐非排除组件的行为差异，优先处理 theme/config selector、model search、session selector 搜索与删除、消息/工具 diff 展示、visual truncate、首次启动和倒计时状态。
+3. 对合并在 `session_view.n`、`chat.n`、`components.n` 的组件补单元测试，覆盖空状态、错误、取消、过滤、选择、删除确认和窄终端布局。
+4. 增加串行 PTY e2e：session resume/search/delete、model/scoped-model、settings 持久化、API-key login/logout、tree/fork/branch summary。
 
-Phase 4 对照式验收 + 全量补齐（2026-08-10）：对照 vendors/pi/packages/tui/ 完整
-源码。补齐项——Tab 路径补全接入（editor ACTION_TAB + OVERLAY_PATH_COMPLETION
-选择列表 + 单候选自动应用 + slash 上下文走命令菜单）、Editor autocomplete 状态机
-（@ 附件触发、每键重算、移动键关闭、单结果自动应用）、fd 式模糊附件搜索
-（无 fd 依赖的递归遍历 + 评分排序 + 20 上限）、命令菜单 fuzzy 排序 + prompt
-模板/skill 命令项、terminal-image 渲染层（render_image 分发/能力缓存
-reset/set/calculate_image_rows/get_cell_dimensions/hyperlink/image_fallback/
-is_image_line、GIF 签名校验、WebP VP8/VP8L/VP8X 分支、仅宽模式保持纵横比、
-随机 allocate_image_id）、editor 首/末视觉行 up/down 跳行首/行尾、历史浏览
-undo 快照、shift+space、滚动指示器（↑ N more/↓ N more）、fuzzy 数字字母交换
-严格对齐 Pi 正则。已记录差异：IME CURSOR_MARKER（adou 无输入法集成）、
-参数区补全（Pi 依赖命令 getArgumentCompletions 接口）。
-
-### Phase 5｜Interactive 模式 UI 组件全量
-- interactive-mode + 40 个组件（diff、session-selector、model-search、login-dialog、
-  oauth-selector、theme-selector、settings-selector、tree-selector、visual-truncate、
-  custom-editor 等）+ theme/
-- 验收：TUI 交互 e2e 覆盖关键路径
+Phase 5 完成标准：所有非排除 interactive 文件在矩阵中有结论；相关单测通过；至少覆盖上述五类 PTY 场景；终端在成功、失败和取消后均恢复。
 
 ### Phase 6｜CLI 补全
-- list-models、session-picker、file-processor、credential-print、initial-message、
-  startup-ui、config-selector、project-trust
-- 验收：对应 CLI e2e
+
+当前已有：参数解析与校验、`--list-models`、`@file`、piped stdin、initial messages、text/json/rpc/print 模式、session/continue/resume/fork、export、project trust 和启动时 session picker。
+
+接下来：
+
+1. 对照 `src/cli` 的 9 个上游文件，确认 list-models、file processor、initial message、session picker、startup UI、config selector、credential print 和 project trust 的全部输入/错误语义。
+2. 补齐 credential/config selector 的非 OAuth 分支，以及参数组合、无 TTY、缺失文件、空 stdin、损坏 session、未认证 provider 等启动边界。
+3. 为每类 CLI 行为增加针对性 e2e，并保持 JSON/RPC stdout 不受诊断日志污染。
+
+Phase 6 完成标准：9 个上游 CLI 文件逐项有结论；帮助文本与参数行为一致；相关 CLI/RPC e2e 全绿。
 
 ### Phase 7｜storage + server
-- storage 12 个：repo/migrations/branch-entries/session-entries/sequences/materialized
-- server 13 个：rpc-process/supervisor/protocol/handler/serve/radius
-- 验收：存储单测 + RPC over IPC e2e
 
-### Phase 8｜evals 基建（收尾验收）
-- pi-harness + smoke.eval（extensions.eval 排除），作为全量回归基准
-- 验收：harness 跑通全量用例
+- 移植 SQLite storage 的 repo、migration、session/branch entry、sequence 和 materialized view。
+- 在不替换现有 JSONL 默认存储前，先定义 repository 适配边界和双后端一致性测试。
+- 移植 server 的 IPC protocol、rpc process、supervisor、handler、serve 和 radius；不得破坏现有进程内 RPC 协议。
 
-## 完成度验证（2026-08-09，vs vendors/pi 同步对比）
+Phase 7 完成标准：SQLite migration/storage 单测、JSONL/SQLite 行为一致性测试和 RPC-over-IPC e2e 通过。
 
-对 Phase 1-3 做了逐模块/逐功能对照（Pi packages/ai、agent/harness、coding-agent/src），
-三档结论：Phase 1 已完成 26 / 行为不一致 15 / 缺失 4；Phase 2 已完成 13 / 行为不一致 9 /
-缺失 0；Phase 3 已完成 10 / 行为不一致 8 / 缺失 4。详见各阶段小节。
+### Phase 8｜evals 基建
 
-最终复核（2026-08-09，三轮补缺后）：约 180 项模块中 ~94% 已完成；行为不一致 6
-（settings-manager 字段子集、export-html 已增强、footer git 已接线、bedrock 占位
-base_url、cloudflare credential.env 已补、images registry 已补）；缺失 3 已全部补齐
-（azure dispatch、legacy-api-aliases、images 运行时注册）。Phase 1 radius/pi-messages
-e2e（tests/e2e/radius-pi-messages.sh）验证通过。
+- 移植 `pi-harness` 和 `smoke.eval`；`extensions.eval` 继续排除。
+- 将现有 provider/tool/session/TUI e2e 接入统一验收入口，但仍通过 Make 串行调度 Nature。
 
-工具链适配（2026-08-09）：nature master 修复了 #289-#292 与 #263 等，本地编译新
-编译器 + 重建 libruntime + 同步 std（含已合入的 #288），安装到 /usr/local/nature。
-适配后：trust set_many 恢复直接 map 修改（删除重建 workaround）；terminal_image 测试
-恢复 == 比较；其余 workaround（any-as-string 中间变量、map 参数值合并）经验证仍为
-必要，保留。Phase 1 补充：settings compaction 子对象（reserveTokens/keepRecentTokens）、
-images api key 解析（getAuth 语义）、bedrock def 去占位 base_url。
+Phase 8 完成标准：harness 可重复运行 smoke 集合，并输出稳定的通过/失败报告。
 
-扩展接口面（extension ABI/钩子/注册点）按"接口齐全、具体扩展不移植"标准补齐：
-EventBus（`src/agent/event_bus.n`，emit/on/off/clear）、provider 钩子
-（before_provider_request/after_provider_response 挂在 agent config_t）、
-CredentialStore 完整接口（`src/config/auth.n`：credential_t/oauth 形状、list、
-序列化 modify）、ModelRegistry 注册面（`src/ai/providers/registry.n` 运行时
-register/unregister）、compat API 注册面（`src/ai/provider.n` runtime api
-分派优先）、动态 slash 命令注册（`src/context/slash_commands.n`，RPC
-get_commands 返回 prompt/skill 来源）、扩展注册集合（`src/agent/extensions.n`：
-Extension/tool/command/flag/shortcut 集合、ExtensionError、LoadExtensionsResult）、
-ToolDefinition 扩展字段（promptSnippet/promptGuidelines/constrainedSampling/
-renderShell）、ExtensionRunner 生命周期（`src/agent/extension_runner.n`：
-handler 分发、bindCore 会话动作、provider 注册排队）、扩展发现规则
-（`src/agent/extension_loader.n`：直接文件/子目录 index/package.json
-pi.extensions manifest）、扩展工具执行器与绑定（`src/agent/extension_bindings.n`）、
-ExtensionContext/UIContext 类型面（状态字段 + 动作闭包占位）。
-扩展 UI 组件的完整渲染、jiti 动态加载由静态链接替代——接口面保留。
+## 验收与执行规则
 
-本轮验证补上的缺口（每项独立 commit）：
-- Phase 1：mistral `promptMode:"reasoning"`；google thinkingConfig（Gemini 3 level /
-  2.5 budget）；thinking_level_map 驱动的 clamp/available；unpaired surrogate 清理
-  （sanitize_unicode.n，接入 OpenAI responses 文本）；openai-completions 按 provider
-  分发 thinkingFormat（deepseek/zai/qwen/openrouter/together/ant-ling）
-- Phase 2：bash 输出剥 `\r`；bash 截断 footer 补 `(line is X)`；read 图片路径返回
-  Pi 占位文案（含 BMP 提示）
-- Phase 3：settings save 读-改-写合并（未知字段不再被抹掉）；session-cwd 缺失校验；
-  resolve-config-value（`!command`/`$ENV` 模板 + auth 存储接线）；experimental 开关；
-  项目信任门控（--approve/--no-approve 消费 + 未信任跳过 .pi 设置与项目上下文）
-- 记录的工具链缺陷：Nature map 参数按值拷贝（子函数修改不生效）、含 ESC 字符串 `==`
-  不稳定、嵌套 json map key 前导空格、`path.join(dst, '.')` 越界、单 token split 失效
+每个阶段必须同时满足：
 
-剩余已知缺口（记录不补）：deferred-tools 接线、codex WebSocket 传输、model compat
-标志、temperature/toolChoice 等可选字段、compaction retainedTail 持久化、leaf 条目
-targetId 语义、keybindings 注册表、视觉行包装。
+1. 固定 Pi 源码文件和 fixture 基线，并记录逐项行为结论。
+2. Nature 单元测试覆盖正常、错误、取消、边界和顺序语义。
+3. 至少一个跨模块集成或 e2e；不得只用孤立 mock 宣布完成。
+4. 先运行 `make build`，再串行运行受影响的单文件 Nature 测试和 e2e。
+5. 不并发运行 Nature、不使用 `make -j`、不运行 `nature fmt`；除非明确需要，不运行约两小时的完整 `make test`。
 
-已补的行为缺口（2026-08-09 持续推进）：
-simple-options（max_tokens 上下文钳制/thinking budgets）、deferred-tools（kimi
-deferredToolsMode 接线）、temperature/toolChoice（stream_options_t + 三个请求层）、
-compaction retainedTail 持久化与上下文重建、leaf 条目 targetId 语义、estimate
-usageAppliesToPrefix 时间戳 + prefix/added-tool token、provider error-body 统一
-截断（4000 chars + [truncated N chars]）、uuid_v7 同毫秒序号、diagnostics 全
-provider 接入。session-resources 的错误汇总受 Nature 闭包无错误传播限制（接口
-已就位）。
-
-- models 目录数据量巨大：用脚本从 Pi `models.generated.ts` 生成 Nature 数据文件
-- provider 适配器模板化：先做一个参考实现（如 deepseek），其余按模板批量
-- 全程遵守：串行编译、不跑 nature fmt、vendors/ 只读、延续 pi-core-module-map.md 验收规则
-
-## 节奏
-
-每阶段交付并更新 pi-core-module-map.md；不跨阶段并行，避免编译器高内存叠加。
+当前测试库存为 132 个 Nature 单元测试文件和 33 个 e2e 脚本；这只是覆盖资产数量，不代表本次快照已重跑全量测试。最新可复核的模块证据维护在 `docs/pi-core-module-map.md`。

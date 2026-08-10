@@ -118,14 +118,16 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
         ai_types.message_t message = bash
         self.messages.push(message)
         self.active_bash = null
+        // Pi keeps the exit status on the bash message itself; the global
+        // status row returns to idle so the footer does not echo the code.
         if bash.cancelled {
-            self.status = 'Command cancelled'
+            self.status = ''
         } else if event.bash_timed_out {
-            self.status = 'Command timed out'
+            self.status = ''
         } else if bash.exit_code >= 0 && bash.exit_code != 0 {
-            self.status = fmt.sprintf('Command exited with code %d', bash.exit_code)
+            self.status = ''
         } else {
-            self.status = 'Command completed'
+            self.status = ''
         }
         self.running = false
         return
@@ -426,29 +428,49 @@ fn render_message_lines(ai_types.message_t message, int width, bool tool_output_
             result.append(wrapped_lines(theme.fg(theme.MUTED, custom.content), width))
         }
     } else if message is ref<ai_types.bash_execution_message_t> bash {
-        result.append(render_bash_lines(bash, width))
+        result.append(render_bash_lines(bash, width, tool_output_expanded))
     }
     return result
 }
 
+// Pi's bash-execution rendering: collapsed state shows the last few visual
+// lines with an expand hint, the truncated flag surfaces the full output
+// path, and the exit status is a short inline footer.
+const BASH_PREVIEW_VISUAL_LINES = 20
+
 #local
-fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width): [string]! {
+fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, bool expanded): [string]! {
     [string] result = vec<string>.cap_of(8)
     string color = bash.exclude_from_context ? theme.DIM_COLOR : theme.ACCENT
     result.push('')
     result.push(theme.fg(color, text_utils.truncate_to_width('$ ' + bash.command, width, '...', false)))
-    if bash.output != '' {
-        for line in bash.output.replace('\r\n', '\n').replace('\r', '\n').split('\n') {
-            result.append(wrapped_lines(theme.fg(theme.MUTED, line), width))
+    string body = bash.output.replace('\r\n', '\n').replace('\r', '\n')
+    if body != '' {
+        if !expanded {
+            var truncated = text_utils.truncate_visual_lines(body, width, BASH_PREVIEW_VISUAL_LINES)
+            int skipped = truncated[1]
+            if skipped > 0 {
+                result.push(theme.fg(theme.DIM_COLOR, fmt.sprintf('... (%d more lines, press Ctrl+O to expand)', skipped)))
+            }
+            for line in truncated[0].split('\n') {
+                result.append(wrapped_lines(theme.fg(theme.MUTED, line), width))
+            }
+        } else {
+            for line in body.split('\n') {
+                result.append(wrapped_lines(theme.fg(theme.MUTED, line), width))
+            }
         }
     } else {
         result.push(theme.fg(theme.MUTED, '(no output)'))
     }
+    if bash.truncated && bash.full_output_path != '' {
+        result.append(wrapped_lines(theme.fg(theme.DIM_COLOR, 'Output truncated. Full output: ' + bash.full_output_path), width))
+    }
     string footer = ''
     if bash.cancelled {
-        footer = '(command cancelled)'
+        footer = '(cancelled)'
     } else if bash.exit_code >= 0 && bash.exit_code != 0 {
-        footer = fmt.sprintf('Command exited with code %d', bash.exit_code)
+        footer = fmt.sprintf('(exit %d)', bash.exit_code)
     }
     if footer != '' {
         result.append(wrapped_lines(theme.fg(theme.ERROR, footer), width))
@@ -463,13 +485,15 @@ fn render_active_bash_lines(ref<ai_types.bash_execution_message_t> bash, int wid
     result.push('')
     result.push(theme.fg(color, text_utils.truncate_to_width('$ ' + bash.command, width, '...', false)))
     string normalized = bash.output.replace('\r\n', '\n').replace('\r', '\n')
-    [string] lines = normalized == '' ? [] : normalized.split('\n')
-    int first = lines.len() > 20 ? lines.len() - 20 : 0
-    if first > 0 {
-        result.push(theme.fg(theme.DIM_COLOR, fmt.sprintf('... (%d earlier lines)', first)))
-    }
-    for int index = first; index < lines.len(); index += 1 {
-        result.append(wrapped_lines(theme.fg(theme.MUTED, lines[index]), width))
+    if normalized != '' {
+        var truncated = text_utils.truncate_visual_lines(normalized, width, BASH_PREVIEW_VISUAL_LINES)
+        int skipped = truncated[1]
+        if skipped > 0 {
+            result.push(theme.fg(theme.DIM_COLOR, fmt.sprintf('... (%d earlier lines)', skipped)))
+        }
+        for line in truncated[0].split('\n') {
+            result.append(wrapped_lines(theme.fg(theme.MUTED, line), width))
+        }
     }
     result.append(wrapped_lines(theme.fg(color, spinner_frame(spinner_index) + ' Running... (escape to cancel)'), width))
     return result

@@ -518,3 +518,22 @@ fn parse_sgr_value(string value): int {
         return -1
     }
 }
+
+// Pi's visual-truncate.ts truncateToVisualLines: keep the last N *visual*
+// lines (after width wrapping) of a multi-line text and report how many
+// were skipped.  Returns (truncated text, skipped visual lines).
+pub fn truncate_visual_lines(string text, int width, int max_visual_lines): (string, int)! {
+    if text == '' {
+        return ('', 0)
+    }
+    var visual = wrap_text_with_ansi(text, width)
+    if visual.len() <= max_visual_lines {
+        return (text, 0)
+    }
+    int first = visual.len() - max_visual_lines
+    if first < 0 {
+        first = 0
+    }
+    [string] kept = visual.slice(first, visual.len())
+    return (strings.join(kept, '\n'), visual.len() - max_visual_lines)
+}

@@ -1,6 +1,6 @@
 # Pi Core Module Map
 
-状态：MVP 核心路径已完成逐模块核对（Pi 基线 `0.82.1`, commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`）；导出/诊断保留部分实现。
+状态：MVP 核心路径已完成逐模块核对（Pi 基线 `0.82.1`, commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`）；Phase 5 Interactive UI 正在验收，Pi extension 运行时已停用。
 
 本文把 `vendors/pi` 中必须翻译到 Nature 的核心边界固定下来。判断标准是 Pi 的可观察 coding-agent 行为，而不是 TypeScript 文件是否已经有一个同名 Nature 文件。每个模块只有在完成源码差分、单元测试和至少一个跨模块集成测试后，才可标记为完成。
 
@@ -22,10 +22,10 @@
 
 以下目录不是核心移植目标，不能被“已有文件数”计入完成度：
 
-- `packages/coding-agent/src/core/extensions/**`、`src/extensions/**`：TypeScript extension ABI、加载器、事件总线和扩展 UI。
+- `packages/coding-agent/src/core/extensions/**`、`src/extensions/**`：TypeScript extension ABI、加载器、事件总线和扩展 UI。早期 QuickJS 实验源码暂留，但生产入口、TUI/RPC 接线和默认链接已停用。
 - `packages/coding-agent/src/extensions/**`：Llama 等扩展 provider。
-- 动态 `.pi/extensions`、`.pi/skills`、`.pi/prompts` 资源加载；核心只保留项目/用户 system prompt 规则。
-- `packages/server/**`、`packages/evals/**`、OAuth/account 登录、远程分享、npm/Bun 发布和安装器。
+- 动态 `.pi/extensions` 资源加载和扩展包管理。`.pi/skills`、`.pi/prompts`、slash commands 已作为核心功能实现，不属于本排除项。
+- `packages/server/**`、`packages/evals/**` 不属于当前 MVP 核心验收；若继续全量工作区移植，分别在 Phase 7–8 处理。OAuth/account 登录、远程分享、npm/Bun 发布和安装器继续排除。
 - Pi 的图片读取、图片渲染和 image processing；MVP 的 `read` 仅承诺 UTF-8 文本分支。
 
 ## 验收规则
@@ -44,7 +44,7 @@
 
 - `NATURE_ROOT=/Users/liulianfuren/Code/nature make clean && NATURE_ROOT=/Users/liulianfuren/Code/nature make build`：通过；二进制明确链接源码树的新 runtime。
 - `NATURE_ROOT=/Users/liulianfuren/Code/nature make test`：全部 Nature 单元测试通过，包含 8 项 OpenAI HTTP、6 项 Anthropic HTTP、所有 session/compaction/TUI/工具测试。
-- `tests/e2e` 当前包含 28 个 CLI/RPC/工具/会话/TUI 脚本；旧记录中的“全部 26 个通过”对应脚本数量尚为 26 时的历史运行，不作为当前 28 个脚本的全量通过证明。完整 e2e 需要在允许本地 loopback/PTY 的环境中串行重跑。
+- `tests/e2e` 当前包含 33 个 CLI/RPC/工具/会话/TUI 脚本；旧记录中的“全部 26 个通过”对应脚本数量尚为 26 时的历史运行，不作为当前 33 个脚本的全量通过证明。完整 e2e 需要在允许本地 loopback/PTY 的环境中串行重跑。
 - 若 `nature --version` 已更新但 `/usr/local/nature/lib/darwin_arm64/libruntime.a` 仍是旧文件，Adou 仍会链接旧 runtime；需用管理员权限覆盖该静态库后再重新 `make clean && make build`。
 - TUI 退出路径使用 Nature 标准输入接口；输入读取在独立协程中阻塞等待 `fs/libuv` 数据，解析协程通过 Nature channel 接收字节并用定时协程处理 ESC 超时，不修改 stdin fd flags。退出时先恢复终端再结束 CLI，避免后台监听协程拖住进程。
 
