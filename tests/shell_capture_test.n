@@ -1,0 +1,79 @@
+import adou.src.ai.abort
+import adou.src.tools.shell_tools
+import adou.src.tools.truncate
+import fs
+import strings
+import syscall
+
+pub fn collect_chunks(string script, int timeout_ms, int max_lines, int max_bytes, bool return_errors): shell_tools.capture_result_t {
+    [string] chunks = []
+    shell_tools.capture_chunk_fn on_chunk = fn(string chunk, shell_tools.capture_progress_t progress) {
+        chunks.push(chunk)
+    }
+    var result = shell_tools.execute_bash_with_capture('/tmp', script, timeout_ms, abort.new(), max_lines, max_bytes, on_chunk, return_errors) catch error {
+        shell_tools.capture_result_t {output: error.msg(), exit_code: -1, cancelled: false, truncated: false, full_output_path: '', execution_error: ''}
+    }
+    if result.output.len() > 0 && chunks.len() == 0 {
+        chunks.push('(captured by throw)')
+    }
+    return result
+}
+
+test 'streaming capture forwards chunks with progress like Pi' {
+    int chunk_count = 0
+    shell_tools.capture_chunk_fn on_chunk = fn(string chunk, shell_tools.capture_progress_t progress) {
+        chunk_count += 1
+    }
+    var result = shell_tools.execute_bash_with_capture('/tmp', 'echo hello && echo world', 10000, abort.new(), truncate.DEFAULT_MAX_LINES, truncate.DEFAULT_MAX_BYTES, on_chunk, false) catch error {
+        shell_tools.capture_result_t {output: error.msg(), exit_code: -1, cancelled: false, truncated: false, full_output_path: '', execution_error: ''}
+    }
+    assert(chunk_count > 0)
+    assert(result.exit_code == 0)
+    assert(result.output.contains('hello'))
+    assert(!result.truncated)
+}
+
+test 'bounded tail accumulation keeps progress output small like Pi' {
+    // 40KB of output with a 4KB byte limit: the tail never exceeds 8KB.
+    int max_bytes = 4096
+    [string] seen = []
+    shell_tools.capture_chunk_fn on_chunk = fn(string chunk, shell_tools.capture_progress_t progress) {
+        seen.push(progress.output)
+    }
+    var result = shell_tools.execute_bash_with_capture('/tmp', 'python3 -c "import sys; sys.stdout.write(\'x\' * 40960)"', 20000, abort.new(), truncate.DEFAULT_MAX_LINES, max_bytes, on_chunk, false) catch error {
+        shell_tools.capture_result_t {output: error.msg(), exit_code: -1, cancelled: false, truncated: false, full_output_path: '', execution_error: ''}
+    }
+    assert(result.truncated)
+    assert(result.output.len() <= max_bytes * 2)
+    assert(result.full_output_path != '')
+    var full = fs.open(result.full_output_path, syscall.O_RDONLY, 0) catch error {
+        assert(false)
+        return
+    }
+    string full_content = full.content() catch error {
+        full.close()
+        return
+    }
+    full.close()
+    assert(full_content.len() >= 40960)
+    // Mid-stream progress stayed bounded too.
+    for snapshot in seen {
+        assert(snapshot.len() <= max_bytes)
+    }
+}
+
+test 'return_execution_errors surfaces failures instead of throwing like Pi' {
+    var result = shell_tools.execute_bash_with_capture('/tmp', 'exit 3', 10000, abort.new(), truncate.DEFAULT_MAX_LINES, truncate.DEFAULT_MAX_BYTES, fn(string chunk, shell_tools.capture_progress_t progress) {}, true) catch error {
+        shell_tools.capture_result_t {output: error.msg(), exit_code: -1, cancelled: false, truncated: false, full_output_path: '', execution_error: ''}
+    }
+    assert(result.execution_error.contains('code 3'))
+    assert(result.exit_code == 3)
+    // Without the option the same failure throws.
+    bool threw = false
+    try {
+        var thrown = shell_tools.execute_bash_with_capture('/tmp', 'exit 3', 10000, abort.new(), truncate.DEFAULT_MAX_LINES, truncate.DEFAULT_MAX_BYTES, fn(string chunk, shell_tools.capture_progress_t progress) {}, false)
+    } catch e {
+        threw = true
+    }
+    assert(threw)
+}

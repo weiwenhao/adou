@@ -40,6 +40,175 @@ pub type bash_stream_state_t = struct {
 pub const GREP_MAX_LINE_LENGTH = 500
 pub const MAX_BASH_TIMEOUT_SECONDS = 2147483.647
 
+// Pi's ShellCaptureProgress: the streaming capture view handed to onChunk
+// consumers.  output is the bounded tail (never more than twice the byte
+// limit), truncation the current tail truncation result, and
+// last_line_bytes the byte length of the open line being accumulated.
+pub type capture_progress_t = struct {
+    string output
+    truncate.result_t truncation
+    string full_output_path
+    int last_line_bytes
+}
+
+pub type capture_chunk_fn = fn(string chunk, capture_progress_t progress)
+
+// Pi's ShellCaptureResult; execution_error carries the failure when
+// return_execution_errors is set, otherwise the call throws.
+pub type capture_result_t = struct {
+    string output
+    int exit_code
+    bool cancelled
+    bool truncated
+    string full_output_path
+    string execution_error
+}
+
+// Pi's executeShellWithCapture: stream command output with bounded tail
+// accumulation (DEFAULT_MAX_BYTES * 2), mid-stream truncation progress,
+// and full output persisted to a temp file once the limits are exceeded.
+pub fn execute_bash_with_capture(string cwd, string script, int timeout_ms, ref<abort.abort_t> cancellation, int max_lines, int max_bytes, capture_chunk_fn on_chunk, bool return_execution_errors): capture_result_t! {
+    throw_if_aborted(cancellation)
+    int max_output_bytes = max_bytes * 2
+    string tail_output = ''
+    int total_bytes = 0
+    int completed_lines = 0
+    bool has_open_line = false
+    int current_line_bytes = 0
+    string full_output_path = ''
+    bool full_output_requested = false
+    ref<fs.file_t>? full_file = null
+
+    // The streaming writer already sanitizes ANSI/control bytes; strip the
+    // remaining carriage returns like Pi and account for bytes/lines.
+    command.output_chunk_fn capture = fn(string text) {
+        string cleaned = text.replace('\r', '')
+        if cleaned == '' {
+            return
+        }
+        total_bytes += cleaned.len()
+        int newline_count = 0
+        for int cursor = 0; cursor < cleaned.len(); cursor += 1 {
+            if cleaned[cursor] == '\n'.char() {
+                newline_count += 1
+            }
+        }
+        completed_lines += newline_count
+        int last_newline = cleaned.rfind('\n')
+        if last_newline >= 0 {
+            current_line_bytes = cleaned.len() - last_newline - 1
+            has_open_line = current_line_bytes > 0
+        } else {
+            current_line_bytes += cleaned.len()
+            has_open_line = true
+        }
+        tail_output += cleaned
+        int total_lines = completed_lines + (has_open_line ? 1 : 0)
+        if (total_bytes > max_bytes || total_lines > max_lines) && !full_output_requested {
+            // Persistence failures must not break the stream; the capture
+            // simply continues without a full output file (Pi's captureError
+            // keeps the tail bounded either way).
+            var started = start_full_output(tail_output) catch error {''}
+            if started != '' {
+                full_output_path = started
+                full_output_requested = true
+            }
+        } else if full_output_requested {
+            append_full_output(full_output_path, cleaned) catch error {}
+        }
+        if tail_output.len() > max_output_bytes {
+            tail_output = trim_to_last_utf8_bytes(tail_output, max_output_bytes)
+        }
+        on_chunk(cleaned, capture_progress(tail_output, total_bytes, completed_lines, has_open_line, current_line_bytes, full_output_path, max_lines, max_bytes))
+    }
+
+    var process_output = command.shell_abortable_stream(cwd, script, timeout_ms, cancellation, capture)
+    if full_output_requested {
+        append_full_output(full_output_path, '') catch error {}
+    }
+    bool cancelled = process_output.aborted || cancellation.is_aborted()
+    bool truncated = total_bytes > max_bytes || completed_lines + (has_open_line ? 1 : 0) > max_lines
+    if truncated && !full_output_requested {
+        var started = start_full_output(tail_output) catch error {''}
+        if started != '' {
+            full_output_path = started
+        }
+    }
+    var truncation = truncate.tail_with_limits(tail_output, max_lines, max_bytes)
+    if truncated && !truncation.truncated {
+        // The bounded tail fits the limits but the full stream did not.
+        truncation.truncated = true
+    }
+    string output_text = truncation.content
+    if process_output.timed_out {
+        if return_execution_errors {
+            return capture_result_t {output: output_text, exit_code: -1, cancelled: cancelled, truncated: truncated, full_output_path: full_output_path, execution_error: 'timeout',}
+        }
+        throw errorf('%s', append_command_status(output_text, fmt.sprintf('Command timed out after %g seconds', timeout_ms as float / 1000.0)))
+    }
+    if cancelled {
+        return capture_result_t {output: output_text, exit_code: -1, cancelled: true, truncated: truncated, full_output_path: full_output_path,}
+    }
+    if process_output.exit_code != 0 {
+        if return_execution_errors {
+            return capture_result_t {output: output_text, exit_code: process_output.exit_code as int, cancelled: false, truncated: truncated, full_output_path: full_output_path, execution_error: fmt.sprintf('Command exited with code %d', process_output.exit_code),}
+        }
+        string status = process_output.term_sig != 0 ? fmt.sprintf('Command exited with code %d (signal %d)', process_output.exit_code, process_output.term_sig) : fmt.sprintf('Command exited with code %d', process_output.exit_code)
+        throw errorf('%s', append_command_status(output_text, status))
+    }
+    return capture_result_t {output: output_text, exit_code: process_output.exit_code as int, cancelled: false, truncated: truncated, full_output_path: full_output_path,}
+}
+
+fn capture_progress(string tail_output, int total_bytes, int completed_lines, bool has_open_line, int current_line_bytes, string full_output_path, int max_lines, int max_bytes): capture_progress_t {
+    var truncation = truncate.tail_with_limits(tail_output, max_lines, max_bytes)
+    int total_lines = completed_lines + (has_open_line ? 1 : 0)
+    bool truncated = total_lines > max_lines || total_bytes > max_bytes
+    if truncated && !truncation.truncated {
+        truncation.truncated = true
+        if truncation.truncated_by == '' {
+            truncation.truncated_by = total_bytes > max_bytes ? 'bytes' : 'lines'
+        }
+    }
+    return capture_progress_t {output: truncation.content, truncation: truncation, full_output_path: full_output_path, last_line_bytes: current_line_bytes,}
+}
+
+fn start_full_output(string initial): string! {
+    string file_path = '/tmp/adou-bash-' + identity.uuid_v7() + '.log'
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_EXCL, 0o600)
+    if initial != '' {
+        int written = file.write(initial as [u8])
+        if written <= 0 {
+            file.close()
+            throw errorf('Could not persist full bash output')
+        }
+    }
+    file.close()
+    return file_path
+}
+
+fn append_full_output(string file_path, string text): void! {
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_APPEND, 0)
+    if text != '' {
+        int written = file.write(text as [u8])
+        if written <= 0 {
+            file.close()
+            throw errorf('Could not persist full bash output')
+        }
+    }
+    file.close()
+}
+
+fn trim_to_last_utf8_bytes(string value, int max_bytes): string {
+    if value.len() <= max_bytes {
+        return value
+    }
+    int start = value.len() - max_bytes
+    for start < value.len() && value[start] >= 0x80 && value[start] <= 0xbf {
+        start += 1
+    }
+    return value.slice(start, value.len())
+}
+
 pub fn bash_executor_t.execute(&self, string call_id, any arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
     throw_if_aborted(cancellation)
     var object = arguments as {string:any}
