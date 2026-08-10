@@ -86,6 +86,7 @@ pub const OVERLAY_LOGOUT = 4
 pub const OVERLAY_SETTINGS = 5
 pub const OVERLAY_SETTINGS_SUBMENU = 18
 pub const OVERLAY_SETUP = 19
+pub const OVERLAY_CONFIG = 20
 pub const OVERLAY_HELP = 6
 pub const OVERLAY_PROVIDER = 7
 pub const OVERLAY_SESSION = 8
@@ -188,6 +189,7 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     refresh_dynamic_commands(cwd)
     model_scope_patterns_cache = view.model_scope_patterns
     var stored_settings = config_settings.load_for(cwd)
+    theme.set_variant(stored_settings.theme)
     view.scoped_model_ids = stored_settings.enabled_model_ids
     view.scoped_models_active = stored_settings.enabled_model_ids.len() > 0
     if runner.repository.get_warnings().len() > 0 {
@@ -878,6 +880,10 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         self.editor.clear()
         self.chat.status = 'Started new session'
         self.redraw()
+        return null
+    }
+    if command == '/config' {
+        self.show_config_overlay()
         return null
     }
     if command == '/help' {
@@ -2167,12 +2173,113 @@ fn view_t.handle_settings_submenu(&self, ref<overlay_t> overlay) {
     self.chat.thinking = level
     self.chat.status = 'Thinking: ' + level
     // Rebuild the full settings list; the submenu replaced the option set.
+    self.save_preferences()
     self.show_settings_overlay()
     self.redraw()
 }
 
 // Pi's first-time setup: a two-choice welcome (theme + telemetry opt-in)
 // that completes by writing a marker file below the agent directory.
+// Pi's config-selector manages package resources; adou's equivalent lists
+// the skills and prompt templates with per-resource enable toggles.
+pub fn view_t.show_config_overlay(&self) {
+    [string] options = []
+    var settings = config_settings.load()
+    options.push('Skills')
+    var skills_result = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), [], true) catch error {
+        skills.load_skills_result_t {}
+    }
+    for skill in skills_result.skills {
+        options.push('  ' + skill.name + ': ' + (resource_enabled(settings.enabled_skill_names, skill.name) ? 'enabled' : 'disabled'))
+    }
+    options.push('Prompts')
+    [string] no_extra = []
+    var templates = prompt_templates.load_prompt_templates(self.runner.repository.cwd, paths.agent_dir(), no_extra, true)
+    for template in templates {
+        options.push('  ' + template.name + ': ' + (resource_enabled(settings.enabled_prompt_names, template.name) ? 'enabled' : 'disabled'))
+    }
+    self.overlay = new overlay_t(kind = OVERLAY_CONFIG, title = 'Resources', options = options)
+    self.redraw()
+}
+
+fn resource_enabled([string] enabled, string name): bool {
+    if enabled.len() == 0 {
+        return true
+    }
+    for candidate in enabled {
+        if candidate == name {
+            return true
+        }
+    }
+    return false
+}
+
+fn view_t.toggle_resource(&self, string option, bool is_skill) {
+    int separator = option.find(':')
+    if separator < 0 {
+        return
+    }
+    string name = option.slice(2, separator).trim([' ', '\t'])
+    var settings = config_settings.load()
+    if is_skill {
+        settings.enabled_skill_names = toggle_list(settings.enabled_skill_names, name)
+    } else {
+        settings.enabled_prompt_names = toggle_list(settings.enabled_prompt_names, name)
+    }
+    config_settings.save(settings) catch error {
+        self.chat.error_message = 'Could not save config: ' + error.msg()
+        self.redraw()
+        return
+    }
+    self.chat.status = (is_skill ? 'Skill ' : 'Prompt ') + name + ' ' + (resource_enabled(is_skill ? settings.enabled_skill_names : settings.enabled_prompt_names, name) ? 'enabled' : 'disabled')
+    self.show_config_overlay()
+}
+
+fn toggle_list([string] enabled, string name): [string] {
+    [string] result = []
+    bool removed = false
+    for candidate in enabled {
+        if candidate == name {
+            removed = true
+        } else {
+            result.push(candidate)
+        }
+    }
+    if !removed {
+        result.push(name)
+    }
+    return result
+}
+
+// Apply the enabled-resource lists from settings to a loaded skill list.
+pub fn view_t.filter_enabled_skills(&self, [ref<skills.skill_t>] loaded): [ref<skills.skill_t>] {
+    var settings = config_settings.load()
+    if settings.enabled_skill_names.len() == 0 {
+        return loaded
+    }
+    [ref<skills.skill_t>] result = []
+    for skill in loaded {
+        if resource_enabled(settings.enabled_skill_names, skill.name) {
+            result.push(skill)
+        }
+    }
+    return result
+}
+
+pub fn view_t.filter_enabled_prompts(&self, [ref<prompt_templates.prompt_template_t>] loaded): [ref<prompt_templates.prompt_template_t>] {
+    var settings = config_settings.load()
+    if settings.enabled_prompt_names.len() == 0 {
+        return loaded
+    }
+    [ref<prompt_templates.prompt_template_t>] result = []
+    for template in loaded {
+        if resource_enabled(settings.enabled_prompt_names, template.name) {
+            result.push(template)
+        }
+    }
+    return result
+}
+
 pub fn view_t.show_setup_overlay(&self) {
     [string] options = [
         'Theme: ' + theme.variant(),
@@ -2257,7 +2364,8 @@ pub fn view_t.expand_skill_command(&self, string text): string {
     var loaded = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), [], true) catch error {
         return text
     }
-    for skill in loaded.skills {
+    var expanded_filtered = self.filter_enabled_skills(loaded.skills)
+    for skill in expanded_filtered {
         if skill.name == skill_name {
             string content = read_skill_file(skill.file_path) catch error {
                 return text
@@ -2287,13 +2395,14 @@ pub fn view_t.show_skills(&self, string text, [string] parts) {    var loaded = 
         self.redraw()
         return
     }
-    if loaded.skills.len() == 0 {
+    var filtered_skills = self.filter_enabled_skills(loaded.skills)
+    if filtered_skills.len() == 0 {
         self.chat.status = 'No skills found in user or project skills directories'
         return
     }
     if parts.len() == 1 {
         [string] lines = []
-        for skill in loaded.skills {
+        for skill in filtered_skills {
             string marker = skill.disable_model_invocation ? ' (manual only)' : ''
             lines.push(skill.name + marker + ' - ' + skill.description)
         }
@@ -2301,7 +2410,7 @@ pub fn view_t.show_skills(&self, string text, [string] parts) {    var loaded = 
         return
     }
     string requested = parts[1]
-    for skill in loaded.skills {
+    for skill in filtered_skills {
         if skill.name == requested {
             self.chat.status = skill.name + ' - ' + skill.description + '\n' + skill.file_path + '\n\nUse the read tool to load the skill file when the task matches.'
             return
@@ -2337,6 +2446,42 @@ pub fn view_t.show_hotkeys_overlay(&self) {
 }
 
 pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input) {
+    if overlay.kind == OVERLAY_CONFIG && !input.paste {
+        string key = keys.parse_key(input.data)
+        if key == 'up' {
+            overlay.selected = overlay.selected == 0 ? overlay.options.len() - 1 : overlay.selected - 1
+            self.redraw()
+            return
+        }
+        if key == 'down' {
+            overlay.selected = overlay.selected == overlay.options.len() - 1 ? 0 : overlay.selected + 1
+            self.redraw()
+            return
+        }
+        if key == 'enter' && overlay.selected < overlay.options.len() {
+            string option = overlay.options[overlay.selected]
+            if option.starts_with('  ') {
+                bool is_skill = false
+                for int index = overlay.selected - 1; index >= 0; index -= 1 {
+                    if overlay.options[index] == 'Prompts' {
+                        is_skill = false
+                        break
+                    }
+                    if overlay.options[index] == 'Skills' {
+                        is_skill = true
+                        break
+                    }
+                }
+                self.toggle_resource(option, is_skill)
+            }
+            return
+        }
+        if key == 'escape' || key == 'ctrl+c' {
+            self.overlay = null
+            self.redraw()
+        }
+        return
+    }
     if overlay.kind == OVERLAY_SETUP && !input.paste {
         string key = keys.parse_key(input.data)
         if key == 'up' {
@@ -2969,6 +3114,7 @@ pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
             // Theme preview: switching the variant re-renders immediately.
             theme.set_variant(theme.variant() == 'light' ? 'dark' : 'light')
             overlay.options[6] = 'Theme: ' + theme.variant()
+            self.save_preferences()
             self.redraw()
             return
         } else if selected_option.starts_with('Auto-compaction:') {
@@ -3161,7 +3307,7 @@ pub fn view_t.restore_queued_messages(&self) {
 
 pub fn view_t.save_preferences(&self) {
     var existing = config_settings.load()
-    var preferences = config_settings.settings_t {default_provider: existing.default_provider, default_model: existing.default_model, default_thinking_level: self.chat.thinking, auto_compaction: self.runner.compaction_settings.enabled, steering_mode: self.runner.agent_config.queues.steering_mode, follow_up_mode: self.runner.agent_config.queues.follow_up_mode, hide_thinking: !self.chat.thinking_visible, retry_enabled: self.runner.retry_enabled, retry_max_attempts: existing.retry_max_attempts, retry_base_delay_ms: existing.retry_base_delay_ms, enabled_model_ids: self.scoped_model_ids,}
+    var preferences = config_settings.settings_t {default_provider: existing.default_provider, default_model: existing.default_model, default_thinking_level: self.chat.thinking, auto_compaction: self.runner.compaction_settings.enabled, steering_mode: self.runner.agent_config.queues.steering_mode, follow_up_mode: self.runner.agent_config.queues.follow_up_mode, hide_thinking: !self.chat.thinking_visible, retry_enabled: self.runner.retry_enabled, retry_max_attempts: existing.retry_max_attempts, retry_base_delay_ms: existing.retry_base_delay_ms, enabled_model_ids: self.scoped_model_ids, theme: theme.variant(), enabled_skill_names: existing.enabled_skill_names, enabled_prompt_names: existing.enabled_prompt_names,}
     config_settings.save(preferences) catch error {
         self.chat.error_message = 'Could not save settings: ' + error.msg()
     }
@@ -3864,12 +4010,19 @@ fn refresh_dynamic_commands(string cwd) {
     var skills_result = skills.load_skills(cwd, paths.agent_dir(), no_extra, true) catch error {
         skills.load_skills_result_t {}
     }
+    // The config selector's enable lists filter which dynamic commands are
+    // advertised in the completion menu.
+    var settings = config_settings.load()
     [slash_commands.slash_command_info_t] commands = []
-    for info in slash_commands.prompt_commands(templates) {
-        commands.push(info)
+    for template in templates {
+        if resource_enabled(settings.enabled_prompt_names, template.name) {
+            commands.push(slash_commands.slash_command_info_t {name: template.name, description: template.description, source: 'prompt', source_info: template.source_info})
+        }
     }
-    for info in slash_commands.skill_commands(skills_result.skills) {
-        commands.push(info)
+    for skill in skills_result.skills {
+        if resource_enabled(settings.enabled_skill_names, skill.name) {
+            commands.push(slash_commands.slash_command_info_t {name: 'skill:' + skill.name, description: skill.description, source: 'skill', source_info: skill.source_info})
+        }
     }
     dynamic_commands_cache = commands
     dynamic_commands_loaded = true

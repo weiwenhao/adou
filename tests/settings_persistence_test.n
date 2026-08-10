@@ -1,0 +1,26 @@
+import adou.src.config.paths
+import fmt
+import adou.src.config.settings
+import fs
+import os
+import path
+import syscall
+import time
+
+test 'theme and resource lists persist through settings round trips' {
+    string dir = path.join('/tmp', 'adou-settings-persist-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    syscall.set_env('PI_CODING_AGENT_DIR', dir)
+    os.mkdirs(dir, 0o700)
+    var saved = settings.settings_t {theme: 'light', enabled_skill_names: ['demo', 'other'], enabled_prompt_names: ['review'],}
+    settings.save(saved) catch error {
+        assert(false)
+    }
+    var loaded = settings.load()
+    assert(loaded.theme == 'light')
+    assert(loaded.enabled_skill_names.len() == 2)
+    assert(loaded.enabled_skill_names[0] == 'demo')
+    assert(loaded.enabled_prompt_names.len() == 1)
+    assert(loaded.enabled_prompt_names[0] == 'review')
+    syscall.set_env('PI_CODING_AGENT_DIR', '')
+    os.rmdir(dir, true)
+}

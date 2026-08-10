@@ -14,6 +14,7 @@ import adou.src.config.resolve
 import adou.src.debug
 import adou.src.timings
 import adou.src.config.settings
+import adou.src.config.settings as config_settings
 import adou.src.config.types as config_types
 import adou.src.config.paths as config_paths
 import adou.src.context.project
@@ -277,6 +278,18 @@ pub fn run(): void! {
     string append_prompt = strings.join(resolved_append_prompts, '\n\n')
     [string] extra_skill_paths = []
     var skills_result = skills.load_skills(session_cwd, config_paths.agent_dir(), extra_skill_paths, true)
+    // The config selector's enabledSkills list filters the model-visible
+    // skills; an empty list keeps everything.
+    var skill_settings = config_settings.load()
+    if skill_settings.enabled_skill_names.len() > 0 {
+        [ref<skills.skill_t>] filtered_skills = []
+        for skill in skills_result.skills {
+            if list_contains_skill(skill_settings.enabled_skill_names, skill.name) {
+                filtered_skills.push(skill)
+            }
+        }
+        skills_result.skills = filtered_skills
+    }
     string skills_prompt = skills.format_skills_for_prompt(skills_result.skills)
     if skills_prompt != '' {
         if append_prompt != '' {
@@ -375,6 +388,16 @@ fn stream_provider(): agent_types.stream_fn {
         return provider.stream(model, context, options)
     }
     return result
+}
+
+#local
+fn list_contains_skill([string] values, string target): bool {
+    for value in values {
+        if value == target {
+            return true
+        }
+    }
+    return false
 }
 
 #local

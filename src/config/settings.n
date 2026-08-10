@@ -28,6 +28,10 @@ pub type settings_t = struct {
     int reserve_tokens = 16384
     int keep_recent_tokens = 20000
     [string] enabled_model_ids = []
+    // Theme variant and per-resource enable lists for the config selector.
+    string theme = 'dark'
+    [string] enabled_skill_names = []
+    [string] enabled_prompt_names = []
 }
 
 pub fn load(): settings_t {
@@ -66,6 +70,26 @@ fn load_file(string file_path, settings_t initial): settings_t {
     result.retry_enabled = bool_value(object, 'retryEnabled', result.retry_enabled)
     result.retry_max_attempts = positive_int(object, 'retryMaxAttempts', result.retry_max_attempts)
     result.retry_base_delay_ms = positive_int(object, 'retryBaseDelayMs', result.retry_base_delay_ms)
+    string theme_value = string_value(object, 'theme', result.theme)
+    if theme_value == 'light' || theme_value == 'dark' {
+        result.theme = theme_value
+    }
+    if object.contains('enabledSkills') && object['enabledSkills'] is [any] {
+        result.enabled_skill_names = []
+        for item in object['enabledSkills'] as [any] {
+            if item is string && (item as string) != '' {
+                result.enabled_skill_names.push(item as string)
+            }
+        }
+    }
+    if object.contains('enabledPrompts') && object['enabledPrompts'] is [any] {
+        result.enabled_prompt_names = []
+        for item in object['enabledPrompts'] as [any] {
+            if item is string && (item as string) != '' {
+                result.enabled_prompt_names.push(item as string)
+            }
+        }
+    }
     any compaction_value = null
     if object.contains('compaction') {
         compaction_value = object['compaction']
@@ -119,6 +143,7 @@ pub fn save(settings_t settings): void! {
     object['defaultProvider'] = settings.default_provider
     object['defaultModel'] = settings.default_model
     object['defaultThinkingLevel'] = settings.default_thinking_level
+    object['theme'] = settings.theme
     object['autoCompaction'] = settings.auto_compaction
     object['steeringMode'] = queue_mode(settings.steering_mode)
     object['followUpMode'] = queue_mode(settings.follow_up_mode)
@@ -138,6 +163,24 @@ pub fn save(settings_t settings): void! {
         object['enabledModels'] = enabled
     } else if object.contains('enabledModels') {
         object.del('enabledModels')
+    }
+    if settings.enabled_skill_names.len() > 0 {
+        [any] skill_values = []
+        for name in settings.enabled_skill_names {
+            skill_values.push(name)
+        }
+        object['enabledSkills'] = skill_values
+    } else if object.contains('enabledSkills') {
+        object.del('enabledSkills')
+    }
+    if settings.enabled_prompt_names.len() > 0 {
+        [any] prompt_values = []
+        for name in settings.enabled_prompt_names {
+            prompt_values.push(name)
+        }
+        object['enabledPrompts'] = prompt_values
+    } else if object.contains('enabledPrompts') {
+        object.del('enabledPrompts')
     }
     string file_path = settings_path()
     os.mkdirs(path.dir(file_path), 0o700)
