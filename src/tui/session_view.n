@@ -1839,26 +1839,31 @@ fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int 
     [string] result = vec<string>.cap_of(16)
     bool bash_mode = editor.get_text().starts_with('!')
     result.push(theme.editor_border_line(thinking, bash_mode, width))
-    var lines = editor.get_lines()
-    var cursor = editor.get_cursor()
+    editor.width = width
+    var visual_lines = editor.visual_lines()
+    var cursor = editor.visual_cursor() catch error {
+        editor.visual_cursor_t {}
+    }
     int visible_lines = terminal_rows * 30 / 100
     if visible_lines < 5 {
         visible_lines = 5
     }
     int first_line = 0
-    if lines.len() > visible_lines && cursor.line >= visible_lines {
-        first_line = cursor.line - visible_lines + 1
+    if visual_lines.len() > visible_lines && cursor.visual_index >= visible_lines {
+        first_line = cursor.visual_index - visible_lines + 1
     }
     int last_line = first_line + visible_lines
-    if last_line > lines.len() {
-        last_line = lines.len()
+    if last_line > visual_lines.len() {
+        last_line = visual_lines.len()
     }
     for int index = first_line; index < last_line; index += 1 {
-        string value = lines[index]
+        var visual = visual_lines[index]
+        string value = visual.text
         string display = value
-        if index == cursor.line {
-            if cursor.column < value.len() {
-                display = value.slice(0, cursor.column) + theme.cursor(value.slice(cursor.column, cursor.column + 1)) + value.slice(cursor.column + 1, value.len())
+        if index == cursor.visual_index {
+            int cursor_offset = cursor.visual_col
+            if cursor_offset < value.len() {
+                display = value.slice(0, cursor_offset) + theme.cursor(value.slice(cursor_offset, cursor_offset + 1)) + value.slice(cursor_offset + 1, value.len())
             } else {
                 display += theme.cursor(' ')
             }

@@ -180,3 +180,67 @@ test 'page navigation moves the cursor by a visible page' {
     value.move_page(-1, 3)
     assert(value.get_cursor().line == 2)
 }
+
+test 'visual lines wrap long input at the terminal width' {
+    var editor = editor.new()
+    editor.set_text('abcdefghijklmnopqrstuvwxyz')
+    editor.width = 10
+    var visual = editor.visual_lines()
+    assert(visual.len() == 3)
+    assert(visual[0].text == 'abcdefghij')
+    assert(visual[1].text == 'klmnopqrst')
+    assert(visual[2].text == 'uvwxyz')
+    assert(visual[0].source_col == 0)
+    assert(visual[1].source_col == 10)
+    assert(visual[2].source_col == 20)
+}
+
+test 'visual wrapping keeps wide CJK graphemes intact' {
+    var editor = editor.new()
+    editor.set_text('你好世界hello')
+    editor.width = 8
+    var visual = editor.visual_lines()
+    assert(visual.len() == 2)
+    assert(visual[0].text == '你好世界')
+    assert(visual[1].text == 'hello')
+    // A grapheme that cannot fit its own segment exceeds the width rather
+    // than splitting a multi-byte character (terminal word-wrap behavior).
+    editor.width = 6
+    var narrow = editor.visual_lines()
+    assert(narrow.len() == 3)
+    assert(narrow[0].text == '你好世')
+    assert(narrow[1].text == '界hell')
+    assert(narrow[2].text == 'o')
+}
+
+test 'cursor visual position follows the wrapped layout' {
+    var editor = editor.new()
+    editor.set_text('abcdefghijklmnopqrstuvwxyz')
+    editor.width = 10
+    // Cursor at the start of the second visual line (byte column 10).
+    editor.move_line_start()
+    for int index = 0; index < 10; index += 1 {
+        editor.move_right()
+    }
+    var cursor = editor.visual_cursor()
+    assert(cursor.visual_index == 1)
+    assert(cursor.visual_col == 0)
+    assert(cursor.source_line == 0)
+    assert(cursor.source_col == 10)
+}
+
+test 'vertical movement crosses visual wrap boundaries like Pi' {
+    var editor = editor.new()
+    editor.set_text('abcdefghijklmnopqrstuvwxyz')
+    editor.width = 10
+    editor.move_line_start()
+    // Move down twice: first to the second visual line, then back up.
+    editor.move_vertical(1)
+    var down = editor.visual_cursor()
+    assert(down.visual_index == 1)
+    assert(down.source_line == 0)
+    editor.move_vertical(-1)
+    var up = editor.visual_cursor()
+    assert(up.visual_index == 0)
+    assert(up.source_col == 0)
+}

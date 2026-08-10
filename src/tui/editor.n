@@ -74,6 +74,23 @@ pub type editor_t = struct {
     // Pi's Ctrl+] / Ctrl+Alt+] character-jump mode.  1 searches forward,
     // -1 searches backward, and 0 means normal editing.
     int jump_mode
+    // Terminal width used for visual line wrapping; the host updates it on
+    // every render so vertical movement and cursor display follow the
+    // wrapped layout.
+    int width = 80
+}
+
+pub type visual_line_t = struct {
+    int source_line
+    int source_col
+    string text
+}
+
+pub type visual_cursor_t = struct {
+    int visual_index
+    int visual_col
+    int source_line
+    int source_col
 }
 
 pub fn new(): ref<editor_t> {
@@ -525,25 +542,109 @@ pub fn editor_t.move_vertical(&self, int direction): void! {
     if direction == 0 {
         return
     }
-    int target_line = self.cursor_line + direction
-    if target_line < 0 || target_line >= self.lines.len() {
+    var visual_lines = self.visual_lines() catch error {
         return
     }
-    string source = self.lines[self.cursor_line]
-    int visual_column = visible_prefix_width(source, self.cursor_col)
+    if visual_lines.len() == 0 {
+        return
+    }
+    var current_cursor = self.visual_cursor() catch error {
+        return
+    }
+    int target_visual = current_cursor.visual_index + direction
+    if target_visual < 0 || target_visual >= visual_lines.len() {
+        return
+    }
+    var current = visual_lines[current_cursor.visual_index]
+    var target = visual_lines[target_visual]
+    int visual_column = visible_prefix_width(current.text, self.cursor_col - current.source_col)
     if self.preferred_visual_column >= 0 {
         visual_column = self.preferred_visual_column
     }
-    int target_column = byte_column_at_width(self.lines[target_line], visual_column)
-    int actual_width = visible_prefix_width(self.lines[target_line], target_column)
+    int target_column = byte_column_at_width(target.text, visual_column)
+    int actual_width = visible_prefix_width(target.text, target_column)
     if actual_width < visual_column {
         self.preferred_visual_column = visual_column
     } else {
         self.preferred_visual_column = -1
     }
-    self.cursor_line = target_line
-    self.cursor_col = snap_out_of_marker(self.pastes, self.lines[target_line], target_column)
+    self.cursor_line = target.source_line
+    self.cursor_col = snap_out_of_marker(self.pastes, self.lines[target.source_line], target.source_col + target_column)
     self.last_action = ACTION_NONE
+}
+
+// The wrapped layout of the editor: each physical line is split into visual
+// lines that fit the terminal width, splitting on grapheme boundaries.
+pub fn editor_t.visual_lines(&self): [visual_line_t]! {
+    [visual_line_t] result = []
+    for line_index, line in self.lines {
+        if line == '' {
+            result.push(visual_line_t {source_line: line_index, source_col: 0, text: ''})
+            continue
+        }
+        int width = self.width
+        if width < 1 {
+            width = 1
+        }
+        var segments = unicode.graphemes(line)
+        int line_start = 0
+        int accumulated = 0
+        for segment in segments {
+            string grapheme = line.slice(segment.start, segment.end)
+            int grapheme_width = unicode.visible_width(grapheme)
+            if accumulated + grapheme_width > width && accumulated > 0 {
+                result.push(visual_line_t {source_line: line_index, source_col: line_start, text: line.slice(line_start, segment.start)})
+                line_start = segment.start
+                accumulated = 0
+            }
+            accumulated += grapheme_width
+        }
+        result.push(visual_line_t {source_line: line_index, source_col: line_start, text: line.slice(line_start, line.len())})
+    }
+    return result
+}
+
+// The cursor's position in the wrapped layout: which visual line it is on
+// and the visual column within it.  A cursor exactly at a wrap boundary
+// belongs to the following visual line (terminal wrap semantics); the last
+// segment of a physical line keeps the end-of-line cursor.
+pub fn editor_t.visual_cursor(&self): visual_cursor_t! {
+    var visual = self.visual_lines()
+    if visual.len() == 0 {
+        return visual_cursor_t {visual_index: 0, visual_col: 0, source_line: 0, source_col: 0,}
+    }
+    int index = -1
+    for visual_index, candidate in visual {
+        if candidate.source_line != self.cursor_line {
+            continue
+        }
+        if self.cursor_col >= candidate.source_col && self.cursor_col < candidate.source_col + candidate.text.len() {
+            index = visual_index
+            break
+        }
+        if self.cursor_col == candidate.source_col + candidate.text.len() {
+            index = visual_index
+            // A wrap boundary prefers the next segment of the same line.
+            if visual_index + 1 < visual.len() && visual[visual_index + 1].source_line == candidate.source_line {
+                index = visual_index + 1
+            }
+            break
+        }
+    }
+    if index < 0 {
+        index = visual.len() - 1
+    }
+    var target = visual[index]
+    int visual_col = 0
+    if self.cursor_col >= target.source_col {
+        visual_col = visible_prefix_width(target.text, self.cursor_col - target.source_col)
+    }
+    return visual_cursor_t {visual_index: index, visual_col: visual_col, source_line: target.source_line, source_col: target.source_col,}
+}
+
+pub fn editor_t.visual_line_count(&self): int {
+    var lines = self.visual_lines() catch error {[]}
+    return lines.len()
 }
 
 // Move the cursor by one terminal page. Pi's editor uses the visible page
