@@ -75,6 +75,10 @@
 
 当前已有：assistant/user/tool/bash/summary/status/footer 渲染，model/scoped-model/settings/login/logout/session/tree/fork/name/branch-summary/help/hotkeys/path-completion overlay，resume picker，以及外部编辑器入口。
 
+逐组件 parity 审计（2026-08-10）：对照 modes/interactive 下 39 个组件，结论——等价/合并：user/assistant/tool/bash/footer/status/keybinding-hints/login(API key 分支)/tree 主体等；部分：session-selector（缺 Tab 作用域/regex 搜索/threaded 排序/trash/行元数据）、model-selector（缺 scope 切换/刷新反馈/当前模型标记）、settings-selector（缺子菜单）、visual-truncate（逻辑行→视觉行）、countdown-timer（重试静态文案）、bash-execution（完成态不可折叠/截断静默）；缺失：theme-selector、diff.ts（工具输出 diff 着色）、first-time-setup、tree 搜索/过滤/折叠；明确排除：oauth-selector/login 的 OAuth 阶段（文档排除项）、extension-*（屏蔽）、show-images/图片渲染（排除项）、daxnuts/armin/earendil-announcement/dynamic-border（装饰组件）。
+
+已实现批次（2026-08-10）：bash 完成态输出管理——render_bash_lines 接入 tool_output_expanded 折叠（视觉行末 20 行 + "N more lines, press Ctrl+O to expand"）、bash.truncated/full_output_path 渲染 "Output truncated. Full output: <path>"、退出码短格式 "(exit N)"（错误色）、活动 bash 视觉行截断 + 跳过计数、chat status 行不再重复 echo 退出码。新增 text_utils.truncate_visual_lines（Pi visual-truncate 语义）与 PTY e2e tui-bash-output.sh。
+
 接下来按以下顺序收口：
 
 1. 建立 `modes/interactive` 逐文件矩阵，将每个上游组件标为“等价实现 / 合并实现 / 排除 / 缺失”，避免用 `session_view.n` 文件大小代替行为验收。
