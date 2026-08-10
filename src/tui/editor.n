@@ -13,6 +13,7 @@ pub const ACTION_TYPE_WORD = 3
 pub const ACTION_SUBMIT = 'submit'
 pub const ACTION_NEWLINE = 'newline'
 pub const ACTION_CANCEL = 'cancel'
+pub const ACTION_TAB = 'tab'
 pub const ACTION_SCROLL_UP = 'scroll_up'
 pub const ACTION_SCROLL_DOWN = 'scroll_down'
 pub const ACTION_IGNORED = 'ignored'
@@ -128,6 +129,34 @@ pub fn editor_t.set_text(&self, string text) {
     self.lines = lines.len() == 0 ? [''] : lines
     self.cursor_line = self.lines.len() - 1
     self.cursor_col = self.lines[self.cursor_line].len()
+    self.last_action = ACTION_NONE
+    self.preferred_visual_column = -1
+    self.history_index = -1
+    self.history_draft = ''
+}
+
+// Apply a completion replacement with a caller-chosen cursor position; the
+// change is recorded on the undo stack like any other edit.
+pub fn editor_t.set_text_at(&self, string text, int cursor_line, int cursor_col) {
+    string normalized = normalize_text(text)
+    if self.get_text() != normalized {
+        self.push_undo_snapshot()
+    }
+    self.pastes = vec<paste_t>.cap_of(4)
+    self.paste_counter = 0
+    var lines = split_lines(normalized)
+    self.lines = lines.len() == 0 ? [''] : lines
+    self.cursor_line = cursor_line < self.lines.len() ? cursor_line : self.lines.len() - 1
+    if self.cursor_line < 0 {
+        self.cursor_line = 0
+    }
+    self.cursor_col = cursor_col
+    if self.cursor_col < 0 {
+        self.cursor_col = 0
+    }
+    if self.cursor_col > self.lines[self.cursor_line].len() {
+        self.cursor_col = self.lines[self.cursor_line].len()
+    }
     self.last_action = ACTION_NONE
     self.preferred_visual_column = -1
     self.history_index = -1
@@ -387,7 +416,7 @@ pub fn editor_t.handle_key(&self, string data, bool kitty_protocol): key_result_
     if action == keybindings.ACTION_YANK {self.yank(); return key_result_t {action: 'handled',}}
     if action == keybindings.ACTION_YANK_POP {self.yank_pop(); return key_result_t {action: 'handled',}}
     if action == keybindings.ACTION_UNDO {self.undo(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_INSERT_INDENT {self.insert_text('    '); return key_result_t {action: 'handled',}}
+    if action == keybindings.ACTION_TAB {return key_result_t {action: ACTION_TAB,}}
     if action == keybindings.ACTION_SCROLL_UP {return key_result_t {action: ACTION_SCROLL_UP,}}
     if action == keybindings.ACTION_SCROLL_DOWN {return key_result_t {action: ACTION_SCROLL_DOWN,}}
     string printable = keys.decode_printable(data)

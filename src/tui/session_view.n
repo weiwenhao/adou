@@ -27,6 +27,7 @@ import adou.src.tui.chat
 import adou.src.tui.editor
 import adou.src.tui.input_buffer
 import adou.src.tui.keys
+import adou.src.tui.path_completion
 import adou.src.tui.renderer
 import adou.src.tui.text_utils
 import adou.src.tui.theme
@@ -88,6 +89,7 @@ pub const OVERLAY_BRANCH_SUMMARY = 13
 pub const OVERLAY_BRANCH_CUSTOM = 14
 pub const OVERLAY_SCOPED_MODELS = 15
 pub const OVERLAY_SESSION_INFO = 16
+pub const OVERLAY_PATH_COMPLETION = 17
 pub const OVERLAY_VISIBLE_OPTIONS = 12
 
 pub type overlay_t = struct {
@@ -426,6 +428,10 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
         return null
     }
     self.apply_editor_action(result)
+    if result.action == editor.ACTION_TAB {
+        self.handle_tab_completion()
+        return null
+    }
     if result.submitted {
         if result.text == '' {
             self.redraw()
@@ -508,6 +514,67 @@ fn view_t.apply_editor_action(&self, editor.key_result_t result) {
     }
     int direction = result.action == editor.ACTION_SCROLL_UP ? -1 : 1
     self.editor.move_page(direction, page_size) catch error {}
+}
+
+// Tab completion follows Pi's editor: a slash command without an argument
+// opens the command menu, otherwise the token before the cursor completes
+// as a file path.  A single candidate applies immediately; several open a
+// selection overlay; none falls back to inserting an indentation.
+fn view_t.handle_tab_completion(&self) {
+    var cursor = self.editor.get_cursor()
+    var lines = self.editor.get_lines()
+    string before = ''
+    if cursor.line < lines.len() {
+        before = lines[cursor.line].slice(0, cursor.column)
+    }
+    if before.starts_with('/') && !before.contains(' ') {
+        self.complete_command()
+        self.redraw()
+        return
+    }
+    string prefix = path_completion.extract_path_prefix(before, true)
+    if prefix == '' {
+        self.editor.insert_text('    ')
+        self.redraw()
+        return
+    }
+    string home = syscall.get_env('HOME')
+    var items = path_completion.get_file_suggestions(prefix, self.runner.repository.cwd, home)
+    if items.len() == 0 {
+        self.editor.insert_text('    ')
+        self.redraw()
+        return
+    }
+    if items.len() == 1 {
+        self.apply_path_completion(items[0], prefix)
+        self.redraw()
+        return
+    }
+    [string] options = []
+    for item in items {
+        options.push(item.label)
+    }
+    self.overlay = new overlay_t(kind = OVERLAY_PATH_COMPLETION, title = 'Complete path:', options = options, query = prefix)
+    self.redraw()
+}
+
+fn view_t.apply_path_completion(&self, path_completion.completion_item_t item, string prefix) {
+    var cursor = self.editor.get_cursor()
+    var lines = self.editor.get_lines()
+    if cursor.line >= lines.len() {
+        return
+    }
+    string line = lines[cursor.line]
+    var applied = path_completion.apply_completion(line, cursor.column, item, prefix)
+    self.editor.set_text_at(applied[0], cursor.line, applied[1])
+    self.overlay = null
+}
+
+// Re-resolve the completion candidates for an open completion overlay (the
+// query may have changed while it was open).
+fn view_t.path_completion_items(&self, string prefix): [path_completion.completion_item_t] {
+    string home = syscall.get_env('HOME')
+    return path_completion.get_file_suggestions(prefix, self.runner.repository.cwd, home)
 }
 
 // Pi restores the terminal before sending SIGTSTP and re-enters raw mode when
@@ -2174,6 +2241,38 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         }
         return
     }
+    if overlay.kind == OVERLAY_PATH_COMPLETION {
+        if input.paste == false && key == 'escape' {
+            self.overlay = null
+            self.redraw()
+            return
+        }
+        if input.paste == false && (key == 'up' || key == 'ctrl+p') {
+            if overlay.selected > 0 {
+                overlay.selected -= 1
+            }
+            self.redraw()
+            return
+        }
+        if input.paste == false && (key == 'down' || key == 'ctrl+n') {
+            if overlay.selected < overlay.options.len() - 1 {
+                overlay.selected += 1
+            }
+            self.redraw()
+            return
+        }
+        if input.paste == false && key == 'enter' {
+            var items = self.path_completion_items(overlay.query)
+            if overlay.selected < items.len() {
+                self.apply_path_completion(items[overlay.selected], overlay.query)
+            } else {
+                self.overlay = null
+            }
+            self.redraw()
+            return
+        }
+        return
+    }
     if overlay.kind == OVERLAY_SESSION {
         if key == 'ctrl+p' {
             overlay.show_paths = !overlay.show_paths
@@ -2824,6 +2923,18 @@ pub fn render_overlay(ref<overlay_t> overlay, int width): [string]! {
     if title_width < 1 {title_width = 1}
     result.push(' ' + theme.bold(theme.fg(theme.ACCENT, text_utils.truncate_to_width(overlay.title, title_width, '...', false))))
     result.push('')
+    if overlay.kind == OVERLAY_PATH_COMPLETION {
+        for index, option in overlay.options {
+            string line = index == overlay.selected ? theme.fg(theme.ACCENT, '→ ' + option) : '  ' + theme.fg(theme.TEXT, option)
+            int available = width - 2
+            if available < 1 {available = 1}
+            result.push(text_utils.truncate_to_width(line, available, '...', false))
+        }
+        result.push('')
+        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.DIM_COLOR, 'up/down select · enter apply · escape close'), width))
+        result.push(theme.border_line(width))
+        return result
+    }
     if overlay.kind == OVERLAY_SESSION_INFO {
         for line in overlay.options {
             if line == '' {

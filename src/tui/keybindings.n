@@ -29,7 +29,7 @@ pub const ACTION_DELETE_TO_LINE_END = 'delete_to_line_end'
 pub const ACTION_YANK = 'yank'
 pub const ACTION_YANK_POP = 'yank_pop'
 pub const ACTION_UNDO = 'undo'
-pub const ACTION_INSERT_INDENT = 'insert_indent'
+pub const ACTION_TAB = 'tab'
 pub const ACTION_SCROLL_UP = 'scroll_up'
 pub const ACTION_SCROLL_DOWN = 'scroll_down'
 
@@ -76,7 +76,7 @@ pub fn default_keybindings(): ref<keybindings_t> {
     registry.bindings.push(keybinding_t {key: 'ctrl+y', action: ACTION_YANK, description: 'Yank the kill ring'})
     registry.bindings.push(keybinding_t {key: 'alt+y', action: ACTION_YANK_POP, description: 'Yank the previous kill ring entry'})
     registry.bindings.push(keybinding_t {key: 'ctrl+-', action: ACTION_UNDO, description: 'Undo the last edit'})
-    registry.bindings.push(keybinding_t {key: 'tab', action: ACTION_INSERT_INDENT, description: 'Insert an indentation'})
+    registry.bindings.push(keybinding_t {key: 'tab', action: ACTION_TAB, description: 'Complete the current token'})
     registry.bindings.push(keybinding_t {key: 'pageUp', action: ACTION_SCROLL_UP, description: 'Scroll the transcript up'})
     registry.bindings.push(keybinding_t {key: 'pageDown', action: ACTION_SCROLL_DOWN, description: 'Scroll the transcript down'})
     return registry

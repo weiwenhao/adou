@@ -244,3 +244,27 @@ test 'vertical movement crosses visual wrap boundaries like Pi' {
     assert(up.visual_index == 0)
     assert(up.source_col == 0)
 }
+
+test 'tab resolves to the completion action for the host to handle' {
+    var editor = editor.new()
+    editor.set_text('hello')
+    var result = editor.handle_key('\t', true)
+    assert(result.action == 'tab')
+    // The editor itself does not insert an indentation anymore.
+    assert(editor.get_text() == 'hello')
+}
+
+test 'set_text_at applies a replacement with a cursor position' {
+    var editor = editor.new()
+    editor.set_text('read foo.txt')
+    var lines = editor.get_lines()
+    var cursor = editor.get_cursor()
+    assert(cursor.line == 0)
+    editor.set_text_at('read /tmp/bar.txt', 0, 13)
+    assert(editor.get_text() == 'read /tmp/bar.txt')
+    var after = editor.get_cursor()
+    assert(after.line == 0 && after.column == 13)
+    // The change is undoable like any other edit.
+    editor.undo()
+    assert(editor.get_text() == 'read foo.txt')
+}
