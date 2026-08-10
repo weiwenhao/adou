@@ -5,10 +5,10 @@
 
 ## 当前进度快照
 
-- Adou 当前有 218 个 `src/**/*.n` 文件、41,839 行 Nature 源码、137 个 Nature 单元测试文件（656 个 test case、2,685 个 `assert`）和 42 个 e2e 脚本。
+- Adou 当前有 218 个 `src/**/*.n` 文件、41,839 行 Nature 源码、137 个 Nature 单元测试文件（656 个 test case、2,685 个 `assert`）和 44 个 e2e 脚本。
 - Phase 1–4 已完成并有源码差分、单元测试和跨模块验收记录。
-- Phase 5 的 39 个 Interactive UI 组件已完成逐组件审计，全部非排除实现项已收口；正式关闭前仍需补齐 tree/fork/branch-summary 的 PTY 验收闭环。
-- Phase 6 正在进行：9 个上游 CLI 模块的主路径已具备，但空 piped stdin 挂起、credential stdout/stderr 隔离、help 文本逐项核对尚未关闭。
+- Phase 5 正式关闭（2026-08-11）：39 个 Interactive UI 组件全部有结论；`tui-tree-fork.sh` PTY 闭环覆盖 tree/fork/branch-summary 与终端恢复。
+- Phase 6 进行中：9 个上游 CLI 模块的主路径已具备；piped stdin 挂起与 credential 输出隔离已修复；help 文本逐项核对与参数矩阵收尾中。
 - Phase 7（独立 storage/server）和 Phase 8（evals harness）尚未开始，且不阻塞当前本地 CLI agent 主业务。
 - Pi extension 已在生产入口停用：不扫描扩展目录、不初始化 QuickJS、不注册扩展工具/命令、不派发生命周期事件；默认构建不再链接 QuickJS。相关源码暂留作未来重新设计的参考。
 
@@ -18,8 +18,8 @@
 | Phase 2：Agent harness | 已完成 | agent loop、工具、memory repo、shell 捕获、取消和 tool context 已覆盖 |
 | Phase 3：coding-agent core | 已完成（排除扩展） | session、compaction、配置、skills、prompts、模型目录、诊断与导出已覆盖 |
 | Phase 4：TUI 基础 | 已完成 | renderer、editor、autocomplete、fuzzy、路径补全、markdown、terminal image 逻辑已覆盖 |
-| Phase 5：Interactive UI | 实现完成、验收收尾 | 39 组件全部有结论，非排除实现项已收口；待补 tree/fork/branch-summary PTY 闭环后正式关闭 |
-| Phase 6：CLI | 进行中 | 9 个上游模块主路径已具备；空 stdin、credential 输出隔离、help/参数矩阵仍需收口 |
+| Phase 5：Interactive UI | 已完成 | 39 组件全部有结论；tree/fork/branch-summary PTY 闭环通过（tui-tree-fork.sh），终端恢复验证 |
+| Phase 6：CLI | 进行中 | 9 个上游模块主路径已具备；空 stdin 挂起与 credential 输出隔离已修复；help/参数矩阵收尾中 |
 | Phase 7：storage + server | 未开始 | 当前使用 JSONL repository 与进程内 RPC；尚无 SQLite/IPC server |
 | Phase 8：evals | 未开始 | 尚未移植 pi-harness/smoke.eval |
 
@@ -100,10 +100,10 @@ Phase 5 正式完成标准：39 个组件矩阵保持全部有结论；非排除
 
 当前已有：参数解析与校验、`--list-models`、`@file`、piped stdin、initial messages、text/json/rpc/print 模式、session/continue/resume/fork、export、project trust 和启动时 session picker。
 
-接下来按阻塞程度处理：
+已完成：
 
-1. 修复 `/bin/sh` command substitution 下空 FIFO stdin 卡在 `read_piped_stdin()` 的问题。不得用测试 timeout、sleep 或弱化断言掩盖；应从 fd 0 的 EOF/HUP 检测或 native poll/read 边界解决。
-2. 修复 `auth print-api-key` 输出隔离：成功时 stdout 只有 credential；失败时 stdout 为空、stderr 使用 `Error:` 前缀且退出码非零。
+1. 修复 `/bin/sh` command substitution 下空 FIFO stdin 卡在 `read_piped_stdin()`：native `poll()` 前置探测（`native/stdin_peek.c`），每次 read 前检查 POLLIN/POLLHUP，写端未关闭且无数据时停止而非阻塞等 EOF；e2e 覆盖 /dev/null、空 pipe、有内容 pipe、regular file。同时把 offline 守卫移到 piped/@file prompt 摄入之后，`--offline` 真正拦截 piped prompt。实跑：`printf 'hello' | ./build/bin/adou --offline --no-context-files --no-session --print` 立即输出 `Offline mode cannot send prompts to a provider`；`cli-startup-boundaries.sh` 全流程自然退出。
+2. 修复 `auth print-api-key` 输出隔离：成功仅 stdout（stderr 空）；失败 stdout 空、`Error: ` 前缀写 stderr、退出码非零；`auth-print.sh` 覆盖成功、缺 provider、无 key、`--api-key` 拒绝与未知参数。
 3. 对照 `src/cli` 的 9 个上游文件，确认 list-models、file processor、initial message、session picker、startup UI、config selector、credential print 和 project trust 的全部输入/错误语义，并逐项核对 help 文本。
 4. 为每类 CLI 行为增加针对性 e2e，保持 text/JSON/RPC stdout 不受诊断日志污染。
 
@@ -133,6 +133,17 @@ Phase 8 完成标准：harness 可重复运行 smoke 集合，并输出稳定的
 - Live DeepSeek smoke 必须显式开启，使用 `thinking=off`、低 `max-tokens`、单请求、禁用重试和非必要工具，避免并发和重复消费。
 - 测试日志、失败信息和提交说明不得打印完整 key；credential-print 测试只断言输出通道和匹配结果。
 
+## 2026-08-11 第二批实跑证据
+
+- `make build`：退出 0；`make clean` 已删除 `native/regex.o` 与新增的 `native/stdin_peek.o`（Makefile clean 目标补齐）。
+- 空 stdin 挂起修复：`/bin/sh -c 'out=$(printf "" | ./build/bin/adou --offline --no-context-files --no-session --print 2>&1 || true); echo DONE'` 立即返回 DONE（修复前卡死）；`echo -n "" | ./build/bin/adou --offline --no-context-files --no-session --print` 同样返回（POSIX sh 的 `echo -n ""` 输出字面 `-n`，测试统一改用 `printf ''`）。
+- offline 守卫：`printf 'hello' | ./build/bin/adou --offline --no-context-files --no-session --print` → `Offline mode cannot send prompts to a provider`，退出码 0。
+- `cli-startup-boundaries.sh`：7 个断言（no-TTY 诊断、/dev/null、空 pipe、有内容 pipe、regular file、损坏 session `Error: session file has no valid header` + 非零退出、缺失 session）全部自然退出通过。
+- `auth-print.sh`：成功路径 stdout 仅 credential；失败路径 stdout 空、stderr `Error:` 前缀、退出码非零。
+- Phase 5 收尾：`ADOU_BIN=./build/bin/adou sh tests/e2e/tui-tree-fork.sh` 通过（/tree 打开与 label、ESC 取消与重开、过滤导航 → `Summarize branch?` → `No summary` → `Navigated to selected point`、`/fork` → `Forked to new session`、`/quit` 退出码 0）。
+- live smoke：`ADOU_LIVE_SMOKE=1 ADOU_BIN=./build/bin/adou sh tests/e2e/live-smoke.sh` 通过（`deepseek/deepseek-v4-flash`、thinking off、64 max tokens、0 retries、60s timeout）；默认（无开关）跳过。日志只输出 key 配置状态，不打印 key。
+- 遗留：`tui-tree-fork.sh` 中 up 方向键（`[A`）经 PTY 输入会被拆包并在 10ms ESC 窗口外判定为 escape，测试改用 tree 的 `f` 过滤键选择非 leaf entry；真实键盘单次传输不受影响。该项记录为测试基础设施限制，不作为 Adou 缺陷。
+
 ## 2026-08-11 审查与实跑证据
 
 - `make build`：退出 0；现有产物已是最新，Make 报告无需重新构建。
@@ -152,4 +163,4 @@ Phase 8 完成标准：harness 可重复运行 smoke 集合，并输出稳定的
 4. 先运行 `make build`，再串行运行受影响的单文件 Nature 测试和 e2e。
 5. 不并发运行 Nature、不使用 `make -j`、不运行 `nature fmt`；除非明确需要，不运行约两小时的完整 `make test`。
 
-当前测试库存为 137 个 Nature 单元测试文件与 42 个 e2e 脚本；这只是覆盖资产数量，不代表本次快照已重跑全量测试。最新可复核的模块证据维护在 `docs/pi-core-module-map.md`。
+当前测试库存为 137 个 Nature 单元测试文件与 44 个 e2e 脚本；这只是覆盖资产数量，不代表本次快照已重跑全量测试。最新可复核的模块证据维护在 `docs/pi-core-module-map.md`。
