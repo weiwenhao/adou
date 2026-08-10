@@ -174,6 +174,19 @@ native-modifiers 按 darwin 原生模块排除（kitty 协议覆盖 Shift+Enter�
 验收：input/renderer 单测全绿 + 2 个 PTY e2e（tui-auth-overlay.sh 原有 +
 tui-editor-wrapping.sh 新增：40 列终端长输入折行渲染 + 清空 + slash 退出）。
 
+Phase 4 对照式验收 + 全量补齐（2026-08-10）：对照 vendors/pi/packages/tui/ 完整
+源码。补齐项——Tab 路径补全接入（editor ACTION_TAB + OVERLAY_PATH_COMPLETION
+选择列表 + 单候选自动应用 + slash 上下文走命令菜单）、Editor autocomplete 状态机
+（@ 附件触发、每键重算、移动键关闭、单结果自动应用）、fd 式模糊附件搜索
+（无 fd 依赖的递归遍历 + 评分排序 + 20 上限）、命令菜单 fuzzy 排序 + prompt
+模板/skill 命令项、terminal-image 渲染层（render_image 分发/能力缓存
+reset/set/calculate_image_rows/get_cell_dimensions/hyperlink/image_fallback/
+is_image_line、GIF 签名校验、WebP VP8/VP8L/VP8X 分支、仅宽模式保持纵横比、
+随机 allocate_image_id）、editor 首/末视觉行 up/down 跳行首/行尾、历史浏览
+undo 快照、shift+space、滚动指示器（↑ N more/↓ N more）、fuzzy 数字字母交换
+严格对齐 Pi 正则。已记录差异：IME CURSOR_MARKER（adou 无输入法集成）、
+参数区补全（Pi 依赖命令 getArgumentCompletions 接口）。
+
 ### Phase 5｜Interactive 模式 UI 组件全量
 - interactive-mode + 40 个组件（diff、session-selector、model-search、login-dialog、
   oauth-selector、theme-selector、settings-selector、tree-selector、visual-truncate、
