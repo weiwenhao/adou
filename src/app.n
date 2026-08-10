@@ -423,17 +423,17 @@ fn list_contains_skill([string] values, string target): bool {
 fn run_auth_print_api_key([string] argv): void! {
     var arguments = args.parse(argv)
     if arguments.errors.len() > 0 {
-        println('Error: ' + strings.join(arguments.errors, '; '))
+        print_auth_error('Error: ' + strings.join(arguments.errors, '; '))
         syscall.exit(1) catch exit_error {}
         return
     }
     if arguments.model == '' {
-        println('Error: Credential printing requires --model <model>')
+        print_auth_error('Error: Credential printing requires --model <model>')
         syscall.exit(1) catch exit_error {}
         return
     }
     if arguments.api_key != '' {
-        println('Error: Credential printing reads configured credentials; --api-key is not supported')
+        print_auth_error('Error: Credential printing reads configured credentials; --api-key is not supported')
         syscall.exit(1) catch exit_error {}
         return
     }
@@ -442,17 +442,31 @@ fn run_auth_print_api_key([string] argv): void! {
         provider = arguments.model.slice(0, arguments.model.find('/'))
     }
     if provider == '' {
-        println('Error: Credential printing requires --provider <provider> when the model is not provider-prefixed')
+        print_auth_error('Error: Credential printing requires --provider <provider> when the model is not provider-prefixed')
         syscall.exit(1) catch exit_error {}
         return
     }
     string api_key = auth.effective(provider)
     if api_key == '' {
-        println('No configured API key for ' + provider)
+        print_auth_error('Error: No configured API key for ' + provider)
         syscall.exit(1) catch exit_error {}
         return
     }
+    // Success: the credential is the entire stdout payload so external
+    // clients can pipe it directly; diagnostics stay on stderr.
     println(api_key)
+}
+
+// Credential-print failures keep stdout empty and use the Error: prefix on
+// stderr so callers can distinguish a missing credential from a printed one.
+#local
+fn print_auth_error(string message) {
+    var err = fs.stderr() catch error {
+        return
+    }
+    err.write(message as [u8]) catch error {}
+    [u8] nl = [10]
+    err.write(nl) catch error {}
 }
 
 #local
