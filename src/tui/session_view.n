@@ -444,9 +444,77 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
         self.editor.add_history(result.text)
         return self.start_prompt(result.text)
     }
+    self.update_autocomplete(key)
     self.update_command_menu()
     self.redraw()
     return null
+}
+
+// Pi's editor autocomplete state machine (trigger character @): after every
+// edit the token before the cursor is re-evaluated; a single candidate
+// applies immediately, several open the completion overlay, and movement
+// keys or a vanished trigger close it.
+fn view_t.update_autocomplete(&self, string key) {
+    bool completion_open = false
+    if self.overlay is ref<overlay_t> active_overlay {
+        completion_open = active_overlay.kind == OVERLAY_PATH_COMPLETION
+    }
+    if completion_open {
+        if key == 'left' || key == 'right' || key == 'up' || key == 'down' || key == 'home' || key == 'end' || key == 'ctrl+b' || key == 'ctrl+f' || key == 'alt+b' || key == 'alt+f' || key == 'ctrl+left' || key == 'ctrl+right' || key == 'alt+left' || key == 'alt+right' {
+            self.overlay = null
+            return
+        }
+    }
+    var cursor = self.editor.get_cursor()
+    var lines = self.editor.get_lines()
+    if cursor.line >= lines.len() {
+        return
+    }
+    string before = lines[cursor.line].slice(0, cursor.column)
+    string at_prefix = at_prefix_for(before)
+    if at_prefix == '' {
+        if completion_open {
+            self.overlay = null
+        }
+        return
+    }
+    string home = syscall.get_env('HOME')
+    var items = path_completion.get_file_suggestions(at_prefix, self.runner.repository.cwd, home)
+    if items.len() == 1 {
+        self.apply_path_completion(items[0], at_prefix)
+        return
+    }
+    if items.len() > 1 {
+        [string] options = []
+        for item in items {
+            options.push(item.label)
+        }
+        self.overlay = new overlay_t(kind = OVERLAY_PATH_COMPLETION, title = 'Attach file:', options = options, query = at_prefix)
+        return
+    }
+    if completion_open {
+        self.overlay = null
+    }
+}
+
+// The @ attachment prefix at a token boundary, like Pi's extractAtPrefix.
+fn at_prefix_for(string text): string {
+    int cursor = text.len() - 1
+    for cursor >= 0 {
+        u8 byte = text[cursor]
+        if byte == '@'.char() {
+            // A quote directly after @ extends the quoted form.
+            if cursor + 1 < text.len() && text[cursor + 1] == '"'.char() {
+                return '@' + text.slice(cursor + 1, text.len())
+            }
+            return text.slice(cursor, text.len())
+        }
+        if byte == ' '.char() || byte == '\t'.char() || byte == '"'.char() || byte == '='.char() {
+            return ''
+        }
+        cursor -= 1
+    }
+    return ''
 }
 
 pub fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, input_t input) {
