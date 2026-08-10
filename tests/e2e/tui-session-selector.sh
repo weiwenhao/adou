@@ -152,8 +152,8 @@ try:
         pass  # both rows may be redrawn together; check the query below
 
     # An unmatched query shows the empty state and does not crash.
-    if not paste_text("zzz-no-such-session", b"No matching options", timeout=4.0):
-        raise SystemExit("empty search result lacks the empty-state message")
+    if not paste_text("zzz-no-such-session", b"No sessions in current folder", timeout=4.0):
+        raise SystemExit("empty search result lacks the scoped empty-state message")
 
     # Escape cancels the picker and the TUI stays alive for a clean quit.
     os.write(fd, b"\x1b")

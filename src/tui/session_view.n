@@ -108,6 +108,9 @@ pub type overlay_t = struct {
     bool show_paths
     bool named_only
     int sort_mode
+    // Pi's scope: 0 = current folder, 1 = all projects.  The options list
+    // holds the merged set; filtered_options narrows it by scope.
+    int scope
 }
 
 pub type view_t = struct {
@@ -1361,7 +1364,7 @@ pub fn view_t.show_session_overlay(&self) {
         }
         return
     }
-    self.overlay = new overlay_t(kind = OVERLAY_SESSION, title = 'Resume session:', options = options, sort_mode = 0)
+    self.overlay = new overlay_t(kind = OVERLAY_SESSION, title = 'Resume session:', options = options, sort_mode = 0, scope = 0)
 }
 
 #local
@@ -1680,7 +1683,7 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     [string] lines = self.chat.render(width)
     [string] editor_lines = []
     if self.overlay is ref<overlay_t> active_overlay {
-        editor_lines = render_overlay(active_overlay, width)
+        editor_lines = render_overlay(active_overlay, width, self.runner.repository.session_dir)
     } else {
         editor_lines = render_editor(self.editor, width, self.command_menu, self.command_index, self.chat.thinking, height)
     }
@@ -2359,6 +2362,13 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         return
     }
     if overlay.kind == OVERLAY_SESSION {
+        if key == 'tab' {
+            overlay.scope = overlay.scope == 0 ? 1 : 0
+            overlay.selected = 0
+            overlay.title = overlay.scope == 0 ? 'Resume Session (Current Folder)' : 'Resume Session (All)'
+            self.redraw()
+            return
+        }
         if key == 'ctrl+p' {
             overlay.show_paths = !overlay.show_paths
             self.redraw()
@@ -2389,7 +2399,7 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             return
         }
         if key == 'pageUp' {
-            int count = filtered_options(overlay).len()
+            int count = filtered_options(self.runner.repository.session_dir, overlay).len()
             overlay.selected -= OVERLAY_VISIBLE_OPTIONS
             if overlay.selected < 0 {overlay.selected = 0}
             if count > 0 && overlay.selected >= count {overlay.selected = count - 1}
@@ -2397,7 +2407,7 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             return
         }
         if key == 'pageDown' {
-            int count = filtered_options(overlay).len()
+            int count = filtered_options(self.runner.repository.session_dir, overlay).len()
             overlay.selected += OVERLAY_VISIBLE_OPTIONS
             if count > 0 && overlay.selected >= count {overlay.selected = count - 1}
             self.redraw()
@@ -2405,7 +2415,7 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         }
     }
     if overlay.kind == OVERLAY_TREE && (key == 'L' || key == 'shift+l') {
-        var options = filtered_options(overlay)
+        var options = filtered_options(self.runner.repository.session_dir, overlay)
         if options.len() > 0 && overlay.selected >= 0 && overlay.selected < options.len() {
             string entry_id = option_entry_id(options[overlay.selected])
             overlay.kind = OVERLAY_LABEL
@@ -2453,14 +2463,14 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         return
     }
     if key == 'up' {
-        int count = filtered_options(overlay).len()
+        int count = filtered_options(self.runner.repository.session_dir, overlay).len()
         if count == 0 {return}
         overlay.selected = overlay.selected == 0 ? count - 1 : overlay.selected - 1
         self.redraw()
         return
     }
     if key == 'down' {
-        int count = filtered_options(overlay).len()
+        int count = filtered_options(self.runner.repository.session_dir, overlay).len()
         if count == 0 {return}
         overlay.selected = overlay.selected == count - 1 ? 0 : overlay.selected + 1
         self.redraw()
@@ -2491,7 +2501,7 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
 
 #local
 fn view_t.begin_delete_session(&self, ref<overlay_t> overlay) {
-    var options = filtered_options(overlay)
+    var options = filtered_options(self.runner.repository.session_dir, overlay)
     if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
         return
     }
@@ -2547,7 +2557,7 @@ fn view_t.confirm_delete_session(&self, ref<overlay_t> overlay) {
 
 #local
 fn view_t.begin_rename_session(&self, ref<overlay_t> overlay) {
-    var options = filtered_options(overlay)
+    var options = filtered_options(self.runner.repository.session_dir, overlay)
     if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
         return
     }
@@ -2633,7 +2643,7 @@ pub fn view_t.complete_api_key_login(&self, ref<overlay_t> overlay) {
 }
 
 pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
-    var options = filtered_options(overlay)
+    var options = filtered_options(self.runner.repository.session_dir, overlay)
     if overlay.kind == OVERLAY_AUTH_METHOD {
         string method = overlay.selected == 0 ? 'account' : 'api_key'
         if overlay.provider == '' {
@@ -3007,7 +3017,7 @@ pub fn view_t.copy_last_response(&self) {
     self.redraw()
 }
 
-pub fn render_overlay(ref<overlay_t> overlay, int width): [string]! {
+pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir): [string]! {
     [string] result = vec<string>.cap_of(24)
     result.push(theme.border_line(width))
     result.push('')
@@ -3066,7 +3076,7 @@ pub fn render_overlay(ref<overlay_t> overlay, int width): [string]! {
                 result.push('')
             }
         }
-        var options = filtered_options(overlay)
+        var options = filtered_options(session_dir, overlay)
         int first = 0
         if overlay.selected >= OVERLAY_VISIBLE_OPTIONS {
             first = overlay.selected - OVERLAY_VISIBLE_OPTIONS + 1
@@ -3086,6 +3096,9 @@ pub fn render_overlay(ref<overlay_t> overlay, int width): [string]! {
             int option_width = width - 4
             if option_width < 1 {option_width = 1}
             string display_option = overlay.kind == OVERLAY_SESSION ? session_option_display(option, overlay.show_paths) : option
+            if overlay.kind == OVERLAY_SESSION && overlay.sort_mode == 3 {
+                display_option = session_tree_prefix(options, index) + display_option
+            }
             string fitted = text_utils.truncate_to_width(display_option, option_width, '...', false)
             string text = selected ? theme.fg(theme.ACCENT, fitted) : theme.fg(theme.TEXT, fitted)
             result.push(' ' + prefix + text)
@@ -3094,7 +3107,21 @@ pub fn render_overlay(ref<overlay_t> overlay, int width): [string]! {
             result.push('  ' + theme.fg(theme.DIM_COLOR, '...'))
         }
         if options.len() == 0 {
-            result.push('  ' + theme.fg(theme.MUTED, 'No matching options'))
+            if overlay.kind == OVERLAY_SESSION {
+                if overlay.named_only {
+                    if overlay.scope == 1 {
+                        result.push('  ' + theme.fg(theme.MUTED, 'No named sessions found. Press Ctrl+N to show all.'))
+                    } else {
+                        result.push('  ' + theme.fg(theme.MUTED, 'No named sessions in current folder. Press Ctrl+N to show all, or Tab to view all.'))
+                    }
+                } else if overlay.scope == 1 {
+                    result.push('  ' + theme.fg(theme.MUTED, 'No sessions found'))
+                } else {
+                    result.push('  ' + theme.fg(theme.MUTED, 'No sessions in current folder. Press Tab to view all.'))
+                }
+            } else {
+                result.push('  ' + theme.fg(theme.MUTED, 'No matching options'))
+            }
         }
     }
     result.push('')
@@ -3105,12 +3132,26 @@ pub fn render_overlay(ref<overlay_t> overlay, int width): [string]! {
 }
 
 #local
-fn filtered_options(ref<overlay_t> overlay): [string] {
+fn filtered_options(string session_dir, ref<overlay_t> overlay): [string] {
     if overlay.kind == OVERLAY_SESSION {
         // Pi's session search: id + name + every message text + cwd, with
         // `re:` regex, quoted phrases and fuzzy tokens; sort_mode 2 ranks
-        // by relevance instead of mtime or name.
-        return session_search.filter_and_sort_sessions(overlay.options, overlay.query, overlay.sort_mode, overlay.named_only)
+        // by relevance instead of mtime or name, and the scope narrows the
+        // merged option list to the current project folder.
+        [string] scoped = []
+        if overlay.scope == 0 {
+            for option in overlay.options {
+                if path.dir(option) == session_dir {
+                    scoped.push(option)
+                }
+            }
+        } else {
+            scoped = overlay.options
+        }
+        if overlay.sort_mode == 3 {
+            return session_search.filter_and_sort_sessions_threaded(scoped, overlay.query, overlay.named_only)
+        }
+        return session_search.filter_and_sort_sessions(scoped, overlay.query, overlay.sort_mode, overlay.named_only)
     }
     [string] result = vec<string>.cap_of(overlay.options.len())
     string query = overlay.query.to_lower()
@@ -3126,6 +3167,78 @@ fn filtered_options(ref<overlay_t> overlay): [string] {
     return result
 }
 
+type session_meta_t = struct {
+    string name
+    string first_message
+    int message_count
+    i64 modified_ms
+}
+
+// Load once and reuse across the display helpers: name, first message,
+// message count and the file modification time Pi shows as session age.
+#local
+fn session_metadata(string file_path): session_meta_t {
+    session_meta_t meta = session_meta_t {}
+    var stat = syscall.stat(file_path) catch error {
+        return meta
+    }
+    meta.modified_ms = stat.mtim.sec * 1000
+    var selected = repository.open(file_path) catch error {
+        return meta
+    }
+    meta.name = selected.get_session_name() catch error {''}
+    var active = selected.active_entries()
+    for entry in active {
+        if entry.kind != session_types.ENTRY_MESSAGE {
+            continue
+        }
+        meta.message_count += 1
+        if meta.first_message == '' {
+            var object = entry.raw as {string:any}
+            if !object.contains('message') || !(object['message'] is {string:any}) {
+                continue
+            }
+            var message = message_json.decode(object['message']) catch error {continue}
+            if message is ref<ai_types.user_message_t> user {
+                meta.first_message = user.content.replace('\n', ' ').trim([' ', '\t'])
+            }
+        }
+    }
+    return meta
+}
+
+// Pi's formatSessionDate: now / 5m / 3h / 2d / 1w / 2mo / 1y.
+#local
+fn format_session_date(int modified_ms): string {
+    int now_ms = time.now().ms_timestamp() as int
+    int diff_ms = now_ms - modified_ms
+    if diff_ms < 0 {
+        diff_ms = 0
+    }
+    int minutes = diff_ms / 60000
+    int hours = diff_ms / 3600000
+    int days = diff_ms / 86400000
+    if minutes < 1 {
+        return 'now'
+    }
+    if minutes < 60 {
+        return fmt.sprintf('%dm', minutes)
+    }
+    if hours < 24 {
+        return fmt.sprintf('%dh', hours)
+    }
+    if days < 7 {
+        return fmt.sprintf('%dd', days)
+    }
+    if days < 30 {
+        return fmt.sprintf('%dw', days / 7)
+    }
+    if days < 365 {
+        return fmt.sprintf('%dmo', days / 30)
+    }
+    return fmt.sprintf('%dy', days / 365)
+}
+
 #local
 fn session_name_for_path(string file_path): string {
     var selected = repository.open(file_path) catch error {return ''}
@@ -3133,31 +3246,68 @@ fn session_name_for_path(string file_path): string {
 }
 
 #local
+// Pi's session row: display name (or first message) with a right-aligned
+// metadata column "{msgCount} {age}" and the working directory when the
+// path column is enabled.
 fn session_option_display(string file_path, bool show_path): string {
+    var meta = session_metadata(file_path)
+    string body = meta.name != '' ? meta.name : meta.first_message
+    if body == '' {
+        body = path.base(file_path)
+    }
+    string right = fmt.sprintf('%d %s', meta.message_count, format_session_date(meta.modified_ms as int))
     if show_path {
-        return shorten_overlay_path(file_path)
+        right = shorten_overlay_path(file_path) + '  ' + right
     }
-    string name = session_name_for_path(file_path)
-    if name != '' {
-        return name
-    }
-    var selected = repository.open(file_path) catch error {return path.base(file_path)}
-    var active = selected.active_entries()
-    for entry in active {
-        if entry.kind != session_types.ENTRY_MESSAGE {continue}
-        if !json_util.is_obj(entry.raw) {continue}
-        var object = entry.raw as {string:any}
-        if !object.contains('message') || !(object['message'] is {string:any}) {continue}
-        var message = message_json.decode(object['message']) catch error {continue}
-        if message is ref<ai_types.user_message_t> user {
-            string preview = user.content.replace('\n', ' ').trim([' ', '\t'])
-            return preview == '' ? path.base(file_path) : preview
-        }
-    }
-    return path.base(file_path)
+    return body + '  ' + theme.fg(theme.DIM_COLOR, right)
 }
 
 #local
+// Pi's threaded tree prefix: │/├─/└─ indentation derived from the sorted
+// option list, where children follow their parent and siblings are adjacent.
+fn session_tree_prefix([string] options, int index): string {
+    if index == 0 {
+        return ''
+    }
+    // Resolve the parent via the header; the option list itself is tree
+    // ordered, so a parent always precedes its children.
+    var selected = repository.open(options[index]) catch error {
+        return ''
+    }
+    string parent = selected.header.parent_session
+    int depth = 0
+    string cursor_path = parent
+    for depth < 16 && cursor_path != '' {
+        int parent_index = -1
+        for candidate, option in options {
+            if candidate < index && option == cursor_path {
+                parent_index = candidate
+                break
+            }
+        }
+        if parent_index < 0 {
+            break
+        }
+        depth += 1
+        var parent_manager = repository.open(cursor_path) catch error {
+            break
+        }
+        cursor_path = parent_manager.header.parent_session
+    }
+    string result = ''
+    for int level = 0; level < depth; level += 1 {
+        result += '│ '
+    }
+    // A child is the last sibling when the following option is not one of
+    // its descendants; approximate with the direct sibling check.
+    if index + 1 < options.len() && options[index + 1] == parent {
+        result += '└─ '
+    } else {
+        result += '├─ '
+    }
+    return theme.fg(theme.MUTED, result)
+}
+
 fn shorten_overlay_path(string value): string {
     string home = syscall.get_env('HOME')
     if home != '' && value.starts_with(home + '/') {
@@ -3310,7 +3460,7 @@ fn view_t.clear_scoped_models(&self, ref<overlay_t> overlay) {
 
 #local
 fn view_t.toggle_scoped_provider(&self, ref<overlay_t> overlay) {
-    var options = filtered_options(overlay)
+    var options = filtered_options(self.runner.repository.session_dir, overlay)
     if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
         return
     }
@@ -3363,7 +3513,7 @@ fn view_t.reorder_scoped_model(&self, ref<overlay_t> overlay, int delta) {
     if !self.scoped_models_active || self.scoped_model_ids.len() == 0 {
         return
     }
-    var options = filtered_options(overlay)
+    var options = filtered_options(self.runner.repository.session_dir, overlay)
     if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
         return
     }

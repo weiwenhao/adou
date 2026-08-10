@@ -94,3 +94,58 @@ test 'filter_and_sort_sessions ranks relevance and respects name filter' {
     assert(none.len() == 0)
     os.rmdir(dir, true)
 }
+
+test 'threaded ordering groups children under their parent session' {
+    string dir = temp_dir()
+    var sessions = path.join(dir, 'sessions')
+    os.mkdirs(sessions, 0o755)
+    // Parent session with a child fork.
+    var parent = repository.create('/tmp/project-p', sessions)
+    parent.append_session_info('parent session')
+    var parent_file = parent.get_session_file()
+    // Fork into a new persisted session to get a parentSessionPath link.
+    var child = parent.fork_at(parent.get_leaf_id()) catch error {
+        assert(false)
+        parent
+    }
+    var child_path = child.get_session_file()
+    var names = os.listdir(sessions) catch error {[]}
+    [string] paths = []
+    for name in names {
+        if name.ends_with('.jsonl') {
+            paths.push(path.join(sessions, name))
+        }
+    }
+    var threaded = session_search.filter_and_sort_sessions_threaded(paths, '', false)
+    // The parent appears before its child (root first).
+    int parent_index = -1
+    int child_index = -1
+    for index, item in threaded {
+        if item == parent_file {
+            parent_index = index
+        }
+        if item == child_path {
+            child_index = index
+        }
+    }
+    assert(parent_index >= 0 && child_index >= 0)
+    assert(parent_index < child_index)
+    os.rmdir(dir, true)
+}
+
+test 'regex queries match against the full search text like Pi' {
+    var manager = repository.create('/tmp/regex-project', path.join(temp_dir(), 'sessions'))
+    manager.append_session_info('regex target')
+    var user = new ai_types.user_message_t(content = 'deploy error 42 occurred')
+    manager.append_message(user)
+    var text = session_search.session_search_text(manager)
+    var parsed = session_search.parse_search_query('re:error [0-9]+')
+    var matched = session_search.match_session(text, parsed)
+    assert(matched[0])
+    var no_match = session_search.parse_search_query('re:nomatch [0-9]+')
+    var rejected = session_search.match_session(text, no_match)
+    assert(!rejected[0])
+    var invalid = session_search.parse_search_query('re:[unclosed')
+    var invalid_match = session_search.match_session(text, invalid)
+    assert(!invalid_match[0])
+}

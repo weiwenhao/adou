@@ -2,8 +2,10 @@ import adou.src.ai.types as ai_types
 import adou.src.session.message_json
 import adou.src.session.repository
 import adou.src.session.types as session_types
+import adou.src.debug
 import adou.src.tui.fuzzy
 import adou.src.json_util
+import fmt
 import syscall
 
 // Pi's session-selector-search.ts: session search over id, name, every
@@ -80,9 +82,16 @@ pub fn session_search_text(ref<repository.manager_t> manager): string {
 // is used for relevance ordering.
 pub fn match_session(string search_text, parsed_query_t parsed): (bool, int) {
     if parsed.regex != '' {
+        // POSIX extended regex via the native bridge (libc regcomp/regexec,
+        // case-insensitive); Pi uses the JS RegExp semantics.
+        i32 raw_result = regex_match(parsed.regex.to_cstr() as anyptr, search_text.to_cstr() as anyptr)
+        int result = raw_result as int
+        if result <= 0 {
+            return (false, 0)
+        }
         int index = search_text.to_lower().find(parsed.regex.to_lower())
         if index < 0 {
-            return (false, 0)
+            index = 0
         }
         return (true, index)
     }
@@ -248,9 +257,95 @@ fn session_name_for_path(string file_path): string {
     return selected.get_session_name() catch error {''}
 }
 
+#linkid adou_regex_match
+fn regex_match(anyptr pattern, anyptr text): i32
+
+
 fn file_modified_ms(string file_path): int {
     var stat = syscall.stat(file_path) catch error {
         return 0
     }
     return stat.mtim.sec * 1000
+}
+
+// Pi's threaded sort mode: sessions are ordered as a tree rooted at
+// parent-less sessions, children grouped under their parentSessionPath,
+// sorted by latest activity in each subtree.  Returns the paths in tree
+// order so the caller can render indentation.
+pub fn filter_and_sort_sessions_threaded([string] paths, string query, bool name_only): [string] {
+    [thread_node_t] nodes = []
+    for file_path in paths {
+        if name_only && session_name_for_path(file_path) == '' {
+            continue
+        }
+        var manager = repository.open(file_path) catch error {
+            continue
+        }
+        var searchable = session_search_text(manager)
+        var result = match_session(searchable, parse_search_query(query))
+        if !result[0] {
+            continue
+        }
+        nodes.push(thread_node_t {path: file_path, parent: manager.header.parent_session, modified: file_modified_ms(file_path)})
+    }
+    // Roots: nodes whose parent path is not among the node set.
+    [thread_node_t] roots = []
+    for node in nodes {
+        bool has_parent_here = false
+        for other in nodes {
+            if other.path == node.parent {
+                has_parent_here = true
+                break
+            }
+        }
+        if !has_parent_here {
+            roots.push(node)
+        }
+    }
+    sort_nodes(roots, nodes)
+    [string] result = []
+    for root in roots {
+        var subtree = append_subtree(root, nodes)
+        for item in subtree {
+            result.push(item)
+        }
+    }
+    return result
+}
+
+type thread_node_t = struct {
+    string path
+    string parent
+    int modified
+}
+
+fn sort_nodes([thread_node_t] roots, [thread_node_t] all) {
+    for int index = 1; index < roots.len(); index += 1 {
+        var current = roots[index]
+        int cursor = index
+        for cursor > 0 && roots[cursor - 1].modified < current.modified {
+            roots[cursor] = roots[cursor - 1]
+            cursor -= 1
+        }
+        roots[cursor] = current
+    }
+}
+
+fn append_subtree(thread_node_t root, [thread_node_t] all): [string] {
+    [string] result = []
+    result.push(root.path)
+    [thread_node_t] children = []
+    for node in all {
+        if node.parent == root.path {
+            children.push(node)
+        }
+    }
+    sort_nodes(children, all)
+    for child in children {
+        var subtree = append_subtree(child, all)
+        for item in subtree {
+            result.push(item)
+        }
+    }
+    return result
 }
