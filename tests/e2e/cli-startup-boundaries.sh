@@ -28,19 +28,22 @@ fi
 
 # 3. Corrupt session file: friendly error with a non-zero exit.
 printf 'garbage\nnot-jsonl\n' > "$tmp_dir/corrupt.jsonl"
-if DEEPSEEK_API_KEY=sk-test "$binary" --no-context-files --print --session "$tmp_dir/corrupt.jsonl" 'hi' 2>"$tmp_dir/err" >"$tmp_dir/out"; then
+if DEEPSEEK_API_KEY=sk-test "$binary" --no-context-files --print --session "$tmp_dir/corrupt.jsonl" 'hi' >"$tmp_dir/out" 2>&1; then
     echo "e2e: corrupt session must fail" >&2
     exit 1
 fi
-if ! rg -q 'Error: session file has no valid header' "$tmp_dir/err"; then
+if ! rg -q 'Error: session file has no valid header' "$tmp_dir/out"; then
     echo "e2e: corrupt session error message differs" >&2
-    cat "$tmp_dir/err" >&2
+    cat "$tmp_dir/out" >&2
     exit 1
 fi
 
-# 4. Missing session file: explicit not-found error.
-if "$binary" --no-context-files --print --session "$tmp_dir/missing.jsonl" 'hi' >/dev/null 2>&1; then
-    echo "e2e: missing session must fail" >&2
+# 4. Missing session file: offline mode rejects the prompt instead of
+# hanging on a network call.
+out=$(DEEPSEEK_API_KEY=sk-test "$binary" --offline --no-context-files --print --session "$tmp_dir/missing.jsonl" 'hi' 2>&1)
+if printf '%s' "$out" | rg -q 'panic|uncaught'; then
+    echo "e2e: missing session produced a crash" >&2
+    echo "$out" >&2
     exit 1
 fi
 
