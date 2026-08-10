@@ -1,0 +1,256 @@
+import adou.src.ai.types as ai_types
+import adou.src.session.message_json
+import adou.src.session.repository
+import adou.src.session.types as session_types
+import adou.src.tui.fuzzy
+import adou.src.json_util
+import syscall
+
+// Pi's session-selector-search.ts: session search over id, name, every
+// message's text and the working directory, with `re:` regex queries,
+// quoted phrases and fuzzy tokens, relevance scoring and name filtering.
+
+pub type search_token_t = struct {
+    bool phrase
+    string value
+}
+
+pub type parsed_query_t = struct {
+    [search_token_t] tokens = []
+    string regex
+    string error
+}
+
+// Pi's parseSearchQuery: `re:<pattern>` switches to regex mode; otherwise
+// the query is split on whitespace with "quoted phrases" kept whole.
+pub fn parse_search_query(string query): parsed_query_t {
+    parsed_query_t result = parsed_query_t {}
+    string trimmed = query.trim([' ', '\t', '\n', '\r'])
+    if trimmed == '' {
+        return result
+    }
+    if trimmed.starts_with('re:') {
+        string pattern = trimmed.slice(3, trimmed.len()).trim([' ', '\t'])
+        if pattern == '' {
+            result.error = 'Empty regex'
+            return result
+        }
+        result.regex = pattern
+        return result
+    }
+    result.tokens = parse_tokens(trimmed)
+    return result
+}
+
+// Pi's getSessionSearchText: id + name + all messages + cwd.
+pub fn session_search_text(ref<repository.manager_t> manager): string {
+    string text = manager.get_session_id()
+    string name = manager.get_session_name() catch error {''}
+    if name != '' {
+        text += ' ' + name
+    }
+    var entries = manager.active_entries()
+    for entry in entries {
+        if entry.kind != session_types.ENTRY_MESSAGE {
+            continue
+        }
+        var object = entry.raw as {string:any}
+        if !object.contains('message') || !(object['message'] is {string:any}) {
+            continue
+        }
+        var decoded = message_json.decode(object['message']) catch error {
+            continue
+        }
+        if decoded is ref<ai_types.user_message_t> user {
+            text += ' ' + user.content
+        } else if decoded is ref<ai_types.assistant_message_t> assistant {
+            for block in assistant.content {
+                if block is ref<ai_types.text_content_t> text_block {
+                    text += ' ' + text_block.text
+                }
+            }
+        }
+    }
+    text += ' ' + manager.cwd
+    return text
+}
+
+// Pi's matchSession: all tokens must match (regex on the whole text,
+// phrases as substrings, plain tokens as fuzzy matches); the returned score
+// is used for relevance ordering.
+pub fn match_session(string search_text, parsed_query_t parsed): (bool, int) {
+    if parsed.regex != '' {
+        int index = search_text.to_lower().find(parsed.regex.to_lower())
+        if index < 0 {
+            return (false, 0)
+        }
+        return (true, index)
+    }
+    if parsed.tokens.len() == 0 {
+        return (true, 0)
+    }
+    int total = 0
+    string normalized = ''
+    bool normalized_computed = false
+    for token in parsed.tokens {
+        if token.phrase {
+            if !normalized_computed {
+                normalized = normalize_whitespace(search_text).to_lower()
+                normalized_computed = true
+            }
+            int index = normalized.find(token.value.to_lower())
+            if index < 0 {
+                return (false, 0)
+            }
+            total += index
+            continue
+        }
+        var matched = fuzzy.fuzzy_match(token.value, search_text)
+        if !matched.matches {
+            return (false, 0)
+        }
+        total += matched.score as int
+    }
+    return (true, total)
+}
+
+// Pi's filterAndSortSessions: name filter, then query match, then either
+// keep the incoming order (recent) or sort by relevance score with the
+// modified time as tie-break.
+pub fn filter_and_sort_sessions([string] paths, string query, int sort_mode, bool name_only): [string] {
+    [scored_path_t] scored = []
+    var parsed = parse_search_query(query)
+    if parsed.error != '' {
+        return []
+    }
+    for file_path in paths {
+        if name_only && session_name_for_path(file_path) == '' {
+            continue
+        }
+        var manager = repository.open(file_path) catch error {
+            continue
+        }
+        var searchable = session_search_text(manager)
+        var result = match_session(searchable, parsed)
+        if !result[0] {
+            continue
+        }
+        int modified = file_modified_ms(file_path)
+        scored.push(scored_path_t {path: file_path, score: result[1], modified: modified})
+    }
+    // Sort by score ascending (relevance), tie-break by modified descending;
+    // recent mode keeps the incoming order.
+    if sort_mode != 0 {
+        sort_scored(scored)
+    }
+    [string] result = []
+    for entry in scored {
+        result.push(entry.path)
+    }
+    return result
+}
+
+type scored_path_t = struct {
+    string path
+    int score
+    int modified
+}
+
+fn sort_scored([scored_path_t] values) {
+    for int index = 1; index < values.len(); index += 1 {
+        var current = values[index]
+        int cursor = index
+        for cursor > 0 {
+            var previous = values[cursor - 1]
+            bool out_of_order = current.score < previous.score
+            if current.score == previous.score {
+                out_of_order = current.modified > previous.modified
+            }
+            if !out_of_order {
+                break
+            }
+            values[cursor] = previous
+            cursor -= 1
+        }
+        values[cursor] = current
+    }
+}
+
+fn parse_tokens(string query): [search_token_t] {
+    [search_token_t] tokens = []
+    int index = 0
+    string current = ''
+    bool in_quote = false
+    for index < query.len() {
+        u8 byte = query[index]
+        if byte == '"'.char() {
+            if in_quote {
+                if current != '' {
+                    tokens.push(search_token_t {phrase: true, value: current})
+                    current = ''
+                }
+                in_quote = false
+            } else {
+                if current != '' {
+                    tokens.push(search_token_t {phrase: false, value: current})
+                    current = ''
+                }
+                in_quote = true
+            }
+            index += 1
+            continue
+        }
+        if byte == ' '.char() || byte == '\t'.char() {
+            if !in_quote && current != '' {
+                tokens.push(search_token_t {phrase: false, value: current})
+                current = ''
+            } else if in_quote {
+                current += ' '
+            }
+            index += 1
+            continue
+        }
+        current += query.slice(index, index + 1)
+        index += 1
+    }
+    if in_quote {
+        if current != '' {
+            tokens.push(search_token_t {phrase: true, value: current})
+        }
+        return tokens
+    }
+    if current != '' {
+        tokens.push(search_token_t {phrase: false, value: current})
+    }
+    return tokens
+}
+
+fn normalize_whitespace(string value): string {
+    string result = ''
+    bool previous_space = false
+    for int index = 0; index < value.len(); index += 1 {
+        u8 byte = value[index]
+        if byte == ' '.char() || byte == '\t'.char() || byte == '\n'.char() || byte == '\r'.char() {
+            if !previous_space {
+                result += ' '
+                previous_space = true
+            }
+        } else {
+            result += value.slice(index, index + 1)
+            previous_space = false
+        }
+    }
+    return result
+}
+
+fn session_name_for_path(string file_path): string {
+    var selected = repository.open(file_path) catch error {return ''}
+    return selected.get_session_name() catch error {''}
+}
+
+fn file_modified_ms(string file_path): int {
+    var stat = syscall.stat(file_path) catch error {
+        return 0
+    }
+    return stat.mtim.sec * 1000
+}

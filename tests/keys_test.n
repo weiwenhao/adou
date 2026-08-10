@@ -43,3 +43,9 @@ test 'mode-aware enter and aliases remain compatible' {
     assert(keys.matches('\n', 'shift+enter'))
     assert(keys.matches('\x1b[6~', 'pagedown'))
 }
+
+test 'ctrl+d resolves like other ctrl characters' {
+    assert(keys.parse_key('\x04') == 'ctrl+d')
+    assert(keys.parse_key('\x15') == 'ctrl+u')
+    assert(keys.parse_key('\x0b') == 'ctrl+k')
+}

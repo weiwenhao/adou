@@ -30,6 +30,8 @@ import adou.src.tui.editor
 import adou.src.tui.input_buffer
 import adou.src.tui.keys
 import adou.src.tui.path_completion
+import adou.src.tui.session_actions
+import adou.src.tui.session_search
 import adou.src.tui.renderer
 import adou.src.tui.text_utils
 import adou.src.tui.theme
@@ -2363,8 +2365,11 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             return
         }
         if key == 'ctrl+s' {
-            overlay.sort_mode = (overlay.sort_mode + 1) % 2
-            overlay.options = overlay.sort_mode == 0 ? sort_session_paths(overlay.options) : sort_session_paths_alpha(overlay.options)
+            // Pi cycles recent → alpha → relevance; the filtered list is
+            // re-derived on render, so switching modes just changes how the
+            // query results are ordered.
+            overlay.sort_mode = (overlay.sort_mode + 1) % 3
+            overlay.options = overlay.sort_mode == 1 ? sort_session_paths_alpha(overlay.options) : sort_session_paths(overlay.options)
             overlay.selected = 0
             self.redraw()
             return
@@ -2510,13 +2515,17 @@ fn view_t.confirm_delete_session(&self, ref<overlay_t> overlay) {
         self.redraw()
         return
     }
-    os.remove(target) catch error {
+    // Pi tries the `trash` CLI first and falls back to a permanent unlink;
+    // the status message reflects which method actually ran.
+    var result = session_actions.delete_session_file(target, self.runner.repository.cwd)
+    if !result[0] {
         overlay.confirming_delete = false
         overlay.delete_path = ''
-        self.chat.error_message = 'Could not delete session: ' + error.msg()
+        self.chat.error_message = result[1]
         self.redraw()
         return
     }
+    string message = result[1]
     [string] remaining = vec<string>.cap_of(overlay.options.len())
     for option in overlay.options {
         if option != target {remaining.push(option)}
@@ -2525,7 +2534,7 @@ fn view_t.confirm_delete_session(&self, ref<overlay_t> overlay) {
     overlay.confirming_delete = false
     overlay.delete_path = ''
     overlay.selected = 0
-    self.chat.status = 'Deleted session ' + path.base(target)
+    self.chat.status = message
     if overlay.options.len() == 0 {
         self.overlay = null
         if self.startup_session_picker {
@@ -3097,6 +3106,12 @@ pub fn render_overlay(ref<overlay_t> overlay, int width): [string]! {
 
 #local
 fn filtered_options(ref<overlay_t> overlay): [string] {
+    if overlay.kind == OVERLAY_SESSION {
+        // Pi's session search: id + name + every message text + cwd, with
+        // `re:` regex, quoted phrases and fuzzy tokens; sort_mode 2 ranks
+        // by relevance instead of mtime or name.
+        return session_search.filter_and_sort_sessions(overlay.options, overlay.query, overlay.sort_mode, overlay.named_only)
+    }
     [string] result = vec<string>.cap_of(overlay.options.len())
     string query = overlay.query.to_lower()
     for option in overlay.options {

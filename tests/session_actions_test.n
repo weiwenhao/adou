@@ -1,0 +1,29 @@
+import adou.src.tui.session_actions
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+test 'delete falls back to unlink and reports the method like Pi' {
+    string dir = path.join('/tmp', 'adou-session-delete-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    os.mkdirs(dir, 0o755)
+    string file_path = path.join(dir, 'session.jsonl')
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    file.write('{}\n' as [u8])
+    file.close()
+    // No `trash` CLI in the e2e environment: the unlink fallback runs.
+    var result = session_actions.delete_session_file(file_path, '/tmp')
+    assert(result[0])
+    assert(result[1] == 'Session deleted')
+    assert(!path.exists(file_path))
+    os.rmdir(dir, true)
+}
+
+test 'a missing file counts as already deleted like Pi' {
+    // Pi treats "file gone afterwards" as a successful trash even when the
+    // CLI is absent, so a missing target reports success.
+    var result = session_actions.delete_session_file('/tmp/does-not-exist-xyz.jsonl', '/tmp')
+    assert(result[0])
+}

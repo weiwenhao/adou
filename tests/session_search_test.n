@@ -1,0 +1,96 @@
+import adou.src.ai.types as ai_types
+import adou.src.session.repository
+import adou.src.session.types as session_types
+import adou.src.tui.session_search
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+fn temp_dir(): string {
+    return path.join('/tmp', 'adou-session-search-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+}
+
+pub fn write_file(string file_path, string content): void! {
+    os.mkdirs(path.dir(file_path), 0o755)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    file.write(content as [u8])
+    file.close()
+}
+
+test 'parse_search_query handles tokens phrases and regex like Pi' {
+    var tokens = session_search.parse_search_query('hello world')
+    assert(tokens.tokens.len() == 2)
+    assert(!tokens.tokens[0].phrase)
+    var phrase = session_search.parse_search_query('"exact phrase" tail')
+    assert(phrase.tokens.len() == 2)
+    assert(phrase.tokens[0].phrase)
+    assert(phrase.tokens[0].value == 'exact phrase')
+    var regex = session_search.parse_search_query('re:error')
+    assert(regex.regex == 'error')
+    var empty = session_search.parse_search_query('re:')
+    assert(empty.error == 'Empty regex')
+}
+
+test 'match_session scores phrases and fuzzy tokens like Pi' {
+    string text = 'session-1 my name hello world some message /tmp/project'
+    var tokens = session_search.parse_search_query('hello world')
+    var matched = session_search.match_session(text, tokens)
+    assert(matched[0])
+    var phrase = session_search.parse_search_query('"some message"')
+    var phrase_match = session_search.match_session(text, phrase)
+    assert(phrase_match[0])
+    var missing = session_search.parse_search_query('absent')
+    var no_match = session_search.match_session(text, missing)
+    assert(!no_match[0])
+}
+
+test 'search text covers name messages and cwd like Pi' {
+    var manager = repository.create('/tmp/session-search-project', path.join(temp_dir(), 'sessions'))
+    manager.append_session_info('searchable-name')
+    var user = new ai_types.user_message_t(content = 'find this phrase inside')
+    manager.append_message(user)
+    var searchable = session_search.session_search_text(manager)
+    assert(searchable.contains('searchable-name'))
+    assert(searchable.contains('find this phrase inside'))
+    assert(searchable.contains('/tmp/session-search-project'))
+}
+
+test 'filter_and_sort_sessions ranks relevance and respects name filter' {
+    string dir = temp_dir()
+    var sessions = path.join(dir, 'sessions')
+    os.mkdirs(sessions, 0o755)
+    var first = repository.create('/tmp/project-a', sessions)
+    first.append_session_info('alpha session')
+    var user_a = new ai_types.user_message_t(content = 'deploy the gateway')
+    first.append_message(user_a)
+    var second = repository.create('/tmp/project-b', sessions)
+    second.append_session_info('beta session')
+    var user_b = new ai_types.user_message_t(content = 'refactor the parser')
+    second.append_message(user_b)
+    var third = repository.create('/tmp/project-c', sessions)
+    var user_c = new ai_types.user_message_t(content = 'alpha deploy check')
+    third.append_message(user_c)
+    var names = os.listdir(sessions) catch error {[]}
+    [string] paths = []
+    for name in names {
+        if name.ends_with('.jsonl') {
+            paths.push(path.join(sessions, name))
+        }
+    }
+    // Search by message text across sessions.
+    var deploy = session_search.filter_and_sort_sessions(paths, 'deploy', 2, false)
+    assert(deploy.len() >= 1)
+    // Name filter drops the unnamed session.
+    var named = session_search.filter_and_sort_sessions(paths, '', 0, true)
+    assert(named.len() == 2)
+    // Empty query keeps everything.
+    var all = session_search.filter_and_sort_sessions(paths, '', 0, false)
+    assert(all.len() == 3)
+    // A query that matches no session yields an empty list.
+    var none = session_search.filter_and_sort_sessions(paths, 'zzz-absent', 2, false)
+    assert(none.len() == 0)
+    os.rmdir(dir, true)
+}
