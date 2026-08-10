@@ -117,14 +117,6 @@ pub fn run(): void! {
         syscall.exit(1) catch exit_error {}
         return
     }
-    if config.offline && config.initial_messages.len() > 0 {
-        if config.mode == 'json' {
-            println(json_error('Offline mode cannot send prompts to a provider'))
-        } else {
-            println('Offline mode cannot send prompts to a provider')
-        }
-        return
-    }
     if arguments.file_args.len() > 0 {
         string file_text = load_file_arguments(arguments.file_args, cwd)
         if file_text != '' {
@@ -144,12 +136,25 @@ pub fn run(): void! {
     // that case: on some Nature runtimes a closed non-TTY descriptor reports
     // a full zero-filled buffer instead of a zero-byte read, which would
     // silently prepend thousands of NULs to the real prompt.
+    // A positional prompt is authoritative for the same reason: probing stdin
+    // would consume it before the resolver gets a chance to decode it, and a
+    // closed non-TTY descriptor can report a full zero-filled buffer.
     if !stdin_tty && config.mode != 'rpc' && stdin_can_contain_prompt() {
         string piped = read_piped_stdin()
         if piped != '' {
             config.initial_messages = args.prepend_initial_text(config.initial_messages, piped.trim([' ', '\t', '\r', '\n']))
             config.print_mode = true
         }
+    }
+    // Piped stdin and @file prompts join initial_messages after the early
+    // startup checks, so the offline guard must run here to cover them.
+    if config.offline && config.initial_messages.len() > 0 {
+        if config.mode == 'json' {
+            println(json_error('Offline mode cannot send prompts to a provider'))
+        } else {
+            println('Offline mode cannot send prompts to a provider')
+        }
+        return
     }
     if config.initial_messages.len() == 0 && !interactive && !config.print_mode && config.mode != 'rpc' {
         println('adou requires a TTY for interactive mode; pass a prompt argument for one-shot mode')
@@ -1572,11 +1577,24 @@ fn load_file_arguments([string] file_args, string cwd): string! {
     return result
 }
 
+
+#linkid adou_stdin_peek
+fn stdin_peek(int fd): int
+
 #local
 fn read_piped_stdin(): string! {
     var input = fs.stdin()
     [u8] output = vec<u8>.new(0, 0)
     for true {
+        // Poll before every read: under `/bin/sh` command substitution the
+        // launcher keeps the process stdin pipe open with no writer closing
+        // it, and a blocking read would wait for EOF forever.  A zero- or
+        // negative-timeout poll tells us whether data is present or the peer
+        // closed; when neither is true we must stop instead of blocking.
+        int ready = stdin_peek(term.STDIN)
+        if ready <= 0 {
+            break
+        }
         var buffer = vec<u8>.new(0, 4096)
         int count = input.read(buffer)
         if count <= 0 {
