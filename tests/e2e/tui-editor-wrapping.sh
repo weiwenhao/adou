@@ -32,6 +32,9 @@ env.update(
     }
 )
 
+os.makedirs(os.path.join(root, "agent"), exist_ok=True)
+open(os.path.join(root, "agent", ".adou-setup"), "w").close()
+
 pid, fd = pty.fork()
 if pid == 0:
     os.execvpe(

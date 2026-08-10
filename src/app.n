@@ -348,6 +348,11 @@ pub fn run(): void! {
         view.startup_session_picker = true
         view.show_session_overlay()
     }
+    // Pi's first-time setup: a theme + telemetry welcome shown once until
+    // the marker below the agent directory exists.
+    if !path_utils.exists(path.join(config_paths.agent_dir(), '.adou-setup')) && config.initial_messages.len() == 0 {
+        view.show_setup_overlay()
+    }
     if config.initial_messages.len() > 0 {
         view.pending_initial_messages = config.initial_messages
         view.active_stream = view.start_next_initial_prompt()

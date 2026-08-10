@@ -3,6 +3,7 @@ import adou.src.agent.session_stream
 import adou.src.agent.types as agent_types
 import adou.src.ai.provider
 import adou.src.ai.abort
+import adou.src.ai.attribution
 import adou.src.ai.types as ai_types
 import adou.src.config.auth
 import adou.src.config.models
@@ -84,6 +85,7 @@ pub const OVERLAY_MODEL = 3
 pub const OVERLAY_LOGOUT = 4
 pub const OVERLAY_SETTINGS = 5
 pub const OVERLAY_SETTINGS_SUBMENU = 18
+pub const OVERLAY_SETUP = 19
 pub const OVERLAY_HELP = 6
 pub const OVERLAY_PROVIDER = 7
 pub const OVERLAY_SESSION = 8
@@ -2169,6 +2171,46 @@ fn view_t.handle_settings_submenu(&self, ref<overlay_t> overlay) {
     self.redraw()
 }
 
+// Pi's first-time setup: a two-choice welcome (theme + telemetry opt-in)
+// that completes by writing a marker file below the agent directory.
+pub fn view_t.show_setup_overlay(&self) {
+    [string] options = [
+        'Theme: ' + theme.variant(),
+        'Telemetry: ' + (attribution.is_install_telemetry_enabled() ? 'on' : 'off'),
+        'Continue',
+    ]
+    self.overlay = new overlay_t(kind = OVERLAY_SETUP, title = 'Welcome to Adou', options = options)
+    self.redraw()
+}
+
+fn view_t.complete_setup(&self) {
+    string marker = path.join(paths.agent_dir(), '.adou-setup')
+    os.mkdirs(paths.agent_dir(), 0o700) catch error {
+        self.chat.error_message = 'Could not save setup: ' + error.msg()
+        self.redraw()
+        return
+    }
+    var file = fs.open(marker, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600) catch error {
+        self.chat.error_message = 'Could not save setup: ' + error.msg()
+        self.redraw()
+        return
+    }
+    file.write(('theme=' + theme.variant() + '\ntelemetry=' + (attribution.is_install_telemetry_enabled() ? 'on' : 'off') + '\n') as [u8]) catch error {
+        file.close()
+        self.chat.error_message = 'Could not save setup: ' + error.msg()
+        self.redraw()
+        return
+    }
+    file.close()
+    self.overlay = null
+    self.chat.status = 'Setup complete. Welcome to Adou!'
+    self.redraw()
+}
+
+pub fn setup_marker_path(): string {
+    return path.join(paths.agent_dir(), '.adou-setup')
+}
+
 fn view_t.show_help_overlay(&self) {
     [string] options = [
         '/model        Select model',
@@ -2295,6 +2337,34 @@ pub fn view_t.show_hotkeys_overlay(&self) {
 }
 
 pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input) {
+    if overlay.kind == OVERLAY_SETUP && !input.paste {
+        string key = keys.parse_key(input.data)
+        if key == 'up' {
+            overlay.selected = overlay.selected == 0 ? overlay.options.len() - 1 : overlay.selected - 1
+            self.redraw()
+            return
+        }
+        if key == 'down' {
+            overlay.selected = overlay.selected == overlay.options.len() - 1 ? 0 : overlay.selected + 1
+            self.redraw()
+            return
+        }
+        if key == 'enter' {
+            if overlay.selected == 0 {
+                theme.set_variant(theme.variant() == 'light' ? 'dark' : 'light')
+                overlay.options[0] = 'Theme: ' + theme.variant()
+                self.redraw()
+            } else if overlay.selected == 1 {
+                syscall.set_env('PI_TELEMETRY', attribution.is_install_telemetry_enabled() ? '' : '1') catch error {}
+                overlay.options[1] = 'Telemetry: ' + (attribution.is_install_telemetry_enabled() ? 'on' : 'off')
+                self.redraw()
+            } else {
+                self.complete_setup()
+            }
+            return
+        }
+        return
+    }
     if overlay.kind == OVERLAY_SETTINGS_SUBMENU && !input.paste {
         string key = keys.parse_key(input.data)
         if key == 'enter' {

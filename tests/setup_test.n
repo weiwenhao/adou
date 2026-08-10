@@ -1,0 +1,25 @@
+import adou.src.ai.attribution
+import adou.src.tui.session_view
+import fmt
+import time
+import adou.src.tui.theme
+import fs
+import os
+import path
+import syscall
+
+test 'setup marker path lives below the agent directory' {
+    string dir = path.join('/tmp', 'adou-setup-test-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    syscall.set_env('PI_CODING_AGENT_DIR', dir)
+    string marker = session_view.setup_marker_path()
+    assert(marker == path.join(dir, '.adou-setup'))
+    syscall.set_env('PI_CODING_AGENT_DIR', '')
+}
+
+test 'telemetry opt-in follows the PI_TELEMETRY env like Pi' {
+    syscall.set_env('PI_TELEMETRY', '')
+    assert(!attribution.is_install_telemetry_enabled())
+    syscall.set_env('PI_TELEMETRY', '1')
+    assert(attribution.is_install_telemetry_enabled())
+    syscall.set_env('PI_TELEMETRY', '')
+}
