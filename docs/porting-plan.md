@@ -17,7 +17,7 @@
 | Phase 2：Agent harness | 已完成 | agent loop、工具、memory repo、shell 捕获、取消和 tool context 已覆盖 |
 | Phase 3：coding-agent core | 已完成（排除扩展） | session、compaction、配置、skills、prompts、模型目录、诊断与导出已覆盖 |
 | Phase 4：TUI 基础 | 已完成 | renderer、editor、autocomplete、fuzzy、路径补全、markdown、terminal image 逻辑已覆盖 |
-| Phase 5：Interactive UI | 进行中 | 39 组件审计完成；session-selector/visual-truncate/bash-execution/model-selector/scoped-models-selector 已收口；未关闭：settings/config selector、diff 着色、tree 搜索/过滤/折叠、first-time setup、theme selector、countdown timer |
+| Phase 5：Interactive UI | 进行中 | 39 组件审计完成；除 config-selector（settings 子菜单已并入）外全部非排除项已收口：settings 子菜单/theme 变体/diff 着色/tree 过滤折叠/first-time setup/countdown timer；剩余：config-selector 独立面与完成标准中的 settings 持久化 PTY 场景 |
 | Phase 6：CLI | 部分完成 | 主参数和启动路径已具备，待逐文件差分和边界 e2e |
 | Phase 7：storage + server | 未开始 | 当前使用 JSONL repository 与进程内 RPC；尚无 SQLite/IPC server |
 | Phase 8：evals | 未开始 | 尚未移植 pi-harness/smoke.eval |
