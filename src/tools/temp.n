@@ -13,7 +13,7 @@ pub fn temp_dir(): string {
     if configured == '' {
         return '/tmp'
     }
-    while configured.ends_with('/') {
+    for configured.ends_with('/') {
         configured = configured.slice(0, configured.len() - 1)
     }
     return configured
