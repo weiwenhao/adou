@@ -79,6 +79,8 @@
 
 已实现批次（2026-08-10）：bash 完成态输出管理——render_bash_lines 接入 tool_output_expanded 折叠（视觉行末 20 行 + "N more lines, press Ctrl+O to expand"）、bash.truncated/full_output_path 渲染 "Output truncated. Full output: <path>"、退出码短格式 "(exit N)"（错误色）、活动 bash 视觉行截断 + 跳过计数、chat status 行不再重复 echo 退出码。新增 text_utils.truncate_visual_lines（Pi visual-truncate 语义）与 PTY e2e tui-bash-output.sh。
 
+已实现批次（2026-08-10）：session selector/resume 主路径——session_search.n（Pi session-selector-search 对齐：搜索文本覆盖 id/名称/全部消息文本/cwd、re: 正则、引号短语、fuzzy token、relevance 排序 + recent 模式保序 + named 过滤）；OVERLAY_SESSION 搜索/排序接入（ctrl+s 循环 recent→alpha→relevance）；session_actions.delete_session_file（trash CLI 优先、unlink 回退、按实际方法报告状态，对齐 Pi deleteSessionFile）；单测 session_search 4/4、session_actions 2/2；PTY e2e tui-session-selector.sh（启动 picker 列出 fixture 会话、消息文本搜索过滤、空结果空态、escape 取消、终端恢复退出）。PTY 下删除确认渲染与差分渲染器存在竞态（快速脚本输入下 confirming UI 偶发不输出），删除闭环由单测覆盖并记录为已知 PTY 限制。
+
 接下来按以下顺序收口：
 
 1. 建立 `modes/interactive` 逐文件矩阵，将每个上游组件标为“等价实现 / 合并实现 / 排除 / 缺失”，避免用 `session_view.n` 文件大小代替行为验收。
@@ -125,4 +127,4 @@ Phase 8 完成标准：harness 可重复运行 smoke 集合，并输出稳定的
 4. 先运行 `make build`，再串行运行受影响的单文件 Nature 测试和 e2e。
 5. 不并发运行 Nature、不使用 `make -j`、不运行 `nature fmt`；除非明确需要，不运行约两小时的完整 `make test`。
 
-当前测试库存为 132 个 Nature 单元测试文件和 33 个 e2e 脚本；这只是覆盖资产数量，不代表本次快照已重跑全量测试。最新可复核的模块证据维护在 `docs/pi-core-module-map.md`。
+当前测试库存为 134 个 Nature 单元测试文件和 35 个 e2e 脚本（新增 session_search/session_actions 单测与 tui-session-selector/tui-bash-output/tui-editor-wrapping/tui-auth-overlay 等 PTY e2e）；这只是覆盖资产数量，不代表本次快照已重跑全量测试。最新可复核的模块证据维护在 `docs/pi-core-module-map.md`。
