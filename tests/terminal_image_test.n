@@ -99,15 +99,60 @@ test 'gif and webp dimensions like Pi' {
     }
     [u8] webp = []
     webp.append('RIFF' as [u8])
-    for int index = 0; index < 22; index += 1 {
+    webp.append([36, 0, 0, 0])         // RIFF chunk size
+    webp.append('WEBP' as [u8])
+    webp.append('VP8X' as [u8])
+    for int index = 0; index < 8; index += 1 {
         webp.push(0)
     }
-    webp.append([7, 0, 9, 0])          // width 7, height 9 at 26/28
+    webp.append([6, 0, 0, 8, 0, 0])    // canvas width 6, height 8 at 24/27
     var webp_dims = terminal_image.get_webp_dimensions(base64_of(webp))
     if webp_dims is terminal_image.image_dimensions_t parsed {
+        // Pi adds 1 to the zero-based canvas bytes.
         assert(parsed.width_px == 7)
         assert(parsed.height_px == 9)
     } else {
         assert(false)
     }
+}
+
+test 'cell dimensions and aspect-preserving rows follow Pi' {
+    var cell = terminal_image.get_cell_dimensions()
+    assert(cell.width_px == 9 && cell.height_px == 18)
+    terminal_image.set_cell_dimensions(terminal_image.cell_dimensions_t {width_px: 10, height_px: 20})
+    var updated = terminal_image.get_cell_dimensions()
+    assert(updated.width_px == 10)
+    terminal_image.set_cell_dimensions(cell)
+    // 800x400 px image at 80 columns: rows preserve the aspect ratio.
+    var rows = terminal_image.calculate_image_rows(terminal_image.image_dimensions_t {width_px: 800, height_px: 400}, 80, cell)
+    assert(rows == 20)
+    // A height cap overrides the aspect-ratio rows.
+    var capped = terminal_image.calculate_image_cell_size(terminal_image.image_dimensions_t {width_px: 800, height_px: 400}, 80, 10, cell)
+    assert(capped[1] == 10)
+}
+
+test 'capabilities cache resets and overrides like Pi' {
+    terminal_image.reset_capabilities_cache()
+    terminal_image.set_capabilities('kitty', true, true)
+    var caps = terminal_image.detect_capabilities()
+    assert(caps[0] == 'kitty' && caps[1] && caps[2])
+    terminal_image.reset_capabilities_cache()
+}
+
+test 'image line detection and hyperlink construction like Pi' {
+    assert(terminal_image.is_image_line('\x1b_Gf=1;a=1;hello\x1b\\'))
+    assert(terminal_image.is_image_line('\x1b]1337;File=name=1;inline=1:\x07'))
+    assert(!terminal_image.is_image_line('plain text'))
+    string link = terminal_image.hyperlink('docs', 'https://example.com')
+    assert(link.contains('\x1b]8;;https://example.com'))
+    assert(link.contains('docs'))
+}
+
+test 'gif signature and webp variants are validated like Pi' {
+    // Invalid GIF signature is rejected.
+    var bad = terminal_image.get_gif_dimensions('AAAGIF99aAA==')
+    assert(bad is null)
+    // A minimal webp header without RIFF is rejected.
+    var not_webp = terminal_image.get_webp_dimensions('AAAA')
+    assert(not_webp is null)
 }

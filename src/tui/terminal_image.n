@@ -2,6 +2,7 @@ import adou.src.tools.command
 import adou.src.tools.image_detect
 import base64
 import fmt
+import libc
 import strings
 import syscall
 import time
@@ -20,7 +21,37 @@ pub type cell_dimensions_t = struct {
     int height_px
 }
 
+// Capabilities are probed once per process (Pi caches them too); tests can
+// reset or override the cached result.
 pub fn detect_capabilities(): (string, bool, bool) {
+    if capabilities_cached {
+        return (cached_images, cached_true_color, cached_hyperlinks)
+    }
+    var detected = probe_capabilities()
+    cached_images = detected[0]
+    cached_true_color = detected[1]
+    cached_hyperlinks = detected[2]
+    capabilities_cached = true
+    return detected
+}
+
+pub fn reset_capabilities_cache() {
+    capabilities_cached = false
+}
+
+pub fn set_capabilities(string images, bool true_color, bool hyperlinks) {
+    cached_images = images
+    cached_true_color = true_color
+    cached_hyperlinks = hyperlinks
+    capabilities_cached = true
+}
+
+string cached_images = ''
+bool cached_true_color = false
+bool cached_hyperlinks = false
+bool capabilities_cached = false
+
+fn probe_capabilities(): (string, bool, bool) {
     string term_program = syscall.get_env('TERM_PROGRAM').to_lower()
     string terminal_emulator = syscall.get_env('TERMINAL_EMULATOR').to_lower()
     string term = syscall.get_env('TERM').to_lower()
@@ -79,7 +110,93 @@ pub fn probe_tmux_hyperlinks(): bool {
 }
 
 pub fn allocate_image_id(): int {
-    return (time.now().ms_timestamp() % 0xfffffffe) + 1
+    // Pi uses a random id to avoid collisions between module instances.
+    i32 random_value = libc.rand()
+    int random = random_value as int
+    if random < 0 {
+        random = -random
+    }
+    return (random % 0xfffffffe) + 1
+}
+
+cell_dimensions_t cell_dimensions_value = cell_dimensions_t {width_px: 9, height_px: 18}
+
+pub fn get_cell_dimensions(): cell_dimensions_t {
+    return cell_dimensions_value
+}
+
+pub fn set_cell_dimensions(cell_dimensions_t dimensions) {
+    cell_dimensions_value = dimensions
+}
+
+// Pi's calculateImageRows: rows for a width-constrained render that keeps
+// the aspect ratio (no height cap).
+pub fn calculate_image_rows(image_dimensions_t image, int target_width_cells, cell_dimensions_t cell): int {
+    var size = calculate_image_cell_size(image, target_width_cells, 0, cell)
+    return size[1]
+}
+
+// An image line starts with (or contains) a kitty or iTerm2 sequence.
+pub fn is_image_line(string line): bool {
+    return line.starts_with('\x1b_G') || line.starts_with('\x1b]1337;File=') || line.contains('\x1b_G') || line.contains('\x1b]1337;File=')
+}
+
+// Pi's hyperlink(): OSC 8 clickable link.
+pub fn hyperlink(string text, string url): string {
+    return '\x1b]8;;' + url + '\x1b\\' + text + '\x1b]8;;\x1b\\'
+}
+
+// Pi's imageFallback(): "[Image: ~/path [mime] WxH]" with the path linked
+// via file:// when hyperlinks are supported.
+pub fn image_fallback(string mime_type, image_dimensions_t? dimensions, string filename): string {
+    [string] parts = []
+    if filename != '' {
+        string display = shorten_home_path(filename)
+        var caps = detect_capabilities()
+        if caps[2] && filename.starts_with('/') {
+            parts.push(hyperlink(display, 'file://' + filename))
+        } else {
+            parts.push(display)
+        }
+    }
+    parts.push('[' + mime_type + ']')
+    if dimensions is image_dimensions_t known {
+        parts.push(fmt.sprintf('%dx%d', known.width_px, known.height_px))
+    }
+    return '[Image: ' + strings.join(parts, ' ') + ']'
+}
+
+fn shorten_home_path(string filename): string {
+    string home = syscall.get_env('HOME')
+    if home != '' && (filename == home || filename.starts_with(home + '/')) {
+        return '~' + filename.slice(home.len(), filename.len())
+    }
+    return filename
+}
+
+// Pi's renderImage(): dispatch to kitty or iTerm2 encoding with the size
+// computed from the cell dimensions; null when the terminal has no images.
+pub type image_render_result_t = struct {
+    string sequence
+    int rows
+    int image_id
+}
+
+pub fn render_image(string base64_data, image_dimensions_t image, int max_width_cells, int max_height_cells, int image_id, bool move_cursor): image_render_result_t? {
+    var caps = detect_capabilities()
+    if caps[0] == '' {
+        return null
+    }
+    var cell = get_cell_dimensions()
+    var size = calculate_image_cell_size(image, max_width_cells, max_height_cells, cell)
+    if caps[0] == 'kitty' {
+        int id = image_id > 0 ? image_id : allocate_image_id()
+        return image_render_result_t {sequence: encode_kitty(base64_data, size[0], size[1], id, move_cursor), rows: size[1], image_id: id,}
+    }
+    if caps[0] == 'iterm2' {
+        return image_render_result_t {sequence: encode_iterm2(base64_data, fmt.sprintf('%d', size[0]), 'auto', '', true), rows: size[1], image_id: 0,}
+    }
+    return null
 }
 
 pub fn encode_kitty(string base64_data, int columns, int rows, int image_id, bool move_cursor): string {
@@ -153,11 +270,15 @@ pub fn encode_iterm2(string base64_data, string width, string height, string nam
 
 pub fn calculate_image_cell_size(image_dimensions_t image, int max_width_cells, int max_height_cells, cell_dimensions_t cell): (int, int) {
     int max_width = max_width_cells > 1 ? max_width_cells : 1
-    int max_height = max_height_cells > 1 ? max_height_cells : 1
     int image_width = image.width_px > 1 ? image.width_px : 1
     int image_height = image.height_px > 1 ? image.height_px : 1
     float width_scale = (max_width * cell.width_px) as float / (image_width as float)
-    float height_scale = (max_height * cell.height_px) as float / (image_height as float)
+    // Pi keeps the aspect ratio when no height cap is given (maxHeightCells
+    // undefined); a positive cap constrains both axes.
+    float height_scale = width_scale
+    if max_height_cells > 1 {
+        height_scale = (max_height_cells * cell.height_px) as float / (image_height as float)
+    }
     float scale = width_scale < height_scale ? width_scale : height_scale
     float scaled_width = (image_width as float) * scale
     float scaled_height = (image_height as float) * scale
@@ -166,8 +287,8 @@ pub fn calculate_image_cell_size(image_dimensions_t image, int max_width_cells, 
     if columns > max_width {
         columns = max_width
     }
-    if rows > max_height {
-        rows = max_height
+    if max_height_cells > 1 && rows > max_height_cells {
+        rows = max_height_cells
     }
     if columns < 1 {
         columns = 1
@@ -270,6 +391,11 @@ pub fn get_gif_dimensions(string base64_data): image_dimensions_t? {
     if bytes.len() < 10 {
         return null
     }
+    // Pi validates the GIF87a / GIF89a signature before reading the size.
+    string signature = bytes.slice(0, 6) as string
+    if signature != 'GIF87a' && signature != 'GIF89a' {
+        return null
+    }
     int width = read_uint16_le(bytes, 6)
     int height = read_uint16_le(bytes, 8)
     return image_dimensions_t {width_px: width, height_px: height}
@@ -282,8 +408,37 @@ pub fn get_webp_dimensions(string base64_data): image_dimensions_t? {
     if bytes.len() < 30 {
         return null
     }
-    int width = (bytes[26] as int) | ((bytes[27] as int) << 8)
-    int height = (bytes[28] as int) | ((bytes[29] as int) << 8)
+    // RIFF....WEBP container validation (Pi checks the header too).
+    if (bytes.slice(0, 4) as string) != 'RIFF' || (bytes.slice(8, 12) as string) != 'WEBP' {
+        return null
+    }
+    string chunk = bytes.slice(12, 16) as string
+    if chunk == 'VP8 ' {
+        // Lossy VP8: frame tag at offset 20, then a 14-bit little-endian size.
+        if bytes.len() < 26 {
+            return null
+        }
+        int width = read_uint16_le(bytes, 26) & 0x3fff
+        int height = read_uint16_le(bytes, 28) & 0x3fff
+        return image_dimensions_t {width_px: width, height_px: height}
+    }
+    if chunk == 'VP8L' {
+        // Lossless VP8L: a 14-bit size packed in four bytes after the tag.
+        if bytes.len() < 25 {
+            return null
+        }
+        int bits = (bytes[21] as int) | ((bytes[22] as int) << 8) | ((bytes[23] as int) << 16) | ((bytes[24] as int) << 24)
+        int width = (bits & 0x3fff) + 1
+        int height = ((bits >> 14) & 0x3fff) + 1
+        return image_dimensions_t {width_px: width, height_px: height}
+    }
+    // VP8X extended: 24-bit canvas sizes in bytes 24..29 (Pi reads them
+    // directly, adding 1 for the zero-based canvas convention).
+    if bytes.len() < 30 {
+        return null
+    }
+    int width = ((bytes[24] as int) | ((bytes[25] as int) << 8) | ((bytes[26] as int) << 16)) + 1
+    int height = ((bytes[27] as int) | ((bytes[28] as int) << 8) | ((bytes[29] as int) << 16)) + 1
     return image_dimensions_t {width_px: width, height_px: height}
 }
 
