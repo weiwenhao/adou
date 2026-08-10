@@ -268,3 +268,48 @@ test 'set_text_at applies a replacement with a cursor position' {
     editor.undo()
     assert(editor.get_text() == 'read foo.txt')
 }
+
+test 'up at the top edge jumps to the line start like Pi' {
+    var editor = editor.new()
+    editor.set_text('hello world')
+    editor.move_line_end()
+    // Cursor at the end; up on the first visual line jumps to line start.
+    var result = editor.handle_key('\x1b[A', true)
+    assert(result.action == 'handled')
+    var cursor = editor.get_cursor()
+    assert(cursor.column == 0)
+}
+
+test 'down at the bottom edge jumps to the line end like Pi' {
+    var editor = editor.new()
+    editor.set_text('line one\nline two')
+    editor.move_line_start()
+    editor.move_vertical(1)
+    var cursor = editor.get_cursor()
+    // On the last physical line now; down jumps to the end of the line.
+    assert(cursor.line == 1)
+    var result = editor.handle_key('\x1b[B', true)
+    assert(result.action == 'handled')
+    var after = editor.get_cursor()
+    assert(after.line == 1)
+    assert(after.column == 8)
+}
+
+test 'shift+space inserts a regular space like Pi' {
+    var editor = editor.new()
+    editor.set_text('ab')
+    editor.move_line_end()
+    var result = editor.handle_key('\x1b[32;2u', true)
+    assert(editor.get_text() == 'ab ')
+}
+
+test 'history browsing snapshots the draft for undo like Pi' {
+    var editor = editor.new()
+    editor.set_text('current draft')
+    editor.add_history('previous prompt')
+    editor.move_line_start()
+    editor.navigate_history(-1)
+    assert(editor.get_text() == 'previous prompt')
+    editor.undo()
+    assert(editor.get_text() == 'current draft')
+}

@@ -65,3 +65,14 @@ test 'fuzzy command filtering ranks partial matches like Pi' {
     assert(scoped.len() == 1)
     assert(scoped[0] == '/scoped-models')
 }
+
+test 'alpha numeric swap only applies to whole letter-digit runs like Pi' {
+    // 'openai3' swaps to '3openai'.
+    var swapped = fuzzy.fuzzy_match('openai3', '3openai model')
+    assert(swapped.matches)
+    // Mixed strings (a1b2) are not swapped.
+    var mixed = fuzzy.fuzzy_match('a1b2', '2b1a something')
+    assert(!mixed.matches)
+    var mixed_direct = fuzzy.fuzzy_match('a1b2', 'a1b2')
+    assert(mixed_direct.matches)
+}

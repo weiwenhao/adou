@@ -1999,6 +1999,9 @@ fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int 
     if last_line > visual_lines.len() {
         last_line = visual_lines.len()
     }
+    if first_line > 0 {
+        result.push(' ' + theme.fg(theme.DIM_COLOR, fmt.sprintf('↑ %d more', first_line)))
+    }
     for int index = first_line; index < last_line; index += 1 {
         var visual = visual_lines[index]
         string value = visual.text
@@ -2016,6 +2019,10 @@ fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int 
             line = text_utils.truncate_to_width(line, width, '...', false)
         }
         result.push(line)
+    }
+    int remaining = visual_lines.len() - last_line
+    if remaining > 0 {
+        result.push(' ' + theme.fg(theme.DIM_COLOR, fmt.sprintf('↓ %d more', remaining)))
     }
     result.push(theme.editor_border_line(thinking, bash_mode, width))
     if command_menu {

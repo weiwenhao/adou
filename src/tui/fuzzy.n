@@ -16,31 +16,10 @@ pub fn fuzzy_match(string query, string text): fuzzy_match_t {
     if primary.matches {
         return primary
     }
-    // Alpha/numeric swap fallback: `openai3` matches `3openai`.
-    string swapped = ''
-    int digit_start = -1
-    int letter_start = -1
-    for int index = 0; index < query_lower.len(); index += 1 {
-        bool digit = query_lower[index] >= '0'.char() && query_lower[index] <= '9'.char()
-        bool letter = query_lower[index] >= 'a'.char() && query_lower[index] <= 'z'.char()
-        if digit && digit_start < 0 && letter_start < 0 {
-            digit_start = index
-        } else if letter && letter_start < 0 && digit_start >= 0 {
-            letter_start = index
-        }
-        if !digit && !letter && digit_start >= 0 {
-            break
-        }
-    }
-    if digit_start >= 0 && letter_start > digit_start && letter_start > 0 {
-        string letters = query_lower.slice(0, letter_start)
-        string digits = query_lower.slice(letter_start, query_lower.len())
-        swapped = digits + letters
-    } else if letter_start < 0 && digit_start > 0 {
-        string letters = query_lower.slice(0, digit_start)
-        string digits = query_lower.slice(digit_start, query_lower.len())
-        swapped = digits + letters
-    }
+    // Pi's alpha/numeric swap: only a whole string of letters followed by
+    // digits (or digits followed by letters) is swapped; mixed strings are
+    // not.
+    string swapped = alpha_numeric_swap(query_lower)
     if swapped == '' {
         return primary
     }
@@ -49,6 +28,32 @@ pub fn fuzzy_match(string query, string text): fuzzy_match_t {
         return primary
     }
     return fuzzy_match_t {matches: true, score: swapped_match.score + 5}
+}
+
+fn alpha_numeric_swap(string query): string {
+    // Only one transition between the letter run and the digit run is
+    // allowed (Pi's ^[a-z]+[0-9]+$ or ^[0-9]+[a-z]+$).
+    int transitions = 0
+    int switch_index = -1
+    bool previous_digit = query[0] >= '0'.char() && query[0] <= '9'.char()
+    for int index = 1; index < query.len(); index += 1 {
+        bool digit = query[index] >= '0'.char() && query[index] <= '9'.char()
+        bool letter = query[index] >= 'a'.char() && query[index] <= 'z'.char()
+        if !digit && !letter {
+            return ''
+        }
+        if digit != previous_digit {
+            transitions += 1
+            switch_index = index
+            previous_digit = digit
+        }
+    }
+    if transitions != 1 || switch_index < 0 {
+        return ''
+    }
+    string first = query.slice(0, switch_index)
+    string second = query.slice(switch_index, query.len())
+    return second + first
 }
 
 fn match_query(string query, string text): fuzzy_match_t {
