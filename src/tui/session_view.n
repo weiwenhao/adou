@@ -14,6 +14,8 @@ import adou.src.context.project
 import adou.src.context.prompt_templates
 import adou.src.context.git_paths
 import adou.src.context.skills
+import adou.src.context.slash_commands
+import adou.src.tui.fuzzy
 import adou.src.context.system_prompt
 import adou.src.debug
 import adou.src.json_util
@@ -170,6 +172,7 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     view.chat.load_messages(runner.active_messages)
     [string] no_extra_prompts = []
     view.prompt_templates = prompt_templates.load_prompt_templates(cwd, paths.agent_dir(), no_extra_prompts, true)
+    refresh_dynamic_commands(cwd)
     var stored_settings = config_settings.load_for(cwd)
     view.scoped_model_ids = stored_settings.enabled_model_ids
     view.scoped_models_active = stored_settings.enabled_model_ids.len() > 0
@@ -3337,11 +3340,72 @@ fn builtin_command_names(): [string] {
     return ['/settings', '/model', '/scoped-models', '/export', '/import', '/share', '/copy', '/name', '/session', '/changelog', '/hotkeys', '/fork', '/clone', '/tree', '/trust', '/login', '/logout', '/new', '/compact', '/resume', '/reload', '/quit']
 }
 
+// Prompt template and skill commands join the built-ins in the completion
+// menu, deduplicated against them.  The host refreshes the cache whenever a
+// session starts (view construction) so project resources stay current.
+[slash_commands.slash_command_info_t] dynamic_commands_cache = []
+bool dynamic_commands_loaded = false
+
+fn refresh_dynamic_commands(string cwd) {
+    [string] no_extra = []
+    var templates = prompt_templates.load_prompt_templates(cwd, paths.agent_dir(), no_extra, true)
+    var skills_result = skills.load_skills(cwd, paths.agent_dir(), no_extra, true) catch error {
+        skills.load_skills_result_t {}
+    }
+    [slash_commands.slash_command_info_t] commands = []
+    for info in slash_commands.prompt_commands(templates) {
+        commands.push(info)
+    }
+    for info in slash_commands.skill_commands(skills_result.skills) {
+        commands.push(info)
+    }
+    dynamic_commands_cache = commands
+    dynamic_commands_loaded = true
+}
+
+#local
+fn command_names(): [string] {
+    [string] result = vec<string>.cap_of(16)
+    for command in builtin_command_names() {
+        result.push(command)
+    }
+    for info in dynamic_commands_cache {
+        if info.name.starts_with('/') {
+            continue
+        }
+        string candidate = '/' + info.name
+        if !list_contains(result, candidate) {
+            result.push(candidate)
+        }
+    }
+    return result
+}
+
+#local
+fn list_contains([string] values, string target): bool {
+    for value in values {
+        if value == target {
+            return true
+        }
+    }
+    return false
+}
+
 #local
 fn matching_command_names(string prefix): [string] {
+    // Pi fuzzy-sorts slash completion; an empty query keeps the registry
+    // order.  The fallback keeps prefix matches when fuzzy scoring is empty.
+    var all = command_names()
+    if prefix == '' {
+        return all
+    }
+    var fuzzy = fuzzy.fuzzy_filter_strings(all, prefix)
+    if fuzzy.len() > 0 {
+        return fuzzy
+    }
     [string] result = vec<string>.cap_of(9)
-    for command in builtin_command_names() {
-        if prefix == '' || command.starts_with(prefix) {
+    for command in all {
+        if command.starts_with(prefix) {
             result.push(command)
         }
     }
