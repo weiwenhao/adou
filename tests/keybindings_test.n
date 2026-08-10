@@ -1,0 +1,30 @@
+import adou.src.tui.keybindings
+
+test 'default keymap resolves actions and aliases like Pi' {
+    var registry = keybindings.default_keybindings()
+    assert(registry.lookup('left') == keybindings.ACTION_MOVE_LEFT)
+    assert(registry.lookup('ctrl+b') == keybindings.ACTION_MOVE_LEFT)
+    assert(registry.lookup('ctrl+k') == keybindings.ACTION_DELETE_TO_LINE_END)
+    assert(registry.lookup('enter') == keybindings.ACTION_SUBMIT)
+    assert(registry.lookup('ctrl+-') == keybindings.ACTION_UNDO)
+    assert(registry.lookup('shift+enter') == keybindings.ACTION_NEWLINE)
+    assert(registry.lookup('unbound-key') == '')
+    // Descriptions accompany the actions for UI hints.
+    assert(registry.describe(keybindings.ACTION_UNDO) == 'Undo the last edit')
+    assert(registry.describe('nope') == '')
+}
+
+test 'every editor action has at least one binding' {
+    var registry = keybindings.default_keybindings()
+    [string] actions = [keybindings.ACTION_SUBMIT, keybindings.ACTION_NEWLINE, keybindings.ACTION_CANCEL, keybindings.ACTION_MOVE_LEFT, keybindings.ACTION_MOVE_RIGHT, keybindings.ACTION_MOVE_WORD_LEFT, keybindings.ACTION_MOVE_WORD_RIGHT, keybindings.ACTION_LINE_START, keybindings.ACTION_LINE_END, keybindings.ACTION_BACKSPACE, keybindings.ACTION_DELETE_WORD_BACKWARD, keybindings.ACTION_DELETE_FORWARD, keybindings.ACTION_DELETE_WORD_FORWARD, keybindings.ACTION_DELETE_TO_LINE_START, keybindings.ACTION_DELETE_TO_LINE_END, keybindings.ACTION_YANK, keybindings.ACTION_YANK_POP, keybindings.ACTION_UNDO, keybindings.ACTION_INSERT_INDENT, keybindings.ACTION_SCROLL_UP, keybindings.ACTION_SCROLL_DOWN]
+    for action in actions {
+        bool found = false
+        for binding in registry.bindings {
+            if binding.action == action {
+                found = true
+                break
+            }
+        }
+        assert(found)
+    }
+}

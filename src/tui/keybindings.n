@@ -1,0 +1,102 @@
+// Pi's keybindings surface: a named registry of editor key actions with
+// their terminal key names and aliases.  handle_key resolves through the
+// registry instead of hard-coding every branch; two-key operations (jump)
+// and stateful keys (history) stay in the editor.
+
+pub type keybinding_t = struct {
+    string key
+    string action
+    string description
+}
+
+pub const ACTION_JUMP_FORWARD = 'jump_forward'
+pub const ACTION_JUMP_BACKWARD = 'jump_backward'
+pub const ACTION_SUBMIT = 'submit'
+pub const ACTION_NEWLINE = 'newline'
+pub const ACTION_CANCEL = 'cancel'
+pub const ACTION_MOVE_LEFT = 'move_left'
+pub const ACTION_MOVE_RIGHT = 'move_right'
+pub const ACTION_MOVE_WORD_LEFT = 'move_word_left'
+pub const ACTION_MOVE_WORD_RIGHT = 'move_word_right'
+pub const ACTION_LINE_START = 'line_start'
+pub const ACTION_LINE_END = 'line_end'
+pub const ACTION_BACKSPACE = 'backspace'
+pub const ACTION_DELETE_WORD_BACKWARD = 'delete_word_backward'
+pub const ACTION_DELETE_FORWARD = 'delete_forward'
+pub const ACTION_DELETE_WORD_FORWARD = 'delete_word_forward'
+pub const ACTION_DELETE_TO_LINE_START = 'delete_to_line_start'
+pub const ACTION_DELETE_TO_LINE_END = 'delete_to_line_end'
+pub const ACTION_YANK = 'yank'
+pub const ACTION_YANK_POP = 'yank_pop'
+pub const ACTION_UNDO = 'undo'
+pub const ACTION_INSERT_INDENT = 'insert_indent'
+pub const ACTION_SCROLL_UP = 'scroll_up'
+pub const ACTION_SCROLL_DOWN = 'scroll_down'
+
+pub type keybindings_t = struct {
+    [keybinding_t] bindings = []
+}
+
+// Pi's built-in editor keymap: primary key followed by aliases, matched in
+// order so the first registered spelling wins.
+pub fn default_keybindings(): ref<keybindings_t> {
+    var registry = new keybindings_t()
+    registry.bindings.push(keybinding_t {key: 'ctrl+]', action: ACTION_JUMP_FORWARD, description: 'Jump forward to a character'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+alt+]', action: ACTION_JUMP_BACKWARD, description: 'Jump backward to a character'})
+    registry.bindings.push(keybinding_t {key: 'enter', action: ACTION_SUBMIT, description: 'Submit the message'})
+    registry.bindings.push(keybinding_t {key: 'shift+enter', action: ACTION_NEWLINE, description: 'Insert a newline'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+j', action: ACTION_NEWLINE, description: 'Insert a newline'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+c', action: ACTION_CANCEL, description: 'Cancel the prompt'})
+    registry.bindings.push(keybinding_t {key: 'left', action: ACTION_MOVE_LEFT, description: 'Move left'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+b', action: ACTION_MOVE_LEFT, description: 'Move left'})
+    registry.bindings.push(keybinding_t {key: 'right', action: ACTION_MOVE_RIGHT, description: 'Move right'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+f', action: ACTION_MOVE_RIGHT, description: 'Move right'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+left', action: ACTION_MOVE_WORD_LEFT, description: 'Move to the previous word'})
+    registry.bindings.push(keybinding_t {key: 'alt+left', action: ACTION_MOVE_WORD_LEFT, description: 'Move to the previous word'})
+    registry.bindings.push(keybinding_t {key: 'alt+b', action: ACTION_MOVE_WORD_LEFT, description: 'Move to the previous word'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+right', action: ACTION_MOVE_WORD_RIGHT, description: 'Move to the next word'})
+    registry.bindings.push(keybinding_t {key: 'alt+right', action: ACTION_MOVE_WORD_RIGHT, description: 'Move to the next word'})
+    registry.bindings.push(keybinding_t {key: 'alt+f', action: ACTION_MOVE_WORD_RIGHT, description: 'Move to the next word'})
+    registry.bindings.push(keybinding_t {key: 'home', action: ACTION_LINE_START, description: 'Move to the start of the line'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+a', action: ACTION_LINE_START, description: 'Move to the start of the line'})
+    registry.bindings.push(keybinding_t {key: 'end', action: ACTION_LINE_END, description: 'Move to the end of the line'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+e', action: ACTION_LINE_END, description: 'Move to the end of the line'})
+    registry.bindings.push(keybinding_t {key: 'backspace', action: ACTION_BACKSPACE, description: 'Delete the previous character'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+h', action: ACTION_BACKSPACE, description: 'Delete the previous character'})
+    registry.bindings.push(keybinding_t {key: 'alt+backspace', action: ACTION_DELETE_WORD_BACKWARD, description: 'Delete the previous word'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+backspace', action: ACTION_DELETE_WORD_BACKWARD, description: 'Delete the previous word'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+w', action: ACTION_DELETE_WORD_BACKWARD, description: 'Delete the previous word'})
+    registry.bindings.push(keybinding_t {key: 'delete', action: ACTION_DELETE_FORWARD, description: 'Delete the next character'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+d', action: ACTION_DELETE_FORWARD, description: 'Delete the next character'})
+    registry.bindings.push(keybinding_t {key: 'shift+delete', action: ACTION_DELETE_FORWARD, description: 'Delete the next character'})
+    registry.bindings.push(keybinding_t {key: 'alt+d', action: ACTION_DELETE_WORD_FORWARD, description: 'Delete the next word'})
+    registry.bindings.push(keybinding_t {key: 'alt+delete', action: ACTION_DELETE_WORD_FORWARD, description: 'Delete the next word'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+u', action: ACTION_DELETE_TO_LINE_START, description: 'Delete to the start of the line'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+k', action: ACTION_DELETE_TO_LINE_END, description: 'Delete to the end of the line'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+y', action: ACTION_YANK, description: 'Yank the kill ring'})
+    registry.bindings.push(keybinding_t {key: 'alt+y', action: ACTION_YANK_POP, description: 'Yank the previous kill ring entry'})
+    registry.bindings.push(keybinding_t {key: 'ctrl+-', action: ACTION_UNDO, description: 'Undo the last edit'})
+    registry.bindings.push(keybinding_t {key: 'tab', action: ACTION_INSERT_INDENT, description: 'Insert an indentation'})
+    registry.bindings.push(keybinding_t {key: 'pageUp', action: ACTION_SCROLL_UP, description: 'Scroll the transcript up'})
+    registry.bindings.push(keybinding_t {key: 'pageDown', action: ACTION_SCROLL_DOWN, description: 'Scroll the transcript down'})
+    return registry
+}
+
+// Resolve a key name to its action; '' when unbound.
+pub fn keybindings_t.lookup(&self, string key): string {
+    for binding in self.bindings {
+        if binding.key == key {
+            return binding.action
+        }
+    }
+    return ''
+}
+
+pub fn keybindings_t.describe(&self, string action): string {
+    for binding in self.bindings {
+        if binding.action == action {
+            return binding.description
+        }
+    }
+    return ''
+}
