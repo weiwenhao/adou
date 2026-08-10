@@ -155,7 +155,13 @@ pub fn run(): void! {
         println('adou requires a TTY for interactive mode; pass a prompt argument for one-shot mode')
         return
     }
-    var repository = open_repository(config, cwd)
+    var repository = open_repository(config, cwd) catch error {
+        // Corrupt or invalid session files surface as a friendly startup
+        // error instead of an uncaught panic.
+        println('Error: ' + error.msg())
+        syscall.exit(1) catch exit_error {}
+        return
+    }
     if repository.persisted && !path_utils.exists(repository.cwd) {
         // Pi's assertSessionCwdExists: opening a session whose stored cwd is
         // gone would silently bind every tool to a missing directory.
