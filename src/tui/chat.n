@@ -309,9 +309,7 @@ pub fn chat_t.render(&self, int width): [string]! {
         string background = tool.is_error ? theme.TOOL_ERROR_BG : tool.done ? theme.TOOL_SUCCESS_BG : theme.TOOL_PENDING_BG
         result.push(colored_row(background, line, width))
         if self.tool_output_expanded && tool.detail != '' {
-            for detail_line in tool.detail.replace('\r\n', '\n').replace('\r', '\n').split('\n') {
-                result.append(wrapped_lines(theme.fg(theme.MUTED, '  ' + detail_line), width))
-            }
+            result.append(render_tool_body(tool.detail, width))
         }
     }
     if self.error_message != '' {
@@ -438,9 +436,7 @@ fn render_message_lines(ai_types.message_t message, int width, bool tool_output_
         string background = tool.is_error ? theme.TOOL_ERROR_BG : theme.TOOL_SUCCESS_BG
         result.push(colored_row(background, line, width))
         if body != '' && tool_output_expanded {
-            for body_line in body.replace('\r\n', '\n').replace('\r', '\n').split('\n') {
-                result.append(wrapped_lines(theme.fg(theme.MUTED, '  ' + body_line), width))
-            }
+            result.append(render_tool_body(body, width))
         }
     } else if message is ref<ai_types.compaction_summary_message_t> summary {
         result.append(wrapped_lines(theme.fg(theme.MUTED, '[Context summary] ' + summary.summary), width))
@@ -748,6 +744,52 @@ fn tool_result_text(tool_types.tool_result_t result): string {
 }
 
 #local
+// Pi's tool result diff rendering: unified-diff bodies get per-line
+// coloring (+ added, - removed, @@ hunk headers, context muted).  Line-level
+// only; Pi additionally word-diffs single-line changes.
+fn render_tool_body(string body, int width): [string]! {
+    [string] lines = body.replace('\r\n', '\n').replace('\r', '\n').split('\n')
+    bool is_diff = looks_like_diff(lines)
+    [string] result = vec<string>.cap_of(lines.len())
+    for line in lines {
+        string rendered = '  ' + line
+        if is_diff {
+            rendered = '  ' + diff_line_color(line)
+        }
+        result.append(wrapped_lines(rendered, width))
+    }
+    return result
+}
+
+fn looks_like_diff([string] lines): bool {
+    int markers = 0
+    for line in lines {
+        if line.starts_with('+') || line.starts_with('-') || line.starts_with('@@') {
+            markers += 1
+            if markers >= 2 {
+                return true
+            }
+        }
+    }
+    return false
+}
+
+fn diff_line_color(string line): string {
+    if line.starts_with('@@') {
+        return theme.fg(theme.WARNING, line)
+    }
+    if line.starts_with('+++') || line.starts_with('---') {
+        return theme.fg(theme.MUTED, line)
+    }
+    if line.starts_with('+') {
+        return theme.fg(theme.SUCCESS, line)
+    }
+    if line.starts_with('-') {
+        return theme.fg(theme.ERROR, line)
+    }
+    return theme.fg(theme.MUTED, line)
+}
+
 fn tool_message_text(ai_types.tool_result_message_t tool): string {
     string text = ''
     for content in tool.content {

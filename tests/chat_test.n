@@ -165,3 +165,23 @@ test 'retry status counts down every render like Pi' {
     var after = strings.join(value.render(60), '\n')
     assert(!after.contains(' in '))
 }
+
+test 'tool output diff bodies render with per-line colors like Pi' {
+    var value = chat.new('mock-model', '/tmp/project')
+    var tool = new types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'git diff', content = [new types.text_content_t(text = '--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n-old line\n+new line\n context'),])
+    types.message_t message = tool
+    var event = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, tool_message: tool,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: event,})
+    value.toggle_tool_output()
+    var lines = strings.join(value.render(60), '\n')
+    assert(lines.contains('\x1b[38;2;204;102;102m-old line'))
+    assert(lines.contains('+new line'))
+    assert(lines.contains('@@'))
+    // Plain output stays uncolored.
+    var plain = new types.tool_result_message_t(tool_call_id = 'call-2', tool_name = 'read', content = [new types.text_content_t(text = 'just text'),])
+    types.message_t plain_message = plain
+    var plain_event = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, tool_message: plain,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: plain_event,})
+    var plain_lines = strings.join(value.render(60), '\n')
+    assert(!plain_lines.contains('-just') && !plain_lines.contains('+just'))
+}
