@@ -59,6 +59,12 @@ pub fn run(): void! {
     timings.reset_timings()
     timings.time('parseArgs')
     var argv = os.args()
+    // Pi's `auth print-api-key` surface for external clients: resolve one
+    // configured credential and print it alone on stdout.
+    if argv.len() > 2 && argv[1] == 'auth' && argv[2] == 'print-api-key' {
+        run_auth_print_api_key(argv)
+        return
+    }
     var arguments = args.parse(argv)
     debug.configure(arguments.debug)
     debug.log('startup', 'adou start pid=' + fmt.sprintf('%d', syscall.getpid()))
@@ -398,6 +404,44 @@ fn list_contains_skill([string] values, string target): bool {
         }
     }
     return false
+}
+
+// Pi's credential-print.ts print-api-key: validates --model, forbids
+// --api-key, resolves the configured key (env or stored) and prints it.
+#local
+fn run_auth_print_api_key([string] argv): void! {
+    var arguments = args.parse(argv)
+    if arguments.errors.len() > 0 {
+        println('Error: ' + strings.join(arguments.errors, '; '))
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    if arguments.model == '' {
+        println('Error: Credential printing requires --model <model>')
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    if arguments.api_key != '' {
+        println('Error: Credential printing reads configured credentials; --api-key is not supported')
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    string provider = arguments.provider
+    if provider == '' && arguments.model.find('/') >= 0 {
+        provider = arguments.model.slice(0, arguments.model.find('/'))
+    }
+    if provider == '' {
+        println('Error: Credential printing requires --provider <provider> when the model is not provider-prefixed')
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    string api_key = auth.effective(provider)
+    if api_key == '' {
+        println('No configured API key for ' + provider)
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    println(api_key)
 }
 
 #local
