@@ -97,13 +97,14 @@ pub fn bash_executor_t.execute(&self, string call_id, any arguments, ref<abort.a
         throw errorf('%s', append_command_status(result_text, 'Command aborted'))
     }
     if output.timed_out {
-        throw errorf('%s', append_command_status(result_text, fmt.sprintf('Command timed out after %.3f seconds', timeout_ms as float / 1000.0)))
+        throw errorf('%s', append_command_status(result_text, fmt.sprintf('Command timed out after %g seconds', timeout_ms as float / 1000.0)))
     }
     if output.exit_code != 0 {
         string status = output.term_sig != 0 ? fmt.sprintf('Command exited with code %d (signal %d)', output.exit_code, output.term_sig) : fmt.sprintf('Command exited with code %d', output.exit_code)
         throw errorf('%s', append_command_status(result_text, status))
     }
-    var result = tool_types.text_result(result_text)
+    // Pi's bash tool reports an empty capture as "(no output)".
+    var result = tool_types.text_result(result_text == '' ? '(no output)' : result_text)
     if truncated.truncated {
         result.details = truncation_details_with_path(truncated, full_output_path)
     }
@@ -127,13 +128,13 @@ pub fn execute_bash(string cwd, string script, int timeout_ms, ref<abort.abort_t
         throw errorf('%s', append_command_status(result_text, 'Command aborted'))
     }
     if output.timed_out {
-        throw errorf('%s', append_command_status(result_text, fmt.sprintf('Command timed out after %.3f seconds', timeout_ms as float / 1000.0)))
+        throw errorf('%s', append_command_status(result_text, fmt.sprintf('Command timed out after %g seconds', timeout_ms as float / 1000.0)))
     }
     if output.exit_code != 0 {
         string status = output.term_sig != 0 ? fmt.sprintf('Command exited with code %d (signal %d)', output.exit_code, output.term_sig) : fmt.sprintf('Command exited with code %d', output.exit_code)
         throw errorf('%s', append_command_status(result_text, status))
     }
-    var result = tool_types.text_result(result_text)
+    var result = tool_types.text_result(result_text == '' ? '(no output)' : result_text)
     if truncated.truncated {
         result.details = truncation_details_with_path(truncated, full_output_path)
     }

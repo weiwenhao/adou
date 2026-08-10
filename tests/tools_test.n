@@ -249,3 +249,12 @@ test 'bash receives Pi session and model environment metadata' {
     var result = shell_tools.execute_bash_stream('/tmp', 'printf "$PI_SESSION_ID|$PI_SESSION_FILE|$PI_PROVIDER|$PI_MODEL|$PI_REASONING_LEVEL"', 0, abort.new(), fn(string chunk) {})
     assert(result.output == 'session-123|/tmp/session.jsonl|deepseek|deepseek-v4-flash|medium')
 }
+
+test 'sanitizer strips interlinear annotation markers U+FFF9-FFFB like Pi' {
+    string input = "a\xef\xbf\xb9b\xef\xbf\xbac\xef\xbf\xbbd"
+    string cleaned = command.sanitize_output(input)
+    assert(cleaned == 'abcd')
+    // Unrelated EF BF sequences (e.g. U+FFFD) survive.
+    string replacement = 'x\xef\xbf\xbdy'
+    assert(command.sanitize_output(replacement) == 'x\xef\xbf\xbdy')
+}

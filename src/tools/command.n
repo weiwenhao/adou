@@ -54,6 +54,8 @@ pub const SANITIZE_ESC = 1
 pub const SANITIZE_CSI = 2
 pub const SANITIZE_OSC = 3
 pub const SANITIZE_OSC_ESC = 4
+pub const SANITIZE_UTF8_MID = 5
+pub const SANITIZE_UTF8_TAIL = 6
 
 pub fn sanitizer_t.clean(&self, [u8] value): [u8] {
     [u8] output = []
@@ -66,10 +68,43 @@ pub fn sanitizer_t.clean(&self, [u8] value): [u8] {
             } else if byte == 0x9c {
                 // String terminator outside a string: discard it.
             } else if byte == 0x09 || byte == 0x0a || byte >= 0x20 {
-                output.push(byte)
+                // Pi strips U+FFF9..U+FFFB (interlinear annotation markers)
+                // along with the C0 controls; the 3-byte UTF-8 sequences are
+                // EF BF B9/BA/BB.
+                if byte == 0xef {
+                    self.state = SANITIZE_UTF8_MID
+                } else {
+                    output.push(byte)
+                }
             }
             // Pi strips carriage returns from captured output
             // (shell-output.ts sanitizeBinaryOutput + replace(/\r/g, "")).
+            continue
+        }
+        if self.state == SANITIZE_UTF8_MID {
+            if byte == 0xbf {
+                self.state = SANITIZE_UTF8_TAIL
+            } else {
+                // Not the FFF9-FFFB prefix; keep the bytes we consumed.
+                output.push(0xef)
+                if byte == 0x09 || byte == 0x0a || byte >= 0x20 {
+                    output.push(byte)
+                }
+                self.state = SANITIZE_NORMAL
+            }
+            continue
+        }
+        if self.state == SANITIZE_UTF8_TAIL {
+            if byte == 0xb9 || byte == 0xba || byte == 0xbb {
+                // U+FFF9..U+FFFB discarded with their full sequence.
+            } else {
+                output.push(0xef)
+                output.push(0xbf)
+                if byte == 0x09 || byte == 0x0a || byte >= 0x20 {
+                    output.push(byte)
+                }
+            }
+            self.state = SANITIZE_NORMAL
             continue
         }
         if self.state == SANITIZE_ESC {
