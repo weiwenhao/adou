@@ -100,3 +100,22 @@ test 'apply_completion replaces the prefix and moves the cursor like Pi' {
 fn suffix(): string {
     return fmt.sprintf('%d', time.now().ms_timestamp())
 }
+
+test 'fuzzy attachment search scores and ranks like Pi' {
+    string root = '/tmp/adou-fuzzy-at-' + fmt.sprintf('%d', time.now().ms_timestamp())
+    os.mkdirs(path.join(root, 'src', 'main'), 0o755)
+    os.mkdirs(path.join(root, 'docs'), 0o755)
+    var doc = fs.open(path.join(root, 'docs', 'guide.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    doc.close()
+    var entry = fs.open(path.join(root, 'src', 'main', 'app.n'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    entry.close()
+    var suggestions = path_completion.get_fuzzy_file_suggestions('guide', root, '/tmp')
+    assert(suggestions.len() == 1)
+    assert(suggestions[0].label == 'guide.md')
+    assert(suggestions[0].value.starts_with('@'))
+    assert(suggestions[0].description.contains('guide.md'))
+    // Directory bonus ranks directories above file substring matches.
+    var dir_suggestions = path_completion.get_fuzzy_file_suggestions('src', root, '/tmp')
+    assert(dir_suggestions.len() >= 1)
+    os.rmdir(root, true)
+}

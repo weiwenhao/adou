@@ -284,3 +284,108 @@ pub fn apply_completion(string line, int cursor_col, completion_item_t item, str
     }
     return (new_line, before + cursor_offset)
 }
+
+// Pi's fd-backed fuzzy attachment search (autocomplete.ts
+// getFuzzyFileSuggestions): walk the working tree without a git submodule
+// or hidden-noise filter, score candidates against the query and return the
+// top matches as @-prefixed completions.  Adou replaces the fd subprocess
+// with a bounded recursive walk.
+pub fn get_fuzzy_file_suggestions(string query, string base_path, string home): [completion_item_t] {
+    var entries = walk_fuzzy(base_path, query, 0)
+    [completion_item_t] result = []
+    for entry in entries {
+        string display_path = entry.path
+        bool is_directory = entry.is_directory
+        string completion_path = is_directory ? display_path + '/' : display_path
+        string value = build_completion_value(completion_path, is_directory, true, false)
+        string label = entry.name + (is_directory ? '/' : '')
+        result.push(completion_item_t {value: value, label: label, description: display_path,})
+    }
+    return result
+}
+
+type fuzzy_entry_t = struct {
+    string path
+    string name
+    bool is_directory
+    int score
+}
+
+const FUZZY_WALK_LIMIT = 100
+const FUZZY_WALK_MAX_DEPTH = 8
+
+fn walk_fuzzy(string directory, string query, int depth): [fuzzy_entry_t] {
+    [fuzzy_entry_t] entries = []
+    if depth > FUZZY_WALK_MAX_DEPTH {
+        return entries
+    }
+    [string] names = os.listdir(directory) catch error {
+        return entries
+    }
+    string lower_query = query.to_lower()
+    for name in names {
+        if entries.len() >= FUZZY_WALK_LIMIT {
+            break
+        }
+        if name == '.git' {
+            continue
+        }
+        string full_path = path.join(directory, name)
+        bool is_directory = false
+        var stat = syscall.stat(full_path) catch error {
+            continue
+        }
+        is_directory = syscall.stat_is_dir(stat.mode)
+        int score = fuzzy_score(name, lower_query, is_directory, full_path)
+        if score > 0 {
+            entries = insert_fuzzy_sorted(entries, fuzzy_entry_t {path: full_path, name: name, is_directory: is_directory, score: score})
+        }
+        if is_directory {
+            var children = walk_fuzzy(full_path, query, depth + 1)
+            for child in children {
+                entries = insert_fuzzy_sorted(entries, child)
+            }
+        }
+    }
+    return entries
+}
+
+fn fuzzy_score(string file_name, string lower_query, bool is_directory, string full_path): int {
+    if lower_query == '' {
+        return is_directory ? 10 : 1
+    }
+    string lower_name = file_name.to_lower()
+    int score = 0
+    if lower_name == lower_query {
+        score = 100
+    } else if lower_name.starts_with(lower_query) {
+        score = 80
+    } else if lower_name.contains(lower_query) {
+        score = 50
+    } else if full_path.to_lower().contains(lower_query) {
+        score = 30
+    }
+    if is_directory && score > 0 {
+        score += 10
+    }
+    return score
+}
+
+fn insert_fuzzy_sorted([fuzzy_entry_t] entries, fuzzy_entry_t entry): [fuzzy_entry_t] {
+    [fuzzy_entry_t] merged = []
+    bool placed = false
+    for existing in entries {
+        if !placed && existing.score < entry.score {
+            merged.push(entry)
+            placed = true
+        }
+        merged.push(existing)
+    }
+    if !placed {
+        merged.push(entry)
+    }
+    if merged.len() > 20 {
+        merged = merged.slice(0, 20)
+    }
+    return merged
+}

@@ -479,7 +479,12 @@ fn view_t.update_autocomplete(&self, string key) {
         return
     }
     string home = syscall.get_env('HOME')
-    var items = path_completion.get_file_suggestions(at_prefix, self.runner.repository.cwd, home)
+    // @ attachments use the fd-style fuzzy tree search; the plain path
+    // completion stays a fallback for the quoted prefix form.
+    var items = path_completion.get_fuzzy_file_suggestions(at_prefix.slice(1, at_prefix.len()), self.runner.repository.cwd, home)
+    if items.len() == 0 {
+        items = path_completion.get_file_suggestions(at_prefix, self.runner.repository.cwd, home)
+    }
     if items.len() == 1 {
         self.apply_path_completion(items[0], at_prefix)
         return
