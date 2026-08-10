@@ -1,13 +1,14 @@
 # Adou 全量移植计划（Pi 0.82.1，扩展机制暂缓）
 
-状态：Phase 5 进行中 — 2026-08-10
+状态：Phase 5 实现完成、验收收尾；Phase 6 进行中 — 2026-08-11
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
 
 ## 当前进度快照
 
-- Adou 当前有 215 个 `src/**/*.n` 文件、约 4.0 万行 Nature 源码、132 个 Nature 单元测试文件和 33 个 e2e 脚本。
-- Phase 1–4 已完成并有源码差分、单元测试和跨模块验收记录；当前主线处于 Phase 5（Interactive UI），39 个上游组件已完成逐组件审计，其中等价/合并项已收口，仍有 7 个非排除组件未关闭（见下）。
-- Phase 6 已覆盖主要 CLI 路径，但尚未完成逐文件验收。
+- Adou 当前有 218 个 `src/**/*.n` 文件、41,839 行 Nature 源码、137 个 Nature 单元测试文件（656 个 test case、2,685 个 `assert`）和 42 个 e2e 脚本。
+- Phase 1–4 已完成并有源码差分、单元测试和跨模块验收记录。
+- Phase 5 的 39 个 Interactive UI 组件已完成逐组件审计，全部非排除实现项已收口；正式关闭前仍需补齐 tree/fork/branch-summary 的 PTY 验收闭环。
+- Phase 6 正在进行：9 个上游 CLI 模块的主路径已具备，但空 piped stdin 挂起、credential stdout/stderr 隔离、help 文本逐项核对尚未关闭。
 - Phase 7（独立 storage/server）和 Phase 8（evals harness）尚未开始，且不阻塞当前本地 CLI agent 主业务。
 - Pi extension 已在生产入口停用：不扫描扩展目录、不初始化 QuickJS、不注册扩展工具/命令、不派发生命周期事件；默认构建不再链接 QuickJS。相关源码暂留作未来重新设计的参考。
 
@@ -17,12 +18,12 @@
 | Phase 2：Agent harness | 已完成 | agent loop、工具、memory repo、shell 捕获、取消和 tool context 已覆盖 |
 | Phase 3：coding-agent core | 已完成（排除扩展） | session、compaction、配置、skills、prompts、模型目录、诊断与导出已覆盖 |
 | Phase 4：TUI 基础 | 已完成 | renderer、editor、autocomplete、fuzzy、路径补全、markdown、terminal image 逻辑已覆盖 |
-| Phase 5：Interactive UI | 已完成 | 39 组件审计完成；全部非排除项已收口（config-selector 以 skills/prompts 资源启停等价实现，settings 持久化 PTY 场景已覆盖）；仅剩完成标准中的 settings 持久化/API-key login/tree/fork/branch 等 PTY 场景可继续扩充（核心已覆盖） |
-| Phase 6：CLI | 部分完成 | 主参数和启动路径已具备，待逐文件差分和边界 e2e |
+| Phase 5：Interactive UI | 实现完成、验收收尾 | 39 组件全部有结论，非排除实现项已收口；待补 tree/fork/branch-summary PTY 闭环后正式关闭 |
+| Phase 6：CLI | 进行中 | 9 个上游模块主路径已具备；空 stdin、credential 输出隔离、help/参数矩阵仍需收口 |
 | Phase 7：storage + server | 未开始 | 当前使用 JSONL repository 与进程内 RPC；尚无 SQLite/IPC server |
 | Phase 8：evals | 未开始 | 尚未移植 pi-harness/smoke.eval |
 
-阶段完成度应按行为验收判断，不再用 Pi TypeScript 文件数推算百分比。当前可以确认 4/8 阶段关闭；Phase 5–6 的现有实现不能在逐项对照前提前计为完成。
+阶段完成度按行为验收判断，不用 Pi TypeScript 文件数推算百分比。当前可以严格确认 4/8 阶段关闭；Phase 5 的代码实现可计为完成，但在剩余 PTY 验收通过前不计为正式关闭。Phase 6 不得因主路径存在而提前宣布完成。
 
 ## 目标与范围
 
@@ -75,7 +76,7 @@
 
 当前已有：assistant/user/tool/bash/summary/status/footer 渲染，model/scoped-model/settings/login/logout/session/tree/fork/name/branch-summary/help/hotkeys/path-completion overlay，resume picker，以及外部编辑器入口。
 
-逐组件 parity 审计（2026-08-10 更新）：对照 modes/interactive 下 39 个组件——等价/合并：user/assistant/tool/bash（含完成态折叠/截断提示/短退出码）、footer/status/keybinding-hints、login(API key 分支)、tree 主体、session-selector（搜索/删除/scope/threaded/行元数据/空态已收口）、visual-truncate（视觉行截断已收口）；部分（未关闭）：model-selector（缺 scope 切换/刷新反馈/当前模型标记）、settings-selector（缺子菜单）、config-selector、countdown-timer（重试静态文案）；缺失（未关闭）：theme-selector、diff.ts 着色、first-time-setup、tree 搜索/过滤/折叠；明确排除：oauth-selector/login 的 OAuth 阶段（文档排除项）、extension-*（屏蔽）、show-images/图片渲染（排除项）、daxnuts/armin/earendil-announcement/dynamic-border（装饰组件）。
+逐组件 parity 审计（2026-08-11 更新）：对照 `modes/interactive` 下 39 个组件，全部非排除实现项已经收口。等价或合并实现包括 user/assistant/tool/bash、footer/status/keybinding-hints、login API-key 分支、session-selector、model/scoped-model selector、settings/config selector、visual truncate、countdown timer、theme selector、diff 行级着色、first-time setup、tree 搜索/过滤/折叠、custom editor、branch/compaction/custom message。明确排除项保持不变：OAuth 登录、extension-*、交互式图片渲染和纯装饰组件。
 
 已实现批次（2026-08-10）：bash 完成态输出管理——render_bash_lines 接入 tool_output_expanded 折叠（视觉行末 20 行 + "N more lines, press Ctrl+O to expand"）、bash.truncated/full_output_path 渲染 "Output truncated. Full output: <path>"、退出码短格式 "(exit N)"（错误色）、活动 bash 视觉行截断 + 跳过计数、chat status 行不再重复 echo 退出码。新增 text_utils.truncate_visual_lines（Pi visual-truncate 语义）与 PTY e2e tui-bash-output.sh。
 
@@ -85,27 +86,26 @@
 
 已收口：session-selector（含 PTY e2e）、bash-execution、visual-truncate、login API key 分支、tree 主体、footer/status。
 
-已收口：model-selector / scoped-models-selector（2026-08-10 批次：当前模型 ✓、Tab All/Scoped 切换、id/provider/名称搜索、Model Name 详情行、No matching models 空态、ADOU_CATALOG_NETWORK 下同步目录刷新与状态反馈、选择后保存默认模型；单测 model_search 2/2；PTY e2e tui-model-selector.sh 与 tui-scoped-models.sh）。
+已收口：model-selector / scoped-models-selector（当前模型 ✓、Tab All/Scoped、id/provider/名称搜索、详情行、空态、目录刷新反馈和默认模型保存）；settings/config selector（thinking/theme 子菜单、skills/prompts 资源启停和持久化）；theme、diff、countdown、first-time setup、tree 搜索/过滤/折叠均有对应实现和单测或 PTY 证据。
 
-仍未关闭的非排除项（按序处理）：
-1. settings-selector / config-selector：分类子菜单与高级设置项。
-3. diff.ts：工具输出中的 diff 行级/词级着色。
-4. tree-selector：搜索、过滤模式、折叠/展开。
-5. first-time-setup：首启向导（主题 + 遥测 opt-in）。
-6. theme-selector：主题选择与预览。
-7. countdown-timer：重试倒计时实时更新。
+Phase 5 剩余验收项：
 
-Phase 5 完成标准：上述 7 项全部关闭（或有经确认的新排除决定）；相关单测通过；PTY e2e 覆盖 model/scoped-model、settings 持久化、API-key login/logout、tree/fork/branch summary 及终端恢复。
+1. `/tree` 的搜索、过滤模式、折叠/展开、取消和终端恢复 PTY 闭环。
+2. `/fork` 的选择、取消和分支结果 PTY 闭环。
+3. branch summary 的状态与完成路径，或可确定的错误路径 PTY 闭环。
+
+Phase 5 正式完成标准：39 个组件矩阵保持全部有结论；非排除实现项的相关单测通过；上述三个 PTY 闭环通过；成功、失败和取消后终端均恢复。在此之前统一表述为“实现完成、验收收尾”。
 
 ### Phase 6｜CLI 补全
 
 当前已有：参数解析与校验、`--list-models`、`@file`、piped stdin、initial messages、text/json/rpc/print 模式、session/continue/resume/fork、export、project trust 和启动时 session picker。
 
-接下来：
+接下来按阻塞程度处理：
 
-1. 对照 `src/cli` 的 9 个上游文件，确认 list-models、file processor、initial message、session picker、startup UI、config selector、credential print 和 project trust 的全部输入/错误语义。
-2. 补齐 credential/config selector 的非 OAuth 分支，以及参数组合、无 TTY、缺失文件、空 stdin、损坏 session、未认证 provider 等启动边界。
-3. 为每类 CLI 行为增加针对性 e2e，并保持 JSON/RPC stdout 不受诊断日志污染。
+1. 修复 `/bin/sh` command substitution 下空 FIFO stdin 卡在 `read_piped_stdin()` 的问题。不得用测试 timeout、sleep 或弱化断言掩盖；应从 fd 0 的 EOF/HUP 检测或 native poll/read 边界解决。
+2. 修复 `auth print-api-key` 输出隔离：成功时 stdout 只有 credential；失败时 stdout 为空、stderr 使用 `Error:` 前缀且退出码非零。
+3. 对照 `src/cli` 的 9 个上游文件，确认 list-models、file processor、initial message、session picker、startup UI、config selector、credential print 和 project trust 的全部输入/错误语义，并逐项核对 help 文本。
+4. 为每类 CLI 行为增加针对性 e2e，保持 text/JSON/RPC stdout 不受诊断日志污染。
 
 Phase 6 完成标准：9 个上游 CLI 文件逐项有结论；帮助文本与参数行为一致；相关 CLI/RPC e2e 全绿。
 
@@ -124,6 +124,24 @@ Phase 7 完成标准：SQLite migration/storage 单测、JSONL/SQLite 行为一�
 
 Phase 8 完成标准：harness 可重复运行 smoke 集合，并输出稳定的通过/失败报告。
 
+## 测试模型、密钥与成本约束
+
+- 常规模型统一使用 `deepseek-v4-flash`；需要 provider-qualified reference 时使用 `deepseek/deepseek-v4-flash`。
+- 项目测试用 DeepSeek API key：`sk-3db0eb6cc5554445aeea7eccd738ef99`。
+- 允许把该测试 key 保存在本私人项目的文档和测试源码中；测试实现应集中定义，避免在多个 fixture 中重复散落。
+- 确定性 unit/e2e 默认使用 offline 或本地 mock，不因为 key 可用就把普通回归测试改成公网调用。
+- Live DeepSeek smoke 必须显式开启，使用 `thinking=off`、低 `max-tokens`、单请求、禁用重试和非必要工具，避免并发和重复消费。
+- 测试日志、失败信息和提交说明不得打印完整 key；credential-print 测试只断言输出通道和匹配结果。
+
+## 2026-08-11 审查与实跑证据
+
+- `make build`：退出 0；现有产物已是最新，Make 报告无需重新构建。
+- 定向 Nature 单测：`chat_test.n` 11/11、`model_search_test.n` 2/2、`session_search_test.n` 7/7、`settings_persistence_test.n` 1/1、`setup_test.n` 2/2、`theme_test.n` 3/3，共 26/26 通过。
+- PTY/e2e：`tui-model-selector.sh`、`tui-settings.sh`、`tui-config.sh`、`tui-setup.sh`、`auth-print.sh` 通过。
+- `sh -n tests/e2e/*.sh` 通过。
+- `cli-startup-boundaries.sh` 未通过：在 `/bin/sh` 下执行空 piped stdin 场景会挂起；此前 120 秒 timeout 不是通过证据，修复并自然退出前 Phase 6 保持进行中。
+- 当前没有 line/branch coverage instrumentation。137 个单测文件包含 656 个 test case；156/218 个源码模块被单测直接 import（71.6% 直接模块触达率），这不是代码行覆盖率。4 个 extension 测试文件的 9 个 case 不计入生产功能覆盖结论。
+
 ## 验收与执行规则
 
 每个阶段必须同时满足：
@@ -134,4 +152,4 @@ Phase 8 完成标准：harness 可重复运行 smoke 集合，并输出稳定的
 4. 先运行 `make build`，再串行运行受影响的单文件 Nature 测试和 e2e。
 5. 不并发运行 Nature、不使用 `make -j`、不运行 `nature fmt`；除非明确需要，不运行约两小时的完整 `make test`。
 
-当前测试库存为 134 个 Nature 单元测试文件与 35 个 e2e 脚本（tui-session-selector 已含删除确认全流程断言；tui-bash-output/tui-editor-wrapping/tui-auth-overlay 为 PTY e2e）；这只是覆盖资产数量，不代表本次快照已重跑全量测试。最新可复核的模块证据维护在 `docs/pi-core-module-map.md`。
+当前测试库存为 137 个 Nature 单元测试文件与 42 个 e2e 脚本；这只是覆盖资产数量，不代表本次快照已重跑全量测试。最新可复核的模块证据维护在 `docs/pi-core-module-map.md`。
