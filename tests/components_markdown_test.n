@@ -54,3 +54,33 @@ test 'markdown handles nested markers, strike, rules, and fenced borders' {
     }
     assert(has_strike && has_rule && has_fence)
 }
+
+test 'markdown tables render aligned columns with a bold header' {
+    string source = '| Name | Value |\n|------|-------|\n| alpha | 1 |\n| beta gamma | 22 |'
+    var lines = markdown.render(source, 40)
+    assert(lines.len() >= 3)
+    assert(lines[0].contains('│') && lines[0].contains('\x1b[1m'))
+    assert(lines[1].contains('├') && lines[1].contains('┼'))
+    for line in lines {
+        assert(text_utils.visible_width(line) <= 40)
+    }
+    // Body cells align under the header columns.
+    assert(lines[2].contains('alpha') && lines[2].contains('1'))
+    assert(lines[3].contains('beta gamma'))
+}
+
+test 'nested blockquotes render one gutter per depth' {
+    string source = '> outer\n>> inner quote'
+    var lines = markdown.render(source, 40)
+    assert(lines[0].contains('│'))
+    assert(lines[1].contains('│ │') || lines[1].contains('│  │'))
+    assert(lines[1].contains('inner quote'))
+}
+
+test 'narrow tables shrink to the terminal width' {
+    string source = '| Long Header Column | Other |\n|-------------------|-------|\n| value | x |'
+    var lines = markdown.render(source, 24)
+    for line in lines {
+        assert(text_utils.visible_width(line) <= 24)
+    }
+}
