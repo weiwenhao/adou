@@ -1,0 +1,34 @@
+import adou.src.session.identity
+import fs
+import os
+import path
+import syscall
+
+// Pi's ExecutionEnv temp helpers (vendors/pi/packages/agent/src/harness/env/
+// nodejs.ts): createTempDir / createTempFile below the platform temp
+// directory.  Files are created empty and owned by the caller.
+
+pub fn temp_dir(): string {
+    string configured = syscall.get_env('TMPDIR')
+    if configured == '' {
+        return '/tmp'
+    }
+    while configured.ends_with('/') {
+        configured = configured.slice(0, configured.len() - 1)
+    }
+    return configured
+}
+
+pub fn create_temp_dir(string prefix): string! {
+    string directory = path.join(temp_dir(), prefix + identity.uuid_v7())
+    os.mkdirs(directory, 0o700)
+    return directory
+}
+
+pub fn create_temp_file(string prefix, string suffix): string! {
+    string directory = create_temp_dir('tmp-')
+    string file_path = path.join(directory, prefix + identity.uuid_v7() + suffix)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_EXCL, 0o600)
+    file.close()
+    return file_path
+}

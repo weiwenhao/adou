@@ -1,0 +1,44 @@
+import adou.src.tools.temp
+import fs
+import os
+import path
+import syscall
+
+test 'create_temp_file makes an empty unique file like Pi' {
+    string file_path = temp.create_temp_file('bash-', '.log') catch error {
+        assert(false)
+        ''
+    }
+    assert(path.dir(file_path) != '')
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        assert(false)
+        return
+    }
+    string content = input.content() catch error {
+        input.close()
+        return
+    }
+    input.close()
+    assert(content == '')
+    assert(file_path.contains('bash-'))
+    assert(file_path.ends_with('.log'))
+    string second = temp.create_temp_file('bash-', '.log') catch error {
+        assert(false)
+        ''
+    }
+    assert(second != file_path)
+}
+
+test 'create_temp_dir makes a unique directory like Pi' {
+    string directory = temp.create_temp_dir('tmp-') catch error {
+        assert(false)
+        ''
+    }
+    var stat = syscall.stat(directory) catch error {
+        assert(false)
+        return
+    }
+    assert(syscall.stat_is_dir(stat.mode))
+    assert(directory.starts_with(temp.temp_dir() + '/'))
+    os.rmdir(directory, true)
+}
