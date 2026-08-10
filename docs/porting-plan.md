@@ -122,6 +122,16 @@ getProgress/returnExecutionErrors 缺失）。memory-repo 缺多会话注册表�
 （open/list/delete）、fork position:"at"、appendActiveToolsChange、
 findEntries/getEntries 游标。
 
+Phase 2 收尾（2026-08-10）：验收报告低优先级项处理——shell 流式捕获进度面
+（execute_bash_with_capture：onChunk 带 progress、有界 tail 累积（字节上限 2 倍）、
+超限时完整输出落盘、return_execution_errors/execution_error 字段）、exec 的
+env/inheritEnv 选项（shell_abortable_env，inherit_env=false 用 env -i 隔离）、
+create_temp_file/create_temp_dir（src/tools/temp.n）、(no output) 占位、
+timeout footer %g 格式、sanitizer 增 U+FFF9-FFFB 剥离。truncate.result_t 经核对
+已含 Pi TruncationResult 全部字段。已知差异：TUI/RPC 交互 bash 流式更新
+（EVENT_BASH_UPDATE）不带 truncation/fullOutputPath（adou 的模型 bash 工具为
+非流式，流式路径是交互终端，无 details 消费方）。Phase 2 验收关闭。
+
 Phase 1/2 缺口补齐（2026-08-10）：全部验收缺口已处理——
 Phase 2：fork_at（position "at" 保留目标为叶）、find_entries + get_entries_after
 （游标语义）、active_tools_change 条目 + SessionContext.activeToolNames、
