@@ -113,6 +113,10 @@ pub type overlay_t = struct {
     // Pi's scope: 0 = current folder, 1 = all projects.  The options list
     // holds the merged set; filtered_options narrows it by scope.
     int scope
+    // Tree selector: Pi's five filter modes (default/no-tools/user-only/
+    // labeled-only/all) and the collapsed entry ids.
+    int tree_filter = 0
+    [string] collapsed_ids = []
 }
 
 pub type view_t = struct {
@@ -1686,7 +1690,7 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     [string] lines = self.chat.render(width)
     [string] editor_lines = []
     if self.overlay is ref<overlay_t> active_overlay {
-        editor_lines = render_overlay(active_overlay, width, self.runner.repository.session_dir, self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id)
+        editor_lines = render_overlay(active_overlay, width, self.runner.repository.session_dir, self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id, self.runner)
     } else {
         editor_lines = render_editor(self.editor, width, self.command_menu, self.command_index, self.chat.thinking, height)
     }
@@ -2473,7 +2477,7 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             return
         }
         if key == 'pageUp' {
-            int count = filtered_options(self.runner.repository.session_dir, overlay).len()
+            int count = filtered_options(self.runner.repository.session_dir, overlay, self.runner).len()
             overlay.selected -= OVERLAY_VISIBLE_OPTIONS
             if overlay.selected < 0 {overlay.selected = 0}
             if count > 0 && overlay.selected >= count {overlay.selected = count - 1}
@@ -2481,15 +2485,49 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             return
         }
         if key == 'pageDown' {
-            int count = filtered_options(self.runner.repository.session_dir, overlay).len()
+            int count = filtered_options(self.runner.repository.session_dir, overlay, self.runner).len()
             overlay.selected += OVERLAY_VISIBLE_OPTIONS
             if count > 0 && overlay.selected >= count {overlay.selected = count - 1}
             self.redraw()
             return
         }
     }
+    if overlay.kind == OVERLAY_TREE {
+        if key == 'f' {
+            overlay.tree_filter = (overlay.tree_filter + 1) % 5
+            overlay.selected = 0
+            self.redraw()
+            return
+        }
+        if key == '[' || key == 'shift+[' {
+            var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
+            if options.len() > 0 && overlay.selected < options.len() {
+                string collapsed_id = option_entry_id(options[overlay.selected])
+                if !list_in(overlay.collapsed_ids, collapsed_id) {
+                    overlay.collapsed_ids.push(collapsed_id)
+                }
+            }
+            self.redraw()
+            return
+        }
+        if key == ']' || key == 'shift+]' {
+            var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
+            if options.len() > 0 && overlay.selected < options.len() {
+                string expanded_id = option_entry_id(options[overlay.selected])
+                [string] remaining = []
+                for collapsed in overlay.collapsed_ids {
+                    if collapsed != expanded_id {
+                        remaining.push(collapsed)
+                    }
+                }
+                overlay.collapsed_ids = remaining
+            }
+            self.redraw()
+            return
+        }
+    }
     if overlay.kind == OVERLAY_TREE && (key == 'L' || key == 'shift+l') {
-        var options = filtered_options(self.runner.repository.session_dir, overlay)
+        var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
         if options.len() > 0 && overlay.selected >= 0 && overlay.selected < options.len() {
             string entry_id = option_entry_id(options[overlay.selected])
             overlay.kind = OVERLAY_LABEL
@@ -2537,14 +2575,14 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         return
     }
     if key == 'up' {
-        int count = filtered_options(self.runner.repository.session_dir, overlay).len()
+        int count = filtered_options(self.runner.repository.session_dir, overlay, self.runner).len()
         if count == 0 {return}
         overlay.selected = overlay.selected == 0 ? count - 1 : overlay.selected - 1
         self.redraw()
         return
     }
     if key == 'down' {
-        int count = filtered_options(self.runner.repository.session_dir, overlay).len()
+        int count = filtered_options(self.runner.repository.session_dir, overlay, self.runner).len()
         if count == 0 {return}
         overlay.selected = overlay.selected == count - 1 ? 0 : overlay.selected + 1
         self.redraw()
@@ -2575,7 +2613,7 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
 
 #local
 fn view_t.begin_delete_session(&self, ref<overlay_t> overlay) {
-    var options = filtered_options(self.runner.repository.session_dir, overlay)
+    var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
     if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
         return
     }
@@ -2631,7 +2669,7 @@ fn view_t.confirm_delete_session(&self, ref<overlay_t> overlay) {
 
 #local
 fn view_t.begin_rename_session(&self, ref<overlay_t> overlay) {
-    var options = filtered_options(self.runner.repository.session_dir, overlay)
+    var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
     if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
         return
     }
@@ -2717,7 +2755,7 @@ pub fn view_t.complete_api_key_login(&self, ref<overlay_t> overlay) {
 }
 
 pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
-    var options = filtered_options(self.runner.repository.session_dir, overlay)
+    var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
     if overlay.kind == OVERLAY_AUTH_METHOD {
         string method = overlay.selected == 0 ? 'account' : 'api_key'
         if overlay.provider == '' {
@@ -3099,7 +3137,7 @@ pub fn view_t.copy_last_response(&self) {
     self.redraw()
 }
 
-pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, string current_model_reference): [string]! {
+pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, string current_model_reference, ref<session.runner_t> runner): [string]! {
     [string] result = vec<string>.cap_of(24)
     result.push(theme.border_line(width))
     result.push('')
@@ -3161,7 +3199,7 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
                 result.push('')
             }
         }
-        var options = filtered_options(session_dir, overlay)
+        var options = filtered_options(session_dir, overlay, runner)
         int first = 0
         if overlay.selected >= OVERLAY_VISIBLE_OPTIONS {
             first = overlay.selected - OVERLAY_VISIBLE_OPTIONS + 1
@@ -3225,14 +3263,14 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
         }
     }
     result.push('')
-    string help = overlay.kind == OVERLAY_TREE ? '↑↓ navigate   enter select   shift+l label   escape/ctrl+c cancel' : overlay.kind == OVERLAY_SCOPED_MODELS ? '↑↓ navigate   enter toggle   ctrl+a all   ctrl+x clear   ctrl+p provider   alt+↑↓ reorder   ctrl+s save   escape/ctrl+c cancel' : overlay.kind == OVERLAY_SESSION ? '↑↓ navigate   pgup/pgdn page   ctrl+p path   ctrl+s sort   ctrl+n named   ctrl+r rename   ctrl+d delete   escape cancel' : '↑↓ navigate   enter select   escape/ctrl+c cancel'
+    string help = overlay.kind == OVERLAY_TREE ? '↑↓ navigate   enter select   f filter   [ ] fold/unfold   shift+l label   escape/ctrl+c cancel' : overlay.kind == OVERLAY_SCOPED_MODELS ? '↑↓ navigate   enter toggle   ctrl+a all   ctrl+x clear   ctrl+p provider   alt+↑↓ reorder   ctrl+s save   escape/ctrl+c cancel' : overlay.kind == OVERLAY_SESSION ? '↑↓ navigate   pgup/pgdn page   ctrl+p path   ctrl+s sort   ctrl+n named   ctrl+r rename   ctrl+d delete   escape cancel' : '↑↓ navigate   enter select   escape/ctrl+c cancel'
     result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.dim_color(), help), width))
     result.push(theme.border_line(width))
     return result
 }
 
 #local
-fn filtered_options(string session_dir, ref<overlay_t> overlay): [string] {
+fn filtered_options(string session_dir, ref<overlay_t> overlay, ref<session.runner_t> runner): [string] {
     if overlay.kind == OVERLAY_MODEL {
         [string] result = []
         for option in overlay.options {
@@ -3271,6 +3309,23 @@ fn filtered_options(string session_dir, ref<overlay_t> overlay): [string] {
             return session_search.filter_and_sort_sessions_threaded(scoped, overlay.query, overlay.named_only)
         }
         return session_search.filter_and_sort_sessions(scoped, overlay.query, overlay.sort_mode, overlay.named_only)
+    }
+    if overlay.kind == OVERLAY_TREE {
+        [string] result = vec<string>.cap_of(overlay.options.len())
+        string query = overlay.query.to_lower()
+        for option in overlay.options {
+            string entry_id = option_entry_id(option)
+            if list_in(overlay.collapsed_ids, entry_id) {
+                continue
+            }
+            if !session_search.entry_matches_tree_filter(runner.repository, entry_id, overlay.tree_filter) {
+                continue
+            }
+            if query == '' || fuzzy_match((option + ' ' + session_search.entry_content_preview(runner.repository, entry_id)).to_lower(), query) {
+                result.push(option)
+            }
+        }
+        return result
     }
     [string] result = vec<string>.cap_of(overlay.options.len())
     string query = overlay.query.to_lower()
@@ -3440,6 +3495,15 @@ fn model_option_display(string reference, string current_reference): string {
     return line
 }
 
+fn list_in([string] values, string target): bool {
+    for value in values {
+        if value == target {
+            return true
+        }
+    }
+    return false
+}
+
 fn shorten_overlay_path(string value): string {
     string home = syscall.get_env('HOME')
     if home != '' && value.starts_with(home + '/') {
@@ -3592,7 +3656,7 @@ fn view_t.clear_scoped_models(&self, ref<overlay_t> overlay) {
 
 #local
 fn view_t.toggle_scoped_provider(&self, ref<overlay_t> overlay) {
-    var options = filtered_options(self.runner.repository.session_dir, overlay)
+    var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
     if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
         return
     }
@@ -3645,7 +3709,7 @@ fn view_t.reorder_scoped_model(&self, ref<overlay_t> overlay, int delta) {
     if !self.scoped_models_active || self.scoped_model_ids.len() == 0 {
         return
     }
-    var options = filtered_options(self.runner.repository.session_dir, overlay)
+    var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
     if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
         return
     }

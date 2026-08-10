@@ -349,3 +349,84 @@ fn append_subtree(thread_node_t root, [thread_node_t] all): [string] {
     }
     return result
 }
+
+// Tree selector filter helpers (Pi's tree filter modes): default shows
+// everything, no-tools hides tool calls and results, user-only keeps user
+// messages, labeled-only keeps labeled entries, all matches default.
+pub fn entry_matches_tree_filter(ref<repository.manager_t> repository, string entry_id, int mode): bool {
+    if mode == 0 || mode == 4 {
+        return true
+    }
+    var entry = repository.get_entry(entry_id) catch error {
+        return false
+    }
+    if !(entry is ref<session_types.entry_t>) {
+        return false
+    }
+    var entry_ref = entry as ref<session_types.entry_t>
+    if entry_ref.kind != session_types.ENTRY_MESSAGE {
+        return mode == 3 ? repository.get_label(entry_id) != '' : true
+    }
+    var object = entry_ref.raw as {string:any}
+    if !object.contains('message') || !(object['message'] is {string:any}) {
+        return true
+    }
+    var message = message_json.decode(object['message']) catch error {
+        return true
+    }
+    if mode == 3 {
+        return repository.get_label(entry_id) != ''
+    }
+    if message is ref<ai_types.user_message_t> {
+        // User messages survive no-tools and user-only alike.
+        return mode == 1 || mode == 2
+    }
+    if message is ref<ai_types.tool_result_message_t> {
+        return mode != 1
+    }
+    if message is ref<ai_types.assistant_message_t> assistant {
+        if mode == 2 {
+            return false
+        }
+        if mode == 1 {
+            for block in assistant.content {
+                if block is ref<ai_types.tool_call_t> {
+                    return false
+                }
+            }
+        }
+    }
+    return true
+}
+
+// A short content preview for the tree search (Pi searches entry content).
+pub fn entry_content_preview(ref<repository.manager_t> repository, string entry_id): string {
+    var entry = repository.get_entry(entry_id) catch error {
+        return ''
+    }
+    if !(entry is ref<session_types.entry_t>) {
+        return ''
+    }
+    var entry_ref = entry as ref<session_types.entry_t>
+    if entry_ref.kind != session_types.ENTRY_MESSAGE {
+        return ''
+    }
+    var object = entry_ref.raw as {string:any}
+    if !object.contains('message') || !(object['message'] is {string:any}) {
+        return ''
+    }
+    var message = message_json.decode(object['message']) catch error {
+        return ''
+    }
+    if message is ref<ai_types.user_message_t> user {
+        return user.content
+    }
+    if message is ref<ai_types.assistant_message_t> assistant {
+        for block in assistant.content {
+            if block is ref<ai_types.text_content_t> text_block {
+                return text_block.text
+            }
+        }
+    }
+    return ''
+}

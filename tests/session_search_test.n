@@ -149,3 +149,21 @@ test 'regex queries match against the full search text like Pi' {
     var invalid_match = session_search.match_session(text, invalid)
     assert(!invalid_match[0])
 }
+
+test 'tree filter helpers classify entries like Pi' {
+    var manager = repository.in_memory('/tmp/tree-filter-test')
+    var user = new ai_types.user_message_t(content = 'plain message')
+    string user_id = manager.append_message(user)
+    var call = new ai_types.tool_call_t(id = 'c1', name = 'bash', arguments = {})
+    ai_types.content_t call_block = call
+    var assistant = new ai_types.assistant_message_t(content = [call_block,])
+    ai_types.message_t assistant_message = assistant
+    string assistant_id = manager.append_message(assistant_message)
+    assert(session_search.entry_matches_tree_filter(manager, user_id, 2))
+    assert(!session_search.entry_matches_tree_filter(manager, assistant_id, 1))
+    assert(session_search.entry_matches_tree_filter(manager, user_id, 1))
+    assert(!session_search.entry_matches_tree_filter(manager, assistant_id, 2))
+    manager.append_label_change(user_id, 'important')
+    assert(session_search.entry_matches_tree_filter(manager, user_id, 3))
+    assert(session_search.entry_content_preview(manager, user_id) == 'plain message')
+}
