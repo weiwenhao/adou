@@ -1,6 +1,6 @@
 # Pi Core Module Map
 
-状态：MVP 核心路径已完成逐模块核对（Pi 基线 `0.82.1`, commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`）；Phase 5 Interactive UI 正在验收，Pi extension 运行时已停用。
+状态：MVP 核心路径已完成逐模块核对（Pi 基线 `0.82.1`, commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`）；Phase 5 Interactive UI 实现完成、PTY 验收收尾，Phase 6 CLI 进行中，Pi extension 运行时已停用。
 
 本文把 `vendors/pi` 中必须翻译到 Nature 的核心边界固定下来。判断标准是 Pi 的可观察 coding-agent 行为，而不是 TypeScript 文件是否已经有一个同名 Nature 文件。每个模块只有在完成源码差分、单元测试和至少一个跨模块集成测试后，才可标记为完成。
 
@@ -14,8 +14,8 @@
 | Session 与 JSONL | `packages/coding-agent/src/core/session-manager.ts`, `core/session-cwd.ts`, `packages/agent/src/harness/session/{session,jsonl-repo,jsonl-storage}.ts` | `src/session/{repository,jsonl,message_json,types,identity,export_html}.n` | session 27/27；RPC clone/new/tree/import/export 场景通过 | MVP 已通过：Pi v3 append-only 链、分支、恢复、fork/clone 和跨 cwd 语义覆盖 |
 | 自动压缩与分支摘要 | `packages/coding-agent/src/core/compaction/{compaction,branch-summarization,utils}.ts`, `packages/agent/src/harness/compaction/*` | `src/compaction/*.n`, `src/agent/session.n` | compaction 15/15；RPC compaction abort/retry/preprompt e2e | MVP 已通过：cut point、retained tail、previous summary/file details、取消和重试覆盖 |
 | 配置、认证、模型与项目上下文 | `packages/coding-agent/src/{config,core/auth-storage,core/model-{config,registry,resolver,runtime},core/settings-manager,core/resource-loader,core/system-prompt,core/project-trust}.ts`, `cli/args.ts` | `src/config/*.n`, `src/context/*.n`, `src/platform/cwd.n` | config context 22/22；model/settings/auth 全部通过；CLI validation/project-config/model-selection e2e | MVP 已通过：`.pi` 优先级、API key、模型 scope/thinking、session cwd 和启动错误语义覆盖 |
-| TUI、输入与终端渲染 | `packages/tui/src/{terminal,tui,stdin-buffer,keys,keybindings,editor-component,autocomplete,word-navigation,terminal-colors}.ts`, `packages/tui/src/components/*`, `packages/coding-agent/src/modes/interactive/components/{assistant-message,tool-execution,footer,loader,login-dialog,model-selector}.ts` | `src/tui/*.n` | input buffer 7/7；renderer 12/12；keys 4/4；term 2/2；text/unicode/markdown/component tests；TUI auth PTY e2e | MVP 已通过：差分渲染、Pi 配色、输入序列、认证/模型 overlay、终端恢复和退出覆盖；图片/扩展 UI 排除 |
-| CLI、print mode 与 RPC | `packages/coding-agent/src/{main,cli/args,modes/print-mode,modes/rpc/{rpc-mode,rpc-types,jsonl}}.ts` | `src/app.n`, `src/config/args.n`, `src/agent/event_json.n`, `src/app.n` RPC 分支 | 当前 `tests/e2e` 有 28 个脚本；event JSON 9/9；debug/config resolver 通过 | MVP 已通过：one-shot、JSON/RPC、abort/queue/retry/compact/session 命令和事件顺序覆盖 |
+| TUI、输入与终端渲染 | `packages/tui/src/{terminal,tui,stdin-buffer,keys,keybindings,editor-component,autocomplete,word-navigation,terminal-colors}.ts`, `packages/tui/src/components/*`, `packages/coding-agent/src/modes/interactive/components/*` | `src/tui/*.n` | 9 个 TUI PTY e2e；renderer/editor/input/model/session/settings/config/setup/theme/chat 等单测 | 实现已收口；待补 tree/fork/branch-summary PTY 后正式关闭 Phase 5 验收；图片/扩展 UI 排除 |
+| CLI、print mode 与 RPC | `packages/coding-agent/src/{main,cli/*,modes/print-mode,modes/rpc/{rpc-mode,rpc-types,jsonl}}.ts` | `src/app.n`, `src/config/args.n`, `src/agent/event_json.n` | 42 个 e2e 中含 18 个 RPC、7 个 CLI/config；event JSON 9/9 | Phase 6 进行中：主路径已覆盖；空 stdin 挂起、credential stderr 隔离和 help/参数矩阵仍需关闭 |
 | 导出与可观测性 | `packages/coding-agent/src/core/export-html/*`, `core/diagnostics.ts`, `core/timings.ts`, `core/output-guard.ts` | `src/session/export_html.n`, `src/debug.n`, `src/timings.n`, `src/output_guard.n`, `src/tui/virtual_terminal.n` | debug/observability 3/3；session/export assertions；`rpc-debug-stderr`、TUI/logging e2e | MVP 核心链路已覆盖：JSONL/静态 HTML 导出、诊断、启动计时和 RPC 输出隔离；Pi 的交互式导出模板、主题解析和扩展工具渲染器仍明确排除 |
 
 ## 明确不翻译
@@ -40,11 +40,14 @@
 
 “有同名文件”或“已有一条 happy-path 测试”不满足完成条件。
 
-## 本轮验收证据
+## 当前测试口径与验收证据
 
-- `NATURE_ROOT=/Users/liulianfuren/Code/nature make clean && NATURE_ROOT=/Users/liulianfuren/Code/nature make build`：通过；二进制明确链接源码树的新 runtime。
-- `NATURE_ROOT=/Users/liulianfuren/Code/nature make test`：全部 Nature 单元测试通过，包含 8 项 OpenAI HTTP、6 项 Anthropic HTTP、所有 session/compaction/TUI/工具测试。
-- `tests/e2e` 当前包含 33 个 CLI/RPC/工具/会话/TUI 脚本；旧记录中的“全部 26 个通过”对应脚本数量尚为 26 时的历史运行，不作为当前 33 个脚本的全量通过证明。完整 e2e 需要在允许本地 loopback/PTY 的环境中串行重跑。
+- 当前有 218 个 Nature 源文件、41,839 行 Nature 源码、137 个 Nature 单测文件、656 个 test case、2,685 个 `assert` 和 42 个 e2e 脚本。
+- 项目没有 line/branch coverage instrumentation。156/218 个源码模块被单测直接 import（71.6% 直接模块触达率），不得把该数字表述成代码覆盖率；extension 的 4 个测试文件/9 个 case 不计生产功能覆盖。
+- 2026-08-11 定向实跑：`chat_test.n`、`model_search_test.n`、`session_search_test.n`、`settings_persistence_test.n`、`setup_test.n`、`theme_test.n` 共 26/26 通过；model/settings/config/setup 四个 PTY e2e 与 `auth-print.sh` 通过。
+- `cli-startup-boundaries.sh` 当前会在 `/bin/sh` 的空 piped stdin 场景挂起；此前 shell timeout 不作为通过证据。修复前不得宣布 Phase 6 完成。
+- 历史上的全量 `make test` 通过记录早于最新 Phase 5/6 提交，不代表当前 137 个单测文件已在同一 HEAD 全量重跑。
+- 常规模型与测试密钥的项目约定维护在 `docs/porting-plan.md` 的“测试模型、密钥与成本约束”章节；普通回归优先 offline/local mock，live smoke 显式开启并限制消费。
 - 若 `nature --version` 已更新但 `/usr/local/nature/lib/darwin_arm64/libruntime.a` 仍是旧文件，Adou 仍会链接旧 runtime；需用管理员权限覆盖该静态库后再重新 `make clean && make build`。
 - TUI 退出路径使用 Nature 标准输入接口；输入读取在独立协程中阻塞等待 `fs/libuv` 数据，解析协程通过 Nature channel 接收字节并用定时协程处理 ESC 超时，不修改 stdin fd flags。退出时先恢复终端再结束 CLI，避免后台监听协程拖住进程。
 
