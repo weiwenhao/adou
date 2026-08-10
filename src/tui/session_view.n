@@ -2007,7 +2007,7 @@ fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int 
         last_line = visual_lines.len()
     }
     if first_line > 0 {
-        result.push(' ' + theme.fg(theme.DIM_COLOR, fmt.sprintf('↑ %d more', first_line)))
+        result.push(' ' + theme.fg(theme.dim_color(), fmt.sprintf('↑ %d more', first_line)))
     }
     for int index = first_line; index < last_line; index += 1 {
         var visual = visual_lines[index]
@@ -2029,7 +2029,7 @@ fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int 
     }
     int remaining = visual_lines.len() - last_line
     if remaining > 0 {
-        result.push(' ' + theme.fg(theme.DIM_COLOR, fmt.sprintf('↓ %d more', remaining)))
+        result.push(' ' + theme.fg(theme.dim_color(), fmt.sprintf('↓ %d more', remaining)))
     }
     result.push(theme.editor_border_line(thinking, bash_mode, width))
     if command_menu {
@@ -3041,17 +3041,17 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
     result.push('')
     int title_width = width - 2
     if title_width < 1 {title_width = 1}
-    result.push(' ' + theme.bold(theme.fg(theme.ACCENT, text_utils.truncate_to_width(overlay.title, title_width, '...', false))))
+    result.push(' ' + theme.bold(theme.fg(theme.accent(), text_utils.truncate_to_width(overlay.title, title_width, '...', false))))
     result.push('')
     if overlay.kind == OVERLAY_PATH_COMPLETION {
         for index, option in overlay.options {
-            string line = index == overlay.selected ? theme.fg(theme.ACCENT, '→ ' + option) : '  ' + theme.fg(theme.TEXT, option)
+            string line = index == overlay.selected ? theme.fg(theme.accent(), '→ ' + option) : '  ' + theme.fg(theme.text(), option)
             int available = width - 2
             if available < 1 {available = 1}
             result.push(text_utils.truncate_to_width(line, available, '...', false))
         }
         result.push('')
-        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.DIM_COLOR, 'up/down select · enter apply · escape close'), width))
+        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.dim_color(), 'up/down select · enter apply · escape close'), width))
         result.push(theme.border_line(width))
         return result
     }
@@ -3060,40 +3060,40 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
             if line == '' {
                 result.push('')
             } else if line == 'Session Info' || line == 'Messages' || line == 'Tokens' || line == 'Cost' || line == 'Context' {
-                result.append(text_utils.wrap_text_with_ansi(' ' + theme.bold(theme.fg(theme.ACCENT, line)), width))
+                result.append(text_utils.wrap_text_with_ansi(' ' + theme.bold(theme.fg(theme.accent(), line)), width))
             } else {
                 int available = width - 2
                 if available < 1 {available = 1}
-                result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.TEXT, text_utils.truncate_to_width(line, available, '...', false)), width))
+                result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.text(), text_utils.truncate_to_width(line, available, '...', false)), width))
             }
         }
         result.push('')
-        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.DIM_COLOR, 'enter/escape close'), width))
+        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.dim_color(), 'enter/escape close'), width))
         result.push(theme.border_line(width))
         return result
     }
     if overlay.kind == OVERLAY_API_KEY || overlay.kind == OVERLAY_NAME || overlay.kind == OVERLAY_LABEL || overlay.kind == OVERLAY_BRANCH_CUSTOM {
         string field = overlay.kind == OVERLAY_NAME ? 'Session name' : overlay.kind == OVERLAY_LABEL ? 'Label' : overlay.kind == OVERLAY_BRANCH_CUSTOM ? 'Instructions' : 'API key'
-        result.push(' ' + theme.fg(theme.MUTED, field))
-        result.push(' > ' + theme.fg(theme.TEXT, overlay.query))
+        result.push(' ' + theme.fg(theme.muted_color(), field))
+        result.push(' > ' + theme.fg(theme.text(), overlay.query))
         result.push('')
     } else {
         if overlay.kind == OVERLAY_SESSION && overlay.confirming_delete {
             result.push(' ' + theme.fg(theme.ERROR, 'Delete this session?'))
-            result.push(' ' + theme.fg(theme.TEXT, shorten_overlay_path(overlay.delete_path)))
+            result.push(' ' + theme.fg(theme.text(), shorten_overlay_path(overlay.delete_path)))
             result.push('')
-            result.push(' ' + theme.fg(theme.DIM_COLOR, 'enter confirm   escape cancel'))
+            result.push(' ' + theme.fg(theme.dim_color(), 'enter confirm   escape cancel'))
             result.push(theme.border_line(width))
             return result
         }
         if overlay.kind == OVERLAY_MODEL {
             // Pi's scope header (all / scoped) plus the auth hint.
             string scope_text = overlay.scope == 1 ? 'Scoped' : 'All'
-            result.push(' ' + theme.fg(theme.MUTED, 'Scope: ') + theme.fg(theme.ACCENT, scope_text) + theme.fg(theme.MUTED, '  (Tab to switch)'))
+            result.push(' ' + theme.fg(theme.muted_color(), 'Scope: ') + theme.fg(theme.accent(), scope_text) + theme.fg(theme.muted_color(), '  (Tab to switch)'))
             result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.WARNING, 'Only showing models from configured providers. Use /login to add providers.'), width))
             result.push('')
             if overlay.query != '' {
-                result.push(' ' + theme.fg(theme.MUTED, 'Search: ') + theme.fg(theme.TEXT, overlay.query))
+                result.push(' ' + theme.fg(theme.muted_color(), 'Search: ') + theme.fg(theme.text(), overlay.query))
                 result.push('')
             }
         }
@@ -3108,12 +3108,12 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
             first = last > OVERLAY_VISIBLE_OPTIONS ? last - OVERLAY_VISIBLE_OPTIONS : 0
         }
         if first > 0 {
-            result.push('  ' + theme.fg(theme.DIM_COLOR, '...'))
+            result.push('  ' + theme.fg(theme.dim_color(), '...'))
         }
         for int index = first; index < last; index += 1 {
             string option = options[index]
             bool selected = index == overlay.selected
-            string prefix = selected ? theme.fg(theme.ACCENT, '→ ') : '  '
+            string prefix = selected ? theme.fg(theme.accent(), '→ ') : '  '
             int option_width = width - 4
             if option_width < 1 {option_width = 1}
             string display_option = overlay.kind == OVERLAY_SESSION ? session_option_display(option, overlay.show_paths) : option
@@ -3124,11 +3124,11 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
                 display_option = session_tree_prefix(options, index) + display_option
             }
             string fitted = text_utils.truncate_to_width(display_option, option_width, '...', false)
-            string text = selected ? theme.fg(theme.ACCENT, fitted) : theme.fg(theme.TEXT, fitted)
+            string text = selected ? theme.fg(theme.accent(), fitted) : theme.fg(theme.text(), fitted)
             result.push(' ' + prefix + text)
         }
         if last < options.len() {
-            result.push('  ' + theme.fg(theme.DIM_COLOR, '...'))
+            result.push('  ' + theme.fg(theme.dim_color(), '...'))
         }
         if overlay.kind == OVERLAY_MODEL && options.len() > 0 && overlay.selected < options.len() {
             string name_line = 'Model Name: ' + options[overlay.selected]
@@ -3138,31 +3138,31 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
                     name_line = 'Model Name: ' + selected_ref.name
                 }
             }
-            result.push(' ' + theme.fg(theme.ACCENT, name_line))
+            result.push(' ' + theme.fg(theme.accent(), name_line))
         }
         if options.len() == 0 {
             if overlay.kind == OVERLAY_MODEL {
-                result.push('  ' + theme.fg(theme.MUTED, 'No matching models'))
+                result.push('  ' + theme.fg(theme.muted_color(), 'No matching models'))
             } else if overlay.kind == OVERLAY_SESSION {
                 if overlay.named_only {
                     if overlay.scope == 1 {
-                        result.push('  ' + theme.fg(theme.MUTED, 'No named sessions found. Press Ctrl+N to show all.'))
+                        result.push('  ' + theme.fg(theme.muted_color(), 'No named sessions found. Press Ctrl+N to show all.'))
                     } else {
-                        result.push('  ' + theme.fg(theme.MUTED, 'No named sessions in current folder. Press Ctrl+N to show all, or Tab to view all.'))
+                        result.push('  ' + theme.fg(theme.muted_color(), 'No named sessions in current folder. Press Ctrl+N to show all, or Tab to view all.'))
                     }
                 } else if overlay.scope == 1 {
-                    result.push('  ' + theme.fg(theme.MUTED, 'No sessions found'))
+                    result.push('  ' + theme.fg(theme.muted_color(), 'No sessions found'))
                 } else {
-                    result.push('  ' + theme.fg(theme.MUTED, 'No sessions in current folder. Press Tab to view all.'))
+                    result.push('  ' + theme.fg(theme.muted_color(), 'No sessions in current folder. Press Tab to view all.'))
                 }
             } else {
-                result.push('  ' + theme.fg(theme.MUTED, 'No matching options'))
+                result.push('  ' + theme.fg(theme.muted_color(), 'No matching options'))
             }
         }
     }
     result.push('')
     string help = overlay.kind == OVERLAY_TREE ? '↑↓ navigate   enter select   shift+l label   escape/ctrl+c cancel' : overlay.kind == OVERLAY_SCOPED_MODELS ? '↑↓ navigate   enter toggle   ctrl+a all   ctrl+x clear   ctrl+p provider   alt+↑↓ reorder   ctrl+s save   escape/ctrl+c cancel' : overlay.kind == OVERLAY_SESSION ? '↑↓ navigate   pgup/pgdn page   ctrl+p path   ctrl+s sort   ctrl+n named   ctrl+r rename   ctrl+d delete   escape cancel' : '↑↓ navigate   enter select   escape/ctrl+c cancel'
-    result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.DIM_COLOR, help), width))
+    result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.dim_color(), help), width))
     result.push(theme.border_line(width))
     return result
 }
@@ -3314,7 +3314,7 @@ fn session_option_display(string file_path, bool show_path): string {
     if show_path {
         right = shorten_overlay_path(file_path) + '  ' + right
     }
-    return body + '  ' + theme.fg(theme.DIM_COLOR, right)
+    return body + '  ' + theme.fg(theme.dim_color(), right)
 }
 
 #local
@@ -3360,7 +3360,7 @@ fn session_tree_prefix([string] options, int index): string {
     } else {
         result += '├─ '
     }
-    return theme.fg(theme.MUTED, result)
+    return theme.fg(theme.muted_color(), result)
 }
 
 // Pi's model row: id with a [provider] badge and a ✓ mark on the current
@@ -3369,7 +3369,7 @@ fn model_option_display(string reference, string current_reference): string {
     int separator = reference.find('/')
     string provider = separator >= 0 ? reference.slice(0, separator) : ''
     string id = separator >= 0 ? reference.slice(separator + 1, reference.len()) : reference
-    string line = id + ' ' + theme.fg(theme.MUTED, '[' + provider + ']')
+    string line = id + ' ' + theme.fg(theme.muted_color(), '[' + provider + ']')
     if reference == current_reference {
         line += theme.fg(theme.SUCCESS, ' ✓')
     }
@@ -3732,8 +3732,8 @@ fn render_command_menu(string prefix, int selected_index, int width): [string]! 
     var matches = matching_command_names(prefix)
     for index, command in matches {
         string description = command_description(command)
-        string line = index == selected_index ? theme.fg(theme.ACCENT, '→ ' + command) : '  ' + theme.fg(theme.TEXT, command)
-        line += '  ' + theme.fg(theme.MUTED, description)
+        string line = index == selected_index ? theme.fg(theme.accent(), '→ ' + command) : '  ' + theme.fg(theme.text(), command)
+        line += '  ' + theme.fg(theme.muted_color(), description)
         result.push(text_utils.truncate_to_width(line, width, '...', false))
     }
     return result

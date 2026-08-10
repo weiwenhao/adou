@@ -1,5 +1,49 @@
 import adou.src.tui.text_utils
 
+// Theme variants.  The dark theme is the default; light overrides the
+// readability-critical colors (text, muted, surfaces) so a light terminal
+// background stays legible.  theme-selector previews by switching variants.
+string theme_variant = ''
+
+pub fn set_variant(string name) {
+    theme_variant = name == 'light' ? 'light' : 'dark'
+}
+
+pub fn variant(): string {
+    if theme_variant == '' {
+        return 'dark'
+    }
+    return theme_variant
+}
+
+pub fn text(): string {
+    return variant() == 'light' ? '\x1b[38;2;50;50;60m' : TEXT_DARK
+}
+
+pub fn muted_color(): string {
+    return variant() == 'light' ? '\x1b[38;2;110;110;115m' : MUTED_DARK
+}
+
+pub fn dim_color(): string {
+    return variant() == 'light' ? '\x1b[38;2;140;140;145m' : DIM_COLOR_DARK
+}
+
+pub fn accent(): string {
+    return variant() == 'light' ? '\x1b[38;2;30;130;120m' : ACCENT_DARK
+}
+
+pub fn user_bg(): string {
+    return variant() == 'light' ? '\x1b[48;2;235;235;240m' : USER_BG_DARK
+}
+
+pub fn selected_bg(): string {
+    return variant() == 'light' ? '\x1b[48;2;225;225;230m' : SELECTED_BG_DARK
+}
+
+pub fn border(): string {
+    return variant() == 'light' ? '\x1b[38;2;70;100;200m' : BORDER_DARK
+}
+
 // Pi's built-in dark theme, kept as terminal-native ANSI styling.
 pub const RESET = '\x1b[0m'
 pub const BOLD = '\x1b[1m'
@@ -9,14 +53,19 @@ pub const UNDERLINE = '\x1b[4m'
 pub const STRIKETHROUGH = '\x1b[9m'
 pub const INVERSE = '\x1b[7m'
 
+const ACCENT_DARK = '\x1b[38;2;138;190;183m'
 pub const ACCENT = '\x1b[38;2;138;190;183m'
+const BORDER_DARK = '\x1b[38;2;95;135;255m'
 pub const BORDER = '\x1b[38;2;95;135;255m'
 pub const BORDER_ACCENT = '\x1b[38;2;0;215;255m'
 pub const SUCCESS = '\x1b[38;2;181;189;104m'
 pub const ERROR = '\x1b[38;2;204;102;102m'
 pub const WARNING = '\x1b[38;2;255;255;0m'
+const MUTED_DARK = '\x1b[38;2;128;128;128m'
 pub const MUTED = '\x1b[38;2;128;128;128m'
+const DIM_COLOR_DARK = '\x1b[38;2;102;102;102m'
 pub const DIM_COLOR = '\x1b[38;2;102;102;102m'
+const TEXT_DARK = '\x1b[38;2;212;212;212m'
 pub const TEXT = '\x1b[38;2;212;212;212m'
 pub const THINKING = '\x1b[38;2;128;128;128m'
 pub const HEADING = '\x1b[38;2;240;198;116m'
@@ -24,7 +73,9 @@ pub const LINK = '\x1b[38;2;129;162;190m'
 pub const CODE = '\x1b[38;2;138;190;183m'
 pub const CODE_BLOCK = '\x1b[38;2;181;189;104m'
 pub const CODE_BLOCK_BORDER = '\x1b[38;2;102;102;102m'
+const USER_BG_DARK = '\x1b[48;2;52;53;65m'
 pub const USER_BG = '\x1b[48;2;52;53;65m'
+const SELECTED_BG_DARK = '\x1b[48;2;58;58;74m'
 pub const SELECTED_BG = '\x1b[48;2;58;58;74m'
 pub const TOOL_PENDING_BG = '\x1b[48;2;40;40;50m'
 pub const TOOL_SUCCESS_BG = '\x1b[48;2;40;50;40m'

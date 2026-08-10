@@ -294,8 +294,8 @@ pub fn chat_t.render(&self, int width): [string]! {
     }
     for tool in self.active_tools {
         string marker = tool.done ? '✓ ' : spinner_frame(self.spinner_index) + ' '
-        string color = tool.is_error ? theme.ERROR : tool.done ? theme.SUCCESS : theme.ACCENT
-        string line = color + marker + theme.fg(theme.TEXT, tool.name)
+        string color = tool.is_error ? theme.ERROR : tool.done ? theme.SUCCESS : theme.accent()
+        string line = color + marker + theme.fg(theme.text(), tool.name)
         if tool.detail != '' {
             // A renderer line must never contain a physical newline.  Pi's
             // tool component owns multiline output as separate rows; the
@@ -304,7 +304,7 @@ pub fn chat_t.render(&self, int width): [string]! {
             string preview = tool.detail.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
             int detail_width = width - text_utils.visible_width(line) - 1
             if detail_width < 1 {detail_width = 1}
-            line += ' ' + theme.fg(theme.MUTED, text_utils.truncate_to_width(preview, detail_width, '...', false))
+            line += ' ' + theme.fg(theme.muted_color(), text_utils.truncate_to_width(preview, detail_width, '...', false))
         }
         string background = tool.is_error ? theme.TOOL_ERROR_BG : tool.done ? theme.TOOL_SUCCESS_BG : theme.TOOL_PENDING_BG
         result.push(colored_row(background, line, width))
@@ -345,7 +345,7 @@ pub fn chat_t.render(&self, int width): [string]! {
         if self.session_name != '' {
             cwd_display += ' • ' + self.session_name
         }
-        string cwd_line = theme.fg(theme.DIM_COLOR, text_utils.truncate_to_width(cwd_display, width, '...', false))
+        string cwd_line = theme.fg(theme.dim_color(), text_utils.truncate_to_width(cwd_display, width, '...', false))
         result.append(wrapped_lines(cwd_line, width))
         [string] stats = []
         if self.total_input_tokens > 0 {stats.push('↑' + format_tokens(self.total_input_tokens))}
@@ -390,7 +390,7 @@ pub fn chat_t.render(&self, int width): [string]! {
             string fitted = available > 0 ? text_utils.truncate_to_width(right, available, '', false) : ''
             footer += repeat_spaces(width - left_width - text_utils.visible_width(fitted)) + fitted
         }
-        result.push(theme.fg(theme.DIM_COLOR, text_utils.truncate_to_width(footer, width, '...', false)))
+        result.push(theme.fg(theme.dim_color(), text_utils.truncate_to_width(footer, width, '...', false)))
     }
     return result
 }
@@ -422,29 +422,29 @@ fn render_message_lines(ai_types.message_t message, int width, bool tool_output_
         // Pi renders user messages through Markdown inside a Box with one
         // column of horizontal and one row of vertical padding. Keep the
         // complete row on the user background (including blank lines).
-        result.push(colored_row(theme.USER_BG, '', width))
-        result.append(render_markdown_rows(user.content, width, theme.USER_BG))
-        result.push(colored_row(theme.USER_BG, '', width))
+        result.push(colored_row(theme.user_bg(), '', width))
+        result.append(render_markdown_rows(user.content, width, theme.user_bg()))
+        result.push(colored_row(theme.user_bg(), '', width))
     } else if message is ref<ai_types.assistant_message_t> assistant {
         result.append(render_assistant_lines(assistant, width, false, thinking_visible))
     } else if message is ref<ai_types.tool_result_message_t> tool {
         string color = tool.is_error ? theme.ERROR : theme.SUCCESS
-        string prefix = color + (tool.is_error ? '✗ ' : '✓ ') + theme.fg(theme.TEXT, tool.tool_name)
+        string prefix = color + (tool.is_error ? '✗ ' : '✓ ') + theme.fg(theme.text(), tool.tool_name)
         string body = tool_message_text(*tool)
         string preview = body.replace('\r\n', '\n').replace('\r', '\n').replace('\n', ' ')
-        string line = prefix + (preview != '' ? ' ' + theme.fg(theme.MUTED, preview) : '')
+        string line = prefix + (preview != '' ? ' ' + theme.fg(theme.muted_color(), preview) : '')
         string background = tool.is_error ? theme.TOOL_ERROR_BG : theme.TOOL_SUCCESS_BG
         result.push(colored_row(background, line, width))
         if body != '' && tool_output_expanded {
             result.append(render_tool_body(body, width))
         }
     } else if message is ref<ai_types.compaction_summary_message_t> summary {
-        result.append(wrapped_lines(theme.fg(theme.MUTED, '[Context summary] ' + summary.summary), width))
+        result.append(wrapped_lines(theme.fg(theme.muted_color(), '[Context summary] ' + summary.summary), width))
     } else if message is ref<ai_types.branch_summary_message_t> summary {
-        result.append(wrapped_lines(theme.fg(theme.MUTED, '[Branch summary] ' + summary.summary), width))
+        result.append(wrapped_lines(theme.fg(theme.muted_color(), '[Branch summary] ' + summary.summary), width))
     } else if message is ref<ai_types.custom_message_t> custom {
         if custom.display {
-            result.append(wrapped_lines(theme.fg(theme.MUTED, custom.content), width))
+            result.append(wrapped_lines(theme.fg(theme.muted_color(), custom.content), width))
         }
     } else if message is ref<ai_types.bash_execution_message_t> bash {
         result.append(render_bash_lines(bash, width, tool_output_expanded))
@@ -460,7 +460,7 @@ const BASH_PREVIEW_VISUAL_LINES = 20
 #local
 fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, bool expanded): [string]! {
     [string] result = vec<string>.cap_of(8)
-    string color = bash.exclude_from_context ? theme.DIM_COLOR : theme.ACCENT
+    string color = bash.exclude_from_context ? theme.dim_color() : theme.accent()
     result.push('')
     result.push(theme.fg(color, text_utils.truncate_to_width('$ ' + bash.command, width, '...', false)))
     string body = bash.output.replace('\r\n', '\n').replace('\r', '\n')
@@ -469,21 +469,21 @@ fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, boo
             var truncated = text_utils.truncate_visual_lines(body, width, BASH_PREVIEW_VISUAL_LINES)
             int skipped = truncated[1]
             if skipped > 0 {
-                result.push(theme.fg(theme.DIM_COLOR, fmt.sprintf('... (%d more lines, press Ctrl+O to expand)', skipped)))
+                result.push(theme.fg(theme.dim_color(), fmt.sprintf('... (%d more lines, press Ctrl+O to expand)', skipped)))
             }
             for line in truncated[0].split('\n') {
-                result.append(wrapped_lines(theme.fg(theme.MUTED, line), width))
+                result.append(wrapped_lines(theme.fg(theme.muted_color(), line), width))
             }
         } else {
             for line in body.split('\n') {
-                result.append(wrapped_lines(theme.fg(theme.MUTED, line), width))
+                result.append(wrapped_lines(theme.fg(theme.muted_color(), line), width))
             }
         }
     } else {
-        result.push(theme.fg(theme.MUTED, '(no output)'))
+        result.push(theme.fg(theme.muted_color(), '(no output)'))
     }
     if bash.truncated && bash.full_output_path != '' {
-        result.append(wrapped_lines(theme.fg(theme.DIM_COLOR, 'Output truncated. Full output: ' + bash.full_output_path), width))
+        result.append(wrapped_lines(theme.fg(theme.dim_color(), 'Output truncated. Full output: ' + bash.full_output_path), width))
     }
     string footer = ''
     if bash.cancelled {
@@ -500,7 +500,7 @@ fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, boo
 #local
 fn render_active_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, int spinner_index): [string]! {
     [string] result = vec<string>.cap_of(24)
-    string color = bash.exclude_from_context ? theme.DIM_COLOR : theme.SUCCESS
+    string color = bash.exclude_from_context ? theme.dim_color() : theme.SUCCESS
     result.push('')
     result.push(theme.fg(color, text_utils.truncate_to_width('$ ' + bash.command, width, '...', false)))
     string normalized = bash.output.replace('\r\n', '\n').replace('\r', '\n')
@@ -508,10 +508,10 @@ fn render_active_bash_lines(ref<ai_types.bash_execution_message_t> bash, int wid
         var truncated = text_utils.truncate_visual_lines(normalized, width, BASH_PREVIEW_VISUAL_LINES)
         int skipped = truncated[1]
         if skipped > 0 {
-            result.push(theme.fg(theme.DIM_COLOR, fmt.sprintf('... (%d earlier lines)', skipped)))
+            result.push(theme.fg(theme.dim_color(), fmt.sprintf('... (%d earlier lines)', skipped)))
         }
         for line in truncated[0].split('\n') {
-            result.append(wrapped_lines(theme.fg(theme.MUTED, line), width))
+            result.append(wrapped_lines(theme.fg(theme.muted_color(), line), width))
         }
     }
     result.append(wrapped_lines(theme.fg(color, spinner_frame(spinner_index) + ' Running... (escape to cancel)'), width))
@@ -622,7 +622,7 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
         }
     }
     if streaming && had_content {
-        result.push(theme.fg(theme.ACCENT, '▌'))
+        result.push(theme.fg(theme.accent(), '▌'))
     }
     return result
 }
@@ -636,7 +636,7 @@ fn render_markdown_rows(string value, int width, string background): [string]! {
     var markdown_lines = markdown.render(value, content_width)
     [string] result = vec<string>.cap_of(markdown_lines.len())
     for line in markdown_lines {
-        string styled = theme.fg(theme.TEXT, line)
+        string styled = theme.fg(theme.text(), line)
         string padded = pad_terminal_line(' ' + styled + ' ', width)
         result.push(background == '' ? padded : theme.background_line(background, padded, width))
     }
@@ -669,8 +669,8 @@ fn pad_terminal_line(string value, int width): string! {
 
 #local
 fn render_status_lines(string status, bool running, int width, int spinner_index): [string]! {
-    string prefix = running ? theme.fg(theme.ACCENT, spinner_frame(spinner_index) + ' ') : ''
-    return wrapped_lines(prefix + theme.fg(theme.MUTED, status), width)
+    string prefix = running ? theme.fg(theme.accent(), spinner_frame(spinner_index) + ' ') : ''
+    return wrapped_lines(prefix + theme.fg(theme.muted_color(), status), width)
 }
 
 #local
@@ -779,7 +779,7 @@ fn diff_line_color(string line): string {
         return theme.fg(theme.WARNING, line)
     }
     if line.starts_with('+++') || line.starts_with('---') {
-        return theme.fg(theme.MUTED, line)
+        return theme.fg(theme.muted_color(), line)
     }
     if line.starts_with('+') {
         return theme.fg(theme.SUCCESS, line)
@@ -787,7 +787,7 @@ fn diff_line_color(string line): string {
     if line.starts_with('-') {
         return theme.fg(theme.ERROR, line)
     }
-    return theme.fg(theme.MUTED, line)
+    return theme.fg(theme.muted_color(), line)
 }
 
 fn tool_message_text(ai_types.tool_result_message_t tool): string {

@@ -38,7 +38,7 @@ pub fn render(string markdown, int width): [string]! {
         }
         if is_horizontal_rule(raw) {
             int rule_width = width > 80 ? 80 : width
-            result.push(theme.fg(theme.MUTED, repeat_string('─', rule_width)))
+            result.push(theme.fg(theme.muted_color(), repeat_string('─', rule_width)))
             result.push('')
             index += 1
             continue
@@ -55,13 +55,13 @@ pub fn render(string markdown, int width): [string]! {
             int depth = quote_depth(content)
             string quote_content = strip_quote_prefix(content, depth)
             string gutter = repeat_string('│ ', depth)
-            styled = indent_text + theme.fg(theme.MUTED, gutter) + inline(quote_content)
+            styled = indent_text + theme.fg(theme.muted_color(), gutter) + inline(quote_content)
         } else if unordered_prefix_end(content) > 0 {
             int marker_end = unordered_prefix_end(content)
-            styled = indent_text + theme.fg(theme.ACCENT, content.slice(0, marker_end)) + inline(content.slice(marker_end, content.len()))
+            styled = indent_text + theme.fg(theme.accent(), content.slice(0, marker_end)) + inline(content.slice(marker_end, content.len()))
         } else {
             int ordered = ordered_prefix_end(content)
-            styled = ordered > 0 ? indent_text + theme.fg(theme.ACCENT, content.slice(0, ordered)) + inline(content.slice(ordered, content.len())) : inline(raw)
+            styled = ordered > 0 ? indent_text + theme.fg(theme.accent(), content.slice(0, ordered)) + inline(content.slice(ordered, content.len())) : inline(raw)
         }
         var wrapped = text_utils.wrap_text_with_ansi(styled, width > 0 ? width : 1)
         for line in wrapped {
@@ -240,7 +240,7 @@ fn table_divider([int] widths): string {
     }
     // Drop the trailing multi-byte separator entirely, then close the row.
     line = line.slice(0, line.len() - 3) + '┤'
-    return theme.fg(theme.MUTED, line)
+    return theme.fg(theme.muted_color(), line)
 }
 
 #local

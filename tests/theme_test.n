@@ -9,3 +9,17 @@ test 'text attributes reset without clearing an enclosing background' {
     string line = theme.background_line(theme.USER_BG, theme.bold('bold') + '  ', 6)
     assert(line == '\x1b[48;2;52;53;65m\x1b[1mbold\x1b[22m  \x1b[0m')
 }
+
+test 'theme variants switch the readability colors like Pi' {
+    theme.set_variant('light')
+    assert(theme.variant() == 'light')
+    assert(theme.muted_color() != '\x1b[38;2;128;128;128m')
+    theme.set_variant('dark')
+    assert(theme.variant() == 'dark')
+    assert(theme.text() == '\x1b[38;2;212;212;212m')
+    assert(theme.muted_color() == '\x1b[38;2;128;128;128m')
+    assert(theme.accent() == '\x1b[38;2;138;190;183m')
+    theme.set_variant('light')
+    assert(theme.border() != '\x1b[38;2;95;135;255m')
+    theme.set_variant('dark')
+}
