@@ -1,4 +1,3 @@
-import adou.src.agent.extensions
 import adou.src.agent.session
 import adou.src.agent.session_stream
 import adou.src.agent.types as agent_types
@@ -321,7 +320,7 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
             return null
         }
         if key == 'down' {
-            int count = matching_command_names(self.editor.get_text(), self.runner.extensions.get_registered_commands()).len()
+            int count = matching_command_names(self.editor.get_text()).len()
             self.command_index += 1
             if self.command_index >= count {
                 self.command_index = count - 1
@@ -1026,28 +1025,6 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         }
         return stream
     }
-    // Extension commands are invoked like built-ins: `/name` with the
-    // remainder as the raw argument string (Pi parses the command name by
-    // stripping the leading slash).
-    string extension_command_name = command.starts_with('/') ? command.slice(1, command.len()) : command
-    var extension_commands = self.runner.extensions.get_registered_commands()
-    for ext_command in extension_commands {
-        if ext_command.name == extension_command_name {
-            string arguments = command_args_after(text, command)
-            string result = self.runner.extensions.run_command(extension_command_name, arguments) catch error {
-                self.chat.error_message = error.msg()
-                self.redraw()
-                return null
-            }
-            if result != '' {
-                self.chat.status = result
-            } else {
-                self.chat.status = 'Extension command ' + extension_command_name + ' completed'
-            }
-            self.redraw()
-            return null
-        }
-    }
     self.chat.error_message = 'Unknown command: ' + text
     self.redraw()
     return null
@@ -1507,15 +1484,6 @@ fn command_tokens(string text): [string] {
     return result
 }
 
-// Raw argument string handed to extension command handlers: everything after
-// the command name, trimmed, or '' when the command line has no arguments.
-#local
-fn command_args_after(string text, string command): string {
-    if text.len() <= command.len() + 1 || !text.starts_with(command + ' ') {
-        return ''
-    }
-    return text.slice(command.len() + 1, text.len()).trim([' ', '\t', '\n', '\r'])
-}
 
 // /export and /import accept the same quoted path convention as Pi.  The
 // other slash commands intentionally keep their free-form remainder parsing.
@@ -1569,7 +1537,7 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     if self.overlay is ref<overlay_t> active_overlay {
         editor_lines = render_overlay(active_overlay, width)
     } else {
-        editor_lines = render_editor(self.editor, width, self.command_menu, self.command_index, self.chat.thinking, height, self.runner.extensions.get_registered_commands())
+        editor_lines = render_editor(self.editor, width, self.command_menu, self.command_index, self.chat.thinking, height)
     }
     lines.append(editor_lines)
     return lines
@@ -1867,7 +1835,7 @@ fn read_input(ref<view_t> view, chan<terminal_input_t> input, chan<input_t> outp
 }
 
 #local
-fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int command_index, string thinking, int terminal_rows, [extensions.extension_command_t] extension_commands): [string]! {
+fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int command_index, string thinking, int terminal_rows): [string]! {
     [string] result = vec<string>.cap_of(16)
     bool bash_mode = editor.get_text().starts_with('!')
     result.push(theme.editor_border_line(thinking, bash_mode, width))
@@ -1903,27 +1871,26 @@ fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int 
     }
     result.push(theme.editor_border_line(thinking, bash_mode, width))
     if command_menu {
-        result.append(render_command_menu(editor.get_text(), command_index, width, extension_commands))
+        result.append(render_command_menu(editor.get_text(), command_index, width))
     }
     return result
 }
 
 pub fn view_t.update_command_menu(&self) {
     string text = self.editor.get_text()
-    var extension_commands = self.runner.extensions.get_registered_commands()
-    self.command_menu = text.starts_with('/') && !text.contains(' ') && matching_command_names(text, extension_commands).len() > 0
+    self.command_menu = text.starts_with('/') && !text.contains(' ') && matching_command_names(text).len() > 0
     if !self.command_menu {
         self.command_index = 0
         return
     }
-    int count = matching_command_names(text, extension_commands).len()
+    int count = matching_command_names(text).len()
     if self.command_index >= count {
         self.command_index = count - 1
     }
 }
 
 pub fn view_t.complete_command(&self): string {
-    var matches = matching_command_names(self.editor.get_text(), self.runner.extensions.get_registered_commands())
+    var matches = matching_command_names(self.editor.get_text())
     if matches.len() == 0 || self.command_index < 0 || self.command_index >= matches.len() {
         return ''
     }
@@ -3255,49 +3222,22 @@ fn builtin_command_names(): [string] {
 }
 
 #local
-fn matching_command_names(string prefix, [extensions.extension_command_t] extension_commands): [string] {
+fn matching_command_names(string prefix): [string] {
     [string] result = vec<string>.cap_of(9)
     for command in builtin_command_names() {
         if prefix == '' || command.starts_with(prefix) {
             result.push(command)
         }
     }
-    // Extension commands follow the built-ins, deduplicated against them
-    // like Pi's autocomplete feed.  They are invoked with a leading slash
-    // (`/name`), so completion surfaces the slash-prefixed spelling.
-    for ext_command in extension_commands {
-        if list_contains(builtin_command_names(), ext_command.name) {
-            continue
-        }
-        string candidate = ext_command.name
-        if !candidate.starts_with('/') {
-            candidate = '/' + candidate
-        }
-        if list_contains(result, candidate) {
-            continue
-        }
-        if prefix == '' || candidate.starts_with(prefix) {
-            result.push(candidate)
-        }
-    }
     return result
 }
 
-fn list_contains([string] values, string target): bool {
-    for value in values {
-        if value == target {
-            return true
-        }
-    }
-    return false
-}
-
 #local
-fn render_command_menu(string prefix, int selected_index, int width, [extensions.extension_command_t] extension_commands): [string]! {
+fn render_command_menu(string prefix, int selected_index, int width): [string]! {
     [string] result = vec<string>.cap_of(10)
-    var matches = matching_command_names(prefix, extension_commands)
+    var matches = matching_command_names(prefix)
     for index, command in matches {
-        string description = command_description(command, extension_commands)
+        string description = command_description(command)
         string line = index == selected_index ? theme.fg(theme.ACCENT, '→ ' + command) : '  ' + theme.fg(theme.TEXT, command)
         line += '  ' + theme.fg(theme.MUTED, description)
         result.push(text_utils.truncate_to_width(line, width, '...', false))
@@ -3306,15 +3246,7 @@ fn render_command_menu(string prefix, int selected_index, int width, [extensions
 }
 
 #local
-fn command_description(string command, [extensions.extension_command_t] extension_commands): string {
-    for ext_command in extension_commands {
-        if ext_command.name == command {
-            return ext_command.description
-        }
-        if command.starts_with('/') && ext_command.name == command.slice(1, command.len()) {
-            return ext_command.description
-        }
-    }
+fn command_description(string command): string {
     if command == '/help' {return 'Show commands'}
     if command == '/settings' {return 'Open settings'}
     if command == '/scoped-models' {return 'Select configured models'}
