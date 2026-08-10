@@ -1,0 +1,36 @@
+import adou.src.ai.types
+import adou.src.tui.fuzzy
+
+// Model selector search: Pi filters by model id, provider and display name
+// and narrows to the scoped set when the scope is "scoped" (the --models
+// patterns).  The overlay keeps the same provider/id reference strings.
+
+// Match a provider/id reference (and its model name) against a query.
+pub fn match_model(string reference, string model_name, string query): bool {
+    if query == '' {
+        return true
+    }
+    string searchable = reference
+    if model_name != '' {
+        searchable += ' ' + model_name
+    }
+    return fuzzy.fuzzy_match(query, searchable.to_lower()).matches
+}
+
+// True when the provider participates in at least one --models scope
+// pattern (bare pattern or provider-prefixed).
+pub fn provider_in_scope(string provider, [string] scope_patterns): bool {
+    if scope_patterns.len() == 0 {
+        return true
+    }
+    for pattern in scope_patterns {
+        int separator = pattern.find('/')
+        if separator >= 0 && pattern.slice(0, separator).to_lower() == provider.to_lower() {
+            return true
+        }
+        if separator < 0 && pattern.to_lower() == provider.to_lower() {
+            return true
+        }
+    }
+    return false
+}

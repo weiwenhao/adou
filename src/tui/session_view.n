@@ -29,6 +29,7 @@ import adou.src.tui.chat
 import adou.src.tui.editor
 import adou.src.tui.input_buffer
 import adou.src.tui.keys
+import adou.src.tui.model_search
 import adou.src.tui.path_completion
 import adou.src.tui.session_actions
 import adou.src.tui.session_search
@@ -178,6 +179,7 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     [string] no_extra_prompts = []
     view.prompt_templates = prompt_templates.load_prompt_templates(cwd, paths.agent_dir(), no_extra_prompts, true)
     refresh_dynamic_commands(cwd)
+    model_scope_patterns_cache = view.model_scope_patterns
     var stored_settings = config_settings.load_for(cwd)
     view.scoped_model_ids = stored_settings.enabled_model_ids
     view.scoped_models_active = stored_settings.enabled_model_ids.len() > 0
@@ -1683,7 +1685,7 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     [string] lines = self.chat.render(width)
     [string] editor_lines = []
     if self.overlay is ref<overlay_t> active_overlay {
-        editor_lines = render_overlay(active_overlay, width, self.runner.repository.session_dir)
+        editor_lines = render_overlay(active_overlay, width, self.runner.repository.session_dir, self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id)
     } else {
         editor_lines = render_editor(self.editor, width, self.command_menu, self.command_index, self.chat.thinking, height)
     }
@@ -2086,6 +2088,14 @@ pub fn view_t.show_model_overlay(&self, string query) {
             break
         }
     }
+    // Pi refreshes the remote catalogs while the selector is open; adou
+    // refreshes synchronously when networking is enabled and reports the
+    // outcome on the status line (success or explicit failure).
+    if syscall.get_env('ADOU_CATALOG_NETWORK') != '' && syscall.get_env('PI_OFFLINE') == '' {
+        self.chat.status = 'Refreshing model catalogs...'
+        models.refresh_remote_catalogs()
+        self.chat.status = 'Model catalogs refreshed.'
+    }
 }
 
 pub fn view_t.show_scoped_models_overlay(&self) {
@@ -2360,6 +2370,14 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             return
         }
         return
+    }
+    if overlay.kind == OVERLAY_MODEL {
+        if key == 'tab' {
+            overlay.scope = overlay.scope == 0 ? 1 : 0
+            overlay.selected = 0
+            self.redraw()
+            return
+        }
     }
     if overlay.kind == OVERLAY_SESSION {
         if key == 'tab' {
@@ -3017,7 +3035,7 @@ pub fn view_t.copy_last_response(&self) {
     self.redraw()
 }
 
-pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir): [string]! {
+pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, string current_model_reference): [string]! {
     [string] result = vec<string>.cap_of(24)
     result.push(theme.border_line(width))
     result.push('')
@@ -3069,6 +3087,9 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir): [s
             return result
         }
         if overlay.kind == OVERLAY_MODEL {
+            // Pi's scope header (all / scoped) plus the auth hint.
+            string scope_text = overlay.scope == 1 ? 'Scoped' : 'All'
+            result.push(' ' + theme.fg(theme.MUTED, 'Scope: ') + theme.fg(theme.ACCENT, scope_text) + theme.fg(theme.MUTED, '  (Tab to switch)'))
             result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.WARNING, 'Only showing models from configured providers. Use /login to add providers.'), width))
             result.push('')
             if overlay.query != '' {
@@ -3096,6 +3117,9 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir): [s
             int option_width = width - 4
             if option_width < 1 {option_width = 1}
             string display_option = overlay.kind == OVERLAY_SESSION ? session_option_display(option, overlay.show_paths) : option
+            if overlay.kind == OVERLAY_MODEL {
+                display_option = model_option_display(option, current_model_reference)
+            }
             if overlay.kind == OVERLAY_SESSION && overlay.sort_mode == 3 {
                 display_option = session_tree_prefix(options, index) + display_option
             }
@@ -3106,8 +3130,20 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir): [s
         if last < options.len() {
             result.push('  ' + theme.fg(theme.DIM_COLOR, '...'))
         }
+        if overlay.kind == OVERLAY_MODEL && options.len() > 0 && overlay.selected < options.len() {
+            string name_line = 'Model Name: ' + options[overlay.selected]
+            var selected_model = models.find(options[overlay.selected])
+            if selected_model is ref<ai_types.model_t> selected_ref {
+                if selected_ref.name != '' {
+                    name_line = 'Model Name: ' + selected_ref.name
+                }
+            }
+            result.push(' ' + theme.fg(theme.ACCENT, name_line))
+        }
         if options.len() == 0 {
-            if overlay.kind == OVERLAY_SESSION {
+            if overlay.kind == OVERLAY_MODEL {
+                result.push('  ' + theme.fg(theme.MUTED, 'No matching models'))
+            } else if overlay.kind == OVERLAY_SESSION {
                 if overlay.named_only {
                     if overlay.scope == 1 {
                         result.push('  ' + theme.fg(theme.MUTED, 'No named sessions found. Press Ctrl+N to show all.'))
@@ -3133,6 +3169,25 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir): [s
 
 #local
 fn filtered_options(string session_dir, ref<overlay_t> overlay): [string] {
+    if overlay.kind == OVERLAY_MODEL {
+        [string] result = []
+        for option in overlay.options {
+            int separator = option.find('/')
+            string provider = separator >= 0 ? option.slice(0, separator) : option
+            if overlay.scope == 1 && !model_search.provider_in_scope(provider, model_scope_patterns_cache) {
+                continue
+            }
+            var model = models.find(option)
+            string model_name = ''
+            if model is ref<ai_types.model_t> model_ref {
+                model_name = model_ref.name
+            }
+            if model_search.match_model(option, model_name, overlay.query) {
+                result.push(option)
+            }
+        }
+        return result
+    }
     if overlay.kind == OVERLAY_SESSION {
         // Pi's session search: id + name + every message text + cwd, with
         // `re:` regex, quoted phrases and fuzzy tokens; sort_mode 2 ranks
@@ -3306,6 +3361,19 @@ fn session_tree_prefix([string] options, int index): string {
         result += '├─ '
     }
     return theme.fg(theme.MUTED, result)
+}
+
+// Pi's model row: id with a [provider] badge and a ✓ mark on the current
+// model.
+fn model_option_display(string reference, string current_reference): string {
+    int separator = reference.find('/')
+    string provider = separator >= 0 ? reference.slice(0, separator) : ''
+    string id = separator >= 0 ? reference.slice(separator + 1, reference.len()) : reference
+    string line = id + ' ' + theme.fg(theme.MUTED, '[' + provider + ']')
+    if reference == current_reference {
+        line += theme.fg(theme.SUCCESS, ' ✓')
+    }
+    return line
 }
 
 fn shorten_overlay_path(string value): string {
@@ -3589,6 +3657,7 @@ fn builtin_command_names(): [string] {
 // menu, deduplicated against them.  The host refreshes the cache whenever a
 // session starts (view construction) so project resources stay current.
 [slash_commands.slash_command_info_t] dynamic_commands_cache = []
+[string] model_scope_patterns_cache = []
 bool dynamic_commands_loaded = false
 
 fn refresh_dynamic_commands(string cwd) {
