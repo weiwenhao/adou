@@ -165,9 +165,14 @@ word-navigation/stdin-buffer 已覆盖。新增 fuzzy 匹配（`src/tui/fuzzy.n`
 文件路径补全（`src/tui/path_completion.n`：引号/@ 前缀、目录优先排序、闭合引号
 去重，7/7）、terminal-image 纯逻辑（`src/tui/terminal_image.n`：能力检测/kitty
 分块编码/iTerm2/尺寸解析/单元格换算，7/7）。
-进行中：编辑器视觉行包装（editor.n 目前物理行近似）、keybindings 注册表
-（键位硬编码）、markdown 增强（表格/嵌套块）；native-modifiers 按 darwin 原生
-模块排除（kitty 协议覆盖 Shift+Enter）；PTY e2e 目前仅 tui-auth-overlay.sh。
+
+Phase 4 完成（2026-08-10）：keybindings 注册表（`src/tui/keybindings.n`：命名动作
++ 别名 + 描述，handle_key 走注册表，2/2）、markdown 增强（表格对齐渲染/表头加粗/
+宽度收缩、嵌套引用层级 gutter，7/7）、编辑器视觉行包装（editor.width + visual_lines
+grapheme 折行/visual_cursor 折行边界归属/垂直移动跨视觉行，editor 17/17）。
+native-modifiers 按 darwin 原生模块排除（kitty 协议覆盖 Shift+Enter）。
+验收：input/renderer 单测全绿 + 2 个 PTY e2e（tui-auth-overlay.sh 原有 +
+tui-editor-wrapping.sh 新增：40 列终端长输入折行渲染 + 清空 + slash 退出）。
 
 ### Phase 5｜Interactive 模式 UI 组件全量
 - interactive-mode + 40 个组件（diff、session-selector、model-search、login-dialog、
