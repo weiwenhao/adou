@@ -79,7 +79,9 @@
 
 已实现批次（2026-08-10）：bash 完成态输出管理——render_bash_lines 接入 tool_output_expanded 折叠（视觉行末 20 行 + "N more lines, press Ctrl+O to expand"）、bash.truncated/full_output_path 渲染 "Output truncated. Full output: <path>"、退出码短格式 "(exit N)"（错误色）、活动 bash 视觉行截断 + 跳过计数、chat status 行不再重复 echo 退出码。新增 text_utils.truncate_visual_lines（Pi visual-truncate 语义）与 PTY e2e tui-bash-output.sh。
 
-已实现批次（2026-08-10）：session selector/resume 主路径——session_search.n（Pi session-selector-search 对齐：搜索文本覆盖 id/名称/全部消息文本/cwd、re: 正则、引号短语、fuzzy token、relevance 排序 + recent 模式保序 + named 过滤）；OVERLAY_SESSION 搜索/排序接入（ctrl+s 循环 recent→alpha→relevance）；session_actions.delete_session_file（trash CLI 优先、unlink 回退、按实际方法报告状态，对齐 Pi deleteSessionFile）；单测 session_search 4/4、session_actions 2/2；PTY e2e tui-session-selector.sh（启动 picker 列出 fixture 会话、消息文本搜索过滤、空结果空态、escape 取消、终端恢复退出）。PTY 下删除确认渲染与差分渲染器存在竞态（快速脚本输入下 confirming UI 偶发不输出），删除闭环由单测覆盖并记录为已知 PTY 限制。
+已实现批次（2026-08-10）：session selector/resume 主路径——session_search.n（Pi session-selector-search 对齐：搜索文本覆盖 id/名称/全部消息文本/cwd、re: 正则、引号短语、fuzzy token、relevance 排序 + recent 模式保序 + named 过滤）；OVERLAY_SESSION 搜索/排序接入（ctrl+s 循环 recent→alpha→relevance）；session_actions.delete_session_file（trash CLI 优先、unlink 回退、按实际方法报告状态，对齐 Pi deleteSessionFile）；单测 session_search 4/4、session_actions 2/2；PTY e2e tui-session-selector.sh（启动 picker 列出 fixture 会话、消息文本搜索过滤、空结果空态、escape 取消、终端恢复退出）。
+
+补齐批次（2026-08-10）：完整对齐——Tab 作用域切换（Current Folder / All，options 合并集按 scope 过滤）；ctrl+s 四档排序（recent→alpha→relevance→threaded，threaded 按 parentSessionPath 树形排序 + │/├─/└─ 前缀渲染）；会话行元数据（消息数 + 相对时间 now/5m/3h/2d/w/mo/y + 路径视图 cwd，对齐 Pi formatSessionDate）；四种分场景空态文案（named/all/current 变体）；re: 查询走 native POSIX regex 桥（libc regcomp/regexec，REG_EXTENDED|ICASE，native/regex.o 接入 Makefile 与 package.toml [links]），替换子串近似；删除确认闭环的 PTY e2e 完整跑通（确认→取消→再确认→enter 删除→列表刷新→状态消息；此前失败为 e2e 自身 query 污染，非渲染竞态）。单测 session_search 6/6（含 threaded 树序与正则语义）、session_actions 2/2；PTY e2e 连跑 3 次稳定。
 
 接下来按以下顺序收口：
 
