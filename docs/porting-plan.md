@@ -17,7 +17,7 @@
 | Phase 2：Agent harness | 已完成 | agent loop、工具、memory repo、shell 捕获、取消和 tool context 已覆盖 |
 | Phase 3：coding-agent core | 已完成（排除扩展） | session、compaction、配置、skills、prompts、模型目录、诊断与导出已覆盖 |
 | Phase 4：TUI 基础 | 已完成 | renderer、editor、autocomplete、fuzzy、路径补全、markdown、terminal image 逻辑已覆盖 |
-| Phase 5：Interactive UI | 进行中 | 39 组件审计完成；session-selector/visual-truncate/bash-execution 等已收口；未关闭：model-selector、settings/config selector、diff 着色、tree 搜索/过滤/折叠、first-time setup、theme selector、countdown timer |
+| Phase 5：Interactive UI | 进行中 | 39 组件审计完成；session-selector/visual-truncate/bash-execution/model-selector/scoped-models-selector 已收口；未关闭：settings/config selector、diff 着色、tree 搜索/过滤/折叠、first-time setup、theme selector、countdown timer |
 | Phase 6：CLI | 部分完成 | 主参数和启动路径已具备，待逐文件差分和边界 e2e |
 | Phase 7：storage + server | 未开始 | 当前使用 JSONL repository 与进程内 RPC；尚无 SQLite/IPC server |
 | Phase 8：evals | 未开始 | 尚未移植 pi-harness/smoke.eval |
@@ -85,9 +85,10 @@
 
 已收口：session-selector（含 PTY e2e）、bash-execution、visual-truncate、login API key 分支、tree 主体、footer/status。
 
+已收口：model-selector / scoped-models-selector（2026-08-10 批次：当前模型 ✓、Tab All/Scoped 切换、id/provider/名称搜索、Model Name 详情行、No matching models 空态、ADOU_CATALOG_NETWORK 下同步目录刷新与状态反馈、选择后保存默认模型；单测 model_search 2/2；PTY e2e tui-model-selector.sh 与 tui-scoped-models.sh）。
+
 仍未关闭的非排除项（按序处理）：
-1. model-selector / scoped-models-selector：scope 切换、刷新中/失败反馈、当前模型标记、空结果与选择后状态。
-2. settings-selector / config-selector：分类子菜单与高级设置项。
+1. settings-selector / config-selector：分类子菜单与高级设置项。
 3. diff.ts：工具输出中的 diff 行级/词级着色。
 4. tree-selector：搜索、过滤模式、折叠/展开。
 5. first-time-setup：首启向导（主题 + 遥测 opt-in）。
