@@ -41,6 +41,10 @@ pub type chat_t = struct {
     ref<ai_types.bash_execution_message_t>? active_bash = null
     int spinner_index
     i64 spinner_last_ms
+    i64 retry_started_ms = 0
+    int retry_delay_ms = 0
+    int retry_attempt = 0
+    int retry_max_attempts = 0
     int total_input_tokens
     int total_output_tokens
     int total_cache_read
@@ -149,11 +153,19 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
     }
     if event.kind == session_stream.EVENT_RETRY_START {
         self.running = true
+        self.retry_started_ms = time.now().ms_timestamp()
+        self.retry_delay_ms = event.retry_delay_ms
+        self.retry_attempt = event.retry_attempt
+        self.retry_max_attempts = event.retry_max_attempts
         self.status = fmt.sprintf('Retrying request (%d/%d) in %.1fs...', event.retry_attempt, event.retry_max_attempts, event.retry_delay_ms as float / 1000.0)
         self.error_message = ''
         return
     }
     if event.kind == session_stream.EVENT_RETRY_END {
+        self.retry_started_ms = 0
+        self.retry_delay_ms = 0
+        self.retry_attempt = 0
+        self.retry_max_attempts = 0
         if event.retry_success {
             self.status = 'Retrying request...'
         } else {
@@ -306,6 +318,17 @@ pub fn chat_t.render(&self, int width): [string]! {
         result.append(wrapped_lines(theme.fg(theme.ERROR, 'Error: ' + self.error_message), width))
     }
     if self.status != '' {
+        // Pi's countdown timer: the retry status re-renders the remaining
+        // seconds on every frame while the retry backoff is pending.
+        if self.retry_started_ms > 0 && self.retry_delay_ms > 0 {
+            i64 now = time.now().ms_timestamp()
+            int elapsed = (now - self.retry_started_ms) as int
+            int remaining = self.retry_delay_ms - elapsed
+            if remaining < 0 {
+                remaining = 0
+            }
+            self.status = fmt.sprintf('Retrying request (%d/%d) in %.1fs...', self.retry_attempt, self.retry_max_attempts, remaining as float / 1000.0)
+        }
         result.append(render_status_lines(self.status, self.running, width, self.spinner_index))
         if self.running {
             i64 now = time.now().ms_timestamp()

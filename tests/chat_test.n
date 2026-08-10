@@ -3,6 +3,7 @@ import adou.src.agent.types as agent_types
 import adou.src.ai.types
 import adou.src.tools.types as tool_types
 import adou.src.tui.chat
+import co
 import fmt
 import strings
 import time
@@ -147,4 +148,20 @@ test 'bash exit status is a short inline footer like Pi' {
     var lines = strings.join(value.render(60), '\n')
     assert(lines.contains('(exit 3)'))
     assert(!lines.contains('Command exited with code'))
+}
+
+test 'retry status counts down every render like Pi' {
+    var value = chat.new('mock-model', '/tmp/project')
+    var started = session_stream.event_t {kind: session_stream.EVENT_RETRY_START, retry_attempt: 2, retry_max_attempts: 3, retry_delay_ms: 3000,}
+    value.apply(started)
+    var first = strings.join(value.render(60), '\n')
+    assert(first.contains('(2/3) in 3s') || first.contains('(2/3) in 3.0s'))
+    co.sleep(1200)
+    var later = strings.join(value.render(60), '\n')
+    assert(later.contains('in 1s') || later.contains('in 1.') || later.contains('in 2s'))
+    var ended = session_stream.event_t {kind: session_stream.EVENT_RETRY_END, retry_success: true,}
+    value.apply(ended)
+    co.sleep(300)
+    var after = strings.join(value.render(60), '\n')
+    assert(!after.contains(' in '))
 }
