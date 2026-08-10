@@ -258,3 +258,37 @@ test 'sanitizer strips interlinear annotation markers U+FFF9-FFFB like Pi' {
     string replacement = 'x\xef\xbf\xbdy'
     assert(command.sanitize_output(replacement) == 'x\xef\xbf\xbdy')
 }
+
+test 'shell env overrides and inherit_env behave like Pi exec options' {
+    {string:string} env = {}
+    env['ADOU_ENV_TEST'] = 'injected-value'
+    var result = command.shell_abortable_env('/tmp', 'echo "$ADOU_ENV_TEST"', 10000, abort.new(), env, true) catch error {
+        assert(false)
+        command.result_t {}
+    }
+    assert(result.stdout.trim([' ', '\t', '\n']) == 'injected-value')
+    // Without the override the variable is unset.
+    var empty = command.shell_abortable('/tmp', 'echo "x${ADOU_ENV_TEST}y"', 10000, abort.new()) catch error {
+        assert(false)
+        command.result_t {}
+    }
+    assert(empty.stdout.trim([' ', '\t', '\n']) == 'xy')
+    // inherit_env=false replaces the environment: PATH-dependent commands fail.
+    var isolated = command.shell_abortable_env('/tmp', 'echo "PATH=${PATH:-unset}"', 10000, abort.new(), {}, false) catch error {
+        assert(false)
+        command.result_t {}
+    }
+    // bash installs its compiled-in default PATH; what must not leak is the
+    // parent environment (HOME/LOGNAME/TMPDIR etc.).
+    var inherited = command.shell_abortable('/tmp', 'echo "HOME=$HOME"', 10000, abort.new())
+    var isolated_home = command.shell_abortable_env('/tmp', 'echo "HOME=${HOME:-gone}"', 10000, abort.new(), {}, false)
+    assert(inherited.stdout.contains('HOME=/'))
+    
+    assert(isolated_home.stdout.trim([' ', '\t', '\n']) == 'HOME=gone')
+    // Explicit env still applies in the isolated environment.
+    var isolated_env = command.shell_abortable_env('/tmp', 'echo "$ADOU_ENV_TEST"', 10000, abort.new(), env, false) catch error {
+        assert(false)
+        command.result_t {}
+    }
+    assert(isolated_env.stdout.trim([' ', '\t', '\n']) == 'injected-value')
+}

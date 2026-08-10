@@ -213,7 +213,23 @@ pub fn shell_timeout(string cwd, string command, int timeout_ms): result_t! {
 }
 
 pub fn shell_abortable(string cwd, string command, int timeout_ms, ref<abort.abort_t> cancellation): result_t! {
-    string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
+    return shell_abortable_env(cwd, command, timeout_ms, cancellation, {}, true)
+}
+
+// Pi's exec env/inheritEnv options: explicit variable overrides layered over
+// (or, when inheritEnv is false, replacing) the inherited environment.  The
+// overrides are injected as export statements before the command so the
+// process layer stays untouched.
+pub fn shell_abortable_env(string cwd, string command, int timeout_ms, ref<abort.abort_t> cancellation, {string:string} env, bool inherit_env): result_t! {
+    string prefix = environment_prefix()
+    for name, value in env {
+        prefix += 'export ' + quote(name) + '=' + quote(value) + ' && '
+    }
+    string inner = 'cd ' + quote(cwd) + ' && ' + prefix + command
+    // inherit_env=false runs the command in an empty environment (Pi's exec
+    // spawn without inherited env); the outer bash stays intact while the
+    // inner bash -lc gets the explicit exports only.
+    string script = inherit_env ? inner : 'env -i /bin/bash -lc ' + quote(inner)
     var stdout_buffer = io.buffer.new()
     var stderr_buffer = io.buffer.new()
     string helper = process_group_helper()
