@@ -1,14 +1,14 @@
 # Adou 全量移植计划（Pi 0.82.1，扩展机制暂缓）
 
-状态：Phase 5 实现完成、验收收尾；Phase 6 进行中 — 2026-08-11
+状态：Phase 5、Phase 6 已完成；Phase 7 进行中 — 2026-08-11
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
 
 ## 当前进度快照
 
-- Adou 当前有 218 个 `src/**/*.n` 文件、41,839 行 Nature 源码、137 个 Nature 单元测试文件（656 个 test case、2,685 个 `assert`）和 44 个 e2e 脚本。
-- Phase 1–4 已完成并有源码差分、单元测试和跨模块验收记录。
-- Phase 5 正式关闭（2026-08-11）：39 个 Interactive UI 组件全部有结论；`tui-tree-fork.sh` PTY 闭环覆盖 tree/fork/branch-summary 与终端恢复。
-- Phase 6 进行中：9 个上游 CLI 模块的主路径已具备；piped stdin 挂起与 credential 输出隔离已修复；help 文本逐项核对与参数矩阵收尾中。
+- Adou 当前有 218 个 `src/**/*.n` 文件、41,925 行 Nature 源码、137 个 Nature 单元测试文件（656 个 test case、2,685 个 `assert`）和 45 个 e2e 脚本。
+- Phase 1–6 已完成并有源码差分、单元测试和跨模块验收记录；137 个单测文件在 2026-08-11 全量串行通过（7 个 OOM abort 单独重跑全过，deepseek fixture 回归已修复）。
+- Phase 7（storage + server）进行中：本批为 repository backend contract 第一纵切（JSONL/memory 双后端契约测试），SQLite 实现待下一批。
+- 历史失败记录（cli-startup-boundaries 挂起、auth stdout 泄漏、ESC 10ms、deepseek fixture、全量 7 文件 OOM）均已由后续修复或重跑覆盖，见各批实跑证据。
 - Phase 7（独立 storage/server）和 Phase 8（evals harness）尚未开始，且不阻塞当前本地 CLI agent 主业务。
 - Pi extension 已在生产入口停用：不扫描扩展目录、不初始化 QuickJS、不注册扩展工具/命令、不派发生命周期事件；默认构建不再链接 QuickJS。相关源码暂留作未来重新设计的参考。
 
@@ -19,11 +19,12 @@
 | Phase 3：coding-agent core | 已完成（排除扩展） | session、compaction、配置、skills、prompts、模型目录、诊断与导出已覆盖 |
 | Phase 4：TUI 基础 | 已完成 | renderer、editor、autocomplete、fuzzy、路径补全、markdown、terminal image 逻辑已覆盖 |
 | Phase 5：Interactive UI | 已完成 | 39 组件全部有结论；tree/fork/branch-summary PTY 闭环通过（tui-tree-fork.sh），终端恢复验证 |
-| Phase 6：CLI | 进行中 | 9 个上游模块主路径已具备；空 stdin 挂起与 credential 输出隔离已修复；help/参数矩阵收尾中 |
+| Phase 6：CLI | 已完成 | 9 个上游模块逐项对照；空 stdin 挂起、credential 输出隔离、help/参数矩阵、启动边界均通过（help-matrix/cli-startup-boundaries/auth-print/rpc-shape-parity 等 45 个 e2e） |
+| Phase 7：storage + server | 进行中 | 本批：JSONL/memory 双后端契约测试与 adapter 边界；SQLite/IPC server 未开始 |
 | Phase 7：storage + server | 未开始 | 当前使用 JSONL repository 与进程内 RPC；尚无 SQLite/IPC server |
 | Phase 8：evals | 未开始 | 尚未移植 pi-harness/smoke.eval |
 
-阶段完成度按行为验收判断，不用 Pi TypeScript 文件数推算百分比。当前可以严格确认 4/8 阶段关闭；Phase 5 的代码实现可计为完成，但在剩余 PTY 验收通过前不计为正式关闭。Phase 6 不得因主路径存在而提前宣布完成。
+阶段完成度按行为验收判断，不用 Pi TypeScript 文件数推算百分比。当前严格确认 6/8 阶段关闭（Phase 1–6）；Phase 7 进行中。
 
 ## 目标与范围
 
@@ -88,26 +89,20 @@
 
 已收口：model-selector / scoped-models-selector（当前模型 ✓、Tab All/Scoped、id/provider/名称搜索、详情行、空态、目录刷新反馈和默认模型保存）；settings/config selector（thinking/theme 子菜单、skills/prompts 资源启停和持久化）；theme、diff、countdown、first-time setup、tree 搜索/过滤/折叠均有对应实现和单测或 PTY 证据。
 
-Phase 5 剩余验收项：
-
-1. `/tree` 的搜索、过滤模式、折叠/展开、取消和终端恢复 PTY 闭环。
-2. `/fork` 的选择、取消和分支结果 PTY 闭环。
-3. branch summary 的状态与完成路径，或可确定的错误路径 PTY 闭环。
-
-Phase 5 正式完成标准：39 个组件矩阵保持全部有结论；非排除实现项的相关单测通过；上述三个 PTY 闭环通过；成功、失败和取消后终端均恢复。在此之前统一表述为“实现完成、验收收尾”。
+Phase 5 验收结果（2026-08-11 关闭）：`tui-tree-fork.sh` PTY 闭环覆盖 `/tree` 打开/搜索过滤/取消/重开、非 leaf 导航进入 branch summary（`No summary` 完成）、`/fork` 选择与 `Forked to new session`、`/quit` 终端恢复退出码 0；39 个组件矩阵全部有结论。历史“剩余验收项”已由该闭环覆盖。
 
 ### Phase 6｜CLI 补全
 
 当前已有：参数解析与校验、`--list-models`、`@file`、piped stdin、initial messages、text/json/rpc/print 模式、session/continue/resume/fork、export、project trust 和启动时 session picker。
 
-已完成：
+已关闭（2026-08-11）：
 
-1. 修复 `/bin/sh` command substitution 下空 FIFO stdin 卡在 `read_piped_stdin()`：native `poll()` 前置探测（`native/stdin_peek.c`），每次 read 前检查 POLLIN/POLLHUP，写端未关闭且无数据时停止而非阻塞等 EOF；e2e 覆盖 /dev/null、空 pipe、有内容 pipe、regular file。同时把 offline 守卫移到 piped/@file prompt 摄入之后，`--offline` 真正拦截 piped prompt。实跑：`printf 'hello' | ./build/bin/adou --offline --no-context-files --no-session --print` 立即输出 `Offline mode cannot send prompts to a provider`；`cli-startup-boundaries.sh` 全流程自然退出。
-2. 修复 `auth print-api-key` 输出隔离：成功仅 stdout（stderr 空）；失败 stdout 空、`Error: ` 前缀写 stderr、退出码非零；`auth-print.sh` 覆盖成功、缺 provider、无 key、`--api-key` 拒绝与未知参数。
-3. 对照 `src/cli` 的 9 个上游文件，确认 list-models、file processor、initial message、session picker、startup UI、config selector、credential print 和 project trust 的全部输入/错误语义，并逐项核对 help 文本。
-4. 为每类 CLI 行为增加针对性 e2e，保持 text/JSON/RPC stdout 不受诊断日志污染。
+1. `/bin/sh` command substitution 下空 FIFO stdin 挂起：native `poll()` 前置探测（`native/stdin_peek.c`），写端未关闭且无数据时停止而非阻塞等 EOF；offline 守卫移到 piped/@file prompt 摄入之后。e2e 覆盖 /dev/null、空 pipe、有内容 pipe、regular file，自然退出通过。
+2. `auth print-api-key` 输出隔离：成功仅 stdout；失败 stdout 空、`Error: ` 写 stderr、退出码非零；`auth-print.sh` 断言成功与全部失败模式的通道分离。
+3. 9 个上游 CLI 文件逐项对照完成（args/config-selector/credential-print/file-processor/initial-message/list-models/project-trust/session-picker/startup-ui），HELP 覆盖全参数矩阵（`help-matrix.sh`）。
+4. 每类 CLI 行为有针对性 e2e；text/JSON/RPC stdout 不受诊断日志污染。
 
-Phase 6 完成标准：9 个上游 CLI 文件逐项有结论；帮助文本与参数行为一致；相关 CLI/RPC e2e 全绿。
+Phase 6 完成标准已满足：9 个上游 CLI 文件逐项有结论；帮助文本与参数行为一致；`help-matrix.sh`、`cli-startup-boundaries.sh`、`auth-print.sh`、`rpc-shape-parity.sh` 及相关 CLI/RPC e2e 全绿（2026-08-11 实跑）。
 
 ### Phase 7｜storage + server
 
@@ -170,4 +165,4 @@ Phase 8 完成标准：harness 可重复运行 smoke 集合，并输出稳定的
 4. 先运行 `make build`，再串行运行受影响的单文件 Nature 测试和 e2e。
 5. 不并发运行 Nature、不使用 `make -j`、不运行 `nature fmt`；除非明确需要，不运行约两小时的完整 `make test`。
 
-当前测试库存为 137 个 Nature 单元测试文件与 44 个 e2e 脚本；这只是覆盖资产数量，不代表本次快照已重跑全量测试。最新可复核的模块证据维护在 `docs/pi-core-module-map.md`。
+当前测试库存为 137 个 Nature 单元测试文件与 45 个 e2e 脚本；这只是覆盖资产数量，不代表每次提交后都重跑全量测试。最新可复核的模块证据维护在 `docs/pi-core-module-map.md`。
