@@ -2,6 +2,7 @@ import adou.src.ai.types as ai_types
 import adou.src.session.identity
 import adou.src.session.repository
 import adou.src.session.types as session_types
+import adou.src.storage.sqlite as sqlite
 import adou.src.storage.sqlite_repo
 import adou.src.tools.command
 import adou.src.tools.path_utils
@@ -113,8 +114,13 @@ pub fn fork_to(backend_t b, string requested_id): backend_t! {
         string timestamp = identity.iso_now()
         var handle = b.sqlite_db as ref<sqlite_repo.db_t>
         sqlite_repo.create_session(handle, new_id, timestamp, mgr(b).cwd, mgr(b).header.id)
+        sqlite.sqlite3_int64_t branch_seq = 0
         for entry in mgr(b).entries {
             sqlite_repo.append_entry(handle, new_id, entry.id, entry.parent_id, entry.kind, entry.timestamp, json.serialize(entry.raw))
+            // Each copied entry joins the new session's main branch with an
+            // entry_seq following the copy order (upstream branch-entries.ts).
+            sqlite_repo.record_branch_entry(handle, new_id, 'main', entry.id, branch_seq)
+            branch_seq += 1
         }
         var manager = sqlite_repo.load_manager(handle, new_id, mgr(b).cwd)
         manager.persisted = true
@@ -164,8 +170,13 @@ pub fn list_session_paths(string session_dir): [string] {
 // File-level delete: move to trash when available, else unlink.
 // Returns (deleted, message); message distinguishes the method used.
 pub fn delete_session_file(string file_path, string cwd): (bool, string) {
-    if file_path == '' || !path_utils.exists(file_path) {
+    if file_path == '' {
         return (false, 'Session file does not exist')
+    }
+    if !path_utils.exists(file_path) {
+        // Pi treats a file that is gone after the attempt as a successful
+        // deletion, so a missing target is already deleted.
+        return (true, 'Session file does not exist')
     }
     var trashed = command.argv(cwd, '/bin/sh', ['trash', file_path]) catch error {
         command.result_t {}

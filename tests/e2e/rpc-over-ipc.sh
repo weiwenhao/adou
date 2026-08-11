@@ -80,6 +80,14 @@ try:
     if resp.get("success") is not False or "Offline mode" not in resp.get("error", ""):
         raise SystemExit(f"offline prompt should fail: {resp!r}")
 
+    resp = request('{"type":"rpc_stream","id":"rs1","instanceId":"' + instance + '"}')
+    if resp.get("success") is not False or "Offline mode" not in resp.get("error", ""):
+        raise SystemExit(f"offline rpc_stream should fail: {resp!r}")
+
+    resp = request('{"type":"rpc","id":"ps1","command":{"type":"prompt","message":"hello","streamingBehavior":"stream"}}')
+    if resp.get("success") is not False or "Offline mode" not in resp.get("error", ""):
+        raise SystemExit(f"offline streamed prompt should fail: {resp!r}")
+
     resp = request('{"type":"stop","id":"x1","instanceId":"' + instance + '"}')
     if resp.get("success") is not True:
         raise SystemExit(f"stop failed: {resp!r}")
@@ -97,4 +105,4 @@ finally:
     shutil.rmtree(root, ignore_errors=True)
 PY
 
-echo "e2e: RPC-over-IPC spawn/list/status/stop and offline prompt guard pass"
+echo "e2e: RPC-over-IPC spawn/list/status/stop and offline prompt/rpc_stream guards pass"

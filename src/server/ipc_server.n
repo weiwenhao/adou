@@ -11,7 +11,23 @@ import time
 
 pub type serve_handler_t = fn(string request_line): string
 
+// Stream-mode counterpart: returns the event lines to write for a request
+// whose response was marked with the "stream":true marker.
+pub type stream_handler_t = fn(string request_line): [string]
+
+pub type optional_stream_handler_t = stream_handler_t|null
+
 pub fn serve(string listen_host, int port, serve_handler_t handler): void! {
+    serve_with_stream(listen_host, port, handler, null)
+}
+
+// Phase 7 streaming slice of the IPC server.  The request handler returns
+// the response line; when that line carries the "stream":true marker the
+// connection switches to stream mode and every line returned by the stream
+// handler is written in order (documented difference from the upstream
+// bidirectional rpc_stream socket protocol, which keeps a single
+// connection open for repeated RpcCommands).
+pub fn serve_with_stream(string listen_host, int port, serve_handler_t handler, optional_stream_handler_t stream_handler): void! {
     var server = tcp.listen(fmt.sprintf('%s:%d', listen_host, port)) catch error {
         return
     }
@@ -19,12 +35,12 @@ pub fn serve(string listen_host, int port, serve_handler_t handler): void! {
         var conn = server.accept() catch error {
             break
         }
-        go handle_connection(conn, handler)
+        go handle_connection(conn, handler, stream_handler)
     }
 }
 
 #local
-fn handle_connection(ref<tcp.conn_t> conn, serve_handler_t handler): void! {
+fn handle_connection(ref<tcp.conn_t> conn, serve_handler_t handler, optional_stream_handler_t stream_handler): void! {
     for true {
         string line = read_line(conn) catch error {
             break
@@ -33,14 +49,41 @@ fn handle_connection(ref<tcp.conn_t> conn, serve_handler_t handler): void! {
             break
         }
         string response = handler(line)
-        if response != '' {
-            var bytes = (response + '\n') as [u8]
-            conn.write(bytes) catch error {
-                break
+        if response == '' {
+            continue
+        }
+        if stream_handler is stream_handler_t streaming && is_stream_marker(response) {
+            var lines = streaming(line)
+            for event_line in lines {
+                var bytes = (event_line + '\n') as [u8]
+                conn.write(bytes) catch error {
+                    conn.close()
+                    return
+                }
             }
+            continue
+        }
+        var bytes = (response + '\n') as [u8]
+        conn.write(bytes) catch error {
+            break
         }
     }
     conn.close()
+}
+
+// The app-level handler marks a streamed request with "stream":true; the
+// connection then writes every event line the stream handler returns.
+#local
+fn is_stream_marker(string response): bool {
+    any parsed = json_util.parse(response) catch error {
+        return false
+    }
+    if parsed is {string:any} object {
+        if object.contains('stream') && object['stream'] is bool {
+            return object['stream'] as bool
+        }
+    }
+    return false
 }
 
 // Line reader tolerant to split reads; returns '' at EOF/empty line.

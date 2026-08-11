@@ -1,20 +1,10 @@
-import adou.src.tools.command
-import adou.src.tools.path_utils
-import os
-import path
+import adou.src.session.backend
 
-// Session deletion used by the resume picker: try the `trash` CLI first
-// (Pi's deleteSessionFile) and fall back to a permanent unlink.  The return
-// value is (deleted, message) where message distinguishes the method used.
+// Session deletion used by the resume picker: delegate to the Phase 7
+// backend helper (trash CLI first, permanent unlink fallback) so the TUI
+// and the repository backends share one file-level implementation.  The
+// return value is (deleted, message) where message distinguishes the
+// method used.
 pub fn delete_session_file(string file_path, string cwd): (bool, string) {
-    var trashed = command.argv(cwd, '/bin/sh', ['trash', file_path]) catch error {
-        command.result_t {}
-    }
-    if trashed.exit_code == 0 || !path_utils.exists(file_path) {
-        return (true, 'Session moved to trash')
-    }
-    os.remove(file_path) catch error {
-        return (false, 'Could not delete session: ' + error.msg())
-    }
-    return (true, 'Session deleted')
+    return backend.delete_session_file(file_path, cwd)
 }

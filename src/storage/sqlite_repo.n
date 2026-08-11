@@ -14,8 +14,8 @@ import syscall
 // packages/storage/sqlite-node/src/sqlite/{repo,storage/*}).  Sessions and
 // entries live in sqlite tables; a loaded session is materialized into the
 // shared manager_t so the repository contract suite exercises the same
-// surface as JSONL/memory.  Branch/materialized tables are created by the
-// schema but not populated in this batch.
+// surface as JSONL/memory.  Entry appends drive the session_sequences and
+// materialized tables in lockstep, and fork callers record branch_entries.
 
 pub type db_t = struct {
     ptr<sqlite.sqlite3_t> db
@@ -83,10 +83,14 @@ pub fn create_session(ref<db_t> handle, string session_id, string created_at, st
     }
 }
 
-// Append one entry row (entry_seq is derived as MAX+1 like the sequences
-// table contract).
+// Append one entry row.  The sequence comes from the session_sequences
+// table (upstream storage/session-sequences.ts): a missing row means the
+// first append takes sequence 0, and every successful append bumps
+// next_seq.  The materialized tables (entry_materialized/session_materialized)
+// are kept in lockstep for the branch query surface; branch_entries rows
+// for forked sessions are recorded by the fork caller.
 pub fn append_entry(ref<db_t> handle, string session_id, string entry_id, string parent_id, string kind, string timestamp, string payload): void! {
-    var seq_text = 'SELECT COALESCE(MAX(entry_seq), -1) + 1 FROM session_entries WHERE session_id = ?'
+    var seq_text = 'SELECT next_seq FROM session_sequences WHERE session_id = ?'
 
     ptr<sqlite.sqlite3_stmt_t> statement = null
     var rc = sqlite.sqlite3_prepare_v2(handle.db, seq_text.to_cstr(), -1, &statement, null)
@@ -124,6 +128,8 @@ pub fn append_entry(ref<db_t> handle, string session_id, string entry_id, string
         }
         throw errorf('append_entry failed: %s', errmsg(handle.db))
     }
+    materialize_entry(handle, session_id, next_seq, kind, payload, entry_id)
+    bump_sequence(handle, session_id, next_seq)
     var leaf_text = 'UPDATE sessions SET active_leaf_id = ? WHERE id = ?'
     rc = sqlite.sqlite3_prepare_v2(handle.db, leaf_text.to_cstr(), -1, &statement, null)
     if rc != sqlite.SQLITE_OK {
@@ -219,6 +225,16 @@ pub fn delete_session(ref<db_t> handle, string session_id): void! {
     sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
     sqlite.sqlite3_step(statement)
     sqlite.sqlite3_finalize(statement)
+    for table in ['session_sequences', 'entry_materialized', 'branch_entries', 'session_materialized'] {
+        sql_text = 'DELETE FROM ' + table + ' WHERE session_id = ?'
+        rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+        if rc != sqlite.SQLITE_OK {
+            throw errorf('prepare ' + table + ' delete failed: %s', errmsg(handle.db))
+        }
+        sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+        sqlite.sqlite3_step(statement)
+        sqlite.sqlite3_finalize(statement)
+    }
     sql_text = 'DELETE FROM sessions WHERE id = ?'
     rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
     if rc != sqlite.SQLITE_OK {
@@ -227,6 +243,88 @@ pub fn delete_session(ref<db_t> handle, string session_id): void! {
     sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
     sqlite.sqlite3_step(statement)
     sqlite.sqlite3_finalize(statement)
+}
+
+// Record one branch link for a forked session (upstream
+// storage/branch-entries.ts): the fork caller writes a row per copied entry
+// with entry_seq following the copy order.
+pub fn record_branch_entry(ref<db_t> handle, string session_id, string branch_id, string entry_id, sqlite.sqlite3_int64_t entry_seq): void! {
+    var sql_text = 'INSERT INTO branch_entries (session_id, branch_id, entry_id, entry_seq) VALUES (?, ?, ?, ?)'
+
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare branch entry failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 2, branch_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 3, entry_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_int64(statement, 4, entry_seq)
+    rc = sqlite.sqlite3_step(statement)
+    sqlite.sqlite3_finalize(statement)
+    if rc != sqlite.SQLITE_DONE {
+        throw errorf('record_branch_entry failed: %s', errmsg(handle.db))
+    }
+}
+
+// Keep entry_materialized and session_materialized in lockstep with every
+// append (upstream storage/entry-materialized.ts and
+// session-materialized.ts).  The session payload records the latest leaf
+// id so branch queries can resolve the active entry without scanning.
+#local
+fn materialize_entry(ref<db_t> handle, string session_id, sqlite.sqlite3_int64_t entry_seq, string kind, string payload, string entry_id): void! {
+    var sql_text = 'INSERT INTO entry_materialized (session_id, entry_seq, type, payload) VALUES (?, ?, ?, ?)'
+
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare entry_materialized failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_int64(statement, 2, entry_seq)
+    sqlite.sqlite3_bind_text(statement, 3, kind.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 4, payload.to_cstr(), -1, 0)
+    rc = sqlite.sqlite3_step(statement)
+    sqlite.sqlite3_finalize(statement)
+    if rc != sqlite.SQLITE_DONE {
+        throw errorf('entry_materialized failed: %s', errmsg(handle.db))
+    }
+
+    {string:any} leaf = {}
+    leaf['leaf'] = entry_id
+    string leaf_payload = json.serialize(leaf)
+    var session_text = 'INSERT INTO session_materialized (session_id, payload) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET payload = excluded.payload'
+    rc = sqlite.sqlite3_prepare_v2(handle.db, session_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare session_materialized failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 2, leaf_payload.to_cstr(), -1, 0)
+    rc = sqlite.sqlite3_step(statement)
+    sqlite.sqlite3_finalize(statement)
+    if rc != sqlite.SQLITE_DONE {
+        throw errorf('session_materialized failed: %s', errmsg(handle.db))
+    }
+}
+
+// Advance the per-session sequence after a successful append (upstream
+// storage/session-sequences.ts): next_seq starts at 0 for a missing row.
+#local
+fn bump_sequence(ref<db_t> handle, string session_id, sqlite.sqlite3_int64_t next_seq): void! {
+    var sql_text = 'INSERT INTO session_sequences (session_id, next_seq) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET next_seq = excluded.next_seq'
+
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare sequence update failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_int64(statement, 2, next_seq + 1)
+    rc = sqlite.sqlite3_step(statement)
+    sqlite.sqlite3_finalize(statement)
+    if rc != sqlite.SQLITE_DONE {
+        throw errorf('sequence update failed: %s', errmsg(handle.db))
+    }
 }
 
 #local

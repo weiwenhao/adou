@@ -777,13 +777,20 @@ fn run_serve(ref<session.runner_t> runner, int port, bool offline): void! {
             error.msg()
         }
     }
-    ipc_server.serve('127.0.0.1', port, handler)
+    ipc_server.stream_handler_t stream_handler = fn(string request_line): [string] {
+        return serve_stream_command(runner, request_line) catch error {
+            [error.msg()]
+        }
+    }
+    ipc_server.serve_with_stream('127.0.0.1', port, handler, stream_handler)
 }
 
 // One IPC request line -> response line.  Minimal upstream surface:
 // spawn/list/status/stop manage the single server instance; rpc executes
 // one prompt command non-streaming (events are dropped; the response
-// carries success/error like the process RPC preflight).
+// carries success/error like the process RPC preflight); rpc_stream opens
+// the documented stream-mode slice (marker response + stream_start + full
+// response), with the offline guard answered deterministically.
 #local
 fn serve_command(ref<session.runner_t> runner, string request_line, bool offline): string! {
     var parsed = json_util.parse(request_line) catch error {
@@ -834,6 +841,15 @@ fn serve_command(ref<session.runner_t> runner, string request_line, bool offline
                 return rpc_error(id, 'prompt', 'Offline mode cannot send prompts to a provider')
             }
             string prompt = rpc_string(command_obj, 'message')
+            // streamingBehavior:"stream" is answered through the stream
+            // path: this handler returns the "stream":true marker and the
+            // stream handler emits stream_start followed by the full
+            // non-streaming response (documented difference).
+            if rpc_string(command_obj, 'streamingBehavior') == 'stream' {
+                {string:any} fields = {}
+                fields['stream'] = true
+                return rpc_success(id, 'prompt', fields)
+            }
             var stream = runner.prompt(prompt) catch error {
                 return rpc_error(id, 'prompt', error.msg())
             }
@@ -855,7 +871,82 @@ fn serve_command(ref<session.runner_t> runner, string request_line, bool offline
         }
         return rpc_error(id, 'rpc', 'Unsupported rpc command: ' + command_kind)
     }
+    if kind == 'rpc_stream' {
+        if offline {
+            return rpc_error(id, 'rpc_stream', 'Offline mode cannot send prompts to a provider')
+        }
+        {string:any} fields = {}
+        fields['instanceId'] = runner.repository.get_session_id()
+        fields['stream'] = true
+        return rpc_success(id, 'rpc_stream', fields)
+    }
     return rpc_error(id, '', 'Unsupported request type: ' + kind)
+}
+
+// Stream-mode counterpart of serve_command (documented difference from the
+// upstream bidirectional rpc_stream socket protocol): the request that the
+// request handler marked with "stream":true is re-executed here and
+// answered with a stream_start event line followed by the complete
+// non-streaming response.
+#local
+fn serve_stream_command(ref<session.runner_t> runner, string request_line): [string]! {
+    var parsed = json_util.parse(request_line) catch error {
+        return [rpc_error('', 'parse', 'Failed to parse command: ' + error.msg())]
+    }
+    if !(parsed is {string:any}) {
+        return [rpc_error('', 'parse', 'RPC command must be a JSON object')]
+    }
+    var object = parsed as {string:any}
+    string kind = rpc_string(object, 'type')
+    string id = rpc_string(object, 'id')
+    if kind == 'rpc_stream' {
+        [string] lines = []
+        {string:any} start = {}
+        start['type'] = 'stream_start'
+        if id != '' {start['id'] = id}
+        start['instanceId'] = runner.repository.get_session_id()
+        lines.push(json.serialize(start))
+        {string:any} ready = {}
+        if id != '' {ready['id'] = id}
+        ready['type'] = 'response'
+        ready['command'] = 'rpc_stream'
+        ready['success'] = true
+        lines.push(json.serialize(ready))
+        return lines
+    }
+    if kind == 'rpc' && object.contains('command') && (object['command'] is {string:any}) {
+        var command_obj = object['command'] as {string:any}
+        string command_kind = rpc_string(command_obj, 'type')
+        if command_kind == 'prompt' && rpc_string(command_obj, 'streamingBehavior') == 'stream' {
+            string prompt = rpc_string(command_obj, 'message')
+            var stream = runner.prompt(prompt) catch error {
+                return [rpc_error(id, 'prompt', error.msg())]
+            }
+            for true {
+                var event = stream.recv() catch error {
+                    break
+                }
+                if event.kind == session_stream.EVENT_SESSION_END {
+                    break
+                }
+            }
+            var result = stream.result() catch error {
+                return [rpc_error(id, 'prompt', error.msg())]
+            }
+            [string] lines = []
+            {string:any} start = {}
+            start['type'] = 'stream_start'
+            if id != '' {start['id'] = id}
+            start['command'] = 'prompt'
+            lines.push(json.serialize(start))
+            string answer = last_assistant_text(result)
+            {string:any} fields = {}
+            fields['message'] = answer
+            lines.push(rpc_success(id, 'prompt', fields))
+            return lines
+        }
+    }
+    return []
 }
 
 #local
