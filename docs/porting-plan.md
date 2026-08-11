@@ -20,7 +20,7 @@
 | Phase 4：TUI 基础 | 已完成 | renderer、editor、autocomplete、fuzzy、路径补全、markdown、terminal image 逻辑已覆盖 |
 | Phase 5：Interactive UI | 已完成 | 39 组件全部有结论；tree/fork/branch-summary PTY 闭环通过（tui-tree-fork.sh），终端恢复验证 |
 | Phase 6：CLI | 已完成 | 9 个上游模块逐项对照；空 stdin 挂起、credential 输出隔离、help/参数矩阵、启动边界均通过（help-matrix/cli-startup-boundaries/auth-print/rpc-shape-parity 等 45 个 e2e） |
-| Phase 7：storage + server | 进行中 | 本批：JSONL/memory 双后端契约测试与 adapter 边界；SQLite/IPC server 未开始 |
+| Phase 7：storage + server | 进行中 | SQLite backend 已落地（nature-sqlite 绑定 + migrations/repo + 三后端契约测试 5/5）；RPC-over-IPC server 未开始 |
 | Phase 7：storage + server | 未开始 | 当前使用 JSONL repository 与进程内 RPC；尚无 SQLite/IPC server |
 | Phase 8：evals | 未开始 | 尚未移植 pi-harness/smoke.eval |
 
