@@ -135,14 +135,12 @@ try:
     if not send(b"/tree\r", b"Session tree:", timeout=5.0):
         raise SystemExit("/tree did not reopen after escape")
 
-    # 3. The labelled-filter mode ('f' cycles 5 modes; mode 3 keeps only
-    #    labelled entries) leaves a non-leaf entry selected.  Accept it and
-    #    complete the branch-summary dialog with "No summary" (offline mode:
-    #    no provider round-trip needed).
-    for _ in range(3):
-        if not send(b"f", b"seed-user [main] message", timeout=4.0):
-            break
-        time.sleep(0.15)
+    # 3. Arrow-up selects the non-leaf user message (the 50 ms escape window
+    #    absorbs PTY-split sequences), then the branch-summary dialog
+    #    completes with "No summary" (offline mode: no provider round-trip).
+    os.write(fd, b"\x1b")
+    time.sleep(0.005)
+    os.write(fd, b"[A")
     time.sleep(0.3)
     if not send(b"\r", b"Summarize branch?", timeout=4.0):
         raise SystemExit("selecting a non-leaf entry did not open the branch summary dialog")

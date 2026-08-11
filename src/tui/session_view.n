@@ -1937,8 +1937,10 @@ fn input_timeout(chan<terminal_input_t> output, i64 timeout_id) {
 fn read_input(ref<view_t> view, chan<terminal_input_t> input, chan<input_t> output): void! {
     // Pi gives an escape sequence a short window to receive its remaining
     // bytes. A timer coroutine provides that window while the terminal reader
-    // continues accepting bytes through the Nature channel.
-    const ESCAPE_SEQUENCE_TIMEOUT_MS = 10
+    // continues accepting bytes through the Nature channel.  50 ms matches
+    // xterm's own escape timeout and keeps PTY-fed (split) sequences from
+    // collapsing into a bare escape when the 10 ms window was too tight.
+    const ESCAPE_SEQUENCE_TIMEOUT_MS = 50
     bool pending_timeout = false
     i64 pending_since = 0
     i64 timeout_id = 0
