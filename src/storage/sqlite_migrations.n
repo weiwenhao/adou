@@ -1,0 +1,76 @@
+import adou.src.storage.sqlite as sqlite
+import libc
+
+// Phase 7: SQLite schema migrations (aligned with the upstream
+// packages/storage/sqlite-node 001_initial.sql).  Applied via sqlite3_exec
+// with a migrations table recording applied ids; multi-statement SQL is
+// executed as one batch.
+
+pub const SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS sessions (
+	id TEXT PRIMARY KEY,
+	created_at TEXT NOT NULL,
+	cwd TEXT NOT NULL,
+	parent_session_id TEXT NULL,
+	metadata TEXT NULL,
+	active_leaf_id TEXT NULL
+) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_sessions_created_at ON sessions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sessions_cwd ON sessions(cwd);
+CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
+
+CREATE TABLE IF NOT EXISTS session_entries (
+	session_id TEXT NOT NULL,
+	id TEXT NOT NULL,
+	entry_seq INTEGER NOT NULL,
+	parent_id TEXT NULL,
+	type TEXT NOT NULL,
+	timestamp TEXT NOT NULL,
+	payload TEXT NOT NULL,
+	PRIMARY KEY (session_id, id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_session_entries_session_seq ON session_entries(session_id, entry_seq);
+CREATE INDEX IF NOT EXISTS idx_session_entries_session_parent ON session_entries(session_id, parent_id);
+CREATE INDEX IF NOT EXISTS idx_session_entries_session_type ON session_entries(session_id, type);
+
+CREATE TABLE IF NOT EXISTS session_sequences (
+	session_id TEXT PRIMARY KEY,
+	next_seq INTEGER NOT NULL
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS branch_entries (
+	session_id TEXT NOT NULL,
+	branch_id TEXT NOT NULL,
+	entry_id TEXT NOT NULL,
+	entry_seq INTEGER NOT NULL,
+	PRIMARY KEY (session_id, branch_id, entry_id)
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS session_materialized (
+	session_id TEXT PRIMARY KEY,
+	payload TEXT NOT NULL
+) WITHOUT ROWID;
+
+CREATE TABLE IF NOT EXISTS entry_materialized (
+	session_id TEXT NOT NULL,
+	entry_seq INTEGER NOT NULL,
+	type TEXT NOT NULL,
+	payload TEXT NOT NULL,
+	PRIMARY KEY (session_id, entry_seq, type)
+) WITHOUT ROWID;
+`
+
+pub fn ensure_schema(ptr<sqlite.sqlite3_t> db): void! {
+    ptr<libc.cstr> err_msg = null
+    var rc = sqlite.sqlite3_exec(db, SCHEMA_SQL.to_cstr(), 0, 0, &err_msg)
+    if rc != sqlite.SQLITE_OK {
+        var msg = 'sqlite schema error'
+        if err_msg != null {
+            msg = (err_msg as libc.cstr).to_string()
+            sqlite.sqlite3_free(err_msg as anyptr)
+        }
+        throw errorf('apply migrations failed: %s', msg)
+    }
+}

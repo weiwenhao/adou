@@ -10,5 +10,6 @@ unicode_icu = { darwin_arm64 = 'native/unicode_icu.o', darwin_amd64 = 'native/un
 term = { darwin_arm64 = 'native/term.o', darwin_amd64 = 'native/term.o', linux_amd64 = 'native/term.o' }
 regex = { darwin_arm64 = 'native/regex.o', darwin_amd64 = 'native/regex.o', linux_amd64 = 'native/regex.o' }
 stdin_peek = { darwin_arm64 = 'native/stdin_peek.o', darwin_amd64 = 'native/stdin_peek.o', linux_amd64 = 'native/stdin_peek.o' }
+libsqlite3 = { darwin_arm64 = 'native/sqlite3/sqlite3_darwin_arm64.o', darwin_amd64 = 'native/sqlite3/sqlite3_darwin_amd64.o', linux_amd64 = 'native/sqlite3/sqlite3_linux_amd64.o', linux_arm64 = 'native/sqlite3/sqlite3_linux_arm64.o' }
 
 [dependencies]

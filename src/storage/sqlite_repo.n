@@ -1,0 +1,239 @@
+import adou.src.json_util
+import adou.src.session.repository
+import co.mutex
+import adou.src.session.types as session_types
+import adou.src.storage.sqlite as sqlite
+import adou.src.storage.sqlite_migrations
+import json
+import libc
+import os
+import path
+import syscall
+
+// Phase 7: SQLite SessionRepo backend (upstream
+// packages/storage/sqlite-node/src/sqlite/{repo,storage/*}).  Sessions and
+// entries live in sqlite tables; a loaded session is materialized into the
+// shared manager_t so the repository contract suite exercises the same
+// surface as JSONL/memory.  Branch/materialized tables are created by the
+// schema but not populated in this batch.
+
+pub type db_t = struct {
+    ptr<sqlite.sqlite3_t> db
+    string path
+}
+
+pub type session_row_t = struct {
+    string id
+    string created_at
+    string cwd
+    string parent_session_id
+    string active_leaf_id
+}
+
+pub fn open_db(string db_path): ref<db_t>! {
+    os.mkdirs(path.dir(db_path), 0o700)
+    ptr<sqlite.sqlite3_t> db_handle = null
+    var rc = sqlite.sqlite3_open_v2(db_path.to_cstr(), &db_handle, sqlite.SQLITE_OPEN_READWRITE | sqlite.SQLITE_OPEN_CREATE, 0)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('could not open sqlite database %s: %s', db_path, errmsg(db_handle))
+    }
+    sqlite_migrations.ensure_schema(db_handle) catch error {
+        sqlite.sqlite3_close(db_handle)
+        throw error
+    }
+    var result = new db_t()
+    result.db = db_handle
+    result.path = db_path
+    return result
+}
+
+pub fn close_db(ref<db_t> handle): void! {
+    sqlite.sqlite3_close(handle.db)
+}
+
+pub fn errmsg(ptr<sqlite.sqlite3_t> db): string! {
+    var message = sqlite.sqlite3_errmsg(db)
+    if message == 0 {
+        return 'unknown sqlite error'
+    }
+    return (message as libc.cstr).to_string()
+}
+
+// SessionRepo.create: insert a session row and return its id.
+pub fn create_session(ref<db_t> handle, string session_id, string created_at, string cwd, string parent_session_id): void! {
+    var sql_text = 'INSERT INTO sessions (id, created_at, cwd, parent_session_id) VALUES (?, ?, ?, ?)'
+
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare create_session failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 2, created_at.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 3, cwd.to_cstr(), -1, 0)
+    if parent_session_id == '' {
+        sqlite.sqlite3_bind_null(statement, 4)
+    } else {
+        sqlite.sqlite3_bind_text(statement, 4, parent_session_id.to_cstr(), -1, 0)
+    }
+    rc = sqlite.sqlite3_step(statement)
+    sqlite.sqlite3_finalize(statement)
+    if rc != sqlite.SQLITE_DONE {
+        throw errorf('create_session failed: %s', errmsg(handle.db))
+    }
+}
+
+// Append one entry row (entry_seq is derived as MAX+1 like the sequences
+// table contract).
+pub fn append_entry(ref<db_t> handle, string session_id, string entry_id, string parent_id, string kind, string timestamp, string payload): void! {
+    var seq_text = 'SELECT COALESCE(MAX(entry_seq), -1) + 1 FROM session_entries WHERE session_id = ?'
+
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, seq_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare seq failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_int64_t next_seq = 0
+    if sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW {
+        next_seq = sqlite.sqlite3_column_int64(statement, 0)
+    }
+    sqlite.sqlite3_finalize(statement)
+
+    var insert_text = 'INSERT INTO session_entries (session_id, id, entry_seq, parent_id, type, timestamp, payload) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    rc = sqlite.sqlite3_prepare_v2(handle.db, insert_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare insert_entry failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 2, entry_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_int64(statement, 3, next_seq)
+    if parent_id == '' {
+        sqlite.sqlite3_bind_null(statement, 4)
+    } else {
+        sqlite.sqlite3_bind_text(statement, 4, parent_id.to_cstr(), -1, 0)
+    }
+    sqlite.sqlite3_bind_text(statement, 5, kind.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 6, timestamp.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 7, payload.to_cstr(), -1, 0)
+    rc = sqlite.sqlite3_step(statement)
+    sqlite.sqlite3_finalize(statement)
+    if rc != sqlite.SQLITE_DONE {
+        if rc == sqlite.SQLITE_CONSTRAINT {
+            throw errorf('duplicate entry id: %s', entry_id)
+        }
+        throw errorf('append_entry failed: %s', errmsg(handle.db))
+    }
+    var leaf_text = 'UPDATE sessions SET active_leaf_id = ? WHERE id = ?'
+    rc = sqlite.sqlite3_prepare_v2(handle.db, leaf_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare leaf update failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, entry_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 2, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_step(statement)
+    sqlite.sqlite3_finalize(statement)
+}
+
+// SessionRepo.open: materialize a session row into a shared manager_t.
+pub fn load_manager(ref<db_t> handle, string session_id, string cwd): ref<repository.manager_t>! {
+    string sql_text = 'SELECT id, created_at, cwd, parent_session_id FROM sessions WHERE id = ?'
+
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare session load failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    var row = session_row_t {}
+    if sqlite.sqlite3_step(statement) != sqlite.SQLITE_ROW {
+        sqlite.sqlite3_finalize(statement)
+        throw errorf('sqlite session %s not found', session_id)
+    }
+    row.id = column_text(statement, 0)
+    row.created_at = column_text(statement, 1)
+    row.cwd = column_text(statement, 2)
+    row.parent_session_id = column_text(statement, 3)
+    sqlite.sqlite3_finalize(statement)
+
+    var header = new session_types.header_t(version = session_types.CURRENT_VERSION, id = row.id, timestamp = row.created_at, cwd = row.cwd, parent_session = row.parent_session_id, raw = null)
+    var manager = new repository.manager_t(lock = mutex.mutex_t.new(), cwd = row.cwd, session_dir = '', persisted = false, header = header)
+    manager.entries = load_entries(handle, session_id)
+    manager.rebuild_index()
+    return manager
+}
+
+#local
+fn load_entries(ref<db_t> handle, string session_id): [ref<session_types.entry_t>]! {
+    [ref<session_types.entry_t>] result = []
+    string sql_text = 'SELECT id, parent_id, type, timestamp, payload FROM session_entries WHERE session_id = ? ORDER BY entry_seq'
+
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare entries load failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    for sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW {
+        string entry_id = column_text(statement, 0)
+        string parent_id = column_text(statement, 1)
+        string kind = column_text(statement, 2)
+        string timestamp = column_text(statement, 3)
+        string payload = column_text(statement, 4)
+        any raw = json.parse(payload) catch error {
+            {string:any} parsed = {}
+            parsed
+        }
+        result.push(new session_types.entry_t(kind = kind, id = entry_id, has_parent = parent_id != '', parent_id = parent_id, timestamp = timestamp, raw = raw))
+    }
+    sqlite.sqlite3_finalize(statement)
+    return result
+}
+
+// SessionRepo.list: session rows, newest first.
+pub fn list_sessions(ref<db_t> handle): [session_row_t]! {
+    [session_row_t] result = []
+    string sql_text = 'SELECT id, created_at, cwd, parent_session_id, active_leaf_id FROM sessions ORDER BY created_at DESC'
+
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare session list failed: %s', errmsg(handle.db))
+    }
+    for sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW {
+        result.push(session_row_t {id: column_text(statement, 0), created_at: column_text(statement, 1), cwd: column_text(statement, 2), parent_session_id: column_text(statement, 3), active_leaf_id: column_text(statement, 4),})
+    }
+    sqlite.sqlite3_finalize(statement)
+    return result
+}
+
+// SessionRepo.delete: remove a session row and its entries.
+pub fn delete_session(ref<db_t> handle, string session_id): void! {
+    string sql_text = 'DELETE FROM session_entries WHERE session_id = ?'
+
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare entry delete failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_step(statement)
+    sqlite.sqlite3_finalize(statement)
+    sql_text = 'DELETE FROM sessions WHERE id = ?'
+    rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare session delete failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_step(statement)
+    sqlite.sqlite3_finalize(statement)
+}
+
+#local
+fn column_text(ptr<sqlite.sqlite3_stmt_t> statement, i32 index): string {
+    var text = sqlite.sqlite3_column_text(statement, index)
+    if text == null {
+        return ''
+    }
+    return (text as libc.cstr).to_string()
+}
