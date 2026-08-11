@@ -1,33 +1,16 @@
-import adou.src.json_util
 import co
 import fmt
 import net.tcp
-import time
 
-// Phase 7: RPC-over-IPC server slice (upstream packages/server ipc/*).
-// Transport: line-delimited JSON over a localhost TCP socket, matching the
-// upstream encodeMessage framing.  The handler receives each request line
-// and returns the response line(s) to write back.
+// Phase 7.1: RPC-over-IPC server transport (upstream packages/server
+// ipc/server.ts).  Line-delimited JSON over a localhost TCP socket with the
+// upstream encodeMessage framing; the app-level handler owns the whole
+// connection, which is what the upstream bidirectional rpc_stream protocol
+// needs (rpc_ready then a continuing command/response loop until close).
 
-pub type serve_handler_t = fn(string request_line): string
+pub type connection_handler_t = fn(ref<tcp.conn_t> conn): void
 
-// Stream-mode counterpart: returns the event lines to write for a request
-// whose response was marked with the "stream":true marker.
-pub type stream_handler_t = fn(string request_line): [string]
-
-pub type optional_stream_handler_t = stream_handler_t|null
-
-pub fn serve(string listen_host, int port, serve_handler_t handler): void! {
-    serve_with_stream(listen_host, port, handler, null)
-}
-
-// Phase 7 streaming slice of the IPC server.  The request handler returns
-// the response line; when that line carries the "stream":true marker the
-// connection switches to stream mode and every line returned by the stream
-// handler is written in order (documented difference from the upstream
-// bidirectional rpc_stream socket protocol, which keeps a single
-// connection open for repeated RpcCommands).
-pub fn serve_with_stream(string listen_host, int port, serve_handler_t handler, optional_stream_handler_t stream_handler): void! {
+pub fn serve(string listen_host, int port, connection_handler_t handler): void! {
     var server = tcp.listen(fmt.sprintf('%s:%d', listen_host, port)) catch error {
         return
     }
@@ -35,60 +18,12 @@ pub fn serve_with_stream(string listen_host, int port, serve_handler_t handler, 
         var conn = server.accept() catch error {
             break
         }
-        go handle_connection(conn, handler, stream_handler)
+        go handler(conn)
     }
-}
-
-#local
-fn handle_connection(ref<tcp.conn_t> conn, serve_handler_t handler, optional_stream_handler_t stream_handler): void! {
-    for true {
-        string line = read_line(conn) catch error {
-            break
-        }
-        if line == '' {
-            break
-        }
-        string response = handler(line)
-        if response == '' {
-            continue
-        }
-        if stream_handler is stream_handler_t streaming && is_stream_marker(response) {
-            var lines = streaming(line)
-            for event_line in lines {
-                var bytes = (event_line + '\n') as [u8]
-                conn.write(bytes) catch error {
-                    conn.close()
-                    return
-                }
-            }
-            continue
-        }
-        var bytes = (response + '\n') as [u8]
-        conn.write(bytes) catch error {
-            break
-        }
-    }
-    conn.close()
-}
-
-// The app-level handler marks a streamed request with "stream":true; the
-// connection then writes every event line the stream handler returns.
-#local
-fn is_stream_marker(string response): bool {
-    any parsed = json_util.parse(response) catch error {
-        return false
-    }
-    if parsed is {string:any} object {
-        if object.contains('stream') && object['stream'] is bool {
-            return object['stream'] as bool
-        }
-    }
-    return false
 }
 
 // Line reader tolerant to split reads; returns '' at EOF/empty line.
-#local
-fn read_line(ref<tcp.conn_t> conn): string! {
+pub fn read_line(ref<tcp.conn_t> conn): string! {
     [u8] collected = vec<u8>.new(0, 0)
     for true {
         var buffer = vec<u8>.new(0, 256)
@@ -110,4 +45,15 @@ fn read_line(ref<tcp.conn_t> conn): string! {
         }
     }
     return collected as string
+}
+
+// Write one framed line; on failure the connection is closed.  Used by the
+// connection coroutine itself (never from worker coroutines, which use the
+// app-level per-connection sink instead).
+pub fn write_line(ref<tcp.conn_t> conn, string line) {
+    var bytes = (line + '\n') as [u8]
+    conn.write(bytes) catch error {
+        conn.close()
+        return
+    }
 }

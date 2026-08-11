@@ -1,0 +1,98 @@
+import json
+
+// Phase 7.1: server IPC protocol responses (upstream vendors/pi/
+// packages/server/src/ipc/protocol.ts).  Pure serializers so the response
+// shapes are unit-testable without a live connection.
+//
+// Every response carries ResponseBase {ok:bool, error?:string}; optional
+// InstanceSummary fields (label/sessionId/sessionFile) are omitted when
+// empty, matching the upstream optional-field serialization.
+
+pub type instance_summary_t = struct {
+    string id
+    string status
+    string cwd
+    string label
+    string session_id
+    string session_file
+}
+
+// InstanceSummary serialization: optional fields are omitted, never null.
+pub fn encode_instance_summary(instance_summary_t summary): {string:any} {
+    {string:any} object = {}
+    object['id'] = summary.id
+    object['status'] = summary.status
+    object['cwd'] = summary.cwd
+    if summary.label != '' {
+        object['label'] = summary.label
+    }
+    if summary.session_id != '' {
+        object['sessionId'] = summary.session_id
+    }
+    if summary.session_file != '' {
+        object['sessionFile'] = summary.session_file
+    }
+    return object
+}
+
+pub fn spawn_result(instance_summary_t summary): string! {
+    {string:any} object = {}
+    object['type'] = 'spawn_result'
+    object['ok'] = true
+    object['instance'] = encode_instance_summary(summary)
+    return json.serialize(object)
+}
+
+pub fn list_result([instance_summary_t] summaries): string! {
+    [any] values = []
+    for summary in summaries {
+        values.push(encode_instance_summary(summary))
+    }
+    {string:any} object = {}
+    object['type'] = 'list_result'
+    object['ok'] = true
+    object['instances'] = values
+    return json.serialize(object)
+}
+
+pub fn status_result(instance_summary_t summary): string! {
+    {string:any} object = {}
+    object['type'] = 'status_result'
+    object['ok'] = true
+    object['instance'] = encode_instance_summary(summary)
+    return json.serialize(object)
+}
+
+pub fn stop_result(string instance_id): string! {
+    {string:any} object = {}
+    object['type'] = 'stop_result'
+    object['ok'] = true
+    object['instanceId'] = instance_id
+    return json.serialize(object)
+}
+
+// rpc_result wraps the child-shaped RpcResponse object verbatim under the
+// `response` key (upstream RpcBridgeResponse).
+pub fn rpc_result({string:any} response): string! {
+    {string:any} object = {}
+    object['type'] = 'rpc_result'
+    object['ok'] = true
+    object['response'] = response
+    return json.serialize(object)
+}
+
+pub fn rpc_ready(instance_summary_t summary): string! {
+    {string:any} object = {}
+    object['type'] = 'rpc_ready'
+    object['ok'] = true
+    object['instance'] = encode_instance_summary(summary)
+    return json.serialize(object)
+}
+
+pub fn error_response(string message): string! {
+    {string:any} object = {}
+    object['type'] = 'error'
+    object['ok'] = false
+    object['error'] = message
+    return json.serialize(object)
+}

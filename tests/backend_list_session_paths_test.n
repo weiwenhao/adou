@@ -1,0 +1,33 @@
+import adou.src.session.backend
+import fmt
+import os
+import path
+import syscall
+import time
+
+// Phase 7.1 TUI regression guard: the resume-picker scan must distinguish a
+// failed scan (missing session directory throws) from a genuinely empty
+// store (empty directory yields an empty list).  The picker surfaces the
+// former as an explicit error instead of the "No persisted sessions" empty
+// state.
+
+test 'list_session_paths throws when the session directory does not exist' {
+    string dir = path.join('/tmp', 'adou-list-paths-missing-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    var listed = backend.list_session_paths(dir) catch error {
+        assert(error.msg() != '')
+        return
+    }
+    assert(false)
+}
+
+test 'list_session_paths returns an empty list for an empty directory' {
+    string dir = path.join('/tmp', 'adou-list-paths-empty-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    os.mkdirs(dir, 0o700)
+    var listed = backend.list_session_paths(dir) catch error {
+        os.rmdir(dir, true)
+        assert(false)
+        return
+    }
+    assert(listed.len() == 0)
+    os.rmdir(dir, true)
+}

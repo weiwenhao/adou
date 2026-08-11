@@ -94,6 +94,7 @@ pub type config_t = struct {
     bool provider_explicit
     bool model_explicit
     bool api_key_explicit
+    bool thinking_explicit
     string steering_mode = 'one-at-a-time'
     string follow_up_mode = 'one-at-a-time'
     bool hide_thinking
