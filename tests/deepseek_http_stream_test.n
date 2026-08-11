@@ -20,6 +20,9 @@ pub fn serve_fixture(ref<http.server_t> server): void! {
 
 pub fn fixture_model(int port): ref<types.model_t> {
     var model = new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = fmt.sprintf('http://127.0.0.1:%d', port), reasoning = true, max_tokens = 128)
+    // Since 595f4de the thinking format is detected at runtime and carried
+    // per model; the fixture must declare the deepseek shape explicitly.
+    model.compat.thinking_format = 'deepseek'
     return model
 }
 
