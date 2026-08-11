@@ -904,58 +904,80 @@ fn serve_request(ref<ipc_supervisor.supervisor_t> sup, {string:any} object, stri
 
 // Bridge capture: the dispatch writes response/event lines asynchronously
 // (prompt workers stream events after the initial response line).  The
-// bridge keeps only the first RpcResponse-shaped line and wraps it in
-// rpc_result, dropping the rest like upstream rpcProcess.send().
+// bridge keeps the first RpcResponse-shaped line and waits until the command
+// has actually completed on the instance instead of a fixed 30s budget:
+// prompt is terminal at session_end (or a failure response), while
+// compact/bash and synchronous commands are terminal at their first (and
+// final) response line.  The provider/network timeout of the running
+// operation bounds the wait; only an instance stop aborts it early.
 type rpc_capture_state_t = struct {
     ref<mutex.mutex_t> lock
-    chan<string> signal
-    bool captured
+    string command_kind
+    string response_line
+    bool terminal
 }
 
 #local
 fn rpc_bridge_response(ref<ipc_supervisor.supervisor_t> sup, ref<ipc_supervisor.instance_t> instance, {string:any} command_obj, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): string! {
-    var state = new rpc_capture_state_t(lock = mutex.mutex_t.new(), signal = chan<string>.new(1), captured = false)
+    string command_kind = rpc_string(command_obj, 'type')
+    string id = rpc_string(command_obj, 'id')
+    var state = new rpc_capture_state_t(lock = mutex.mutex_t.new(), command_kind = command_kind)
     var sink = new rpc_sink_t(lock = state.lock, write = fn(string line) {
         // Invoked under state.lock by rpc_write.
-        if state.captured {
+        if state.terminal {
             return
         }
         var parsed = json_util.parse(line) catch error {
             return
         }
-        if parsed is {string:any} response_obj {
-            if response_obj.contains('type') && response_obj['type'] is string && (response_obj['type'] as string) == 'response' {
-                state.captured = true
-                state.signal.send(line) catch error {}
+        if !(parsed is {string:any}) {
+            return
+        }
+        var response_obj = parsed as {string:any}
+        bool is_response = response_obj.contains('type') && response_obj['type'] is string && (response_obj['type'] as string) == 'response'
+        bool is_session_end = response_obj.contains('type') && response_obj['type'] is string && (response_obj['type'] as string) == session_stream.EVENT_SESSION_END
+        if is_response && state.response_line == '' {
+            state.response_line = line
+        }
+        bool failure_response = is_response && response_obj.contains('success') && response_obj['success'] is bool && (response_obj['success'] as bool) == false
+        if command_kind == 'prompt' {
+            // Prompt answers with an immediate ack; the command completes at
+            // session_end or when the turn fails outright.
+            if is_session_end || failure_response {
+                state.terminal = true
             }
+        } else if is_response {
+            state.terminal = true
         }
     })
-    string command_kind = rpc_string(command_obj, 'type')
-    string id = rpc_string(command_obj, 'id')
     if sup.offline && command_kind == 'prompt' {
         rpc_write(sink, rpc_error(id, 'prompt', 'Offline mode cannot send prompts to a provider'))
     } else {
         rpc_dispatch(instance.runner, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns)
     }
-    int waited_ms = 0
     for true {
-        var (line, received) = state.signal.try_recv() catch error {
+        state.lock.lock()
+        bool terminal = state.terminal
+        string response_line = state.response_line
+        state.lock.unlock()
+        if terminal {
+            if response_line != '' {
+                var parsed = json_util.parse(response_line) catch error {
+                    break
+                }
+                if parsed is {string:any} response_obj {
+                    return ipc_protocol.rpc_result(response_obj)
+                }
+            }
             break
         }
-        if received {
-            var parsed = json_util.parse(line) catch error {
-                break
-            }
-            if parsed is {string:any} response_obj {
-                return ipc_protocol.rpc_result(response_obj)
-            }
-            break
-        }
-        if waited_ms >= 30000 {
-            break
+        // The wait is bounded by the provider/network timeout of the running
+        // command, not by the bridge.  Only an instance stop aborts it early.
+        var found = sup.get(instance.summary.id)
+        if !(found is ref<ipc_supervisor.instance_t>) {
+            return ipc_protocol.error_response('instance stopped during command')
         }
         co.sleep(10)
-        waited_ms += 10
     }
     return ipc_protocol.error_response('No response from instance')
 }
