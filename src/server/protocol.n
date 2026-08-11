@@ -15,6 +15,9 @@ pub type instance_summary_t = struct {
     string label
     string session_id
     string session_file
+    // Adou extension: exit reason for exited instances, serialized as an
+    // optional `error` field (upstream InstanceSummary has no such field).
+    string exit_error
 }
 
 // InstanceSummary serialization: optional fields are omitted, never null.
@@ -31,6 +34,9 @@ pub fn encode_instance_summary(instance_summary_t summary): {string:any} {
     }
     if summary.session_file != '' {
         object['sessionFile'] = summary.session_file
+    }
+    if summary.exit_error != '' {
+        object['error'] = summary.exit_error
     }
     return object
 }

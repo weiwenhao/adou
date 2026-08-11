@@ -56,6 +56,17 @@ test 'status_result and stop_result shapes' {
     assert(stop_object['instanceId'] as string == 'abc')
 }
 
+test 'instance summary carries the optional exit error for terminal instances' {
+    var object = json_util.parse(protocol.status_result(protocol.instance_summary_t {id: 'abc', status: 'exited', cwd: '/tmp', label: '', session_id: '', session_file: '', exit_error: 'quota exceeded',})) as {string:any}
+    var instance = object['instance'] as {string:any}
+    assert(instance['status'] as string == 'exited')
+    assert(instance['error'] as string == 'quota exceeded')
+    var stopped_object = json_util.parse(protocol.status_result(protocol.instance_summary_t {id: 'abc', status: 'stopped', cwd: '/tmp', label: '', session_id: '', session_file: '',})) as {string:any}
+    var stopped_instance = stopped_object['instance'] as {string:any}
+    assert(stopped_instance['status'] as string == 'stopped')
+    assert(!stopped_instance.contains('error'))
+}
+
 test 'rpc_result wraps the RpcResponse verbatim under response' {
     var response_object = json_util.parse('{"id":"g1","type":"response","command":"get_state","success":true,"data":{"cwd":"/tmp"}}') as {string:any}
     var object = json_util.parse(protocol.rpc_result(response_object)) as {string:any}

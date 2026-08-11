@@ -4,7 +4,13 @@ pub fn is_retryable_assistant_error(ref<types.assistant_message_t> message): boo
     if message.stop_reason != types.STOP_ERROR || message.error_message == '' {
         return false
     }
-    string error_message = message.error_message.to_lower()
+    return is_retryable_error_message(message.error_message)
+}
+
+// Message-only variant used where no assistant message is available (RPC
+// bridge failures surface as plain error strings).
+pub fn is_retryable_error_message(string message): bool {
+    string error_message = message.to_lower()
     [string] non_retryable = ['gousagelimiterror', 'freeusagelimiterror', 'monthly usage limit reached', 'available balance', 'insufficient_quota', 'out of budget', 'quota exceeded', 'billing']
     if contains_any(error_message, non_retryable) {
         return false

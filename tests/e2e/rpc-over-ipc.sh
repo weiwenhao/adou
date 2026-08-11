@@ -179,7 +179,7 @@ try:
         raise SystemExit(f"extension_ui_response should be deterministically refused: {guard!r}")
     stream.close()
 
-    # Stop A; B must remain online.
+    # Stop A; B must remain online and A stays observable as 'stopped'.
     stop_a = request(json.dumps({"type": "stop", "instanceId": id_a}))
     if stop_a.get("type") != "stop_result" or stop_a.get("ok") is not True or stop_a.get("instanceId") != id_a:
         raise SystemExit(f"stop A failed: {stop_a!r}")
@@ -187,13 +187,26 @@ try:
     if status_b.get("type") != "status_result" or status_b["instance"]["id"] != id_b:
         raise SystemExit(f"stop A broke B: {status_b!r}")
     status_a = request(json.dumps({"type": "status", "instanceId": id_a}))
-    if status_a.get("type") != "error" or "Unknown instance" not in status_a.get("error", ""):
-        raise SystemExit(f"stopped instance should be unknown: {status_a!r}")
+    if status_a.get("type") != "status_result" or status_a["instance"].get("status") != "stopped":
+        raise SystemExit(f"stopped instance should report status 'stopped': {status_a!r}")
     stop_a_again = request(json.dumps({"type": "stop", "instanceId": id_a}))
-    if stop_a_again.get("type") != "error" or "Unknown instance" not in stop_a_again.get("error", ""):
-        raise SystemExit(f"stopping an unknown instance should error: {stop_a_again!r}")
+    if stop_a_again.get("type") != "stop_result" or stop_a_again.get("ok") is not True:
+        raise SystemExit(f"stopping a stopped instance must be idempotent: {stop_a_again!r}")
+
+    # rpc/rpc_stream on a stopped instance error with 'not running'.
+    rpc_stopped = request(json.dumps({"type": "rpc", "instanceId": id_a, "command": {"type": "get_state", "id": "g-dead"}}))
+    if rpc_stopped.get("type") != "error" or rpc_stopped.get("ok") is not False or "not running" not in rpc_stopped.get("error", ""):
+        raise SystemExit(f"rpc on a stopped instance must error: {rpc_stopped!r}")
+    stream_dead = socket.create_connection(("127.0.0.1", port), timeout=10)
+    send_line(stream_dead, json.dumps({"type": "rpc_stream", "instanceId": id_a}))
+    dead_ready = recv_line(stream_dead)
+    if dead_ready.get("type") != "error" or "not running" not in dead_ready.get("error", ""):
+        raise SystemExit(f"rpc_stream on a stopped instance must error: {dead_ready!r}")
+    stream_dead.close()
+
     listed = request('{"type":"list"}')
-    if [i["id"] for i in listed.get("instances", [])] != [id_b]:
+    listed_by_id = {i["id"]: i.get("status") for i in listed.get("instances", [])}
+    if listed_by_id != {id_a: "stopped", id_b: "online"}:
         raise SystemExit(f"list after stop wrong: {listed!r}")
 finally:
     proc.terminate()
