@@ -20,6 +20,7 @@ import adou.src.tui.fuzzy
 import adou.src.context.system_prompt
 import adou.src.debug
 import adou.src.json_util
+import adou.src.session.backend
 import adou.src.session.message_json
 import adou.src.session.identity
 import adou.src.session.cache_stats
@@ -1332,21 +1333,9 @@ pub fn view_t.show_session_overlay(&self) {
         }
         return
     }
-    [string] options = []
-    var names = os.listdir(self.runner.repository.session_dir) catch error {
-        if self.startup_session_picker {
-            self.startup_session_picker = false
-            self.quitting = true
-        } else {
-            self.chat.error_message = error.msg()
-        }
-        return
-    }
-    for name in names {
-        if name.ends_with('.jsonl') {
-            options.push(path.join(self.runner.repository.session_dir, name))
-        }
-    }
+    // Phase 7: the file-level scan lives in the backend helper (same
+    // .jsonl filter and mtime-newest ordering).
+    [string] options = backend.list_session_paths(self.runner.repository.session_dir)
     // Pi's resume picker can broaden from the current project to all
     // projects. Include the default shared store here as well; explicit
     // --session-dir remains intentionally scoped to that directory.
