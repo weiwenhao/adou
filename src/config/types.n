@@ -2,6 +2,7 @@ import adou.src.ai.types as ai_types
 import adou.src.compaction.types as compaction_types
 
 pub type cli_args_t = struct {
+    int serve_port = 0
     string provider
     string model
     string base_url
@@ -53,6 +54,7 @@ pub type cli_args_t = struct {
 }
 
 pub type config_t = struct {
+    int serve_port = 0
     string cwd
     string provider
     ref<ai_types.model_t> model

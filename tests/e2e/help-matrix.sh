@@ -25,7 +25,7 @@ printf '%s' "$out" | rg -q '^Environment:' || { echo "e2e: help lacks Environmen
 # plus the startup/auth surfaces; extension/skill/template/theme flags are
 # intentionally excluded (resource toggles live in /config).
 for option in \
-    --provider --model --models --list-models --base-url --thinking --mode \
+    --provider --model --models --list-models --base-url --thinking --mode --serve-port \
     --session --session-id --session-dir --continue --resume --fork --name \
     --print --export --system-prompt --append-system-prompt \
     --no-context-files --no-tools --no-builtin-tools --tools --exclude-tools \

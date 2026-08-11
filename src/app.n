@@ -24,6 +24,7 @@ import adou.src.context.skills
 import adou.src.context.system_prompt
 import adou.src.json_util
 import adou.src.platform.cwd as platform_cwd
+import adou.src.server.ipc_server
 import adou.src.session.repository
 import adou.src.session.types as session_types
 import adou.src.session.message_json
@@ -156,7 +157,7 @@ pub fn run(): void! {
         }
         return
     }
-    if config.initial_messages.len() == 0 && !interactive && !config.print_mode && config.mode != 'rpc' {
+    if config.initial_messages.len() == 0 && !interactive && !config.print_mode && config.mode != 'rpc' && config.serve_port == 0 {
         println('adou requires a TTY for interactive mode; pass a prompt argument for one-shot mode')
         return
     }
@@ -332,6 +333,14 @@ pub fn run(): void! {
     runner.retry_max_attempts = config.retry_max_attempts
     runner.retry_base_delay_ms = config.retry_base_delay_ms
 
+    if config.serve_port > 0 {
+        // Phase 7 RPC-over-IPC: serve line-delimited JSON RPC commands on a
+        // localhost TCP port (upstream packages/server ipc protocol).
+        debug.log('mode', 'starting ipc server on port ' + fmt.sprintf('%d', config.serve_port))
+        run_serve(runner, config.serve_port, config.offline)
+        timings.print_timings()
+        return
+    }
     if config.mode == 'rpc' {
         // Keep the original CLI overrides for later RPC session switches;
         // an empty value means the new session should rediscover its own
@@ -761,6 +770,107 @@ pub fn html_escape(string value): string {
 // Pi's RPC mode is a newline-delimited command protocol. The command reader
 // stays live while prompt/compact/bash workers stream events in the
 // background; session mutations still go through the runner's busy lock.
+#local
+fn run_serve(ref<session.runner_t> runner, int port, bool offline): void! {
+    ipc_server.serve_handler_t handler = fn(string request_line): string {
+        return serve_command(runner, request_line, offline) catch error {
+            error.msg()
+        }
+    }
+    ipc_server.serve('127.0.0.1', port, handler)
+}
+
+// One IPC request line -> response line.  Minimal upstream surface:
+// spawn/list/status/stop manage the single server instance; rpc executes
+// one prompt command non-streaming (events are dropped; the response
+// carries success/error like the process RPC preflight).
+#local
+fn serve_command(ref<session.runner_t> runner, string request_line, bool offline): string! {
+    var parsed = json_util.parse(request_line) catch error {
+        return rpc_error('', 'parse', 'Failed to parse command: ' + error.msg())
+    }
+    if !json_util.is_obj(parsed) {
+        return rpc_error('', 'parse', 'RPC command must be a JSON object')
+    }
+    if parsed is {string:any} parsed_obj {
+        parsed = parsed_obj
+    }
+    var object = parsed as {string:any}
+    string kind = rpc_string(object, 'type')
+    string id = rpc_string(object, 'id')
+    if kind == 'spawn' {
+        {string:any} fields = {}
+        fields['instanceId'] = runner.repository.get_session_id()
+        return rpc_success(id, 'spawn', fields)
+    }
+    if kind == 'list' {
+        {string:any} fields = {}
+        fields['instanceId'] = runner.repository.get_session_id()
+        return rpc_success(id, 'list', fields)
+    }
+    if kind == 'status' {
+        {string:any} fields = {}
+        fields['instanceId'] = runner.repository.get_session_id()
+        fields['status'] = 'running'
+        return rpc_success(id, 'status', fields)
+    }
+    if kind == 'stop' {
+        {string:any} fields = {}
+        fields['instanceId'] = rpc_string(object, 'instanceId')
+        return rpc_success(id, 'stop', fields)
+    }
+    if kind == 'rpc' {
+        if !object.contains('command') {
+            return rpc_error(id, 'rpc', 'Missing command')
+        }
+        var command = object['command']
+        if !(command is {string:any}) {
+            return rpc_error(id, 'rpc', 'command must be an object')
+        }
+        var command_obj = command as {string:any}
+        string command_kind = rpc_string(command_obj, 'type')
+        if command_kind == 'prompt' {
+            if offline {
+                return rpc_error(id, 'prompt', 'Offline mode cannot send prompts to a provider')
+            }
+            string prompt = rpc_string(command_obj, 'message')
+            var stream = runner.prompt(prompt) catch error {
+                return rpc_error(id, 'prompt', error.msg())
+            }
+            for true {
+                var event = stream.recv() catch error {
+                    break
+                }
+                if event.kind == session_stream.EVENT_SESSION_END {
+                    break
+                }
+            }
+            var result = stream.result() catch error {
+                return rpc_error(id, 'prompt', error.msg())
+            }
+            string answer = last_assistant_text(result)
+            {string:any} fields = {}
+            fields['message'] = answer
+            return rpc_success(id, 'prompt', fields)
+        }
+        return rpc_error(id, 'rpc', 'Unsupported rpc command: ' + command_kind)
+    }
+    return rpc_error(id, '', 'Unsupported request type: ' + kind)
+}
+
+#local
+fn rpc_success(string id, string command, {string:any} fields): string! {
+    {string:any} response = {}
+    response['id'] = id
+    response['type'] = 'response'
+    response['command'] = command
+    response['success'] = true
+    for key, value in fields {
+        response[key] = value
+    }
+    return json.serialize(response)
+}
+
 #local
 fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): void! {
     var input = fs.stdin()

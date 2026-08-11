@@ -66,12 +66,23 @@ parent_session 血缘、重复 id 错误、list/delete（持久化后端）与�
   list/delete），外加 SQLite 与 JSONL 各自的 reopen 持久化（顺序与 lineage
   跨 reopen 保留）。
 
+## RPC-over-IPC（2026-08-11 batch 3 已落地最小 slice）
+
+- `src/server/ipc_server.n`：localhost TCP + 逐行 JSON 帧（与上游
+  `ipc/protocol.ts` encodeMessage 一致），连接级协程处理。
+- `adou --serve-port <port>`：app.n 分支构建 runner 后进入 serve 循环；
+  命令表面：spawn/list/status/stop（单实例）+ `rpc` 非流式 prompt（offline
+  守卫生效，返回 success/error 响应行）；事件流（rpc_stream）未接入。
+- e2e `rpc-over-ipc.sh`：spawn → list → status → offline prompt 拒绝 →
+  stop → 未知命令拒绝，全通过。现有进程内 RPC（--mode rpc）未改动。
+
 ## 下一批边界
 
 - SQLite 分支语义：`branch_entries`/`session_materialized`/`entry_materialized`
   填充与 branch 查询对齐 `repo.ts`；`session_sequences` 表接入（当前 MAX+1）。
-- RPC-over-IPC server（Phase 7 另一半）：IPC protocol、rpc process、
-  supervisor、handler、serve、radius；不得破坏现有进程内 RPC 协议。
+- IPC 升级：rpc_stream 事件流、多实例 spawn/supervisor 进程管理（上游
+  `rpc-process.ts`/`supervisor.ts`）、handler.ts 命令面；radius（OAuth/
+  遥测）按排除项评估。
 - TUI list/delete 调用点迁移到 backend helper。
 - 若系统 SQLite 头/库需要动态链接（如降级打包），单独验证 Darwin/Linux ABI，
   本批静态 .o 链接不改变。
