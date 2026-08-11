@@ -148,10 +148,15 @@ try:
         if resp.get("type") != "error" or resp.get("ok") is not False or "Unknown instance" not in resp.get("error", ""):
             raise SystemExit(f"unknown id for {kind} should error: {resp!r}")
 
-    # Offline prompt rejection preserved through the rpc bridge.
+    # Offline prompt rejection preserved through the rpc bridge, and it must
+    # fail fast: the bridge no longer waits out a fixed 30s budget.
+    t0 = time.time()
     offline = request(json.dumps({"type": "rpc", "instanceId": id_a, "command": {"type": "prompt", "id": "p1", "message": "hello"}}))
+    elapsed = time.time() - t0
     if offline.get("type") != "rpc_result" or offline.get("response", {}).get("success") is not False or "Offline mode" not in offline.get("response", {}).get("error", ""):
         raise SystemExit(f"offline prompt should be rejected: {offline!r}")
+    if elapsed > 5.0:
+        raise SystemExit(f"offline prompt must fail fast instead of waiting, took {elapsed:.1f}s: {offline!r}")
 
     # rpc_stream: one connection, rpc_ready first, then two consecutive
     # non-network commands, then the extension guard, then close.
