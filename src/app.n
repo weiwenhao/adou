@@ -25,6 +25,8 @@ import adou.src.context.system_prompt
 import adou.src.json_util
 import adou.src.platform.cwd as platform_cwd
 import adou.src.server.ipc_server
+import adou.src.server.protocol as ipc_protocol
+import adou.src.server.supervisor as ipc_supervisor
 import adou.src.session.repository
 import adou.src.session.types as session_types
 import adou.src.session.message_json
@@ -47,13 +49,43 @@ import io.buf
 import fmt
 import co
 import co.mutex
+import net.tcp
 import time
 
 pub const VERSION = '0.1.0-dev'
 
 pub type rpc_bash_update_state_t = struct {
     string id
-    ref<mutex.mutex_t> output_lock
+    ref<rpc_sink_t> sink
+}
+
+// RPC output abstraction shared by --mode rpc (stdout) and the Phase 7.1
+// IPC server (TCP connections).  The write callback must always be invoked
+// under the lock; rpc_write owns that locking contract.
+type rpc_sink_t = struct {
+    ref<mutex.mutex_t> lock
+    fn(string line) write
+}
+
+// --mode rpc keeps writing responses to stdout.
+#local
+fn stdout_rpc_sink(): ref<rpc_sink_t> {
+    return new rpc_sink_t(lock = mutex.mutex_t.new(), write = fn(string line) {
+        var output = fs.stdout() catch error {
+            return
+        }
+        output.write((line + '\n') as [u8]) catch error {}
+    })
+}
+
+// IPC connection sink: framed lines; a failed write only drops the line (the
+// connection coroutine owns close).
+#local
+fn conn_rpc_sink(ref<tcp.conn_t> conn): ref<rpc_sink_t> {
+    return new rpc_sink_t(lock = mutex.mutex_t.new(), write = fn(string line) {
+        var bytes = (line + '\n') as [u8]
+        conn.write(bytes) catch error {}
+    })
 }
 
 pub fn run(): void! {
@@ -334,10 +366,11 @@ pub fn run(): void! {
     runner.retry_base_delay_ms = config.retry_base_delay_ms
 
     if config.serve_port > 0 {
-        // Phase 7 RPC-over-IPC: serve line-delimited JSON RPC commands on a
-        // localhost TCP port (upstream packages/server ipc protocol).
+        // Phase 7.1 RPC-over-IPC: serve the upstream packages/server ipc
+        // protocol on a localhost TCP port.  Instances are spawned on demand
+        // (in-process isolated runners, see docs/phase7-storage-design.md).
         debug.log('mode', 'starting ipc server on port ' + fmt.sprintf('%d', config.serve_port))
-        run_serve(runner, config.serve_port, config.offline)
+        run_serve(config, config.serve_port, config.offline, config.no_context_files, config.system_prompt, config.append_system_prompts, config.scoped_models)
         timings.print_timings()
         return
     }
@@ -770,347 +803,463 @@ pub fn html_escape(string value): string {
 // Pi's RPC mode is a newline-delimited command protocol. The command reader
 // stays live while prompt/compact/bash workers stream events in the
 // background; session mutations still go through the runner's busy lock.
+
+// Phase 7.1: RPC-over-IPC supervisor.  Each TCP connection runs its own
+// handler coroutine; non-stream requests are answered with a single response
+// line and the connection closes (upstream socket.end semantics), while
+// rpc_stream keeps the connection open for the bidirectional command/event
+// loop.
 #local
-fn run_serve(ref<session.runner_t> runner, int port, bool offline): void! {
-    ipc_server.serve_handler_t handler = fn(string request_line): string {
-        return serve_command(runner, request_line, offline) catch error {
-            error.msg()
+fn run_serve(config_types.config_t config, int port, bool offline, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): void! {
+    ipc_supervisor.spawn_runner_fn spawner = fn(string cwd): ref<session.runner_t>! {
+        return build_spawned_runner(config, cwd)
+    }
+    var sup = ipc_supervisor.new(spawner, offline)
+    ipc_server.connection_handler_t handler = fn(ref<tcp.conn_t> conn): void {
+        serve_connection(sup, conn, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns) catch error {
+            conn.close()
         }
     }
-    ipc_server.stream_handler_t stream_handler = fn(string request_line): [string] {
-        return serve_stream_command(runner, request_line) catch error {
-            [error.msg()]
-        }
-    }
-    ipc_server.serve_with_stream('127.0.0.1', port, handler, stream_handler)
+    ipc_server.serve('127.0.0.1', port, handler)
 }
 
-// One IPC request line -> response line.  Minimal upstream surface:
-// spawn/list/status/stop manage the single server instance; rpc executes
-// one prompt command non-streaming (events are dropped; the response
-// carries success/error like the process RPC preflight); rpc_stream opens
-// the documented stream-mode slice (marker response + stream_start + full
-// response), with the offline guard answered deterministically.
 #local
-fn serve_command(ref<session.runner_t> runner, string request_line, bool offline): string! {
-    var parsed = json_util.parse(request_line) catch error {
-        return rpc_error('', 'parse', 'Failed to parse command: ' + error.msg())
+fn serve_connection(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): void! {
+    for true {
+        string line = ipc_server.read_line(conn) catch error {
+            break
+        }
+        if line == '' {
+            break
+        }
+        var parsed = json_util.parse(line) catch error {
+            ipc_server.write_line(conn, ipc_protocol.error_response('Failed to parse request: ' + error.msg()))
+            break
+        }
+        if !json_util.is_obj(parsed) {
+            ipc_server.write_line(conn, ipc_protocol.error_response('Request must be a JSON object'))
+            break
+        }
+        var object = parsed as {string:any}
+        if rpc_string(object, 'type') == 'rpc_stream' {
+            serve_rpc_stream(sup, conn, object, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns)
+            return
+        }
+        string response = serve_request(sup, object, rpc_string(object, 'type'), no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns) catch error {
+            ipc_protocol.error_response(error.msg())
+        }
+        ipc_server.write_line(conn, response)
+        return
     }
-    if !json_util.is_obj(parsed) {
-        return rpc_error('', 'parse', 'RPC command must be a JSON object')
-    }
-    if parsed is {string:any} parsed_obj {
-        parsed = parsed_obj
-    }
-    var object = parsed as {string:any}
-    string kind = rpc_string(object, 'type')
-    string id = rpc_string(object, 'id')
+    conn.close()
+}
+
+// One IPC request line -> response line (upstream handler.ts command surface
+// with the upstream response shapes: spawn_result/list_result/status_result/
+// stop_result/rpc_result/error).
+#local
+fn serve_request(ref<ipc_supervisor.supervisor_t> sup, {string:any} object, string kind, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): string! {
     if kind == 'spawn' {
-        {string:any} fields = {}
-        fields['instanceId'] = runner.repository.get_session_id()
-        return rpc_success(id, 'spawn', fields)
+        string cwd = rpc_string(object, 'cwd')
+        if cwd == '' {
+            return ipc_protocol.error_response('spawn requires a cwd')
+        }
+        var summary = sup.spawn(cwd, rpc_string(object, 'label')) catch error {
+            return ipc_protocol.error_response(error.msg())
+        }
+        return ipc_protocol.spawn_result(summary)
     }
     if kind == 'list' {
-        {string:any} fields = {}
-        fields['instanceId'] = runner.repository.get_session_id()
-        return rpc_success(id, 'list', fields)
+        return ipc_protocol.list_result(sup.list())
     }
     if kind == 'status' {
-        {string:any} fields = {}
-        fields['instanceId'] = runner.repository.get_session_id()
-        fields['status'] = 'running'
-        return rpc_success(id, 'status', fields)
+        string instance_id = rpc_string(object, 'instanceId')
+        var instance = sup.get(instance_id)
+        if instance is ref<ipc_supervisor.instance_t> live {
+            return ipc_protocol.status_result(live.summary)
+        }
+        return ipc_protocol.error_response('Unknown instance: ' + instance_id)
     }
     if kind == 'stop' {
-        {string:any} fields = {}
-        fields['instanceId'] = rpc_string(object, 'instanceId')
-        return rpc_success(id, 'stop', fields)
+        string instance_id = rpc_string(object, 'instanceId')
+        if sup.stop(instance_id) {
+            return ipc_protocol.stop_result(instance_id)
+        }
+        return ipc_protocol.error_response('Unknown instance: ' + instance_id)
     }
     if kind == 'rpc' {
-        if !object.contains('command') {
-            return rpc_error(id, 'rpc', 'Missing command')
+        string instance_id = rpc_string(object, 'instanceId')
+        var instance = sup.get(instance_id)
+        if !(instance is ref<ipc_supervisor.instance_t>) {
+            return ipc_protocol.error_response('Unknown instance: ' + instance_id)
         }
-        var command = object['command']
-        if !(command is {string:any}) {
-            return rpc_error(id, 'rpc', 'command must be an object')
+        var live = instance as ref<ipc_supervisor.instance_t>
+        if !object.contains('command') || !(object['command'] is {string:any}) {
+            return ipc_protocol.error_response('rpc requires a command object')
         }
-        var command_obj = command as {string:any}
-        string command_kind = rpc_string(command_obj, 'type')
-        if command_kind == 'prompt' {
-            if offline {
-                return rpc_error(id, 'prompt', 'Offline mode cannot send prompts to a provider')
-            }
-            string prompt = rpc_string(command_obj, 'message')
-            // streamingBehavior:"stream" is answered through the stream
-            // path: this handler returns the "stream":true marker and the
-            // stream handler emits stream_start followed by the full
-            // non-streaming response (documented difference).
-            if rpc_string(command_obj, 'streamingBehavior') == 'stream' {
-                {string:any} fields = {}
-                fields['stream'] = true
-                return rpc_success(id, 'prompt', fields)
-            }
-            var stream = runner.prompt(prompt) catch error {
-                return rpc_error(id, 'prompt', error.msg())
-            }
-            for true {
-                var event = stream.recv() catch error {
-                    break
-                }
-                if event.kind == session_stream.EVENT_SESSION_END {
-                    break
-                }
-            }
-            var result = stream.result() catch error {
-                return rpc_error(id, 'prompt', error.msg())
-            }
-            string answer = last_assistant_text(result)
-            {string:any} fields = {}
-            fields['message'] = answer
-            return rpc_success(id, 'prompt', fields)
-        }
-        return rpc_error(id, 'rpc', 'Unsupported rpc command: ' + command_kind)
+        return rpc_bridge_response(sup, live, object['command'] as {string:any}, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns)
     }
-    if kind == 'rpc_stream' {
-        if offline {
-            return rpc_error(id, 'rpc_stream', 'Offline mode cannot send prompts to a provider')
-        }
-        {string:any} fields = {}
-        fields['instanceId'] = runner.repository.get_session_id()
-        fields['stream'] = true
-        return rpc_success(id, 'rpc_stream', fields)
-    }
-    return rpc_error(id, '', 'Unsupported request type: ' + kind)
+    return ipc_protocol.error_response('Unsupported request type: ' + kind)
 }
 
-// Stream-mode counterpart of serve_command (documented difference from the
-// upstream bidirectional rpc_stream socket protocol): the request that the
-// request handler marked with "stream":true is re-executed here and
-// answered with a stream_start event line followed by the complete
-// non-streaming response.
-#local
-fn serve_stream_command(ref<session.runner_t> runner, string request_line): [string]! {
-    var parsed = json_util.parse(request_line) catch error {
-        return [rpc_error('', 'parse', 'Failed to parse command: ' + error.msg())]
-    }
-    if !(parsed is {string:any}) {
-        return [rpc_error('', 'parse', 'RPC command must be a JSON object')]
-    }
-    var object = parsed as {string:any}
-    string kind = rpc_string(object, 'type')
-    string id = rpc_string(object, 'id')
-    if kind == 'rpc_stream' {
-        [string] lines = []
-        {string:any} start = {}
-        start['type'] = 'stream_start'
-        if id != '' {start['id'] = id}
-        start['instanceId'] = runner.repository.get_session_id()
-        lines.push(json.serialize(start))
-        {string:any} ready = {}
-        if id != '' {ready['id'] = id}
-        ready['type'] = 'response'
-        ready['command'] = 'rpc_stream'
-        ready['success'] = true
-        lines.push(json.serialize(ready))
-        return lines
-    }
-    if kind == 'rpc' && object.contains('command') && (object['command'] is {string:any}) {
-        var command_obj = object['command'] as {string:any}
-        string command_kind = rpc_string(command_obj, 'type')
-        if command_kind == 'prompt' && rpc_string(command_obj, 'streamingBehavior') == 'stream' {
-            string prompt = rpc_string(command_obj, 'message')
-            var stream = runner.prompt(prompt) catch error {
-                return [rpc_error(id, 'prompt', error.msg())]
-            }
-            for true {
-                var event = stream.recv() catch error {
-                    break
-                }
-                if event.kind == session_stream.EVENT_SESSION_END {
-                    break
-                }
-            }
-            var result = stream.result() catch error {
-                return [rpc_error(id, 'prompt', error.msg())]
-            }
-            [string] lines = []
-            {string:any} start = {}
-            start['type'] = 'stream_start'
-            if id != '' {start['id'] = id}
-            start['command'] = 'prompt'
-            lines.push(json.serialize(start))
-            string answer = last_assistant_text(result)
-            {string:any} fields = {}
-            fields['message'] = answer
-            lines.push(rpc_success(id, 'prompt', fields))
-            return lines
-        }
-    }
-    return []
+// Bridge capture: the dispatch writes response/event lines asynchronously
+// (prompt workers stream events after the initial response line).  The
+// bridge keeps only the first RpcResponse-shaped line and wraps it in
+// rpc_result, dropping the rest like upstream rpcProcess.send().
+type rpc_capture_state_t = struct {
+    ref<mutex.mutex_t> lock
+    chan<string> signal
+    bool captured
 }
 
 #local
-fn rpc_success(string id, string command, {string:any} fields): string! {
-    {string:any} response = {}
-    response['id'] = id
-    response['type'] = 'response'
-    response['command'] = command
-    response['success'] = true
-    for key, value in fields {
-        response[key] = value
+fn rpc_bridge_response(ref<ipc_supervisor.supervisor_t> sup, ref<ipc_supervisor.instance_t> instance, {string:any} command_obj, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): string! {
+    var state = new rpc_capture_state_t(lock = mutex.mutex_t.new(), signal = chan<string>.new(1), captured = false)
+    var sink = new rpc_sink_t(lock = state.lock, write = fn(string line) {
+        // Invoked under state.lock by rpc_write.
+        if state.captured {
+            return
+        }
+        var parsed = json_util.parse(line) catch error {
+            return
+        }
+        if parsed is {string:any} response_obj {
+            if response_obj.contains('type') && response_obj['type'] is string && (response_obj['type'] as string) == 'response' {
+                state.captured = true
+                state.signal.send(line) catch error {}
+            }
+        }
+    })
+    string command_kind = rpc_string(command_obj, 'type')
+    string id = rpc_string(command_obj, 'id')
+    if sup.offline && command_kind == 'prompt' {
+        rpc_write(sink, rpc_error(id, 'prompt', 'Offline mode cannot send prompts to a provider'))
+    } else {
+        rpc_dispatch(instance.runner, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns)
     }
-    return json.serialize(response)
+    int waited_ms = 0
+    for true {
+        var (line, received) = state.signal.try_recv() catch error {
+            break
+        }
+        if received {
+            var parsed = json_util.parse(line) catch error {
+                break
+            }
+            if parsed is {string:any} response_obj {
+                return ipc_protocol.rpc_result(response_obj)
+            }
+            break
+        }
+        if waited_ms >= 30000 {
+            break
+        }
+        co.sleep(10)
+        waited_ms += 10
+    }
+    return ipc_protocol.error_response('No response from instance')
+}
+
+// rpc_stream connection protocol (upstream ipc/server.ts): rpc_ready first,
+// then the connection stays open and every command line is answered with the
+// RpcResponse/AgentSessionEvent lines the instance emits.  Closing the
+// connection unsubscribes the subscriber.
+#local
+fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, {string:any} object, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): void! {
+    string instance_id = rpc_string(object, 'instanceId')
+    var instance = sup.get(instance_id)
+    if !(instance is ref<ipc_supervisor.instance_t>) {
+        ipc_server.write_line(conn, ipc_protocol.error_response('Unknown instance: ' + instance_id))
+        conn.close()
+        return
+    }
+    var live = instance as ref<ipc_supervisor.instance_t>
+    var sink = conn_rpc_sink(conn)
+    ipc_server.write_line(conn, ipc_protocol.rpc_ready(live.summary))
+    int subscriber_id = sup.subscribe(live, sink.lock, fn(string line) {
+        var bytes = (line + '\n') as [u8]
+        conn.write(bytes) catch error {}
+    })
+    for true {
+        string line = ipc_server.read_line(conn) catch error {
+            break
+        }
+        if line == '' {
+            break
+        }
+        var parsed = json_util.parse(line) catch error {
+            rpc_write(sink, ipc_protocol.error_response('Failed to parse command: ' + error.msg()))
+            continue
+        }
+        if !json_util.is_obj(parsed) {
+            rpc_write(sink, ipc_protocol.error_response('RPC command must be a JSON object'))
+            continue
+        }
+        var command_obj = parsed as {string:any}
+        string command_kind = rpc_string(command_obj, 'type')
+        if command_kind == 'extension_ui_response' {
+            // Extensions are disabled; answer deterministically and keep the
+            // stream open.
+            rpc_write(sink, ipc_protocol.error_response('extensions disabled'))
+            continue
+        }
+        string id = rpc_string(command_obj, 'id')
+        if sup.offline && command_kind == 'prompt' {
+            rpc_write(sink, rpc_error(id, 'prompt', 'Offline mode cannot send prompts to a provider'))
+            continue
+        }
+        // A dispatch failure must not kill the connection loop; answer with
+        // the error shape and keep the stream open.
+        rpc_dispatch(live.runner, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns) catch error {
+            rpc_write(sink, ipc_protocol.error_response(error.msg()))
+        }
+    }
+    sup.unsubscribe(live, subscriber_id)
+    conn.close()
+}
+
+// Build the isolated in-memory runner for one spawned instance.  The
+// instance inherits the server's resolved model/stream/compaction/retry
+// configuration; project-bound context (AGENTS.md/CLAUDE.md, skills, tools,
+// system prompt) is rebuilt for the instance cwd like a fresh session there.
+// The stream options are copied per instance so set_model/set_thinking_level
+// mutations never leak between instances.
+#local
+fn build_spawned_runner(config_types.config_t config, string cwd): ref<session.runner_t>! {
+    var session_repo = repository.in_memory(cwd)
+    var session_preferences = config.project_trusted ? settings.load_for(cwd) : settings.load()
+    var instance_config = config
+    if !instance_config.provider_explicit && !instance_config.model_explicit && session_preferences.default_model != '' {
+        string preferred = session_preferences.default_provider != '' ? session_preferences.default_provider + '/' + session_preferences.default_model : session_preferences.default_model
+        ref<ai_types.model_t>? preferred_model = models.find(preferred)
+        if preferred_model is ref<ai_types.model_t> selected_model {
+            instance_config.model = selected_model
+            instance_config.provider = selected_model.provider
+            instance_config.stream_options.api_key = auth.effective(selected_model.provider)
+            instance_config.stream_options.max_tokens = selected_model.max_tokens
+        }
+    }
+    string thinking = instance_config.thinking
+    if !instance_config.thinking_explicit && instance_config.scoped_models.len() == 0 {
+        thinking = models.clamp_thinking_level(instance_config.model, session_preferences.default_thinking_level)
+    }
+    var stream_options = new ai_types.stream_options_t(api_key = instance_config.stream_options.api_key, timeout_ms = instance_config.stream_options.timeout_ms, max_tokens = instance_config.stream_options.max_tokens, max_retries = instance_config.stream_options.max_retries, max_retry_delay_ms = instance_config.stream_options.max_retry_delay_ms, session_id = session_repo.get_session_id(), reasoning_effort = thinking, thinking_enabled = thinking != 'off', cache_retention = instance_config.stream_options.cache_retention, temperature = instance_config.stream_options.temperature, tool_choice = instance_config.stream_options.tool_choice, transport = instance_config.stream_options.transport)
+    command.configure_agent_environment(session_repo.get_session_id(), session_repo.get_session_file(), instance_config.model.provider, instance_config.model.id, thinking)
+    [ref<project.file_t>] context_files = []
+    if !instance_config.no_context_files && instance_config.project_trusted {
+        var loaded = project.load(cwd, '')
+        context_files = loaded.files
+    }
+    string resolved_system_prompt = instance_config.system_prompt
+    if resolved_system_prompt == '' {
+        var discovered_system = project.system_prompt_file(cwd, '')
+        if discovered_system is ref<project.file_t> system_file {
+            resolved_system_prompt = system_file.content
+        }
+    }
+    [string] resolved_append_prompts = instance_config.append_system_prompts
+    if resolved_append_prompts.len() == 0 {
+        var discovered_append = project.append_system_prompt_file(cwd, '')
+        if discovered_append is ref<project.file_t> append_file {
+            resolved_append_prompts.push(append_file.content)
+        }
+    }
+    string append_prompt = strings.join(resolved_append_prompts, '\n\n')
+    [string] extra_skill_paths = []
+    var skills_result = skills.load_skills(cwd, config_paths.agent_dir(), extra_skill_paths, true)
+    // The server's enabled-skills list filters instance skills too.
+    var skill_settings = config_settings.load()
+    if skill_settings.enabled_skill_names.len() > 0 {
+        [ref<skills.skill_t>] filtered_skills = []
+        for skill in skills_result.skills {
+            if list_contains_skill(skill_settings.enabled_skill_names, skill.name) {
+                filtered_skills.push(skill)
+            }
+        }
+        skills_result.skills = filtered_skills
+    }
+    string skills_prompt = skills.format_skills_for_prompt(skills_result.skills)
+    if skills_prompt != '' {
+        if append_prompt != '' {
+            append_prompt += '\n\n'
+        }
+        append_prompt += skills_prompt
+    }
+    var tools = builtins.select_tools(cwd, instance_config.tool_names, instance_config.exclude_tool_names, instance_config.no_tools || instance_config.no_builtin_tools)
+    [string] tool_names = []
+    for tool in tools {
+        tool_names.push(tool.name)
+    }
+    string system = system_prompt.build_with_tools(cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
+    var context = new agent_types.context_t(system_prompt = system, tools = tools)
+    var agent_config = new agent_types.config_t(model = instance_config.model, stream_options = stream_options)
+    agent_config.queues.steering_mode = instance_config.steering_mode
+    agent_config.queues.follow_up_mode = instance_config.follow_up_mode
+    var spawned = session.new(session_repo, context, agent_config, stream_provider(), instance_config.compaction)
+    spawned.retry_enabled = instance_config.retry_enabled
+    spawned.retry_max_attempts = instance_config.retry_max_attempts
+    spawned.retry_base_delay_ms = instance_config.retry_base_delay_ms
+    return spawned
+}
+
+// Shared command dispatch for one RpcCommand.  Used both by --mode rpc
+// (stdout sink, run_rpc loop) and the Phase 7.1 IPC server (per-connection
+// sinks).  Responses and events are written through the sink asynchronously
+// where the operation is a background worker (prompt/compact/bash).
+#local
+fn rpc_dispatch(ref<session.runner_t> runner, {string:any} object, string command, string id, ref<rpc_sink_t> sink, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): void! {
+    if command == 'prompt' {
+        string prompt_behavior = rpc_string(object, 'streamingBehavior')
+        rpc_run_prompt(runner, id, rpc_string(object, 'message'), prompt_behavior, sink)
+    } else if command == 'steer' {
+        rpc_queue_message(runner, id, rpc_string(object, 'message'), true, sink)
+    } else if command == 'follow_up' {
+        rpc_queue_message(runner, id, rpc_string(object, 'message'), false, sink)
+    } else if command == 'abort' {
+        runner.abort_and_wait()
+        rpc_write(sink, rpc_ok(id, 'abort'))
+    } else if command == 'abort_retry' {
+        // Pi's abortRetry only interrupts the session-level backoff;
+        // the active provider/compaction stream remains untouched.
+        runner.abort_retry()
+        rpc_write(sink, rpc_ok(id, 'abort_retry'))
+    } else if command == 'get_state' {
+        rpc_write(sink, rpc_ok_data(id, 'get_state', rpc_state(runner)))
+    } else if command == 'get_available_models' {
+        rpc_write(sink, rpc_ok_data(id, 'get_available_models', rpc_models(runner)))
+    } else if command == 'set_model' {
+        rpc_set_model(runner, id, rpc_string(object, 'provider'), rpc_string(object, 'modelId'), sink)
+    } else if command == 'cycle_model' {
+        rpc_cycle_model(runner, id, model_scope_patterns, sink)
+    } else if command == 'set_thinking_level' {
+        runner.set_thinking_level(rpc_string(object, 'level')) catch error {
+            rpc_write(sink, rpc_error(id, command, error.msg()))
+            return
+        }
+        rpc_write(sink, rpc_ok(id, command))
+    } else if command == 'cycle_thinking_level' {
+        rpc_cycle_thinking(runner, id, sink)
+    } else if command == 'get_available_thinking_levels' {
+        rpc_write(sink, rpc_ok_data(id, command, rpc_thinking_levels(runner.agent_config.model)))
+    } else if command == 'set_steering_mode' {
+        rpc_set_queue_mode(runner, id, true, rpc_string(object, 'mode'), sink)
+    } else if command == 'set_follow_up_mode' {
+        rpc_set_queue_mode(runner, id, false, rpc_string(object, 'mode'), sink)
+    } else if command == 'set_auto_compaction' {
+        runner.set_auto_compaction(rpc_bool(object, 'enabled', true)) catch error {
+            rpc_write(sink, rpc_error(id, command, error.msg()))
+            return
+        }
+        rpc_write(sink, rpc_ok(id, command))
+    } else if command == 'set_auto_retry' {
+        runner.set_auto_retry(rpc_bool(object, 'enabled', true)) catch error {
+            rpc_write(sink, rpc_error(id, command, error.msg()))
+            return
+        }
+        rpc_write(sink, rpc_ok(id, command))
+    } else if command == 'compact' {
+        rpc_run_compaction(runner, id, rpc_string(object, 'customInstructions'), sink)
+    } else if command == 'bash' {
+        rpc_run_bash(runner, id, rpc_string(object, 'command'), rpc_bool(object, 'excludeFromContext', false), sink)
+    } else if command == 'abort_bash' {
+        runner.abort_bash()
+        rpc_write(sink, rpc_ok(id, 'abort_bash'))
+    } else if command == 'get_session_stats' {
+        var stats = runner.repository.stats(runner.agent_config.model.context_window) catch error {
+            rpc_write(sink, rpc_error(id, command, error.msg()))
+            return
+        }
+        rpc_write(sink, rpc_ok_data(id, command, rpc_stats(stats, runner.repository)))
+    } else if command == 'export_html' {
+        rpc_export_html(runner, id, rpc_string(object, 'outputPath'), sink)
+    } else if command == 'get_messages' {
+        rpc_write(sink, rpc_ok_data(id, command, rpc_messages(runner.copy_active_messages())))
+    } else if command == 'get_last_assistant_text' {
+        rpc_write(sink, rpc_ok_data(id, command, rpc_text_data('text', last_assistant_text(runner.copy_active_messages()))))
+    } else if command == 'get_commands' {
+        rpc_write(sink, rpc_ok_data(id, command, rpc_commands(runner, runner.repository.cwd, runner.repository.cwd)))
+    } else if command == 'set_session_name' {
+        string name = rpc_string(object, 'name').trim([' ', '\t', '\n', '\r'])
+        if name == '' {
+            rpc_write(sink, rpc_error(id, command, 'Session name cannot be empty'))
+            return
+        }
+        runner.set_session_name(name) catch error {
+            rpc_write(sink, rpc_error(id, command, error.msg()))
+            return
+        }
+        rpc_write(sink, rpc_ok(id, command))
+    } else if command == 'new_session' {
+        runner.start_new_session_with_parent(rpc_string(object, 'parentSession')) catch error {
+            rpc_write(sink, rpc_error(id, command, error.msg()))
+            return
+        }
+        rpc_write(sink, rpc_ok_data(id, command, rpc_cancelled_data(false)))
+    } else if command == 'switch_session' {
+        rpc_switch_session(runner, id, rpc_string(object, 'sessionPath'), no_context_files, system_prompt_override, append_system_prompts, sink)
+    } else if command == 'fork' {
+        string fork_text = rpc_fork_message_text(runner.repository, rpc_string(object, 'entryId'))
+        runner.fork_session(rpc_string(object, 'entryId')) catch error {
+            rpc_write(sink, rpc_error(id, command, error.msg()))
+            return
+        }
+        {string:any} fork_data = {}
+        fork_data['text'] = fork_text
+        fork_data['cancelled'] = false
+        rpc_write(sink, rpc_ok_data(id, command, fork_data))
+    } else if command == 'clone' {
+        runner.clone_session() catch error {
+            rpc_write(sink, rpc_error(id, command, error.msg()))
+            return
+        }
+        rpc_write(sink, rpc_ok_data(id, command, rpc_cancelled_data(false)))
+    } else if command == 'get_entries' {
+        var entries_data = rpc_entries(runner.repository, rpc_string(object, 'since')) catch error {
+            rpc_write(sink, rpc_error(id, command, error.msg()))
+            return
+        }
+        rpc_write(sink, rpc_ok_data(id, command, entries_data))
+    } else if command == 'get_tree' {
+        var tree_data = rpc_tree(runner.repository) catch error {
+            rpc_write(sink, rpc_error(id, command, error.msg()))
+            return
+        }
+        rpc_write(sink, rpc_ok_data(id, command, tree_data))
+    } else if command == 'get_fork_messages' {
+        var fork_data = rpc_fork_messages(runner.repository) catch error {
+            rpc_write(sink, rpc_error(id, command, error.msg()))
+            return
+        }
+        rpc_write(sink, rpc_ok_data(id, command, fork_data))
+    } else {
+        rpc_write(sink, rpc_error(id, command, 'Unknown command: ' + command))
+    }
 }
 
 #local
 fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): void! {
     var input = fs.stdin()
     var reader = new buf.reader<ref<fs.file_t>>(rd = input)
-    var output_lock = mutex.mutex_t.new()
+    var sink = stdout_rpc_sink()
     runner.set_event_sink(fn(session_stream.event_t event) {
         string line = event_json.encode(event) catch error {return}
-        rpc_write(output_lock, line)
+        rpc_write(sink, line)
     })
     for true {
         string line = reader.read_line() catch error {break}
         line = line.trim([' ', '\t', '\r', '\n'])
         var parsed = json_util.parse(line) catch error {
-            rpc_write(output_lock, rpc_error('', 'parse', 'Failed to parse command: ' + error.msg()))
+            rpc_write(sink, rpc_error('', 'parse', 'Failed to parse command: ' + error.msg()))
             continue
         }
         if !json_util.is_obj(parsed) {
-            rpc_write(output_lock, rpc_error('', 'parse', 'Failed to parse command: RPC command must be a JSON object'))
+            rpc_write(sink, rpc_error('', 'parse', 'Failed to parse command: RPC command must be a JSON object'))
             continue
         }
         var object = parsed as {string:any}
         string command = rpc_string(object, 'type')
         string id = rpc_string(object, 'id')
-        if command == 'prompt' {
-            string prompt_behavior = rpc_string(object, 'streamingBehavior')
-            rpc_run_prompt(runner, id, rpc_string(object, 'message'), prompt_behavior, output_lock)
-        } else if command == 'steer' {
-            rpc_queue_message(runner, id, rpc_string(object, 'message'), true, output_lock)
-        } else if command == 'follow_up' {
-            rpc_queue_message(runner, id, rpc_string(object, 'message'), false, output_lock)
-        } else if command == 'abort' {
-            runner.abort_and_wait()
-            rpc_write(output_lock, rpc_ok(id, 'abort'))
-        } else if command == 'abort_retry' {
-            // Pi's abortRetry only interrupts the session-level backoff;
-            // the active provider/compaction stream remains untouched.
-            runner.abort_retry()
-            rpc_write(output_lock, rpc_ok(id, 'abort_retry'))
-        } else if command == 'get_state' {
-            rpc_write(output_lock, rpc_ok_data(id, 'get_state', rpc_state(runner)))
-        } else if command == 'get_available_models' {
-            rpc_write(output_lock, rpc_ok_data(id, 'get_available_models', rpc_models(runner)))
-        } else if command == 'set_model' {
-            rpc_set_model(runner, id, rpc_string(object, 'provider'), rpc_string(object, 'modelId'), output_lock)
-        } else if command == 'cycle_model' {
-            rpc_cycle_model(runner, id, model_scope_patterns, output_lock)
-        } else if command == 'set_thinking_level' {
-            runner.set_thinking_level(rpc_string(object, 'level')) catch error {
-                rpc_write(output_lock, rpc_error(id, command, error.msg()))
-                continue
-            }
-            rpc_write(output_lock, rpc_ok(id, command))
-        } else if command == 'cycle_thinking_level' {
-            rpc_cycle_thinking(runner, id, output_lock)
-        } else if command == 'get_available_thinking_levels' {
-            rpc_write(output_lock, rpc_ok_data(id, command, rpc_thinking_levels(runner.agent_config.model)))
-        } else if command == 'set_steering_mode' {
-            rpc_set_queue_mode(runner, id, true, rpc_string(object, 'mode'), output_lock)
-        } else if command == 'set_follow_up_mode' {
-            rpc_set_queue_mode(runner, id, false, rpc_string(object, 'mode'), output_lock)
-        } else if command == 'set_auto_compaction' {
-            runner.set_auto_compaction(rpc_bool(object, 'enabled', true)) catch error {
-                rpc_write(output_lock, rpc_error(id, command, error.msg()))
-                continue
-            }
-            rpc_write(output_lock, rpc_ok(id, command))
-        } else if command == 'set_auto_retry' {
-            runner.set_auto_retry(rpc_bool(object, 'enabled', true)) catch error {
-                rpc_write(output_lock, rpc_error(id, command, error.msg()))
-                continue
-            }
-            rpc_write(output_lock, rpc_ok(id, command))
-        } else if command == 'compact' {
-            rpc_run_compaction(runner, id, rpc_string(object, 'customInstructions'), output_lock)
-        } else if command == 'bash' {
-            rpc_run_bash(runner, id, rpc_string(object, 'command'), rpc_bool(object, 'excludeFromContext', false), output_lock)
-        } else if command == 'abort_bash' {
-            runner.abort_bash()
-            rpc_write(output_lock, rpc_ok(id, 'abort_bash'))
-        } else if command == 'get_session_stats' {
-            var stats = runner.repository.stats(runner.agent_config.model.context_window) catch error {
-                rpc_write(output_lock, rpc_error(id, command, error.msg()))
-                continue
-            }
-            rpc_write(output_lock, rpc_ok_data(id, command, rpc_stats(stats, runner.repository)))
-        } else if command == 'export_html' {
-            rpc_export_html(runner, id, rpc_string(object, 'outputPath'), output_lock)
-        } else if command == 'get_messages' {
-            rpc_write(output_lock, rpc_ok_data(id, command, rpc_messages(runner.copy_active_messages())))
-        } else if command == 'get_last_assistant_text' {
-            rpc_write(output_lock, rpc_ok_data(id, command, rpc_text_data('text', last_assistant_text(runner.copy_active_messages()))))
-        } else if command == 'get_commands' {
-            rpc_write(output_lock, rpc_ok_data(id, command, rpc_commands(runner, runner.repository.cwd, runner.repository.cwd)))
-        } else if command == 'set_session_name' {
-            string name = rpc_string(object, 'name').trim([' ', '\t', '\n', '\r'])
-            if name == '' {
-                rpc_write(output_lock, rpc_error(id, command, 'Session name cannot be empty'))
-                continue
-            }
-            runner.set_session_name(name) catch error {
-                rpc_write(output_lock, rpc_error(id, command, error.msg()))
-                continue
-            }
-            rpc_write(output_lock, rpc_ok(id, command))
-        } else if command == 'new_session' {
-            runner.start_new_session_with_parent(rpc_string(object, 'parentSession')) catch error {
-                rpc_write(output_lock, rpc_error(id, command, error.msg()))
-                continue
-            }
-            rpc_write(output_lock, rpc_ok_data(id, command, rpc_cancelled_data(false)))
-        } else if command == 'switch_session' {
-            rpc_switch_session(runner, id, rpc_string(object, 'sessionPath'), no_context_files, system_prompt_override, append_system_prompts, output_lock)
-        } else if command == 'fork' {
-            string fork_text = rpc_fork_message_text(runner.repository, rpc_string(object, 'entryId'))
-            runner.fork_session(rpc_string(object, 'entryId')) catch error {
-                rpc_write(output_lock, rpc_error(id, command, error.msg()))
-                continue
-            }
-            {string:any} fork_data = {}
-            fork_data['text'] = fork_text
-            fork_data['cancelled'] = false
-            rpc_write(output_lock, rpc_ok_data(id, command, fork_data))
-        } else if command == 'clone' {
-            runner.clone_session() catch error {
-                rpc_write(output_lock, rpc_error(id, command, error.msg()))
-                continue
-            }
-            rpc_write(output_lock, rpc_ok_data(id, command, rpc_cancelled_data(false)))
-        } else if command == 'get_entries' {
-            var entries_data = rpc_entries(runner.repository, rpc_string(object, 'since')) catch error {
-                rpc_write(output_lock, rpc_error(id, command, error.msg()))
-                continue
-            }
-            rpc_write(output_lock, rpc_ok_data(id, command, entries_data))
-        } else if command == 'get_tree' {
-            var tree_data = rpc_tree(runner.repository) catch error {
-                rpc_write(output_lock, rpc_error(id, command, error.msg()))
-                continue
-            }
-            rpc_write(output_lock, rpc_ok_data(id, command, tree_data))
-        } else if command == 'get_fork_messages' {
-            var fork_data = rpc_fork_messages(runner.repository) catch error {
-                rpc_write(output_lock, rpc_error(id, command, error.msg()))
-                continue
-            }
-            rpc_write(output_lock, rpc_ok_data(id, command, fork_data))
-        } else {
-            rpc_write(output_lock, rpc_error(id, command, 'Unknown command: ' + command))
-        }
+        rpc_dispatch(runner, object, command, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns)
     }
     // A piped RPC client may close stdin immediately after sending a prompt.
     // Keep the process alive until the background operation has emitted its
@@ -1123,7 +1272,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
 }
 
 #local
-fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string streaming_behavior, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string streaming_behavior, ref<rpc_sink_t> sink): void! {
     // Pi lets clients use `prompt` as a convenience queue operation while an
     // assistant turn is already running.  Keep explicit steer/follow_up
     // commands equivalent, but accept the streamingBehavior spelling too.
@@ -1132,21 +1281,21 @@ fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string
         bool active = runner.busy
         runner.lock.unlock()
         if active {
-            rpc_queue_message(runner, id, prompt, streaming_behavior == 'steer', output_lock)
+            rpc_queue_message(runner, id, prompt, streaming_behavior == 'steer', sink)
             return
         }
     }
     var stream = runner.prompt_rpc(prompt) catch error {
-        rpc_write(output_lock, rpc_error(id, 'prompt', error.msg()))
+        rpc_write(sink, rpc_error(id, 'prompt', error.msg()))
         return
     }
     runner.require_rpc_delivery(stream)
-    go rpc_prompt_worker(runner, stream, id, output_lock)
+    go rpc_prompt_worker(runner, stream, id, sink)
 }
 
 #local
-fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<mutex.mutex_t> output_lock): void! {
-    rpc_write(output_lock, rpc_ok(id, 'prompt'))
+fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<rpc_sink_t> sink): void! {
+    rpc_write(sink, rpc_ok(id, 'prompt'))
     for true {
         var (event, received) = stream.try_recv() catch error {break}
         if !received {
@@ -1155,17 +1304,17 @@ fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> 
             // worker can safely publish the canonical event itself instead
             // of waiting forever for that handoff.
             if stream.is_terminal() {
-                rpc_write(output_lock, event_json.encode(session_stream.event_t {kind: session_stream.EVENT_SESSION_END,}))
+                rpc_write(sink, event_json.encode(session_stream.event_t {kind: session_stream.EVENT_SESSION_END,}))
                 break
             }
             co.sleep(1)
             continue
         }
-        rpc_write(output_lock, event_json.encode(event))
+        rpc_write(sink, event_json.encode(event))
         if event.kind == session_stream.EVENT_SESSION_END {break}
     }
     stream.result() catch error {
-        rpc_write(output_lock, rpc_error(id, 'prompt', error.msg()))
+        rpc_write(sink, rpc_error(id, 'prompt', error.msg()))
         runner.finish_rpc_delivery(stream)
         return
     }
@@ -1173,18 +1322,18 @@ fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> 
 }
 
 #local
-fn rpc_queue_message(ref<session.runner_t> runner, string id, string text, bool steering, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_queue_message(ref<session.runner_t> runner, string id, string text, bool steering, ref<rpc_sink_t> sink): void! {
     var message = new ai_types.user_message_t(content = text, timestamp = time.now().ms_timestamp())
     if steering {
         runner.queue_steering(message)
     } else {
         runner.queue_follow_up(message)
     }
-    rpc_write(output_lock, rpc_ok(id, steering ? 'steer' : 'follow_up'))
+    rpc_write(sink, rpc_ok(id, steering ? 'steer' : 'follow_up'))
 }
 
 #local
-fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope_patterns, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope_patterns, ref<rpc_sink_t> sink): void! {
     [ref<ai_types.model_t>] available = []
     [models.scoped_model_t] scoped = models.resolve_scope(model_scope_patterns)
     if scoped.len() > 0 {
@@ -1207,7 +1356,7 @@ fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope
         }
     }
     if available.len() <= 1 {
-        rpc_write(output_lock, rpc_ok_data(id, 'cycle_model', null))
+        rpc_write(sink, rpc_ok_data(id, 'cycle_model', null))
         return
     }
     int current = 0
@@ -1219,13 +1368,13 @@ fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope
     }
     var next = available[(current + 1) % available.len()]
     runner.set_model(next) catch error {
-        rpc_write(output_lock, rpc_error(id, 'cycle_model', error.msg()))
+        rpc_write(sink, rpc_error(id, 'cycle_model', error.msg()))
         return
     }
     string scoped_thinking = models.thinking_for(next.provider + '/' + next.id, model_scope_patterns)
     if scoped_thinking != '' {
         runner.set_thinking_level(scoped_thinking) catch error {
-            rpc_write(output_lock, rpc_error(id, 'cycle_model', error.msg()))
+            rpc_write(sink, rpc_error(id, 'cycle_model', error.msg()))
             return
         }
     }
@@ -1233,13 +1382,13 @@ fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope
     result['model'] = rpc_model_data(next)
     result['thinkingLevel'] = runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off'
     result['isScoped'] = scoped.len() > 0
-    rpc_write(output_lock, rpc_ok_data(id, 'cycle_model', result))
+    rpc_write(sink, rpc_ok_data(id, 'cycle_model', result))
 }
 
 #local
-fn rpc_cycle_thinking(ref<session.runner_t> runner, string id, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_cycle_thinking(ref<session.runner_t> runner, string id, ref<rpc_sink_t> sink): void! {
     if !runner.agent_config.model.reasoning {
-        rpc_write(output_lock, rpc_ok_data(id, 'cycle_thinking_level', null))
+        rpc_write(sink, rpc_ok_data(id, 'cycle_thinking_level', null))
         return
     }
     [string] levels = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -1250,57 +1399,57 @@ fn rpc_cycle_thinking(ref<session.runner_t> runner, string id, ref<mutex.mutex_t
     }
     string next = levels[(index + 1) % levels.len()]
     runner.set_thinking_level(next) catch error {
-        rpc_write(output_lock, rpc_error(id, 'cycle_thinking_level', error.msg()))
+        rpc_write(sink, rpc_error(id, 'cycle_thinking_level', error.msg()))
         return
     }
     {string:any} result = {}
     string effective = runner.agent_config.stream_options.thinking_enabled ? runner.agent_config.stream_options.reasoning_effort : 'off'
     result['level'] = effective
-    rpc_write(output_lock, rpc_ok_data(id, 'cycle_thinking_level', result))
+    rpc_write(sink, rpc_ok_data(id, 'cycle_thinking_level', result))
 }
 
 #local
-fn rpc_set_queue_mode(ref<session.runner_t> runner, string id, bool steering, string mode, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_set_queue_mode(ref<session.runner_t> runner, string id, bool steering, string mode, ref<rpc_sink_t> sink): void! {
     if mode != agent_types.QUEUE_ALL && mode != agent_types.QUEUE_ONE {
-        rpc_write(output_lock, rpc_error(id, steering ? 'set_steering_mode' : 'set_follow_up_mode', 'mode must be all or one-at-a-time'))
+        rpc_write(sink, rpc_error(id, steering ? 'set_steering_mode' : 'set_follow_up_mode', 'mode must be all or one-at-a-time'))
         return
     }
     if steering {
         runner.set_steering_mode(mode) catch error {
-            rpc_write(output_lock, rpc_error(id, 'set_steering_mode', error.msg()))
+            rpc_write(sink, rpc_error(id, 'set_steering_mode', error.msg()))
             return
         }
     } else {
         runner.set_follow_up_mode(mode) catch error {
-            rpc_write(output_lock, rpc_error(id, 'set_follow_up_mode', error.msg()))
+            rpc_write(sink, rpc_error(id, 'set_follow_up_mode', error.msg()))
             return
         }
     }
-    rpc_write(output_lock, rpc_ok(id, steering ? 'set_steering_mode' : 'set_follow_up_mode'))
+    rpc_write(sink, rpc_ok(id, steering ? 'set_steering_mode' : 'set_follow_up_mode'))
 }
 
 #local
-fn rpc_run_bash(ref<session.runner_t> runner, string id, string command_text, bool excluded, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_run_bash(ref<session.runner_t> runner, string id, string command_text, bool excluded, ref<rpc_sink_t> sink): void! {
     if command_text == '' {
-        rpc_write(output_lock, rpc_error(id, 'bash', 'command is required'))
+        rpc_write(sink, rpc_error(id, 'bash', 'command is required'))
         return
     }
     runner.begin_operation() catch error {
-        rpc_write(output_lock, rpc_error(id, 'bash', error.msg()))
+        rpc_write(sink, rpc_error(id, 'bash', error.msg()))
         return
     }
     var stream = session_stream.new()
     runner.attach_bash_stream(stream)
-    go rpc_bash_worker(runner, stream, command_text, excluded, id, output_lock)
+    go rpc_bash_worker(runner, stream, command_text, excluded, id, sink)
 }
 
 #local
-fn rpc_bash_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string command_text, bool excluded, string id, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_bash_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string command_text, bool excluded, string id, ref<rpc_sink_t> sink): void! {
     // Keep callback state in a heap object.  Nature's process output reader
     // invokes the callback from a separate coroutine after the worker has
     // yielded; capturing a function parameter directly would lose the RPC id
     // on that boundary even though the final response still has it.
-    var update_state = new rpc_bash_update_state_t(id = id, output_lock = output_lock)
+    var update_state = new rpc_bash_update_state_t(id = id, sink = sink)
     command.output_chunk_fn on_chunk = fn(string chunk) {
         // Pi emits bash_execution_update from AgentSession.executeBash before
         // returning the final RPC response.  Write each sanitized chunk under
@@ -1308,15 +1457,15 @@ fn rpc_bash_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> st
         // overtake a chunk emitted by the child process.
         var event = session_stream.event_t {kind: session_stream.EVENT_BASH_EXECUTION_UPDATE, bash_id: update_state.id, bash_delta: chunk,}
         string line = event_json.encode(event) catch error {return}
-        rpc_write(update_state.output_lock, line)
+        rpc_write(update_state.sink, line)
     }
     var result = shell_tools.execute_bash_stream(runner.repository.cwd, command_text, 0, stream.cancellation, on_chunk) catch error {
-        rpc_write(output_lock, rpc_error(id, 'bash', error.msg()))
+        rpc_write(sink, rpc_error(id, 'bash', error.msg()))
         runner.end_operation()
         return
     }
     runner.record_bash_during_operation(command_text, result.output, result.cancelled ? -1 : result.exit_code, result.cancelled, result.truncated, result.full_output_path, excluded) catch error {
-        rpc_write(output_lock, rpc_error(id, 'bash', error.msg()))
+        rpc_write(sink, rpc_error(id, 'bash', error.msg()))
         runner.end_operation()
         return
     }
@@ -1327,14 +1476,14 @@ fn rpc_bash_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> st
     data['timedOut'] = result.timed_out
     data['truncated'] = result.truncated
     if result.full_output_path != '' {data['fullOutputPath'] = result.full_output_path}
-    rpc_write(output_lock, rpc_ok_data(id, 'bash', data))
+    rpc_write(sink, rpc_ok_data(id, 'bash', data))
     runner.end_operation()
 }
 
 #local
-fn rpc_export_html(ref<session.runner_t> runner, string id, string requested_path, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_export_html(ref<session.runner_t> runner, string id, string requested_path, ref<rpc_sink_t> sink): void! {
     if !runner.repository.persisted {
-        rpc_write(output_lock, rpc_error(id, 'export_html', 'Cannot export an in-memory session'))
+        rpc_write(sink, rpc_error(id, 'export_html', 'Cannot export an in-memory session'))
         return
     }
     string target = requested_path
@@ -1345,33 +1494,33 @@ fn rpc_export_html(ref<session.runner_t> runner, string id, string requested_pat
         target += '.html'
     }
     string absolute = write_export(runner.repository, target) catch error {
-        rpc_write(output_lock, rpc_error(id, 'export_html', error.msg()))
+        rpc_write(sink, rpc_error(id, 'export_html', error.msg()))
         return
     }
     {string:any} data = {}
     data['path'] = absolute
-    rpc_write(output_lock, rpc_ok_data(id, 'export_html', data))
+    rpc_write(sink, rpc_ok_data(id, 'export_html', data))
 }
 
 #local
-fn rpc_switch_session(ref<session.runner_t> runner, string id, string session_path, bool no_context_files, string system_prompt_override, [string] append_system_prompts, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_switch_session(ref<session.runner_t> runner, string id, string session_path, bool no_context_files, string system_prompt_override, [string] append_system_prompts, ref<rpc_sink_t> sink): void! {
     if session_path == '' {
-        rpc_write(output_lock, rpc_error(id, 'switch_session', 'sessionPath is required'))
+        rpc_write(sink, rpc_error(id, 'switch_session', 'sessionPath is required'))
         return
     }
     var next = repository.open(session_path) catch error {
-        rpc_write(output_lock, rpc_error(id, 'switch_session', error.msg()))
+        rpc_write(sink, rpc_error(id, 'switch_session', error.msg()))
         return
     }
     runner.replace_repository(next) catch error {
-        rpc_write(output_lock, rpc_error(id, 'switch_session', error.msg()))
+        rpc_write(sink, rpc_error(id, 'switch_session', error.msg()))
         return
     }
     rebind_rpc_context(runner, next.cwd, no_context_files, system_prompt_override, append_system_prompts) catch error {
-        rpc_write(output_lock, rpc_error(id, 'switch_session', error.msg()))
+        rpc_write(sink, rpc_error(id, 'switch_session', error.msg()))
         return
     }
-    rpc_write(output_lock, rpc_ok_data(id, 'switch_session', rpc_cancelled_data(false)))
+    rpc_write(sink, rpc_ok_data(id, 'switch_session', rpc_cancelled_data(false)))
 }
 
 // Session switching changes the runtime cwd.  Pi rebuilds project-bound
@@ -1412,23 +1561,23 @@ fn rebind_rpc_context(ref<session.runner_t> runner, string cwd, bool no_context_
 }
 
 #local
-fn rpc_run_compaction(ref<session.runner_t> runner, string id, string instructions, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_run_compaction(ref<session.runner_t> runner, string id, string instructions, ref<rpc_sink_t> sink): void! {
     var stream = runner.compact_now(instructions) catch error {
-        rpc_write(output_lock, rpc_error(id, 'compact', error.msg()))
+        rpc_write(sink, rpc_error(id, 'compact', error.msg()))
         return
     }
-    go rpc_compaction_worker(runner, stream, id, output_lock)
+    go rpc_compaction_worker(runner, stream, id, sink)
 }
 
 #local
-fn rpc_compaction_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_compaction_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<rpc_sink_t> sink): void! {
     string summary = ''
     int tokens_before = 0
     int estimated_after = 0
     string failure = ''
     for true {
         var event = stream.recv() catch error {break}
-        rpc_write(output_lock, event_json.encode(event))
+        rpc_write(sink, event_json.encode(event))
         if event.kind == session_stream.EVENT_COMPACTION_END {
             summary = event.summary
             tokens_before = event.tokens_before
@@ -1438,11 +1587,11 @@ fn rpc_compaction_worker(ref<session.runner_t> runner, ref<session_stream.stream
         if event.kind == session_stream.EVENT_SESSION_END {break}
     }
     stream.result() catch error {
-        rpc_write(output_lock, rpc_error(id, 'compact', error.msg()))
+        rpc_write(sink, rpc_error(id, 'compact', error.msg()))
         return
     }
     if failure != '' {
-        rpc_write(output_lock, rpc_error(id, 'compact', failure))
+        rpc_write(sink, rpc_error(id, 'compact', failure))
         return
     }
     {string:any} data = {}
@@ -1458,21 +1607,21 @@ fn rpc_compaction_worker(ref<session.runner_t> runner, ref<session_stream.stream
             }
         }
     }
-    rpc_write(output_lock, rpc_ok_data(id, 'compact', data))
+    rpc_write(sink, rpc_ok_data(id, 'compact', data))
 }
 
 #local
-fn rpc_set_model(ref<session.runner_t> runner, string id, string provider_name, string model_id, ref<mutex.mutex_t> output_lock): void! {
+fn rpc_set_model(ref<session.runner_t> runner, string id, string provider_name, string model_id, ref<rpc_sink_t> sink): void! {
     ref<ai_types.model_t>? selected = models.find(provider_name + '/' + model_id)
     if !(selected is ref<ai_types.model_t>) {
-        rpc_write(output_lock, rpc_error(id, 'set_model', 'Model not found: ' + provider_name + '/' + model_id))
+        rpc_write(sink, rpc_error(id, 'set_model', 'Model not found: ' + provider_name + '/' + model_id))
         return
     }
     runner.set_model(selected as ref<ai_types.model_t>) catch error {
-        rpc_write(output_lock, rpc_error(id, 'set_model', error.msg()))
+        rpc_write(sink, rpc_error(id, 'set_model', error.msg()))
         return
     }
-    rpc_write(output_lock, rpc_ok_data(id, 'set_model', rpc_model_data(selected as ref<ai_types.model_t>)))
+    rpc_write(sink, rpc_ok_data(id, 'set_model', rpc_model_data(selected as ref<ai_types.model_t>)))
 }
 
 #local
@@ -1782,14 +1931,10 @@ fn rpc_error(string id, string command, string message): string! {
 }
 
 #local
-fn rpc_write(ref<mutex.mutex_t> output_lock, string line) {
-    output_lock.lock()
-    var output = fs.stdout() catch error {
-        output_lock.unlock()
-        return
-    }
-    output.write((line + '\n') as [u8]) catch error {}
-    output_lock.unlock()
+fn rpc_write(ref<rpc_sink_t> sink, string line) {
+    sink.lock.lock()
+    sink.write(line)
+    sink.lock.unlock()
 }
 
 #local

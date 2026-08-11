@@ -65,7 +65,11 @@ parent_session 血缘、重复 id 错误、list/delete（持久化后端）与�
   list/delete），外加 SQLite 与 JSONL 各自的 reopen 持久化（顺序与 lineage
   跨 reopen 保留）。
 
-## RPC-over-IPC（2026-08-11 batch 3 已落地最小 slice）
+## RPC-over-IPC（2026-08-11 batch 3 已落地最小 slice；已由下方 Phase 7.1 取代）
+
+> 本节为历史中间态：单实例 + `"stream":true` 标记 + serve_with_stream 的
+> 旧切片。Phase 7.1 已按上游双向 rpc_stream 连接态重写（见下），本节保留
+> 仅作演进记录，不再代表当前实现。
 
 - `src/server/ipc_server.n`：localhost TCP + 逐行 JSON 帧（与上游
   `ipc/protocol.ts` encodeMessage 一致），连接级协程处理。
@@ -76,7 +80,7 @@ parent_session 血缘、重复 id 错误、list/delete（持久化后端）与�
   offline rpc_stream 拒绝 → offline 流式 prompt 拒绝 → stop → 未知命令
   拒绝，全通过。现有进程内 RPC（--mode rpc）未改动。
 
-## Phase 7 batch 4 已落地（2026-08-11）
+## Phase 7 batch 4 已落地（2026-08-11；其中 rpc_stream 旧切片已由 Phase 7.1 取代）
 
 - `session_sequences` 表接入：`sqlite_repo.append_entry` 不再用
   `MAX(entry_seq)+1`，改为读取 `session_sequences.next_seq`（无行视为 0），
@@ -114,6 +118,107 @@ parent_session 血缘、重复 id 错误、list/delete（持久化后端）与�
   连接态协议依赖它）。
 - 若系统 SQLite 头/库需要动态链接（如降级打包），单独验证 Darwin/Linux ABI，
   本批静态 .o 链接不改变。
+
+## Phase 7.1：server 协议 parity closeout（2026-08-11 落地，2026-08-12 验收中）
+
+### 上游 → Nature 实现映射
+
+| 上游（vendors/pi） | Nature 实现 |
+|---|---|
+| `packages/server/src/ipc/protocol.ts`（ServerRequest/ServerResponse 形状） | `src/server/protocol.n`（响应序列化器 + instance_summary_t） |
+| `packages/server/src/ipc/server.ts`（TCP 逐行帧、rpc_stream 连接态） | `src/server/ipc_server.n`（连接级 `go handler(conn)` + `read_line`）+ `src/app.n` 连接处理器 |
+| `packages/server/src/supervisor.ts`（实例表 + 生命周期） | `src/server/supervisor.n`（实例表、spawn/list/stop/status 路由、subscriber 扇出） |
+| `packages/server/src/handler.ts`（命令面与错误形状） | `src/app.n` `serve_command` 重写（按响应类型分发 + `Unknown instance: <id>`） |
+| `packages/server/src/rpc-process.ts`（子进程 + 行分帧） | 按隔离方案排除（见下）；命令面复用 `src/app.n` 的进程内 `rpc_dispatch`（原 run_rpc 循环体提取，--mode rpc 行为不变） |
+| `packages/server/src/{serve,config,storage,radius,cli}.ts` | 不移植：radius 排除；实例表保持内存态（不持久化 instances 记录） |
+
+### 协议响应形状（每行一个 JSON，逐行帧与上游 encodeMessage 一致）
+
+```json
+{"type":"spawn_result","ok":true,"instance":{"id":"<uuid>","status":"online","cwd":"/tmp","label":"a"}}
+{"type":"list_result","ok":true,"instances":[{"id":"<uuid>","status":"online","cwd":"/tmp","label":"a"},{"id":"<uuid>","status":"online","cwd":"/tmp","label":"b"}]}
+{"type":"status_result","ok":true,"instance":{"id":"<uuid>","status":"online","cwd":"/tmp"}}
+{"type":"stop_result","ok":true,"instanceId":"<uuid>"}
+{"type":"rpc_result","ok":true,"response":{"id":"g1","type":"response","command":"get_state","success":true,"data":{...}}}
+{"type":"rpc_ready","ok":true,"instance":{"id":"<uuid>","status":"online","cwd":"/tmp"}}
+{"type":"error","ok":false,"error":"Unknown instance: nope"}
+```
+
+sessionId/sessionFile/label 仅在非空时出现（与上游 InstanceSummary 可选字段一致）。
+
+### 实例生命周期（进程内隔离 runner）
+
+每 `spawn{cwd,label?}` 创建：
+
+1. `id = identity.uuid_v7()`；`status = "online"`（runner 创建成功后入表，上游
+   starting→online 的中间态在表内不可观测，等价于创建成功前的失败直接回 error）。
+2. 独立 runner：`repository.in_memory(cwd)`（--no-session 语义，无文件）；
+   sessionId/sessionFile 取自该 repository；label/cwd 原样保留。
+3. 实例继承 server 进程已解析的模型/流选项/compaction/重试配置；工具集与
+   system prompt（AGENTS.md/CLAUDE.md/skills）按实例 cwd 重新构建。
+
+`stop{instanceId}`：从表移除后 `runner.abort_and_wait()`（放弃该 runner）。
+`status/list`：按表路由。未知 instanceId（spawn 未成功/已 stop/从未存在）一律
+返回 `error{ok:false,error:"Unknown instance: <id>"}`（与上游 handler.ts
+unknownInstanceError 一致）。stop A 不影响 B：每实例独立 runner 与锁。
+server 关闭：无子进程（隔离方案），进程退出即释放全部 runner；`supervisor.shutdown()`
+逐实例 abort，供未来优雅退出接线。
+
+### rpc_stream 交互序列（同一连接，上游 server.ts 连接态）
+
+```
+C→S: {"type":"rpc_stream","instanceId":"<id>"}
+S→C: {"type":"rpc_ready","ok":true,"instance":{...}}        # 连接保持打开
+C→S: {"id":"g1","type":"get_state"}
+S→C: {"id":"g1","type":"response","command":"get_state","success":true,"data":{...}}
+C→S: {"id":"g2","type":"get_last_assistant_text"}
+S→C: {"id":"g2","type":"response","command":"get_last_assistant_text","success":true,"data":{"text":null}}
+C→S: {"type":"extension_ui_response",...}
+S→C: {"type":"error","ok":false,"error":"extensions disabled"}   # 禁用边界确定性
+C   : 断开连接
+S   : 解除订阅（不再向该连接扇出事件）
+```
+
+连接存活期间实例的 AgentSessionEvent（event_json 编码，如
+`{"type":"message_start",...}`）实时逐行扇出；prompt 等异步命令的响应与事件
+顺序与 `--mode rpc` 一致（先 response 行，后事件流）。非 rpc_stream 请求
+上游 `socket.end()` 语义：响应一行后关闭连接。
+
+### 为什么子进程方案被否决（硬阻塞证据，2026-08-12 复核）
+
+- 审计对象：`/Users/liulianfuren/Code/nature/std/process/process.n`，与安装版
+  `/usr/local/nature/std/process/process.n` diff 完全一致（同一版本，v0.7.4）。
+- `command_t` 声明了 `stdin io.reader` 字段，但唯一两个构造入口
+  `process.run()` 与 `process.command()` 都把 stdin 硬编码为
+  `fs.discard()`（即 `open(/dev/null)`）；模块没有任何写子进程 stdin 的 API，
+  只有 `read_stdout`/`read_stderr`/`wait`，也没有 kill/terminate
+  （仅 `syscall.kill(pid, sig)`）。
+- 运行时 `runtime/nutils/process.c` `uv_async_process_spawn`：
+  `stdio[0].flags = UV_IGNORE`（stdin 恒 /dev/null），stdout/stderr 才是
+  `UV_CREATE_PIPE | UV_WRITABLE_PIPE`（子→父单向管道）。即 `command_t.stdin`
+  字段从未被运行时使用。
+- 结论：`adou --mode rpc` 子进程的 stdin 读端立即 EOF，run_rpc 循环直接退出，
+  spawn 出的实例无法接收任何命令——子进程管道方案存在硬阻塞。
+
+因此采用任务决策点的备选方案：进程内等价隔离 runner。差异文档化：实例与
+server 同进程（崩溃互相影响）、无进程级强制终止（abort 为协作取消）、无
+`RPC process exited` 异常路径（error 状态由 spawn 失败承担）。
+
+### e2e 与单测（2026-08-12 实跑全绿）
+
+- `tests/ipc_protocol_test.n` 7/7：协议响应形状序列化断言（spawn/list/status/
+  stop/rpc_result/rpc_ready/error + InstanceSummary 可选字段省略）。
+- `tests/backend_list_session_paths_test.n` 2/2：resume picker 扫描失败的
+  TUI 回归守卫（目录不存在 → throw；空目录 → 空列表）。
+- `tests/e2e/rpc-over-ipc.sh`（重写，python 客户端）：两次 spawn 不同 id/cwd/
+  label、list 两项、分别 status、rpc get_state 按 instanceId 路由（data.sessionId
+  不同）、stop A 后 B 仍在线、未知 id error、同一 rpc_stream 连接连续两条非联网
+  命令 + extension_ui_response 确定性 error、连接关闭、server 退出后无遗留
+  adou 子进程、offline prompt 拒绝——全通过。
+- 回归：`rpc-shape-parity.sh`、`rpc-empty-messages.sh`（进程内 --mode rpc 形状
+  与空消息语义）、`rpc-new-session.sh`、`rpc-tree-corrupt.sh`、
+  `repository_contract_test.n` 5/5、`setup_test.n` 2/2 全绿，证明 run_rpc →
+  rpc_dispatch 重构未改变进程内协议。
 
 ## 与既有约束的关系
 

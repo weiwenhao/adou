@@ -1334,8 +1334,15 @@ pub fn view_t.show_session_overlay(&self) {
         return
     }
     // Phase 7: the file-level scan lives in the backend helper (same
-    // .jsonl filter and mtime-newest ordering).
-    [string] options = backend.list_session_paths(self.runner.repository.session_dir)
+    // .jsonl filter and mtime-newest ordering).  A failed scan is surfaced
+    // explicitly instead of masquerading as an empty store.
+    var listed = backend.list_session_paths(self.runner.repository.session_dir) catch error {
+        self.chat.error_message = 'Could not list sessions: ' + error.msg()
+        self.chat.status = 'Request failed'
+        self.redraw()
+        return
+    }
+    [string] options = listed
     // Pi's resume picker can broaden from the current project to all
     // projects. Include the default shared store here as well; explicit
     // --session-dir remains intentionally scoped to that directory.

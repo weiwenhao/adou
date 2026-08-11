@@ -1,0 +1,83 @@
+import adou.src.server.protocol
+import adou.src.json_util
+import json
+
+// Phase 7.1: server IPC response shape parity (upstream
+// packages/server/src/ipc/protocol.ts ResponseMap).  Every line carries
+// ResponseBase {ok:bool, error?:string}; optional InstanceSummary fields
+// (label/sessionId/sessionFile) are omitted when empty, never null.
+
+#local
+fn summary(string id, string cwd, string label): protocol.instance_summary_t {
+    return protocol.instance_summary_t {id: id, status: 'online', cwd: cwd, label: label, session_id: 'sess-' + id, session_file: '/tmp/sessions/sess-' + id + '.jsonl',}
+}
+
+test 'spawn_result wraps a full instance summary' {
+    var object = json_util.parse(protocol.spawn_result(summary('abc', '/tmp', 'label-a'))) as {string:any}
+    assert(object['type'] as string == 'spawn_result')
+    assert(object['ok'] as bool == true)
+    var instance = object['instance'] as {string:any}
+    assert(instance['id'] as string == 'abc')
+    assert(instance['status'] as string == 'online')
+    assert(instance['cwd'] as string == '/tmp')
+    assert(instance['label'] as string == 'label-a')
+    assert(instance['sessionId'] as string == 'sess-abc')
+    assert(instance['sessionFile'] as string == '/tmp/sessions/sess-abc.jsonl')
+    assert(!object.contains('error'))
+}
+
+test 'optional instance fields are omitted when empty' {
+    var object = json_util.parse(protocol.spawn_result(protocol.instance_summary_t {id: 'abc', status: 'online', cwd: '/tmp', label: '', session_id: '', session_file: '',})) as {string:any}
+    var instance = object['instance'] as {string:any}
+    assert(instance.len() == 3)
+    assert(instance['id'] as string == 'abc')
+    assert(!instance.contains('label'))
+    assert(!instance.contains('sessionId'))
+    assert(!instance.contains('sessionFile'))
+}
+
+test 'list_result carries the ordered instance array' {
+    var object = json_util.parse(protocol.list_result([summary('a', '/tmp', 'first'), summary('b', '/tmp', 'second')])) as {string:any}
+    assert(object['type'] as string == 'list_result')
+    assert(object['ok'] as bool == true)
+    var instances = object['instances'] as [any]
+    assert(instances.len() == 2)
+    assert((instances[0] as {string:any})['id'] as string == 'a')
+    assert((instances[1] as {string:any})['id'] as string == 'b')
+}
+
+test 'status_result and stop_result shapes' {
+    var status_object = json_util.parse(protocol.status_result(summary('abc', '/tmp', ''))) as {string:any}
+    assert(status_object['type'] as string == 'status_result')
+    assert((status_object['instance'] as {string:any})['id'] as string == 'abc')
+    var stop_object = json_util.parse(protocol.stop_result('abc')) as {string:any}
+    assert(stop_object['type'] as string == 'stop_result')
+    assert(stop_object['ok'] as bool == true)
+    assert(stop_object['instanceId'] as string == 'abc')
+}
+
+test 'rpc_result wraps the RpcResponse verbatim under response' {
+    var response_object = json_util.parse('{"id":"g1","type":"response","command":"get_state","success":true,"data":{"cwd":"/tmp"}}') as {string:any}
+    var object = json_util.parse(protocol.rpc_result(response_object)) as {string:any}
+    assert(object['type'] as string == 'rpc_result')
+    assert(object['ok'] as bool == true)
+    var response = object['response'] as {string:any}
+    assert(response['type'] as string == 'response')
+    assert(response['command'] as string == 'get_state')
+    assert(response['success'] as bool == true)
+    assert((response['data'] as {string:any})['cwd'] as string == '/tmp')
+}
+
+test 'rpc_ready shape matches upstream RpcReadyResponse' {
+    var object = json_util.parse(protocol.rpc_ready(summary('abc', '/tmp', ''))) as {string:any}
+    assert(object['type'] as string == 'rpc_ready')
+    assert(object['ok'] as bool == true)
+    assert((object['instance'] as {string:any})['id'] as string == 'abc')
+}
+
+test 'error_response carries ok:false and a non-empty error' {
+    var object = json_util.parse(protocol.error_response('Unknown instance: nope')) as {string:any}
+    assert(object['type'] as string == 'error')
+    assert(object['ok'] as bool == false)
+    assert(object['error'] as string == 'Unknown instance: nope')
+}

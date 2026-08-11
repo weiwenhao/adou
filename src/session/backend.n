@@ -148,14 +148,15 @@ fn persist_entry(backend_t b, string entry_id): void! {
 
 // SessionRepo.list: session file paths in a directory, newest file first
 // (same semantics as the resume picker's scan; concentrated here so both
-// backends and future SQLite listing share one shape).
-pub fn list_session_paths(string session_dir): [string] {
-    [string] result = []
+// backends and future SQLite listing share one shape).  A missing/unreadable
+// session directory throws so callers can surface the failure instead of
+// silently treating it as an empty store.
+pub fn list_session_paths(string session_dir): [string]! {
     if session_dir == '' {
-        return result
+        return []
     }
     var names = os.listdir(session_dir) catch error {
-        return result
+        throw error
     }
     [string] candidates = []
     for name in names {

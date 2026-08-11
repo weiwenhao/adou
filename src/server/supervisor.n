@@ -1,0 +1,184 @@
+import adou.src.agent.event_json
+import adou.src.agent.session
+import adou.src.agent.session_stream
+import adou.src.server.protocol
+import adou.src.session.identity
+import co.mutex
+
+// Phase 7.1: multi-instance supervisor (upstream packages/server
+// supervisor.ts + handler.ts).  Instances are isolated in-process runners:
+// Nature's process runtime pins child stdin to UV_IGNORE (see
+// docs/phase7-storage-design.md Phase 7.1), so a real `--mode rpc` child
+// process cannot receive commands; each spawn therefore gets its own
+// session.runner_t with an independent in-memory repository.
+
+// A line writer that must always be invoked under its own lock.  An
+// rpc_stream connection uses one of these as both its command-response sink
+// and its session-event subscriber, which serializes every write to the
+// underlying TCP connection through a single mutex.
+pub type subscriber_t = struct {
+    int id
+    ref<mutex.mutex_t> lock
+    fn(string line) write
+}
+
+pub type instance_t = struct {
+    protocol.instance_summary_t summary
+    ref<session.runner_t> runner
+    ref<mutex.mutex_t> subscriber_lock
+    [subscriber_t] subscribers
+    int next_subscriber_id = 1
+}
+
+pub type spawn_runner_fn = fn(string cwd): ref<session.runner_t>!
+
+pub type supervisor_t = struct {
+    ref<mutex.mutex_t> lock
+    [ref<instance_t>] instances
+    spawn_runner_fn spawner
+    bool offline
+}
+
+pub fn new(spawn_runner_fn spawner, bool offline): ref<supervisor_t> {
+    return new supervisor_t(lock = mutex.mutex_t.new(), instances = [], spawner = spawner, offline = offline)
+}
+
+// Create an instance record and its isolated runner.  Throws when the runner
+// cannot be built; the caller answers with an error response and the failed
+// instance id is never observable (upstream failSpawn removes it).
+pub fn supervisor_t.spawn(&self, string cwd, string label): protocol.instance_summary_t! {
+    var runner = self.spawner(cwd) catch error {
+        throw error
+    }
+    var summary = protocol.instance_summary_t {
+        id: identity.uuid_v7(),
+        status: 'online',
+        cwd: cwd,
+        label: label,
+        session_id: runner.repository.get_session_id(),
+        session_file: runner.repository.get_session_file(),
+    }
+    var instance = new instance_t(summary = summary, runner = runner, subscriber_lock = mutex.mutex_t.new(), subscribers = [],)
+    runner.set_event_sink(fn(session_stream.event_t event) {
+        instance.emit(event)
+    })
+    self.lock.lock()
+    self.instances.push(instance)
+    self.lock.unlock()
+    return summary
+}
+
+pub fn supervisor_t.get(&self, string instance_id): ref<instance_t>? {
+    self.lock.lock()
+    ref<instance_t>? found = null
+    for instance in self.instances {
+        if instance.summary.id == instance_id {
+            found = instance
+            break
+        }
+    }
+    self.lock.unlock()
+    return found
+}
+
+pub fn supervisor_t.list(&self): [protocol.instance_summary_t] {
+    self.lock.lock()
+    [protocol.instance_summary_t] result = []
+    for instance in self.instances {
+        result.push(instance.summary)
+    }
+    self.lock.unlock()
+    return result
+}
+
+// Stop one instance without touching the others: remove it from the table
+// first, then cooperatively abort its runner outside the table lock.  Returns
+// false when the id is unknown.
+pub fn supervisor_t.stop(&self, string instance_id): bool {
+    self.lock.lock()
+    ref<instance_t>? found = null
+    int found_index = -1
+    for index, instance in self.instances {
+        if instance.summary.id == instance_id {
+            found = instance
+            found_index = index
+            break
+        }
+    }
+    if found is ref<instance_t> && found_index >= 0 {
+        [ref<instance_t>] remaining = []
+        for index, candidate in self.instances {
+            if index != found_index {
+                remaining.push(candidate)
+            }
+        }
+        self.instances = remaining
+    }
+    self.lock.unlock()
+    if found is ref<instance_t> instance {
+        instance.runner.abort_and_wait()
+        return true
+    }
+    return false
+}
+
+// Subscribe a connection to every session event line the instance emits.
+// The subscriber's lock must be the same mutex that guards the connection's
+// command responses so all writes to the connection are serialized.
+pub fn supervisor_t.subscribe(&self, ref<instance_t> instance, ref<mutex.mutex_t> lock, fn(string line) write): int {
+    instance.subscriber_lock.lock()
+    int id = instance.next_subscriber_id
+    instance.next_subscriber_id += 1
+    instance.subscribers.push(subscriber_t {id: id, lock: lock, write: write})
+    instance.subscriber_lock.unlock()
+    return id
+}
+
+pub fn supervisor_t.unsubscribe(&self, ref<instance_t> instance, int subscriber_id) {
+    instance.subscriber_lock.lock()
+    [subscriber_t] remaining = []
+    for subscriber in instance.subscribers {
+        if subscriber.id != subscriber_id {
+            remaining.push(subscriber)
+        }
+    }
+    instance.subscribers = remaining
+    instance.subscriber_lock.unlock()
+}
+
+// Fan out one encoded session event to every open rpc_stream connection.
+// Dropped lines from a closed connection are absorbed by the subscriber's
+// write function.
+pub fn instance_t.emit(&self, session_stream.event_t event) {
+    string line = event_json.encode(event) catch error {
+        return
+    }
+    self.subscriber_lock.lock()
+    [subscriber_t] current = self.subscribers
+    self.subscriber_lock.unlock()
+    for subscriber in current {
+        subscriber.lock.lock()
+        subscriber.write(line)
+        subscriber.lock.unlock()
+    }
+}
+
+// Abandon every instance; used on server shutdown so no busy runner survives
+// the process exit.
+pub fn supervisor_t.shutdown(&self): void {
+    for true {
+        self.lock.lock()
+        ref<instance_t>? first = null
+        if self.instances.len() > 0 {
+            first = self.instances[0]
+            [ref<instance_t>] rest = self.instances.slice(1, self.instances.len())
+            self.instances = rest
+        }
+        self.lock.unlock()
+        if first is ref<instance_t> instance {
+            instance.runner.abort_and_wait()
+        } else {
+            break
+        }
+    }
+}

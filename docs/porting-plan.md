@@ -5,11 +5,11 @@
 
 ## 当前进度快照
 
-- Adou 当前有 218 个 `src/**/*.n` 文件、41,925 行 Nature 源码、137 个 Nature 单元测试文件（656 个 test case、2,685 个 `assert`）和 45 个 e2e 脚本。
+- Adou 当前有 218 个 `src/**/*.n` 文件、41,925 行 Nature 源码、138 个 Nature 单元测试文件（665 个 test case、2,724 个 `assert`）和 45 个 e2e 脚本。
 - Phase 1–6 已完成并有源码差分、单元测试和跨模块验收记录；137 个单测文件在 2026-08-11 全量串行通过（7 个 OOM abort 单独重跑全过，deepseek fixture 回归已修复）。
-- Phase 7（storage + server）进行中：本批为 repository backend contract 第一纵切（JSONL/memory 双后端契约测试），SQLite 实现待下一批。
+- Phase 7（storage + server）进行中：storage 已完成（JSONL/memory/SQLite 三后端契约测试 + migrations + materialized 表），server supervisor/protocol/rpc_stream 验收中。
 - 历史失败记录（cli-startup-boundaries 挂起、auth stdout 泄漏、ESC 10ms、deepseek fixture、全量 7 文件 OOM）均已由后续修复或重跑覆盖，见各批实跑证据。
-- Phase 7（独立 storage/server）和 Phase 8（evals harness）尚未开始，且不阻塞当前本地 CLI agent 主业务。
+- Phase 8（evals harness）尚未开始，且不阻塞当前本地 CLI agent 主业务。
 - Pi extension 已在生产入口停用：不扫描扩展目录、不初始化 QuickJS、不注册扩展工具/命令、不派发生命周期事件；默认构建不再链接 QuickJS。相关源码暂留作未来重新设计的参考。
 
 | 阶段 | 状态 | 当前结论 |
@@ -20,8 +20,7 @@
 | Phase 4：TUI 基础 | 已完成 | renderer、editor、autocomplete、fuzzy、路径补全、markdown、terminal image 逻辑已覆盖 |
 | Phase 5：Interactive UI | 已完成 | 39 组件全部有结论；tree/fork/branch-summary PTY 闭环通过（tui-tree-fork.sh），终端恢复验证 |
 | Phase 6：CLI | 已完成 | 9 个上游模块逐项对照；空 stdin 挂起、credential 输出隔离、help/参数矩阵、启动边界均通过（help-matrix/cli-startup-boundaries/auth-print/rpc-shape-parity 等 45 个 e2e） |
-| Phase 7：storage + server | 进行中 | SQLite backend 已落地（nature-sqlite 绑定 + migrations/repo + 三后端契约测试 5/5）；RPC-over-IPC server 未开始 |
-| Phase 7：storage + server | 未开始 | 当前使用 JSONL repository 与进程内 RPC；尚无 SQLite/IPC server |
+| Phase 7：storage + server | 进行中 | SQLite backend 已落地（nature-sqlite 绑定 + migrations/repo + 三后端契约测试 5/5）；server supervisor/协议/rpc_stream 已按上游 ipc/protocol.ts 重写，多实例生命周期与 rpc_stream e2e 验收中（Phase 7.1） |
 | Phase 8：evals | 未开始 | 尚未移植 pi-harness/smoke.eval |
 
 阶段完成度按行为验收判断，不用 Pi TypeScript 文件数推算百分比。当前严格确认 6/8 阶段关闭（Phase 1–6）；Phase 7 进行中。
@@ -112,6 +111,32 @@ Phase 6 完成标准已满足：9 个上游 CLI 文件逐项有结论；帮助�
 
 Phase 7 完成标准：SQLite migration/storage 单测、JSONL/SQLite 行为一致性测试和 RPC-over-IPC e2e 通过。
 
+Phase 7.1（server 协议 parity closeout，2026-08-11）验收中（e2e 已全绿，2026-08-12 复核）：
+
+- storage 段落关闭；server 段按上游 `packages/server/src/ipc/protocol.ts` 重写：
+  `src/server/protocol.n`（响应形状）、`src/server/supervisor.n`（多实例表）、
+  `src/server/ipc_server.n`（连接级逐行 TCP serve）、`src/app.n` run_serve/serve_command。
+- 响应形状：spawn_result/list_result/status_result/stop_result/rpc_result/rpc_ready/error
+  （ok/instance/instances/response 字段），不再使用旧 response/success 包装。
+- 多实例：每 spawn 一个独立进程内 runner（独立 in-memory repository），id 为 uuid；
+  stop=abort+移除；list/status 按实例表路由；未知 instanceId 返回
+  `error{ok:false,error:"Unknown instance: <id>"}`；stop A 不影响 B。
+- rpc_stream：同一连接 rpc_ready → 持续多命令 → 逐行 RpcResponse/AgentSessionEvent；
+  连接断开即解除订阅；`extension_ui_response` 确定性返回
+  `error{ok:false,error:"extensions disabled"}`。
+- 实例隔离采用进程内 runner 而非子进程：审计
+  `std/process/process.n`（`/Users/liulianfuren/Code/nature` 与安装版一致）——
+  `command_t.stdin` 恒为 `fs.discard()`（/dev/null），无写 stdin API、无
+  kill/terminate；运行时 `runtime/nutils/process.c` stdio[0] 固定 UV_IGNORE，
+  无法给 `--mode rpc` 子进程喂命令流，子进程方案存在硬阻塞（证据与方案选择见
+  `docs/phase7-storage-design.md` Phase 7.1 章节）。该差异已文档化。
+- 验收（2026-08-12 串行实跑）：`make build` 退出 0；`tests/ipc_protocol_test.n`
+  7/7、`tests/backend_list_session_paths_test.n` 2/2、
+  `tests/repository_contract_test.n` 5/5、`tests/setup_test.n` 2/2；
+  e2e `rpc-over-ipc.sh`（多实例生命周期 + rpc_stream 连接态 + 无遗留子进程）、
+  `rpc-shape-parity.sh`、`rpc-empty-messages.sh`、`rpc-new-session.sh`、
+  `rpc-tree-corrupt.sh` 全绿。
+
 ### Phase 8｜evals 基建
 
 - 移植 `pi-harness` 和 `smoke.eval`；`extensions.eval` 继续排除。
@@ -165,4 +190,4 @@ Phase 8 完成标准：harness 可重复运行 smoke 集合，并输出稳定的
 4. 先运行 `make build`，再串行运行受影响的单文件 Nature 测试和 e2e。
 5. 不并发运行 Nature、不使用 `make -j`、不运行 `nature fmt`；除非明确需要，不运行约两小时的完整 `make test`。
 
-当前测试库存为 137 个 Nature 单元测试文件与 45 个 e2e 脚本；这只是覆盖资产数量，不代表每次提交后都重跑全量测试。最新可复核的模块证据维护在 `docs/pi-core-module-map.md`。
+当前测试库存为 138 个 Nature 单元测试文件与 45 个 e2e 脚本；这只是覆盖资产数量，不代表每次提交后都重跑全量测试。最新可复核的模块证据维护在 `docs/pi-core-module-map.md`。
