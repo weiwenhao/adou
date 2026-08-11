@@ -1,0 +1,294 @@
+import adou.src.agent.session
+import adou.src.agent.session_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.event_stream as ai_event_stream
+import adou.src.ai.providers.anthropic_provider
+import adou.src.ai.types as ai_types
+import adou.src.compaction.types as compaction_types
+import adou.src.session.repository
+import adou.src.tools.builtins
+import co
+import fmt
+import http
+
+// Phase 8 eval harness.  Mirrors the role of vendors/pi packages/evals
+// pi-harness.ts: a repeatable runner that assembles a session (provider,
+// tools, storage) for each declared case, runs one prompt, extracts the
+// transcript, and produces a stable pass/fail report.  Provider traffic is
+// served by a local scripted HTTP mock (deterministic, offline), not a real
+// model API.  extensions.eval is deliberately not ported.
+
+pub const EVAL_PROMPT_SYSTEM = 'eval'
+
+pub type mock_t = struct {
+    int port
+    int request_count
+    [string] sse_bodies = []
+    [string] request_bodies = []
+    // When set, respond with this HTTP status instead of SSE (error cases).
+    int error_status
+}
+
+pub type case_t = struct {
+    string name
+    int port
+    // One Anthropic-messages SSE body per provider turn (request index).
+    // The agent loop calls the provider once per turn: turn 1 may be a
+    // tool_use response, later turns carry the tool results back.
+    [string] sse_bodies = []
+    // Builtin tool names registered on the session ('read', 'write', ...).
+    [string] tool_names = []
+    string prompt
+    // Substring that must appear in the final assistant text ('' = skip).
+    string expected_text = ''
+    // Substring that must appear in a tool result message content ('' = skip).
+    string expected_tool_result = ''
+    // Substring that must appear in the follow-up provider request body,
+    // proving the tool result was fed back into context ('' = skip).
+    string expected_provider_request = ''
+    // The final assistant must be an error turn (harness marks the run
+    // failed, matching pi-harness promptAgent throwing on non-stop reasons).
+    bool expect_run_error
+    // Substring that must appear in the run error message ('' = skip).
+    string expect_error_fragment = ''
+}
+
+pub type outcome_t = struct {
+    bool run_error
+    string error_message
+    string assistant_text
+    bool tool_result_found
+    string tool_result_text
+    int request_count
+    [string] request_bodies = []
+}
+
+pub type result_t = struct {
+    string name
+    bool passed
+    string detail
+}
+
+// Serve one scripted case.  Close the listener after the final scripted
+// response so the goroutine cannot outlive the case.
+pub fn serve_mock(ref<mock_t> mock): void! {
+    var server = http.server()
+    server.port = mock.port
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        mock.request_bodies.push(request.body)
+        int index = mock.request_count
+        mock.request_count += 1
+        if mock.error_status > 0 {
+            response.status = mock.error_status
+            response.message = 'Internal Server Error'
+            response.content_type = 'application/json'
+            response.send('{"error":{"type":"api_error","message":"boom"}}')
+            server.close()
+            return
+        }
+        string body = mock.sse_bodies[index]
+        response.content_type = 'text/event-stream'
+        response.send(body)
+        if mock.request_count == mock.sse_bodies.len() {
+            server.close()
+        }
+    }
+    server.post('/v1/messages', handler)
+    server.listen(server.port)
+}
+
+pub fn text_response(string text): string {
+    string body = ''
+    body += 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_eval","usage":{"input_tokens":2,"output_tokens":0}}}\n\n'
+    body += 'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n'
+    body += 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"' + text + '"}}\n\n'
+    body += 'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
+    body += 'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":1}}\n\n'
+    body += 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    return body
+}
+
+pub fn tool_use_response(string call_id, string tool_name, string arguments): string {
+    string escaped_arguments = arguments.replace('"', '\\"')
+    string body = ''
+    body += 'event: message_start\ndata: {"type":"message_start","message":{"id":"msg_eval_tool","usage":{"input_tokens":2,"output_tokens":0}}}\n\n'
+    body += 'event: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"' + call_id + '","name":"' + tool_name + '","input":{}}}\n\n'
+    body += 'event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"' + escaped_arguments + '"}}\n\n'
+    body += 'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
+    body += 'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":1}}\n\n'
+    body += 'event: message_stop\ndata: {"type":"message_stop"}\n\n'
+    return body
+}
+
+// Build the session pieces the way the pi-harness run() does: a model bound
+// to the mock endpoint, an isolated in-memory repository, the requested
+// builtin tools, and the anthropic provider stream function.
+pub fn make_runner(ref<mock_t> mock, case_t case, string cwd): ref<session.runner_t>! {
+    var model = new ai_types.model_t(id = 'eval-mock', api = 'anthropic-messages', provider = 'anthropic', base_url = fmt.sprintf('http://127.0.0.1:%d/v1', mock.port), context_window = 10000, max_tokens = 128)
+    var context = new agent_types.context_t(system_prompt = EVAL_PROMPT_SYSTEM)
+    for tool_name in case.tool_names {
+        if tool_name == 'read' {
+            context.tools.push(builtins.read_tool(cwd))
+        }
+    }
+    var config = new agent_types.config_t(model = model, stream_options = new ai_types.stream_options_t(api_key = 'eval-key', max_retries = 0, timeout_ms = 5000))
+    var settings = compaction_types.settings_t {enabled: false, reserve_tokens: 100, keep_recent_tokens: 20,}
+    agent_types.stream_fn provider_stream = fn(ref<ai_types.model_t> current_model, ref<ai_types.context_t> current_context, ref<ai_types.stream_options_t> current_options): ref<ai_event_stream.assistant_stream_t> {
+        return anthropic_provider.stream(current_model, current_context, current_options)
+    }
+    var runner = session.new(repository.in_memory(cwd), context, config, provider_stream, settings)
+    // Smoke evals stay deterministic: no session-level provider retries.
+    runner.retry_enabled = false
+    return runner
+}
+
+pub fn run_case(ref<mock_t> mock, case_t case, string cwd): ref<result_t> {
+    var outcome = drive_prompt(mock, case, cwd)
+    var detail = ''
+    bool passed = true
+    if outcome.run_error {
+        if case.expect_run_error {
+            detail = 'expected error observed: ' + outcome.error_message
+        } else {
+            passed = false
+            detail = 'run failed unexpectedly: ' + outcome.error_message
+        }
+    } else if case.expect_run_error {
+        passed = false
+        detail = 'expected a run error but the assistant turn stopped cleanly'
+    }
+    if case.expect_error_fragment != '' && !outcome.error_message.contains(case.expect_error_fragment) {
+        passed = false
+        detail = fmt.sprintf('expected error fragment "%s" but got "%s"', case.expect_error_fragment, outcome.error_message)
+    }
+    if case.expected_text != '' {
+        if outcome.assistant_text.contains(case.expected_text) {
+            if detail == '' {
+                detail = fmt.sprintf('assistant text matched "%s"', case.expected_text)
+            }
+        } else {
+            passed = false
+            detail = fmt.sprintf('assistant text "%s" does not contain "%s"', outcome.assistant_text, case.expected_text)
+        }
+    }
+    if case.expected_tool_result != '' {
+        if outcome.tool_result_found && outcome.tool_result_text.contains(case.expected_tool_result) {
+            if detail == '' {
+                detail = fmt.sprintf('tool result matched "%s"', case.expected_tool_result)
+            }
+        } else {
+            passed = false
+            detail = fmt.sprintf('tool result "%s" does not contain "%s"', outcome.tool_result_text, case.expected_tool_result)
+        }
+    }
+    if case.expected_provider_request != '' {
+        string follow_up = outcome.request_bodies.len() > 1 ? outcome.request_bodies[1] : ''
+        if follow_up.contains(case.expected_provider_request) {
+            if detail == '' {
+                detail = fmt.sprintf('tool result fed back in the follow-up provider request (matched "%s")', case.expected_provider_request)
+            }
+        } else {
+            passed = false
+            detail = fmt.sprintf('follow-up provider request "%s" does not contain "%s"', follow_up, case.expected_provider_request)
+        }
+    }
+    return new result_t(name = case.name, passed = passed, detail = detail)
+}
+
+pub fn drive_prompt(ref<mock_t> mock, case_t case, string cwd): ref<outcome_t> {
+    var runner = make_runner(mock, case, cwd) catch error {
+        return new outcome_t(run_error = true, error_message = error.msg())
+    }
+    var stream = runner.prompt(case.prompt) catch error {
+        return new outcome_t(run_error = true, error_message = error.msg())
+    }
+    consume(stream)
+    var messages = stream.result() catch error {
+        return new outcome_t(run_error = true, error_message = error.msg())
+    }
+    var outcome = new outcome_t(request_count = mock.request_count, request_bodies = mock.request_bodies)
+    // pi-harness promptAgent throws unless the last assistant turn stopped
+    // cleanly.  Mark the run failed the same way instead of crashing.
+    var assistant = last_assistant(messages)
+    if assistant is ref<ai_types.assistant_message_t> current {
+        if current.stop_reason != ai_types.STOP_STOP || current.error_message != '' {
+            outcome.run_error = true
+            outcome.error_message = current.error_message == '' ? 'assistant stop reason: ' + current.stop_reason : current.error_message
+        } else {
+            outcome.assistant_text = assistant_text(current)
+        }
+    } else {
+        outcome.run_error = true
+        outcome.error_message = 'Agent run completed without an assistant message.'
+    }
+    var (found, text) = tool_result_content(messages)
+    outcome.tool_result_found = found
+    outcome.tool_result_text = text
+    return outcome
+}
+
+pub fn tool_result_content([ai_types.message_t] messages): (bool, string) {
+    for message in messages {
+        if message is ref<ai_types.tool_result_message_t> tool {
+            string text = ''
+            for block in tool.content {
+                text += block.text
+            }
+            return (true, text)
+        }
+    }
+    return (false, '')
+}
+
+pub fn consume(ref<session_stream.stream_t> stream): [session_stream.event_t] {
+    [session_stream.event_t] events = []
+    for true {
+        var event = stream.recv() catch error {
+            break
+        }
+        events.push(event)
+    }
+    return events
+}
+
+pub fn last_assistant([ai_types.message_t] messages): ref<ai_types.assistant_message_t>? {
+    for int index = messages.len() - 1; index >= 0; index -= 1 {
+        if messages[index] is ref<ai_types.assistant_message_t> assistant {
+            return assistant
+        }
+    }
+    return null
+}
+
+pub fn assistant_text(ref<ai_types.assistant_message_t> assistant): string {
+    string result = ''
+    for block in assistant.content {
+        if block is ref<ai_types.text_content_t> text {
+            result += text.text
+        }
+    }
+    return result
+}
+
+pub fn print_report([ref<result_t>] results): int {
+    int passed = 0
+    int failed = 0
+    for result in results {
+        if result.passed {
+            passed += 1
+            println('PASS ' + result.name + ': ' + result.detail)
+        } else {
+            failed += 1
+            println('FAIL ' + result.name + ': ' + result.detail)
+        }
+    }
+    println(fmt.sprintf('eval summary: %d passed, %d failed, %d total', passed, failed, results.len()))
+    return failed
+}
+
+pub fn wait_for_server(int port): void {
+    // Mirrors the fixture-server startup sleep used by the HTTP stream
+    // tests: the listen goroutine needs a scheduler turn before clients
+    // connect.
+    co.sleep(300)
+}

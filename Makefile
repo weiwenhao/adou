@@ -23,8 +23,10 @@ ICU_CFLAGS := $(if $(ICU_INCLUDE),-I$(ICU_INCLUDE),)
 NATURE_SOURCES := main.n package.toml $(shell find src -type f -name '*.n' -print)
 TEST_SOURCES := $(sort $(wildcard tests/*.n))
 E2E_SOURCES := $(sort $(wildcard tests/e2e/*.sh))
+EVAL_ENTRY := tests/evals/smoke_evals.n
+EVAL_BIN := $(BIN_DIR)/adou-evals
 
-.PHONY: all build run test e2e check install clean help
+.PHONY: all build run test e2e eval check install clean help
 
 all: build
 
@@ -72,6 +74,15 @@ e2e: build
 		ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/$$test_file"; \
 	done
 
+# Phase 8 eval harness: one guarded build of the smoke eval entry point, then
+# a serial run of its cases against local scripted HTTP mocks.
+eval: build $(EVAL_BIN)
+	@"$(EVAL_BIN)"
+
+$(EVAL_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(SAFE_NATURE) $(EVAL_ENTRY)
+	@mkdir -p "$(BIN_DIR)"
+	@NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" build -o "$(EVAL_BIN)" "$(CURDIR)/$(EVAL_ENTRY)"
+
 check: test e2e
 
 PREFIX ?= /usr/local
@@ -94,6 +105,7 @@ help:
 		'make run     Build and run Adou' \
 		'make test    Run every Nature test serially through the guard' \
 		'make e2e     Build once, then run CLI end-to-end tests' \
+		'make eval    Run the Phase 8 smoke evals against local mocks' \
 		'make check   Run unit tests followed by end-to-end tests' \
 		'make install Install the binary and docs (PREFIX=/usr/local)' \
 		'make clean   Remove generated build files'

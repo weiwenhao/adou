@@ -1,15 +1,15 @@
 # Adou 全量移植计划（Pi 0.82.1，扩展机制暂缓）
 
-状态：Phase 5、Phase 6 已完成；Phase 7 进行中 — 2026-08-11
+状态：Phase 5、Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
 
 ## 当前进度快照
 
 - Adou 当前有 218 个 `src/**/*.n` 文件、41,925 行 Nature 源码、138 个 Nature 单元测试文件（665 个 test case、2,724 个 `assert`）和 45 个 e2e 脚本。
 - Phase 1–6 已完成并有源码差分、单元测试和跨模块验收记录；137 个单测文件在 2026-08-11 全量串行通过（7 个 OOM abort 单独重跑全过，deepseek fixture 回归已修复）。
-- Phase 7（storage + server）进行中：storage 已完成（JSONL/memory/SQLite 三后端契约测试 + migrations + materialized 表），server supervisor/protocol/rpc_stream 验收中。
+- Phase 7（storage + server）已完成：storage 已完成（JSONL/memory/SQLite 三后端契约测试 + migrations + materialized 表），server supervisor/protocol/rpc_stream 已验收（Phase 7.1 于 2026-08-12 关闭）。
 - 历史失败记录（cli-startup-boundaries 挂起、auth stdout 泄漏、ESC 10ms、deepseek fixture、全量 7 文件 OOM）均已由后续修复或重跑覆盖，见各批实跑证据。
-- Phase 8（evals harness）尚未开始，且不阻塞当前本地 CLI agent 主业务。
+- Phase 8（evals harness）已完成：`make eval` 3/3 绿（2026-08-12），见 `docs/evals-design.md`。
 - Pi extension 已在生产入口停用：不扫描扩展目录、不初始化 QuickJS、不注册扩展工具/命令、不派发生命周期事件；默认构建不再链接 QuickJS。相关源码暂留作未来重新设计的参考。
 
 | 阶段 | 状态 | 当前结论 |
@@ -20,10 +20,10 @@
 | Phase 4：TUI 基础 | 已完成 | renderer、editor、autocomplete、fuzzy、路径补全、markdown、terminal image 逻辑已覆盖 |
 | Phase 5：Interactive UI | 已完成 | 39 组件全部有结论；tree/fork/branch-summary PTY 闭环通过（tui-tree-fork.sh），终端恢复验证 |
 | Phase 6：CLI | 已完成 | 9 个上游模块逐项对照；空 stdin 挂起、credential 输出隔离、help/参数矩阵、启动边界均通过（help-matrix/cli-startup-boundaries/auth-print/rpc-shape-parity 等 45 个 e2e） |
-| Phase 7：storage + server | 进行中 | SQLite backend 已落地（nature-sqlite 绑定 + migrations/repo + 三后端契约测试 5/5）；server supervisor/协议/rpc_stream 已按上游 ipc/protocol.ts 重写，多实例生命周期与 rpc_stream e2e 验收中（Phase 7.1） |
-| Phase 8：evals | 未开始 | 尚未移植 pi-harness/smoke.eval |
+| Phase 7：storage + server | 已完成 | SQLite backend 已落地（nature-sqlite 绑定 + migrations/repo + 三后端契约测试 5/5）；server supervisor/协议/rpc_stream 已按上游 ipc/protocol.ts 重写，多实例生命周期与 rpc_stream e2e 通过（Phase 7.1 于 2026-08-12 关闭） |
+| Phase 8：evals | 已完成 | pi-harness/smoke.eval 已移植（本地脚本化 HTTP mock），`make eval` 3/3 绿；extensions.eval 明确排除；见 `docs/evals-design.md` |
 
-阶段完成度按行为验收判断，不用 Pi TypeScript 文件数推算百分比。当前严格确认 6/8 阶段关闭（Phase 1–6）；Phase 7 进行中。
+阶段完成度按行为验收判断，不用 Pi TypeScript 文件数推算百分比。当前严格确认 8/8 阶段关闭（Phase 1–8）。
 
 ## 目标与范围
 
@@ -139,10 +139,12 @@ Phase 7.1（server 协议 parity closeout，2026-08-11）验收中（e2e 已全�
 
 ### Phase 8｜evals 基建
 
-- 移植 `pi-harness` 和 `smoke.eval`；`extensions.eval` 继续排除。
-- 将现有 provider/tool/session/TUI e2e 接入统一验收入口，但仍通过 Make 串行调度 Nature。
+- 已移植 `pi-harness` 和 `smoke.eval`（`src/evals/harness.n` + `tests/evals/smoke_evals.n`）；`extensions.eval` 继续排除（Pi extension 已停用）。
+- 统一验收入口 `make eval`：guarded 串行构建 smoke eval 入口并运行，每 case 一行 PASS/FAIL + 汇总；不改变 build/test/e2e 行为。
+- smoke 集合：`basic-prompt`（mock 固定文本 Paris）、`tool-call-read`（mock 触发内置 read 工具并断言结果进入上下文、回传 provider）、`provider-error-handling`（HTTP 500 被标记为 run 失败且不崩溃）。
+- 本地脚本化 HTTP mock provider（参照 anthropic/deepseek HTTP fixture server 模式），离线确定性，不用真实 API；结构设计与上游映射见 `docs/evals-design.md`。
 
-Phase 8 完成标准：harness 可重复运行 smoke 集合，并输出稳定的通过/失败报告。
+Phase 8 验收结果（2026-08-12 关闭）：`make build` 退出 0；`make eval` 连续多次全绿（3 passed, 0 failed, exit 0；人为注入断言失败时输出 FAIL 行并 exit 1）；e2e 抽查 `rpc-shape-parity.sh`、`help-matrix.sh` 通过。
 
 ## 测试模型、密钥与成本约束
 

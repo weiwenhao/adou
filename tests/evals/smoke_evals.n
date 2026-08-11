@@ -1,0 +1,68 @@
+import adou.src.evals.harness
+import fs
+import os
+import path
+import syscall
+
+// Phase 8 smoke evals.  Entry point for `make eval`; built and run through
+// the guarded Nature invocation like the unit tests.  Each case runs a full
+// session (provider -> tools -> storage) against a scripted local HTTP mock.
+// Named to mirror the upstream smoke.eval cases:
+//   - runs a basic prompt end to end
+//   - uses a tool and feeds the result back to the provider
+//   - marks a provider error as a failed run without crashing
+
+pub const BASIC_PORT = 19210
+pub const TOOL_PORT = 19211
+pub const ERROR_PORT = 19212
+
+fn main() {
+    var results = run_cases()
+    int failed = harness.print_report(results)
+    if failed > 0 {
+        syscall.exit(1) catch exit_error {}
+    }
+}
+
+fn run_cases(): [ref<harness.result_t>] {
+    [ref<harness.result_t>] results = []
+    results.push(basic_case())
+    results.push(tool_case())
+    results.push(error_case())
+    return results
+}
+
+fn basic_case(): ref<harness.result_t> {
+    var mock = new harness.mock_t(port = BASIC_PORT, sse_bodies = [harness.text_response('Paris')])
+    go harness.serve_mock(mock)
+    harness.wait_for_server(BASIC_PORT)
+    var case = harness.case_t {name: 'basic-prompt', port: BASIC_PORT, prompt: "What's the capital of France? Respond with only the city name.", expected_text: 'Paris',}
+    return harness.run_case(mock, case, '/tmp')
+}
+
+fn tool_case(): ref<harness.result_t> {
+    string root = '/tmp/adou-eval-tool-case'
+    os.rmdir(root, true) catch error {}
+    os.mkdirs(root, 0o755) catch error {}
+    string fixture_path = path.join(root, 'fixture.txt')
+    var file = fs.open(fixture_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600) catch error {
+        return new harness.result_t(name = 'tool-call-read', passed = false, detail = 'fixture setup failed: ' + error.msg())
+    }
+    var ignored = file.write('hello from fixture' as [u8]) catch error {}
+    file.close() catch error {}
+    var mock = new harness.mock_t(port = TOOL_PORT, sse_bodies = [harness.tool_use_response('toolu_eval_01', 'read', '{"path":"fixture.txt"}'), harness.text_response('Read the file.')])
+    go harness.serve_mock(mock)
+    harness.wait_for_server(TOOL_PORT)
+    var case = harness.case_t {name: 'tool-call-read', port: TOOL_PORT, tool_names: ['read'], prompt: 'Read fixture.txt and report what it says.', expected_text: 'Read the file.', expected_tool_result: 'hello from fixture', expected_provider_request: 'hello from fixture',}
+    return harness.run_case(mock, case, root)
+}
+
+fn error_case(): ref<harness.result_t> {
+    var mock = new harness.mock_t(port = ERROR_PORT, sse_bodies = [''], error_status = 500)
+    go harness.serve_mock(mock)
+    harness.wait_for_server(ERROR_PORT)
+    // The mock answers HTTP 500; the provider fails its stream and the
+    // harness must mark the run failed without crashing.
+    var case = harness.case_t {name: 'provider-error-handling', port: ERROR_PORT, prompt: 'trigger a provider error', expect_run_error: true, expect_error_fragment: 'Anthropic API error: HTTP 500',}
+    return harness.run_case(mock, case, '/tmp')
+}
