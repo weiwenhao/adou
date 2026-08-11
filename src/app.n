@@ -553,36 +553,20 @@ fn open_repository(config_types.config_t config, string cwd): ref<repository.man
 }
 
 #local
+// The Nature TLS runtime stops its connect timer once TCP connects and
+// leaves the mbedtls handshake untimed: under a silently blackholed proxy
+// a request can hang forever instead of honouring --timeout-ms.  Coroutines
+// cannot be forcibly interrupted, so a watchdog coroutine terminates the
+// process after the configured timeout (same approach as the TUI exit for
+// its parked terminal reader).  The guard channel is not used for a full
+// handshake; a timed-out process exits before the normal path can send.
 fn run_headless(ref<session.runner_t> runner, [string] prompts, bool plain, bool json_mode): void! {
     if json_mode {
-        run_json(runner, prompts)
+        run_headless_with_watchdog(runner, prompts, true)
         return
     }
     if plain {
-        [ai_types.message_t] messages = []
-        for prompt in prompts {
-            var stream = runner.prompt(prompt) catch error {
-                println('Error: ' + error.msg())
-                return
-            }
-            for true {
-                var event = stream.recv() catch error {
-                    break
-                }
-                if event.kind == session_stream.EVENT_SESSION_END {
-                    break
-                }
-            }
-            messages = stream.result() catch error {
-                string message = error.msg()
-                println('Error: ' + message)
-                return
-            }
-        }
-        string answer = last_assistant_text(messages)
-        if answer != '' {
-            println(answer)
-        }
+        run_headless_with_watchdog(runner, prompts, false)
         return
     }
     var view = chat.new(runner.agent_config.model.id, runner.repository.cwd)
@@ -613,6 +597,74 @@ fn run_headless(ref<session.runner_t> runner, [string] prompts, bool plain, bool
     }
     var lines = view.render(120)
     println(strings.join(lines, '\n'))
+}
+
+#local
+fn run_headless_with_watchdog(ref<session.runner_t> runner, [string] prompts, bool json_mode): void! {
+    int budget_ms = runner.agent_config.stream_options.timeout_ms
+    if budget_ms <= 0 {
+        budget_ms = 120000
+    }
+    var guard = chan<int>.new(1)
+    go headless_watchdog(guard, budget_ms, json_mode)
+    if json_mode {
+        run_json(runner, prompts)
+    } else {
+        run_plain(runner, prompts)
+    }
+    guard.send(0) catch error {}
+}
+
+#local
+fn headless_watchdog(chan<int> guard, int budget_ms, bool json_mode) {
+    co.sleep(budget_ms)
+    var (cancelled, received) = guard.try_recv() catch error {
+        return
+    }
+    if received && cancelled == 0 {
+        return
+    }
+    string message = fmt.sprintf('Error: provider request timed out after %d ms', budget_ms)
+    if json_mode {
+        message = json_error(message) catch error {
+            message
+        }
+    }
+    var err = fs.stderr() catch error {
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    err.write((message + '\n') as [u8]) catch error {}
+    syscall.exit(1) catch exit_error {}
+}
+
+// Plain one-shot loop extracted so the watchdog covers the whole session.
+#local
+fn run_plain(ref<session.runner_t> runner, [string] prompts): void! {
+    [ai_types.message_t] messages = []
+    for prompt in prompts {
+        var stream = runner.prompt(prompt) catch error {
+            println('Error: ' + error.msg())
+            return
+        }
+        for true {
+            var event = stream.recv() catch error {
+                break
+            }
+            if event.kind == session_stream.EVENT_SESSION_END {
+                break
+            }
+        }
+        messages = stream.result() catch error {
+            string message = error.msg()
+            println('Error: ' + message)
+            return
+        }
+    }
+    string answer = last_assistant_text(messages)
+    if answer != '' {
+        println(answer)
+    }
 }
 
 #local

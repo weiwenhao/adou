@@ -10,6 +10,9 @@ fi
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/adou-auth-print.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 
+# shellcheck source=lib/deepseek-test-config.sh
+. "$(dirname -- "$0")/lib/deepseek-test-config.sh"
+
 # A failed credential print must keep stdout empty and write "Error: " to
 # stderr with a non-zero exit so callers can tell a missing credential from
 # a printed one.
@@ -30,13 +33,13 @@ run_failing() {
 
 # Provider-prefixed model prints the configured key alone on stdout, with
 # an empty stderr.
-out=$(DEEPSEEK_API_KEY=sk-print-test "$binary" auth print-api-key --model deepseek/deepseek-v4-flash 2>"$tmp_dir/err")
-[ "$out" = "sk-print-test" ] || { echo "e2e: unexpected stdout: $out" >&2; exit 1; }
+out=$(DEEPSEEK_API_KEY="$DEEPSEEK_TEST_API_KEY" "$binary" auth print-api-key --model "$DEEPSEEK_TEST_MODEL_REF" 2>"$tmp_dir/err")
+[ "$out" = "$DEEPSEEK_TEST_API_KEY" ] || { echo "e2e: unexpected stdout length ${#out}" >&2; exit 1; }
 [ ! -s "$tmp_dir/err" ] || { echo "e2e: success leaked to stderr: $(cat "$tmp_dir/err")" >&2; exit 1; }
 
 # Explicit provider works for bare model ids.
-out=$(DEEPSEEK_API_KEY=sk-print-test "$binary" auth print-api-key --model deepseek-v4-flash --provider deepseek)
-[ "$out" = "sk-print-test" ] || { echo "e2e: unexpected stdout: $out" >&2; exit 1; }
+out=$(DEEPSEEK_API_KEY="$DEEPSEEK_TEST_API_KEY" "$binary" auth print-api-key --model "$DEEPSEEK_TEST_MODEL" --provider deepseek)
+[ "$out" = "$DEEPSEEK_TEST_API_KEY" ] || { echo "e2e: unexpected stdout length ${#out}" >&2; exit 1; }
 
 # Missing provider: stdout empty, Error: on stderr, non-zero exit.
 run_failing auth print-api-key --model deepseek-v4-flash
