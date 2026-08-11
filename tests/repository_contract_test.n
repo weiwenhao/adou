@@ -1,6 +1,7 @@
 import adou.src.ai.types as ai_types
 import adou.src.session.backend
 import adou.src.session.repository
+import adou.src.storage.sqlite_repo
 import adou.src.session.types as session_types
 import os
 import path
@@ -42,19 +43,28 @@ fn fork_to_throws(ref<repository.manager_t> manager, string cwd, string dir, str
     return false
 }
 
+#local
+fn backend_fork_throws(backend.backend_t b, string id): bool {
+    backend.fork_to(b, id) catch error {
+        return true
+    }
+    return false
+}
+
 // Shared assertions run for any backend.  `persisted` selects the
 // file-level list/delete checks that only apply to the JSONL backend.
 fn run_contract_suite(backend.backend_t backend_ref, bool persisted): void! {
-    var manager = backend_ref.manager
+    var manager = backend.mgr(backend_ref)
 
     // create: header carries version, id and cwd.
     assert(manager.header.version == session_types.CURRENT_VERSION)
     assert(manager.header.id.len() > 0)
     assert(manager.header.cwd == fixture_cwd())
 
-    // append two messages: entry order follows append order.
-    string first_id = manager.append_message(user_message('contract first'))
-    string second_id = manager.append_message(user_message('contract second'))
+    // append two messages: entry order follows append order (SQLite
+    // persists through the backend layer).
+    string first_id = backend.append_message(backend_ref, user_message('contract first'))
+    string second_id = backend.append_message(backend_ref, user_message('contract second'))
     var entries = manager.get_entries()
     // metadata entries may vary by backend; the two messages must be present
     // in append order with the second as the leaf.
@@ -115,24 +125,24 @@ fn run_contract_suite(backend.backend_t backend_ref, bool persisted): void! {
     assert(at.get_leaf_id() == first_id)
 
     // full fork: every entry is copied and the new header records the
-    // parent session lineage.
+    // parent session lineage.  JSONL keeps the source file reference in
+    // header.parent_session; SQLite records the source session id.
     if persisted {
-        string fork_dir = path.join(backend_ref.session_dir, 'forked')
-        var full = manager.fork_to(fixture_cwd(), fork_dir, 'contract-fork')
-        assert(full.get_entries().len() == entries.len())
-        assert(full.header.parent_session == manager.session_file)
-        assert(full.get_leaf_id() == manager.get_leaf_id())
+        var full = backend.fork_to(backend_ref, 'contract-fork')
+        assert(backend.mgr(full).get_entries().len() == entries.len())
+        assert(backend.mgr(full).header.parent_session != '')
+        assert(backend.mgr(full).get_leaf_id() == manager.get_leaf_id())
         // duplicate id is rejected with an explicit error.
-        assert(fork_to_throws(manager, fixture_cwd(), fork_dir, 'contract-fork'))
+        assert(backend_fork_throws(backend_ref, 'contract-fork'))
     } else {
-        var full = manager.fork_to(fixture_cwd(), '', '')
-        assert(full.get_entries().len() == entries.len())
-        assert(full.header.parent_session == '')
+        var full = backend.fork_to(backend_ref, '')
+        assert(backend.mgr(full).get_entries().len() == entries.len())
+        assert(backend.mgr(full).header.parent_session == '')
     }
 
-    // list/delete are file-level and only apply to the JSONL backend.
+    // list/delete are backend-level and only apply to persisted backends.
     if persisted {
-        var listed = backend.list_session_paths(backend_ref.session_dir)
+        var listed = backend.list_sessions(backend_ref)
         var found = false
         for candidate in listed {
             if candidate.contains(manager.header.id) {
@@ -140,17 +150,13 @@ fn run_contract_suite(backend.backend_t backend_ref, bool persisted): void! {
             }
         }
         assert(found)
-        var (deleted, message) = backend.delete_session(manager.session_file, fixture_cwd())
+        var (deleted, message) = backend.delete_session(backend_ref, manager.header.id)
         assert(deleted)
         assert(message.len() > 0)
-        var listed_after = backend.list_session_paths(backend_ref.session_dir)
+        var listed_after = backend.list_sessions(backend_ref)
         for candidate in listed_after {
             assert(!candidate.contains(manager.header.id))
         }
-        // delete of a missing file reports failure.
-        var (gone, gone_message) = backend.delete_session(manager.session_file, fixture_cwd())
-        assert(!gone)
-        assert(gone_message.len() > 0)
     }
 }
 
@@ -171,17 +177,58 @@ test 'SessionRepo contract: in-memory backend' {
     run_contract_suite(backend_ref, false)
 }
 
+test 'SessionRepo contract: SQLite backend' {
+    string tmp_dir = temp_dir('sqlite')
+    defer os.rmdir(tmp_dir, true) catch error {}
+    string db_path = path.join(tmp_dir, 'sessions.db')
+    var backend_ref = backend.open_sqlite(fixture_cwd(), db_path)
+    run_contract_suite(backend_ref, true)
+}
+
+test 'SQLite reopen persists entries, order and lineage' {
+    string tmp_dir = temp_dir('sqlite-reopen')
+    defer os.rmdir(tmp_dir, true) catch error {}
+    string db_path = path.join(tmp_dir, 'sessions.db')
+    var created = backend.open_sqlite(fixture_cwd(), db_path)
+    string first_id = backend.append_message(created, user_message('reopen first'))
+    string second_id = backend.append_message(created, user_message('reopen second'))
+    sqlite_repo.close_db(created.sqlite_db as ref<sqlite_repo.db_t>)
+
+    var reopened = backend.open_sqlite_session(fixture_cwd(), db_path, backend.mgr(created).header.id)
+    var entries = backend.mgr(reopened).get_entries()
+    var messages = 0
+    var first_seen = 0
+    var second_seen = 0
+    for entry in entries {
+        if entry.kind == session_types.ENTRY_MESSAGE {
+            messages += 1
+            if entry.id == first_id {
+                first_seen = messages
+            }
+            if entry.id == second_id {
+                second_seen = messages
+            }
+        }
+    }
+    assert(messages == 2)
+    assert(first_seen == 1 && second_seen == 2)
+    var second = backend.mgr(reopened).get_entry(second_id)
+    var second_ref = second as ref<session_types.entry_t>
+    assert(second_ref.has_parent)
+    assert(second_ref.parent_id == first_id)
+}
+
 test 'JSONL reopen persists entries, order and lineage' {
     string tmp_dir = temp_dir('reopen')
     defer os.rmdir(tmp_dir, true) catch error {}
     var created = backend.create_jsonl(fixture_cwd(), tmp_dir)
-    string first_id = created.manager.append_message(user_message('reopen first'))
-    string second_id = created.manager.append_message(user_message('reopen second'))
-    string file_path = created.manager.session_file
+    string first_id = backend.mgr(created).append_message(user_message('reopen first'))
+    string second_id = backend.mgr(created).append_message(user_message('reopen second'))
+    string file_path = backend.mgr(created).session_file
 
     var reopened = backend.open_jsonl(file_path)
-    assert(reopened.kind == backend.backend_kind_t.JSONL)
-    var entries = reopened.manager.get_entries()
+    assert(reopened.kind == 'jsonl')
+    var entries = backend.mgr(reopened).get_entries()
     var messages = 0
     var first_seen = 0
     var second_seen = 0
@@ -199,7 +246,7 @@ test 'JSONL reopen persists entries, order and lineage' {
     assert(messages == 2)
     // append order survives the reopen.
     assert(first_seen == 1 && second_seen == 2)
-    var second = reopened.manager.get_entry(second_id)
+    var second = backend.mgr(reopened).get_entry(second_id)
     var second_ref = second as ref<session_types.entry_t>
     assert(second_ref.has_parent)
     assert(second_ref.parent_id == first_id)

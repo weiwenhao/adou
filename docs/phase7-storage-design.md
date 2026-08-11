@@ -43,17 +43,38 @@ parent_session 血缘、重复 id 错误、list/delete（持久化后端）与�
 另加 JSONL reopen 持久化（顺序与 lineage 跨 reopen 保留）。2026-08-11 实跑
 3/3 通过。
 
-## SQLite 下一批边界（本批不实现）
+## SQLite 后端（2026-08-11 batch 2 已落地）
 
-- schema/migration：`migrations.ts` 的 sessions / session_entries /
-  branch_entries / session_sequences / session_materialized 表结构与迁移
-  版本号对齐；行为对齐 `repo.ts` 的 SessionRepo 实现。
-- 一致性：SQLite backend 接入同一套 `run_contract_suite`（persisted 语义），
-  并补 JSONL↔SQLite 行为一致性测试与 RPC-over-IPC 验收。
-- 链接约束：不得依赖 Node、QuickJS 或 `sqlite3` CLI。系统 SQLite C ABI
-  （`sqlite3.h` + `libsqlite3`）在 Darwin/Linux 的可用性、动态链接
-  （`-lsqlite3`/`dlopen`）或静态打包方式必须单独验证后再引入，本批不引入
-  任何不可移植的链接；若 ABI 不可用则退回纯 JSONL 并记录阻塞。
+- 绑定来源：`https://github.com/weiwenhao/nature-sqlite`（SQLite 3.50.4
+  amalgamation + 4 平台预编译 .o + Nature 绑定）。集成：`native/sqlite3/`
+  （sqlite3.c/h + sqlite3_*.o），`package.toml [links] libsqlite3` 按
+  darwin_arm64/darwin_amd64/linux_arm64/linux_amd64 映射。适配本编译器
+  （v0.7.4）：`rawptr<T>` 非关键字，已全局替换为内置 `ptr<T>`；绑定函数与
+  常量改为 `pub`。不依赖 Node、QuickJS 或 `sqlite3` CLI；静态链接随
+  平台 .o 打包，无需系统库安装。
+- 实现：`src/storage/sqlite_migrations.n`（上游 001_initial.sql 全套表，
+  含 sessions/session_entries/session_sequences/branch_entries/
+  session_materialized/entry_materialized）、`src/storage/sqlite_repo.n`
+  （open_db/close_db/create_session/append_entry/load_manager/list_sessions/
+  delete_session，entry_seq 取 MAX+1 等价 sequences 表；branch/materialized
+  表已建未填，属后续批次）、`src/session/backend.n` 增加 `open_sqlite` /
+  `open_sqlite_session` / 后端级 `append_message`/`list_sessions`/
+  `delete_session`/`fork_to` 分发。
+- 契约：`tests/repository_contract_test.n` 5/5 通过——同一套
+  `run_contract_suite` 驱动 JSONL / memory / SQLite 三后端（create、append
+  顺序、parent lineage、缺失/重复错误、fork before/at、完整 fork 血缘、
+  list/delete），外加 SQLite 与 JSONL 各自的 reopen 持久化（顺序与 lineage
+  跨 reopen 保留）。
+
+## 下一批边界
+
+- SQLite 分支语义：`branch_entries`/`session_materialized`/`entry_materialized`
+  填充与 branch 查询对齐 `repo.ts`；`session_sequences` 表接入（当前 MAX+1）。
+- RPC-over-IPC server（Phase 7 另一半）：IPC protocol、rpc process、
+  supervisor、handler、serve、radius；不得破坏现有进程内 RPC 协议。
+- TUI list/delete 调用点迁移到 backend helper。
+- 若系统 SQLite 头/库需要动态链接（如降级打包），单独验证 Darwin/Linux ABI，
+  本批静态 .o 链接不改变。
 
 ## 与既有约束的关系
 

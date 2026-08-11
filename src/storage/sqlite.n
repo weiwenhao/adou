@@ -1,0 +1,1033 @@
+import libc
+
+// SQLite version information
+pub const SQLITE_VERSION = "3.50.4"
+pub const SQLITE_VERSION_NUMBER = 3050004
+
+// SQLite result codes
+pub const SQLITE_OK = 0           // Success
+pub const SQLITE_ERROR = 1        // Generic error
+pub const SQLITE_INTERNAL = 2     // Internal logic error
+pub const SQLITE_PERM = 3         // Access permission denied
+pub const SQLITE_ABORT = 4        // Callback routine requested an abort
+pub const SQLITE_BUSY = 5         // Database file is locked
+pub const SQLITE_LOCKED = 6       // A table in the database is locked
+pub const SQLITE_NOMEM = 7        // malloc() failed
+pub const SQLITE_READONLY = 8     // Attempt to write a readonly database
+pub const SQLITE_INTERRUPT = 9    // Operation terminated by sqlite3_interrupt()
+pub const SQLITE_IOERR = 10       // Some kind of disk I/O error occurred
+pub const SQLITE_CORRUPT = 11     // Database disk image is malformed
+pub const SQLITE_NOTFOUND = 12    // Unknown opcode
+pub const SQLITE_FULL = 13        // Insertion failed because database is full
+pub const SQLITE_CANTOPEN = 14    // Unable to open the database file
+pub const SQLITE_PROTOCOL = 15    // Database lock protocol error
+pub const SQLITE_EMPTY = 16       // Internal use only
+pub const SQLITE_SCHEMA = 17      // Database schema changed
+pub const SQLITE_TOOBIG = 18      // String or BLOB exceeds size limit
+pub const SQLITE_CONSTRAINT = 19  // Abort due to constraint violation
+pub const SQLITE_MISMATCH = 20    // Data type mismatch
+pub const SQLITE_MISUSE = 21      // Library used incorrectly
+pub const SQLITE_NOLFS = 22       // Uses OS features not supported on host
+pub const SQLITE_AUTH = 23        // Authorization denied
+pub const SQLITE_FORMAT = 24      // Not used
+pub const SQLITE_RANGE = 25       // 2nd parameter to sqlite3_bind out of range
+pub const SQLITE_NOTADB = 26      // File opened that is not a database file
+pub const SQLITE_NOTICE = 27      // Notifications from sqlite3_log()
+pub const SQLITE_WARNING = 28     // Warnings from sqlite3_log()
+pub const SQLITE_ROW = 100        // sqlite3_step() has another row ready
+pub const SQLITE_DONE = 101       // sqlite3_step() has finished executing
+
+// SQLite open flags
+pub const SQLITE_OPEN_READONLY = 0x00000001      // Read only
+pub const SQLITE_OPEN_READWRITE = 0x00000002     // Read write
+pub const SQLITE_OPEN_CREATE = 0x00000004        // Create
+pub const SQLITE_OPEN_DELETEONCLOSE = 0x00000008 // Delete on close
+pub const SQLITE_OPEN_EXCLUSIVE = 0x00000010     // Exclusive
+pub const SQLITE_OPEN_AUTOPROXY = 0x00000020     // Auto proxy
+pub const SQLITE_OPEN_URI = 0x00000040           // URI
+pub const SQLITE_OPEN_MEMORY = 0x00000080        // Memory
+pub const SQLITE_OPEN_MAIN_DB = 0x00000100       // Main database
+pub const SQLITE_OPEN_TEMP_DB = 0x00000200       // Temporary database
+pub const SQLITE_OPEN_TRANSIENT_DB = 0x00000400  // Transient database
+pub const SQLITE_OPEN_MAIN_JOURNAL = 0x00000800  // Main journal
+pub const SQLITE_OPEN_TEMP_JOURNAL = 0x00001000  // Temporary journal
+pub const SQLITE_OPEN_SUBJOURNAL = 0x00002000    // Sub journal
+pub const SQLITE_OPEN_SUPER_JOURNAL = 0x00004000 // Super journal
+pub const SQLITE_OPEN_NOMUTEX = 0x00008000       // No mutex
+pub const SQLITE_OPEN_FULLMUTEX = 0x00010000     // Full mutex
+pub const SQLITE_OPEN_SHAREDCACHE = 0x00020000   // Shared cache
+pub const SQLITE_OPEN_PRIVATECACHE = 0x00040000  // Private cache
+pub const SQLITE_OPEN_WAL = 0x00080000           // WAL
+pub const SQLITE_OPEN_NOFOLLOW = 0x01000000      // No follow
+pub const SQLITE_OPEN_EXRESCODE = 0x02000000     // Extended result code
+
+// SQLite data types
+pub const SQLITE_INTEGER = 1  // Integer
+pub const SQLITE_FLOAT = 2    // Float
+pub const SQLITE_BLOB = 4     // BLOB
+pub const SQLITE_NULL = 5     // NULL
+pub const SQLITE_TEXT = 3     // Text
+const SQLITE3_TEXT = 3    // Text
+
+// SQLite configuration options
+pub const SQLITE_CONFIG_SINGLETHREAD = 1   // Single thread
+pub const SQLITE_CONFIG_MULTITHREAD = 2    // Multi thread
+pub const SQLITE_CONFIG_SERIALIZED = 3     // Serialized
+pub const SQLITE_CONFIG_MALLOC = 4         // Memory allocation
+pub const SQLITE_CONFIG_GETMALLOC = 5      // Get memory allocation
+pub const SQLITE_CONFIG_SCRATCH = 6        // Scratch memory
+pub const SQLITE_CONFIG_PAGECACHE = 7      // Page cache
+pub const SQLITE_CONFIG_HEAP = 8           // Heap
+pub const SQLITE_CONFIG_MEMSTATUS = 9      // Memory status
+pub const SQLITE_CONFIG_MUTEX = 10         // Mutex
+pub const SQLITE_CONFIG_GETMUTEX = 11      // Get mutex
+pub const SQLITE_CONFIG_PCACHE = 14        // Page cache
+pub const SQLITE_CONFIG_GETPCACHE = 15     // Get page cache
+pub const SQLITE_CONFIG_LOG = 16           // Log
+pub const SQLITE_CONFIG_URI = 17           // URI
+pub const SQLITE_CONFIG_PCACHE2 = 18       // Page cache 2
+pub const SQLITE_CONFIG_GETPCACHE2 = 19    // Get page cache 2
+pub const SQLITE_CONFIG_COVERING_INDEX_SCAN = 20  // Covering index scan
+pub const SQLITE_CONFIG_SQLLOG = 21        // SQL log
+pub const SQLITE_CONFIG_MMAP_SIZE = 22     // Memory map size
+pub const SQLITE_CONFIG_WIN32_HEAPSIZE = 23 // Win32 heap size
+pub const SQLITE_CONFIG_PCACHE_HDRSZ = 24  // Page cache header size
+pub const SQLITE_CONFIG_PMASZ = 25         // PMA size
+pub const SQLITE_CONFIG_STMTJRNL_SPILL = 26 // Statement journal spill
+pub const SQLITE_CONFIG_SMALL_MALLOC = 27  // Small malloc
+pub const SQLITE_CONFIG_SORTERREF_SIZE = 28 // Sorter reference size
+pub const SQLITE_CONFIG_MEMDB_MAXSIZE = 29 // Memory database max size
+pub const SQLITE_CONFIG_ROWID_IN_VIEW = 30 // ROWID in view
+
+// SQLite database configuration options
+pub const SQLITE_DBCONFIG_MAINDBNAME = 1000            // Main database name
+pub const SQLITE_DBCONFIG_LOOKASIDE = 1001             // Lookaside memory
+pub const SQLITE_DBCONFIG_ENABLE_FKEY = 1002           // Enable foreign key
+pub const SQLITE_DBCONFIG_ENABLE_TRIGGER = 1003        // Enable trigger
+pub const SQLITE_DBCONFIG_ENABLE_FTS3_TOKENIZER = 1004 // Enable FTS3 tokenizer
+pub const SQLITE_DBCONFIG_ENABLE_LOAD_EXTENSION = 1005 // Enable load extension
+pub const SQLITE_DBCONFIG_NO_CKPT_ON_CLOSE = 1006     // No checkpoint on close
+pub const SQLITE_DBCONFIG_ENABLE_QPSG = 1007           // Enable QPSG
+pub const SQLITE_DBCONFIG_TRIGGER_EQP = 1008           // Trigger EQP
+pub const SQLITE_DBCONFIG_RESET_DATABASE = 1009        // Reset database
+pub const SQLITE_DBCONFIG_DEFENSIVE = 1010             // Defensive
+pub const SQLITE_DBCONFIG_WRITABLE_SCHEMA = 1011       // Writable schema
+pub const SQLITE_DBCONFIG_LEGACY_ALTER_TABLE = 1012    // Legacy ALTER TABLE
+pub const SQLITE_DBCONFIG_DQS_DML = 1013              // DQS DML
+pub const SQLITE_DBCONFIG_DQS_DDL = 1014              // DQS DDL
+pub const SQLITE_DBCONFIG_ENABLE_VIEW = 1015           // Enable view
+pub const SQLITE_DBCONFIG_LEGACY_FILE_FORMAT = 1016    // Legacy file format
+pub const SQLITE_DBCONFIG_TRUSTED_SCHEMA = 1017        // Trusted schema
+pub const SQLITE_DBCONFIG_STMT_SCANSTATUS = 1018       // Statement scan status
+pub const SQLITE_DBCONFIG_REVERSE_SCANORDER = 1019     // Reverse scan order
+pub const SQLITE_DBCONFIG_ENABLE_ATTACH_CREATE = 1020  // Enable attach create
+pub const SQLITE_DBCONFIG_ENABLE_ATTACH_WRITE = 1021   // Enable attach write
+pub const SQLITE_DBCONFIG_ENABLE_COMMENTS = 1022       // Enable comments
+pub const SQLITE_DBCONFIG_MAX = 1022                   // Maximum value
+
+// SQLite prepare flags
+pub const SQLITE_PREPARE_PERSISTENT = 0x01  // Persistent
+pub const SQLITE_PREPARE_NORMALIZE = 0x02   // Normalize
+pub const SQLITE_PREPARE_NO_VTAB = 0x04     // No virtual table
+pub const SQLITE_PREPARE_DONT_LOG = 0x10    // Don't log
+
+// SQLite limits
+pub const SQLITE_LIMIT_LENGTH = 0                    // Length limit
+pub const SQLITE_LIMIT_SQL_LENGTH = 1               // SQL length limit
+pub const SQLITE_LIMIT_COLUMN = 2                   // Column limit
+pub const SQLITE_LIMIT_EXPR_DEPTH = 3               // Expression depth limit
+pub const SQLITE_LIMIT_COMPOUND_SELECT = 4          // Compound select limit
+pub const SQLITE_LIMIT_VDBE_OP = 5                  // VDBE operation limit
+pub const SQLITE_LIMIT_FUNCTION_ARG = 6             // Function argument limit
+pub const SQLITE_LIMIT_ATTACHED = 7                 // Attached limit
+pub const SQLITE_LIMIT_LIKE_PATTERN_LENGTH = 8      // LIKE pattern length limit
+pub const SQLITE_LIMIT_VARIABLE_NUMBER = 9          // Variable number limit
+pub const SQLITE_LIMIT_TRIGGER_DEPTH = 10           // Trigger depth limit
+pub const SQLITE_LIMIT_WORKER_THREADS = 11          // Worker threads limit
+
+// SQLite text encoding
+pub const SQLITE_UTF8 = 1           // UTF-8
+pub const SQLITE_UTF16LE = 2        // UTF-16 little endian
+pub const SQLITE_UTF16BE = 3        // UTF-16 big endian
+pub const SQLITE_UTF16 = 4          // UTF-16
+pub const SQLITE_ANY = 5            // Any
+pub const SQLITE_UTF16_ALIGNED = 8  // UTF-16 aligned
+
+// SQLite function flags
+pub const SQLITE_DETERMINISTIC = 0x000000800  // Deterministic
+pub const SQLITE_DIRECTONLY = 0x000080000     // Direct only
+pub const SQLITE_SUBTYPE = 0x000100000        // Subtype
+pub const SQLITE_INNOCUOUS = 0x000200000      // Innocuous
+pub const SQLITE_RESULT_SUBTYPE = 0x001000000 // Result subtype
+pub const SQLITE_SELFORDER1 = 0x002000000     // Self order 1
+
+// SQLite authorization action codes
+pub const SQLITE_DENY = 1    // Deny
+pub const SQLITE_IGNORE = 2  // Ignore
+
+pub const SQLITE_CREATE_INDEX = 1           // Create index
+pub const SQLITE_CREATE_TABLE = 2           // Create table
+pub const SQLITE_CREATE_TEMP_INDEX = 3      // Create temp index
+pub const SQLITE_CREATE_TEMP_TABLE = 4      // Create temp table
+pub const SQLITE_CREATE_TEMP_TRIGGER = 5    // Create temp trigger
+pub const SQLITE_CREATE_TEMP_VIEW = 6       // Create temp view
+pub const SQLITE_CREATE_TRIGGER = 7         // Create trigger
+pub const SQLITE_CREATE_VIEW = 8            // Create view
+pub const SQLITE_DELETE = 9                 // Delete
+pub const SQLITE_DROP_INDEX = 10            // Drop index
+pub const SQLITE_DROP_TABLE = 11            // Drop table
+pub const SQLITE_DROP_TEMP_INDEX = 12       // Drop temp index
+pub const SQLITE_DROP_TEMP_TABLE = 13       // Drop temp table
+pub const SQLITE_DROP_TEMP_TRIGGER = 14     // Drop temp trigger
+pub const SQLITE_DROP_TEMP_VIEW = 15        // Drop temp view
+pub const SQLITE_DROP_TRIGGER = 16          // Drop trigger
+pub const SQLITE_DROP_VIEW = 17             // Drop view
+pub const SQLITE_INSERT = 18                // Insert
+pub const SQLITE_PRAGMA = 19                // PRAGMA
+pub const SQLITE_READ = 20                  // Read
+pub const SQLITE_SELECT = 21                // Select
+pub const SQLITE_TRANSACTION = 22           // Transaction
+pub const SQLITE_UPDATE = 23                // Update
+pub const SQLITE_ATTACH = 24                // Attach
+pub const SQLITE_DETACH = 25                // Detach
+pub const SQLITE_ALTER_TABLE = 26           // Alter table
+pub const SQLITE_REINDEX = 27               // Reindex
+pub const SQLITE_ANALYZE = 28               // Analyze
+pub const SQLITE_CREATE_VTABLE = 29         // Create virtual table
+pub const SQLITE_DROP_VTABLE = 30           // Drop virtual table
+pub const SQLITE_FUNCTION = 31              // Function
+pub const SQLITE_SAVEPOINT = 32             // Savepoint
+pub const SQLITE_COPY = 0                   // Copy
+pub const SQLITE_RECURSIVE = 33             // Recursive
+
+// SQLite trace flags
+pub const SQLITE_TRACE_STMT = 0x01     // Statement trace
+pub const SQLITE_TRACE_PROFILE = 0x02  // Profile trace
+pub const SQLITE_TRACE_ROW = 0x04      // Row trace
+pub const SQLITE_TRACE_CLOSE = 0x08    // Close trace
+
+// SQLite transaction state
+pub const SQLITE_TXN_NONE = 0   // No transaction
+pub const SQLITE_TXN_READ = 1   // Read transaction
+pub const SQLITE_TXN_WRITE = 2  // Write transaction
+
+// SQLite checkpoint mode
+pub const SQLITE_CHECKPOINT_PASSIVE = 0   // Passive checkpoint
+pub const SQLITE_CHECKPOINT_FULL = 1      // Full checkpoint
+pub const SQLITE_CHECKPOINT_RESTART = 2   // Restart checkpoint
+pub const SQLITE_CHECKPOINT_TRUNCATE = 3  // Truncate checkpoint
+
+// SQLite status parameters
+pub const SQLITE_STATUS_MEMORY_USED = 0          // Memory used
+pub const SQLITE_STATUS_PAGECACHE_USED = 1       // Page cache used
+pub const SQLITE_STATUS_PAGECACHE_OVERFLOW = 2   // Page cache overflow
+pub const SQLITE_STATUS_SCRATCH_USED = 3         // Scratch used
+pub const SQLITE_STATUS_SCRATCH_OVERFLOW = 4     // Scratch overflow
+pub const SQLITE_STATUS_MALLOC_SIZE = 5          // Malloc size
+pub const SQLITE_STATUS_PARSER_STACK = 6         // Parser stack
+pub const SQLITE_STATUS_PAGECACHE_SIZE = 7       // Page cache size
+pub const SQLITE_STATUS_SCRATCH_SIZE = 8         // Scratch size
+pub const SQLITE_STATUS_MALLOC_COUNT = 9         // Malloc count
+
+// SQLite database status parameters
+pub const SQLITE_DBSTATUS_LOOKASIDE_USED = 0       // Lookaside used
+pub const SQLITE_DBSTATUS_CACHE_USED = 1           // Cache used
+pub const SQLITE_DBSTATUS_SCHEMA_USED = 2          // Schema used
+pub const SQLITE_DBSTATUS_STMT_USED = 3            // Statement used
+pub const SQLITE_DBSTATUS_LOOKASIDE_HIT = 4        // Lookaside hit
+pub const SQLITE_DBSTATUS_LOOKASIDE_MISS_SIZE = 5  // Lookaside miss size
+pub const SQLITE_DBSTATUS_LOOKASIDE_MISS_FULL = 6  // Lookaside miss full
+pub const SQLITE_DBSTATUS_CACHE_HIT = 7            // Cache hit
+pub const SQLITE_DBSTATUS_CACHE_MISS = 8           // Cache miss
+pub const SQLITE_DBSTATUS_CACHE_WRITE = 9          // Cache write
+pub const SQLITE_DBSTATUS_DEFERRED_FKS = 10        // Deferred foreign keys
+pub const SQLITE_DBSTATUS_CACHE_USED_SHARED = 11   // Cache used shared
+pub const SQLITE_DBSTATUS_CACHE_SPILL = 12         // Cache spill
+pub const SQLITE_DBSTATUS_MAX = 12                 // Maximum value
+
+// SQLite statement status parameters
+pub const SQLITE_STMTSTATUS_FULLSCAN_STEP = 1   // Full scan step
+pub const SQLITE_STMTSTATUS_SORT = 2            // Sort
+pub const SQLITE_STMTSTATUS_AUTOINDEX = 3       // Auto index
+pub const SQLITE_STMTSTATUS_VM_STEP = 4         // Virtual machine step
+pub const SQLITE_STMTSTATUS_REPREPARE = 5       // Reprepare
+pub const SQLITE_STMTSTATUS_RUN = 6             // Run
+pub const SQLITE_STMTSTATUS_FILTER_MISS = 7     // Filter miss
+pub const SQLITE_STMTSTATUS_FILTER_HIT = 8      // Filter hit
+pub const SQLITE_STMTSTATUS_MEMUSED = 99        // Memory used
+
+// SQLite type definitions
+pub type sqlite3_t = struct{}                    // SQLite database connection
+pub type sqlite3_stmt_t = struct{}               // SQLite prepared statement
+pub type sqlite3_value_t = struct{}              // SQLite value
+type sqlite3_context_t = struct{}            // SQLite context
+pub type sqlite3_int64_t = i64                   // SQLite 64-bit integer
+pub type sqlite3_uint64_t = u64                  // SQLite 64-bit unsigned integer
+type sqlite3_filename_t = anyptr             // SQLite filename
+type sqlite3_mutex_t = struct{}              // SQLite mutex
+type sqlite3_file_t = struct{}               // SQLite file
+type sqlite3_vfs_t = struct{}                // SQLite virtual file system
+type sqlite3_backup_t = struct{}             // SQLite backup
+type sqlite3_blob_t = struct{}               // SQLite BLOB
+type sqlite3_str_t = struct{}                // SQLite string builder
+
+// SQLite callback function types
+type sqlite3_callback_t = fn(anyptr, i32, ptr<anyptr>, ptr<anyptr>):i32
+type sqlite3_destructor_type_t = fn(anyptr)
+
+// SQLite memory methods structure
+type sqlite3_mem_methods_t = struct{
+    anyptr x_malloc_func      // malloc function pointer
+    anyptr x_free_func        // free function pointer
+    anyptr x_realloc_func     // realloc function pointer
+    anyptr x_size_func        // size function pointer
+    anyptr x_roundup_func     // roundup function pointer
+    anyptr x_init_func        // init function pointer
+    anyptr x_shutdown_func    // shutdown function pointer
+    anyptr p_app_data         // application data
+}
+
+// SQLite version and library information functions
+#linkid sqlite3_libversion
+pub fn sqlite3_libversion():libc.cstr
+
+#linkid sqlite3_sourceid
+pub fn sqlite3_sourceid():libc.cstr
+
+#linkid sqlite3_libversion_number
+pub fn sqlite3_libversion_number():i32
+
+#linkid sqlite3_compileoption_used
+pub fn sqlite3_compileoption_used(libc.cstr z_opt_name):i32
+
+#linkid sqlite3_compileoption_get
+pub fn sqlite3_compileoption_get(i32 n):libc.cstr
+
+#linkid sqlite3_threadsafe
+pub fn sqlite3_threadsafe():i32
+
+// SQLite database connection functions
+#linkid sqlite3_open
+pub fn sqlite3_open(libc.cstr filename, ptr<ptr<sqlite3_t>> pp_db):i32
+
+#linkid sqlite3_open16
+pub fn sqlite3_open16(anyptr filename, ptr<ptr<sqlite3_t>> pp_db):i32
+
+#linkid sqlite3_open_v2
+pub fn sqlite3_open_v2(libc.cstr filename, ptr<ptr<sqlite3_t>> pp_db, i32 flags, libc.cstr z_vfs):i32
+
+#linkid sqlite3_close
+pub fn sqlite3_close(ptr<sqlite3_t> db):i32
+
+#linkid sqlite3_close_v2
+pub fn sqlite3_close_v2(ptr<sqlite3_t> db):i32
+
+// SQLite error handling functions
+#linkid sqlite3_errcode
+pub fn sqlite3_errcode(ptr<sqlite3_t> db):i32
+
+#linkid sqlite3_extended_errcode
+pub fn sqlite3_extended_errcode(ptr<sqlite3_t> db):i32
+
+#linkid sqlite3_errmsg
+pub fn sqlite3_errmsg(ptr<sqlite3_t> db):libc.cstr
+
+#linkid sqlite3_errmsg16
+pub fn sqlite3_errmsg16(ptr<sqlite3_t> db):anyptr
+
+#linkid sqlite3_errstr
+pub fn sqlite3_errstr(i32 rc):libc.cstr
+
+#linkid sqlite3_error_offset
+pub fn sqlite3_error_offset(ptr<sqlite3_t> db):i32
+
+// SQLite execution functions
+#linkid sqlite3_exec
+pub fn sqlite3_exec(ptr<sqlite3_t> db, libc.cstr sql, anyptr callback, anyptr arg, ptr<ptr<libc.cstr>> errmsg):i32
+
+// SQLite statement preparation functions
+#linkid sqlite3_prepare
+pub fn sqlite3_prepare(ptr<sqlite3_t> db, libc.cstr z_sql, i32 n_byte, ptr<ptr<sqlite3_stmt_t>> pp_stmt, ptr<libc.cstr> pz_tail):i32
+
+#linkid sqlite3_prepare_v2
+pub fn sqlite3_prepare_v2(ptr<sqlite3_t> db, libc.cstr z_sql, i32 n_byte, ptr<ptr<sqlite3_stmt_t>> pp_stmt, ptr<libc.cstr> pz_tail):i32
+
+#linkid sqlite3_prepare_v3
+pub fn sqlite3_prepare_v3(ptr<sqlite3_t> db, libc.cstr z_sql, i32 n_byte, u32 prep_flags, ptr<ptr<sqlite3_stmt_t>> pp_stmt, ptr<libc.cstr> pz_tail):i32
+
+#linkid sqlite3_prepare16
+pub fn sqlite3_prepare16(ptr<sqlite3_t> db, anyptr z_sql, i32 n_byte, ptr<ptr<sqlite3_stmt_t>> pp_stmt, ptr<anyptr> pz_tail):i32
+
+#linkid sqlite3_prepare16_v2
+pub fn sqlite3_prepare16_v2(ptr<sqlite3_t> db, anyptr z_sql, i32 n_byte, ptr<ptr<sqlite3_stmt_t>> pp_stmt, ptr<anyptr> pz_tail):i32
+
+#linkid sqlite3_prepare16_v3
+pub fn sqlite3_prepare16_v3(ptr<sqlite3_t> db, anyptr z_sql, i32 n_byte, u32 prep_flags, ptr<ptr<sqlite3_stmt_t>> pp_stmt, ptr<anyptr> pz_tail):i32
+
+// SQLite statement execution functions
+#linkid sqlite3_step
+pub fn sqlite3_step(ptr<sqlite3_stmt_t> stmt):i32
+
+#linkid sqlite3_reset
+pub fn sqlite3_reset(ptr<sqlite3_stmt_t> stmt):i32
+
+#linkid sqlite3_finalize
+pub fn sqlite3_finalize(ptr<sqlite3_stmt_t> stmt):i32
+
+// SQLite parameter binding functions
+#linkid sqlite3_bind_blob
+pub fn sqlite3_bind_blob(ptr<sqlite3_stmt_t> stmt, i32 index, anyptr value, i32 n, anyptr destructor):i32
+
+#linkid sqlite3_bind_blob64
+pub fn sqlite3_bind_blob64(ptr<sqlite3_stmt_t> stmt, i32 index, anyptr value, sqlite3_uint64_t n, anyptr destructor):i32
+
+#linkid sqlite3_bind_double
+pub fn sqlite3_bind_double(ptr<sqlite3_stmt_t> stmt, i32 index, f64 value):i32
+
+#linkid sqlite3_bind_int
+pub fn sqlite3_bind_int(ptr<sqlite3_stmt_t> stmt, i32 index, i32 value):i32
+
+#linkid sqlite3_bind_int64
+pub fn sqlite3_bind_int64(ptr<sqlite3_stmt_t> stmt, i32 index, sqlite3_int64_t value):i32
+
+#linkid sqlite3_bind_null
+pub fn sqlite3_bind_null(ptr<sqlite3_stmt_t> stmt, i32 index):i32
+
+#linkid sqlite3_bind_text
+pub fn sqlite3_bind_text(ptr<sqlite3_stmt_t> stmt, i32 index, libc.cstr value, i32 n, anyptr destructor):i32
+
+#linkid sqlite3_bind_text16
+pub fn sqlite3_bind_text16(ptr<sqlite3_stmt_t> stmt, i32 index, anyptr value, i32 n, anyptr destructor):i32
+
+#linkid sqlite3_bind_text64
+pub fn sqlite3_bind_text64(ptr<sqlite3_stmt_t> stmt, i32 index, libc.cstr value, sqlite3_uint64_t n, anyptr destructor, u8 encoding):i32
+
+#linkid sqlite3_bind_value
+pub fn sqlite3_bind_value(ptr<sqlite3_stmt_t> stmt, i32 index, ptr<sqlite3_value_t> value):i32
+
+#linkid sqlite3_bind_pointer
+pub fn sqlite3_bind_pointer(ptr<sqlite3_stmt_t> stmt, i32 index, anyptr p, libc.cstr type_name, anyptr destructor):i32
+
+#linkid sqlite3_bind_zeroblob
+pub fn sqlite3_bind_zeroblob(ptr<sqlite3_stmt_t> stmt, i32 index, i32 n):i32
+
+#linkid sqlite3_bind_zeroblob64
+pub fn sqlite3_bind_zeroblob64(ptr<sqlite3_stmt_t> stmt, i32 index, sqlite3_uint64_t n):i32
+
+// SQLite parameter information functions
+#linkid sqlite3_bind_parameter_count
+pub fn sqlite3_bind_parameter_count(ptr<sqlite3_stmt_t> stmt):i32
+
+#linkid sqlite3_bind_parameter_name
+pub fn sqlite3_bind_parameter_name(ptr<sqlite3_stmt_t> stmt, i32 index):libc.cstr
+
+#linkid sqlite3_bind_parameter_index
+pub fn sqlite3_bind_parameter_index(ptr<sqlite3_stmt_t> stmt, libc.cstr name):i32
+
+#linkid sqlite3_clear_bindings
+pub fn sqlite3_clear_bindings(ptr<sqlite3_stmt_t> stmt):i32
+
+// SQLite column information functions
+#linkid sqlite3_column_count
+pub fn sqlite3_column_count(ptr<sqlite3_stmt_t> stmt):i32
+
+#linkid sqlite3_column_name
+pub fn sqlite3_column_name(ptr<sqlite3_stmt_t> stmt, i32 n):libc.cstr
+
+#linkid sqlite3_column_name16
+pub fn sqlite3_column_name16(ptr<sqlite3_stmt_t> stmt, i32 n):anyptr
+
+#linkid sqlite3_column_database_name
+pub fn sqlite3_column_database_name(ptr<sqlite3_stmt_t> stmt, i32 n):libc.cstr
+
+#linkid sqlite3_column_database_name16
+pub fn sqlite3_column_database_name16(ptr<sqlite3_stmt_t> stmt, i32 n):anyptr
+
+#linkid sqlite3_column_table_name
+pub fn sqlite3_column_table_name(ptr<sqlite3_stmt_t> stmt, i32 n):libc.cstr
+
+#linkid sqlite3_column_table_name16
+pub fn sqlite3_column_table_name16(ptr<sqlite3_stmt_t> stmt, i32 n):anyptr
+
+#linkid sqlite3_column_origin_name
+pub fn sqlite3_column_origin_name(ptr<sqlite3_stmt_t> stmt, i32 n):libc.cstr
+
+#linkid sqlite3_column_origin_name16
+pub fn sqlite3_column_origin_name16(ptr<sqlite3_stmt_t> stmt, i32 n):anyptr
+
+#linkid sqlite3_column_decltype
+pub fn sqlite3_column_decltype(ptr<sqlite3_stmt_t> stmt, i32 n):libc.cstr
+
+#linkid sqlite3_column_decltype16
+pub fn sqlite3_column_decltype16(ptr<sqlite3_stmt_t> stmt, i32 n):anyptr
+
+// SQLite column data retrieval functions
+#linkid sqlite3_data_count
+pub fn sqlite3_data_count(ptr<sqlite3_stmt_t> stmt):i32
+
+#linkid sqlite3_column_blob
+pub fn sqlite3_column_blob(ptr<sqlite3_stmt_t> stmt, i32 i_col):anyptr
+
+#linkid sqlite3_column_double
+pub fn sqlite3_column_double(ptr<sqlite3_stmt_t> stmt, i32 i_col):f64
+
+#linkid sqlite3_column_int
+pub fn sqlite3_column_int(ptr<sqlite3_stmt_t> stmt, i32 i_col):i32
+
+#linkid sqlite3_column_int64
+pub fn sqlite3_column_int64(ptr<sqlite3_stmt_t> stmt, i32 i_col):sqlite3_int64_t
+
+#linkid sqlite3_column_text
+pub fn sqlite3_column_text(ptr<sqlite3_stmt_t> stmt, i32 i_col):libc.cstr
+
+#linkid sqlite3_column_text16
+pub fn sqlite3_column_text16(ptr<sqlite3_stmt_t> stmt, i32 i_col):anyptr
+
+#linkid sqlite3_column_value
+pub fn sqlite3_column_value(ptr<sqlite3_stmt_t> stmt, i32 i_col):ptr<sqlite3_value_t>
+
+#linkid sqlite3_column_bytes
+pub fn sqlite3_column_bytes(ptr<sqlite3_stmt_t> stmt, i32 i_col):i32
+
+#linkid sqlite3_column_bytes16
+pub fn sqlite3_column_bytes16(ptr<sqlite3_stmt_t> stmt, i32 i_col):i32
+
+#linkid sqlite3_column_type
+pub fn sqlite3_column_type(ptr<sqlite3_stmt_t> stmt, i32 i_col):i32
+
+// SQLite value handling functions
+#linkid sqlite3_value_blob
+pub fn sqlite3_value_blob(ptr<sqlite3_value_t> value):anyptr
+
+#linkid sqlite3_value_double
+pub fn sqlite3_value_double(ptr<sqlite3_value_t> value):f64
+
+#linkid sqlite3_value_int
+pub fn sqlite3_value_int(ptr<sqlite3_value_t> value):i32
+
+#linkid sqlite3_value_int64
+pub fn sqlite3_value_int64(ptr<sqlite3_value_t> value):sqlite3_int64_t
+
+#linkid sqlite3_value_pointer
+pub fn sqlite3_value_pointer(ptr<sqlite3_value_t> value, libc.cstr type_name):anyptr
+
+#linkid sqlite3_value_text
+pub fn sqlite3_value_text(ptr<sqlite3_value_t> value):libc.cstr
+
+#linkid sqlite3_value_text16
+pub fn sqlite3_value_text16(ptr<sqlite3_value_t> value):anyptr
+
+#linkid sqlite3_value_text16le
+pub fn sqlite3_value_text16le(ptr<sqlite3_value_t> value):anyptr
+
+#linkid sqlite3_value_text16be
+pub fn sqlite3_value_text16be(ptr<sqlite3_value_t> value):anyptr
+
+#linkid sqlite3_value_bytes
+pub fn sqlite3_value_bytes(ptr<sqlite3_value_t> value):i32
+
+#linkid sqlite3_value_bytes16
+pub fn sqlite3_value_bytes16(ptr<sqlite3_value_t> value):i32
+
+#linkid sqlite3_value_type
+pub fn sqlite3_value_type(ptr<sqlite3_value_t> value):i32
+
+#linkid sqlite3_value_numeric_type
+pub fn sqlite3_value_numeric_type(ptr<sqlite3_value_t> value):i32
+
+#linkid sqlite3_value_nochange
+pub fn sqlite3_value_nochange(ptr<sqlite3_value_t> value):i32
+
+#linkid sqlite3_value_frombind
+pub fn sqlite3_value_frombind(ptr<sqlite3_value_t> value):i32
+
+#linkid sqlite3_value_encoding
+pub fn sqlite3_value_encoding(ptr<sqlite3_value_t> value):i32
+
+#linkid sqlite3_value_subtype
+pub fn sqlite3_value_subtype(ptr<sqlite3_value_t> value):u32
+
+#linkid sqlite3_value_dup
+pub fn sqlite3_value_dup(ptr<sqlite3_value_t> value):ptr<sqlite3_value_t>
+
+#linkid sqlite3_value_free
+pub fn sqlite3_value_free(ptr<sqlite3_value_t> value)
+
+// SQLite result setting functions
+#linkid sqlite3_result_blob
+pub fn sqlite3_result_blob(ptr<sqlite3_context_t> ctx, anyptr value, i32 n, anyptr destructor)
+
+#linkid sqlite3_result_blob64
+pub fn sqlite3_result_blob64(ptr<sqlite3_context_t> ctx, anyptr value, sqlite3_uint64_t n, anyptr destructor)
+
+#linkid sqlite3_result_double
+pub fn sqlite3_result_double(ptr<sqlite3_context_t> ctx, f64 value)
+
+#linkid sqlite3_result_error
+pub fn sqlite3_result_error(ptr<sqlite3_context_t> ctx, libc.cstr msg, i32 n)
+
+#linkid sqlite3_result_error16
+pub fn sqlite3_result_error16(ptr<sqlite3_context_t> ctx, anyptr msg, i32 n)
+
+#linkid sqlite3_result_error_toobig
+pub fn sqlite3_result_error_toobig(ptr<sqlite3_context_t> ctx)
+
+#linkid sqlite3_result_error_nomem
+pub fn sqlite3_result_error_nomem(ptr<sqlite3_context_t> ctx)
+
+#linkid sqlite3_result_error_code
+pub fn sqlite3_result_error_code(ptr<sqlite3_context_t> ctx, i32 error_code)
+
+#linkid sqlite3_result_int
+pub fn sqlite3_result_int(ptr<sqlite3_context_t> ctx, i32 value)
+
+#linkid sqlite3_result_int64
+pub fn sqlite3_result_int64(ptr<sqlite3_context_t> ctx, sqlite3_int64_t value)
+
+#linkid sqlite3_result_null
+pub fn sqlite3_result_null(ptr<sqlite3_context_t> ctx)
+
+#linkid sqlite3_result_text
+pub fn sqlite3_result_text(ptr<sqlite3_context_t> ctx, libc.cstr value, i32 n, anyptr destructor)
+
+#linkid sqlite3_result_text64
+pub fn sqlite3_result_text64(ptr<sqlite3_context_t> ctx, libc.cstr value, sqlite3_uint64_t n, anyptr destructor, u8 encoding)
+
+#linkid sqlite3_result_text16
+pub fn sqlite3_result_text16(ptr<sqlite3_context_t> ctx, anyptr value, i32 n, anyptr destructor)
+
+#linkid sqlite3_result_text16le
+pub fn sqlite3_result_text16le(ptr<sqlite3_context_t> ctx, anyptr value, i32 n, anyptr destructor)
+
+#linkid sqlite3_result_text16be
+pub fn sqlite3_result_text16be(ptr<sqlite3_context_t> ctx, anyptr value, i32 n, anyptr destructor)
+
+#linkid sqlite3_result_value
+pub fn sqlite3_result_value(ptr<sqlite3_context_t> ctx, ptr<sqlite3_value_t> value)
+
+#linkid sqlite3_result_pointer
+pub fn sqlite3_result_pointer(ptr<sqlite3_context_t> ctx, anyptr p, libc.cstr type_name, anyptr destructor)
+
+#linkid sqlite3_result_zeroblob
+pub fn sqlite3_result_zeroblob(ptr<sqlite3_context_t> ctx, i32 n)
+
+#linkid sqlite3_result_zeroblob64
+pub fn sqlite3_result_zeroblob64(ptr<sqlite3_context_t> ctx, sqlite3_uint64_t n):i32
+
+#linkid sqlite3_result_subtype
+pub fn sqlite3_result_subtype(ptr<sqlite3_context_t> ctx, u32 subtype)
+
+// SQLite aggregate context functions
+#linkid sqlite3_aggregate_context
+pub fn sqlite3_aggregate_context(ptr<sqlite3_context_t> ctx, i32 n_bytes):anyptr
+
+#linkid sqlite3_user_data
+pub fn sqlite3_user_data(ptr<sqlite3_context_t> ctx):anyptr
+
+#linkid sqlite3_context_db_handle
+pub fn sqlite3_context_db_handle(ptr<sqlite3_context_t> ctx):ptr<sqlite3_t>
+
+#linkid sqlite3_get_auxdata
+pub fn sqlite3_get_auxdata(ptr<sqlite3_context_t> ctx, i32 n):anyptr
+
+#linkid sqlite3_set_auxdata
+pub fn sqlite3_set_auxdata(ptr<sqlite3_context_t> ctx, i32 n, anyptr data, anyptr destructor)
+
+// SQLite database information functions
+#linkid sqlite3_last_insert_rowid
+pub fn sqlite3_last_insert_rowid(ptr<sqlite3_t> db):sqlite3_int64_t
+
+#linkid sqlite3_set_last_insert_rowid
+pub fn sqlite3_set_last_insert_rowid(ptr<sqlite3_t> db, sqlite3_int64_t rowid)
+
+#linkid sqlite3_changes
+pub fn sqlite3_changes(ptr<sqlite3_t> db):i32
+
+#linkid sqlite3_changes64
+pub fn sqlite3_changes64(ptr<sqlite3_t> db):sqlite3_int64_t
+
+#linkid sqlite3_total_changes
+pub fn sqlite3_total_changes(ptr<sqlite3_t> db):i32
+
+#linkid sqlite3_total_changes64
+pub fn sqlite3_total_changes64(ptr<sqlite3_t> db):sqlite3_int64_t
+
+#linkid sqlite3_interrupt
+pub fn sqlite3_interrupt(ptr<sqlite3_t> db)
+
+#linkid sqlite3_is_interrupted
+pub fn sqlite3_is_interrupted(ptr<sqlite3_t> db):i32
+
+#linkid sqlite3_complete
+pub fn sqlite3_complete(libc.cstr sql):i32
+
+#linkid sqlite3_complete16
+pub fn sqlite3_complete16(anyptr sql):i32
+
+// SQLite busy handling functions
+#linkid sqlite3_busy_handler
+pub fn sqlite3_busy_handler(ptr<sqlite3_t> db, anyptr handler, anyptr user_data):i32
+
+#linkid sqlite3_busy_timeout
+pub fn sqlite3_busy_timeout(ptr<sqlite3_t> db, i32 ms):i32
+
+// SQLite memory management functions
+#linkid sqlite3_malloc
+pub fn sqlite3_malloc(i32 size):anyptr
+
+#linkid sqlite3_malloc64
+pub fn sqlite3_malloc64(sqlite3_uint64_t size):anyptr
+
+#linkid sqlite3_realloc
+pub fn sqlite3_realloc(anyptr p, i32 size):anyptr
+
+#linkid sqlite3_realloc64
+pub fn sqlite3_realloc64(anyptr p, sqlite3_uint64_t size):anyptr
+
+#linkid sqlite3_free
+pub fn sqlite3_free(anyptr p)
+
+#linkid sqlite3_msize
+pub fn sqlite3_msize(anyptr p):sqlite3_uint64_t
+
+#linkid sqlite3_memory_used
+pub fn sqlite3_memory_used():sqlite3_int64_t
+
+#linkid sqlite3_memory_highwater
+pub fn sqlite3_memory_highwater(i32 reset_flag):sqlite3_int64_t
+
+// SQLite random number functions
+#linkid sqlite3_randomness
+pub fn sqlite3_randomness(i32 n, anyptr p)
+
+// SQLite configuration functions
+#linkid sqlite3_config
+pub fn sqlite3_config(i32 option, anyptr arg1, anyptr arg2, anyptr arg3, anyptr arg4):i32
+
+#linkid sqlite3_config
+pub fn sqlite3_config_custom(i32 option, anyptr arg1):i32
+
+#linkid sqlite3_db_config
+pub fn sqlite3_db_config(ptr<sqlite3_t> db, i32 op, anyptr arg1, anyptr arg2, anyptr arg3):i32
+
+#linkid sqlite3_extended_result_codes
+pub fn sqlite3_extended_result_codes(ptr<sqlite3_t> db, i32 onoff):i32
+
+// SQLite limit functions
+#linkid sqlite3_limit
+pub fn sqlite3_limit(ptr<sqlite3_t> db, i32 id, i32 new_val):i32
+
+// SQLite statement information functions
+#linkid sqlite3_sql
+pub fn sqlite3_sql(ptr<sqlite3_stmt_t> stmt):libc.cstr
+
+#linkid sqlite3_expanded_sql
+pub fn sqlite3_expanded_sql(ptr<sqlite3_stmt_t> stmt):libc.cstr
+
+#linkid sqlite3_stmt_readonly
+pub fn sqlite3_stmt_readonly(ptr<sqlite3_stmt_t> stmt):i32
+
+#linkid sqlite3_stmt_isexplain
+pub fn sqlite3_stmt_isexplain(ptr<sqlite3_stmt_t> stmt):i32
+
+#linkid sqlite3_stmt_explain
+pub fn sqlite3_stmt_explain(ptr<sqlite3_stmt_t> stmt, i32 e_mode):i32
+
+#linkid sqlite3_stmt_busy
+pub fn sqlite3_stmt_busy(ptr<sqlite3_stmt_t> stmt):i32
+
+// SQLite table result functions
+#linkid sqlite3_get_table
+pub fn sqlite3_get_table(ptr<sqlite3_t> db, libc.cstr z_sql, ptr<ptr<libc.cstr>> paz_result, ptr<i32> pn_row, ptr<i32> pn_column, ptr<libc.cstr> pz_errmsg):i32
+
+#linkid sqlite3_free_table
+pub fn sqlite3_free_table(ptr<libc.cstr> result)
+
+// SQLite string formatting functions
+#linkid sqlite3_vmprintf
+pub fn sqlite3_vmprintf(libc.cstr format, anyptr args):libc.cstr
+
+#linkid sqlite3_vsnprintf
+pub fn sqlite3_vsnprintf(i32 size, libc.cstr buffer, libc.cstr format, anyptr args):libc.cstr
+
+// SQLite authorization functions
+#linkid sqlite3_set_authorizer
+pub fn sqlite3_set_authorizer(ptr<sqlite3_t> db, anyptr x_auth, anyptr p_user_data):i32
+
+// SQLite tracing functions
+#linkid sqlite3_trace_v2
+pub fn sqlite3_trace_v2(ptr<sqlite3_t> db, u32 u_mask, anyptr x_callback, anyptr p_ctx):i32
+
+#linkid sqlite3_progress_handler
+pub fn sqlite3_progress_handler(ptr<sqlite3_t> db, i32 n, anyptr handler, anyptr user_data)
+
+// SQLite URI parameter functions
+#linkid sqlite3_uri_parameter
+pub fn sqlite3_uri_parameter(sqlite3_filename_t z, libc.cstr z_param):libc.cstr
+
+#linkid sqlite3_uri_boolean
+pub fn sqlite3_uri_boolean(sqlite3_filename_t z, libc.cstr z_param, i32 b_default):i32
+
+#linkid sqlite3_uri_int64
+pub fn sqlite3_uri_int64(sqlite3_filename_t z, libc.cstr z_param, sqlite3_int64_t default_val):sqlite3_int64_t
+
+#linkid sqlite3_uri_key
+pub fn sqlite3_uri_key(sqlite3_filename_t z, i32 n):libc.cstr
+
+// SQLite filename functions
+#linkid sqlite3_filename_database
+pub fn sqlite3_filename_database(sqlite3_filename_t filename):libc.cstr
+
+#linkid sqlite3_filename_journal
+pub fn sqlite3_filename_journal(sqlite3_filename_t filename):libc.cstr
+
+#linkid sqlite3_filename_wal
+pub fn sqlite3_filename_wal(sqlite3_filename_t filename):libc.cstr
+
+#linkid sqlite3_database_file_object
+pub fn sqlite3_database_file_object(libc.cstr z_name):ptr<sqlite3_file_t>
+
+#linkid sqlite3_create_filename
+pub fn sqlite3_create_filename(libc.cstr z_database, libc.cstr z_journal, libc.cstr z_wal, i32 n_param, ptr<libc.cstr> az_param):sqlite3_filename_t
+
+#linkid sqlite3_free_filename
+pub fn sqlite3_free_filename(sqlite3_filename_t filename)
+
+// SQLite database handle functions
+#linkid sqlite3_db_handle
+pub fn sqlite3_db_handle(ptr<sqlite3_stmt_t> stmt):ptr<sqlite3_t>
+
+#linkid sqlite3_db_name
+pub fn sqlite3_db_name(ptr<sqlite3_t> db, i32 n):libc.cstr
+
+#linkid sqlite3_db_filename
+pub fn sqlite3_db_filename(ptr<sqlite3_t> db, libc.cstr z_db_name):sqlite3_filename_t
+
+#linkid sqlite3_db_readonly
+pub fn sqlite3_db_readonly(ptr<sqlite3_t> db, libc.cstr z_db_name):i32
+
+#linkid sqlite3_txn_state
+pub fn sqlite3_txn_state(ptr<sqlite3_t> db, libc.cstr z_schema):i32
+
+#linkid sqlite3_next_stmt
+pub fn sqlite3_next_stmt(ptr<sqlite3_t> p_db, ptr<sqlite3_stmt_t> p_stmt):ptr<sqlite3_stmt_t>
+
+// SQLite hook functions
+#linkid sqlite3_commit_hook
+pub fn sqlite3_commit_hook(ptr<sqlite3_t> db, anyptr callback, anyptr user_data):anyptr
+
+#linkid sqlite3_rollback_hook
+pub fn sqlite3_rollback_hook(ptr<sqlite3_t> db, anyptr callback, anyptr user_data):anyptr
+
+#linkid sqlite3_update_hook
+pub fn sqlite3_update_hook(ptr<sqlite3_t> db, anyptr callback, anyptr user_data):anyptr
+
+// SQLite auto-vacuum functions
+#linkid sqlite3_autovacuum_pages
+pub fn sqlite3_autovacuum_pages(ptr<sqlite3_t> db, anyptr callback, anyptr user_data, anyptr destructor):i32
+
+// SQLite shared cache functions
+#linkid sqlite3_enable_shared_cache
+pub fn sqlite3_enable_shared_cache(i32 enable):i32
+
+// SQLite memory release functions
+#linkid sqlite3_release_memory
+pub fn sqlite3_release_memory(i32 n):i32
+
+#linkid sqlite3_db_release_memory
+pub fn sqlite3_db_release_memory(ptr<sqlite3_t> db):i32
+
+// SQLite heap limit functions
+#linkid sqlite3_soft_heap_limit64
+pub fn sqlite3_soft_heap_limit64(sqlite3_int64_t n):sqlite3_int64_t
+
+#linkid sqlite3_hard_heap_limit64
+pub fn sqlite3_hard_heap_limit64(sqlite3_int64_t n):sqlite3_int64_t
+
+// SQLite table column metadata functions
+#linkid sqlite3_table_column_metadata
+pub fn sqlite3_table_column_metadata(ptr<sqlite3_t> db, libc.cstr z_db_name, libc.cstr z_table_name, libc.cstr z_column_name, ptr<libc.cstr> pz_data_type, ptr<libc.cstr> pz_coll_seq, ptr<i32> p_not_null, ptr<i32> p_primary_key, ptr<i32> p_autoinc):i32
+
+// SQLite extension loading functions
+#linkid sqlite3_load_extension
+pub fn sqlite3_load_extension(ptr<sqlite3_t> db, libc.cstr z_file, libc.cstr z_proc, ptr<libc.cstr> pz_err_msg):i32
+
+#linkid sqlite3_enable_load_extension
+pub fn sqlite3_enable_load_extension(ptr<sqlite3_t> db, i32 onoff):i32
+
+#linkid sqlite3_auto_extension
+pub fn sqlite3_auto_extension(anyptr x_entry_point):i32
+
+#linkid sqlite3_cancel_auto_extension
+pub fn sqlite3_cancel_auto_extension(anyptr x_entry_point):i32
+
+#linkid sqlite3_reset_auto_extension
+pub fn sqlite3_reset_auto_extension()
+
+// SQLite BLOB handling functions
+#linkid sqlite3_blob_open
+pub fn sqlite3_blob_open(ptr<sqlite3_t> db, libc.cstr z_db, libc.cstr z_table, libc.cstr z_column, sqlite3_int64_t i_row, i32 flags, ptr<ptr<sqlite3_blob_t>> pp_blob):i32
+
+#linkid sqlite3_blob_reopen
+pub fn sqlite3_blob_reopen(ptr<sqlite3_blob_t> blob, sqlite3_int64_t i_row):i32
+
+#linkid sqlite3_blob_close
+pub fn sqlite3_blob_close(ptr<sqlite3_blob_t> blob):i32
+
+#linkid sqlite3_blob_bytes
+pub fn sqlite3_blob_bytes(ptr<sqlite3_blob_t> blob):i32
+
+#linkid sqlite3_blob_read
+pub fn sqlite3_blob_read(ptr<sqlite3_blob_t> blob, anyptr z, i32 n, i32 i_offset):i32
+
+#linkid sqlite3_blob_write
+pub fn sqlite3_blob_write(ptr<sqlite3_blob_t> blob, anyptr z, i32 n, i32 i_offset):i32
+
+// SQLite backup functions
+#linkid sqlite3_backup_init
+pub fn sqlite3_backup_init(ptr<sqlite3_t> p_dest, libc.cstr z_dest_name, ptr<sqlite3_t> p_source, libc.cstr z_source_name):ptr<sqlite3_backup_t>
+
+#linkid sqlite3_backup_step
+pub fn sqlite3_backup_step(ptr<sqlite3_backup_t> p, i32 n_page):i32
+
+#linkid sqlite3_backup_finish
+pub fn sqlite3_backup_finish(ptr<sqlite3_backup_t> p):i32
+
+#linkid sqlite3_backup_remaining
+pub fn sqlite3_backup_remaining(ptr<sqlite3_backup_t> p):i32
+
+#linkid sqlite3_backup_pagecount
+pub fn sqlite3_backup_pagecount(ptr<sqlite3_backup_t> p):i32
+
+// SQLite unlock notification functions
+#linkid sqlite3_unlock_notify
+pub fn sqlite3_unlock_notify(ptr<sqlite3_t> p_blocked, anyptr x_notify, anyptr p_notify_arg):i32
+
+// SQLite string comparison functions
+#linkid sqlite3_stricmp
+pub fn sqlite3_stricmp(libc.cstr str1, libc.cstr str2):i32
+
+#linkid sqlite3_strnicmp
+pub fn sqlite3_strnicmp(libc.cstr str1, libc.cstr str2, i32 n):i32
+
+#linkid sqlite3_strglob
+pub fn sqlite3_strglob(libc.cstr z_glob, libc.cstr z_str):i32
+
+#linkid sqlite3_strlike
+pub fn sqlite3_strlike(libc.cstr z_glob, libc.cstr z_str, u32 c_esc):i32
+
+// SQLite WAL functions
+#linkid sqlite3_wal_hook
+pub fn sqlite3_wal_hook(ptr<sqlite3_t> db, anyptr callback, anyptr user_data):anyptr
+
+#linkid sqlite3_wal_autocheckpoint
+pub fn sqlite3_wal_autocheckpoint(ptr<sqlite3_t> db, i32 n):i32
+
+#linkid sqlite3_wal_checkpoint
+pub fn sqlite3_wal_checkpoint(ptr<sqlite3_t> db, libc.cstr z_db):i32
+
+#linkid sqlite3_wal_checkpoint_v2
+pub fn sqlite3_wal_checkpoint_v2(ptr<sqlite3_t> db, libc.cstr z_db, i32 e_mode, ptr<i32> pn_log, ptr<i32> pn_ckpt):i32
+
+// SQLite status functions
+#linkid sqlite3_status
+pub fn sqlite3_status(i32 op, ptr<i32> p_current, ptr<i32> p_highwater, i32 reset_flag):i32
+
+#linkid sqlite3_status64
+pub fn sqlite3_status64(i32 op, ptr<sqlite3_int64_t> p_current, ptr<sqlite3_int64_t> p_highwater, i32 reset_flag):i32
+
+#linkid sqlite3_db_status
+pub fn sqlite3_db_status(ptr<sqlite3_t> db, i32 op, ptr<i32> p_cur, ptr<i32> p_hiwtr, i32 reset_flg):i32
+
+#linkid sqlite3_stmt_status
+pub fn sqlite3_stmt_status(ptr<sqlite3_stmt_t> stmt, i32 op, i32 reset_flg):i32
+
+// SQLite system error functions
+#linkid sqlite3_system_errno
+pub fn sqlite3_system_errno(ptr<sqlite3_t> db):i32
+
+// SQLite string builder functions
+#linkid sqlite3_str_new
+pub fn sqlite3_str_new(ptr<sqlite3_t> db):ptr<sqlite3_str_t>
+
+#linkid sqlite3_str_finish
+pub fn sqlite3_str_finish(ptr<sqlite3_str_t> str):libc.cstr
+
+#linkid sqlite3_str_vappendf
+pub fn sqlite3_str_vappendf(ptr<sqlite3_str_t> str, libc.cstr z_format, anyptr args)
+
+#linkid sqlite3_str_append
+pub fn sqlite3_str_append(ptr<sqlite3_str_t> str, libc.cstr z_in, i32 n)
+
+#linkid sqlite3_str_appendall
+pub fn sqlite3_str_appendall(ptr<sqlite3_str_t> str, libc.cstr z_in)
+
+#linkid sqlite3_str_appendchar
+pub fn sqlite3_str_appendchar(ptr<sqlite3_str_t> str, i32 n, i8 c)
+
+#linkid sqlite3_str_reset
+pub fn sqlite3_str_reset(ptr<sqlite3_str_t> str)
+
+#linkid sqlite3_str_errcode
+pub fn sqlite3_str_errcode(ptr<sqlite3_str_t> str):i32
+
+#linkid sqlite3_str_length
+pub fn sqlite3_str_length(ptr<sqlite3_str_t> str):i32
+
+#linkid sqlite3_str_value
+pub fn sqlite3_str_value(ptr<sqlite3_str_t> str):libc.cstr
+
+// SQLite keyword functions
+#linkid sqlite3_keyword_count
+pub fn sqlite3_keyword_count():i32
+
+#linkid sqlite3_keyword_name
+pub fn sqlite3_keyword_name(i32 index, ptr<libc.cstr> name, ptr<i32> length):i32
+
+#linkid sqlite3_keyword_check
+pub fn sqlite3_keyword_check(libc.cstr name, i32 length):i32
+
+// SQLite initialization and shutdown functions
+#linkid sqlite3_initialize
+pub fn sqlite3_initialize():i32
+
+#linkid sqlite3_shutdown
+pub fn sqlite3_shutdown():i32
+
+#linkid sqlite3_os_init
+pub fn sqlite3_os_init():i32
+
+#linkid sqlite3_os_end
+pub fn sqlite3_os_end():i32
+
+// SQLite autocommit functions
+#linkid sqlite3_get_autocommit
+pub fn sqlite3_get_autocommit(ptr<sqlite3_t> db):i32
+
+// SQLite sleep functions
+#linkid sqlite3_sleep
+pub fn sqlite3_sleep(i32 ms):i32
+
+// SQLite client data functions
+#linkid sqlite3_get_clientdata
+pub fn sqlite3_get_clientdata(ptr<sqlite3_t> db, libc.cstr key):anyptr
+
+#linkid sqlite3_set_clientdata
+pub fn sqlite3_set_clientdata(ptr<sqlite3_t> db, libc.cstr key, anyptr data, anyptr destructor):i32
+
+// SQLite serialization functions
+#linkid sqlite3_serialize
+pub fn sqlite3_serialize(ptr<sqlite3_t> db, libc.cstr z_schema, ptr<sqlite3_int64_t> pi_size, u32 m_flags):ptr<u8>
+
+#linkid sqlite3_deserialize
+pub fn sqlite3_deserialize(ptr<sqlite3_t> db, libc.cstr z_schema, ptr<u8> p_data, sqlite3_int64_t sz_db, sqlite3_int64_t sz_buf, u32 m_flags):i32
+
+// SQLite serialization flags
+pub const SQLITE_SERIALIZE_NOCOPY = 0x001
+pub const SQLITE_DESERIALIZE_FREEONCLOSE = 1
+pub const SQLITE_DESERIALIZE_RESIZEABLE = 2
+pub const SQLITE_DESERIALIZE_READONLY = 4
+
+// SQLite database cache flush functions
+#linkid sqlite3_db_cacheflush
+pub fn sqlite3_db_cacheflush(ptr<sqlite3_t> db):i32

@@ -1,7 +1,11 @@
+import adou.src.ai.types as ai_types
+import adou.src.session.identity
 import adou.src.session.repository
 import adou.src.session.types as session_types
+import adou.src.storage.sqlite_repo
 import adou.src.tools.command
 import adou.src.tools.path_utils
+import json
 import os
 import path
 import syscall
@@ -13,33 +17,127 @@ import syscall
 // helpers used by the contract tests; existing TUI call sites are not
 // switched over in this batch (documented in docs/phase7-storage-design.md).
 
-pub type backend_kind_t = enum {
-    JSONL,
-    MEMORY,
+pub type backend_t = struct {
+    string kind = 'jsonl'
+    ref<repository.manager_t>? manager = null
+    string session_dir = ''
+    ref<sqlite_repo.db_t>? sqlite_db = null
 }
 
-pub type backend_t = struct {
-    backend_kind_t kind
-    ref<repository.manager_t> manager
-    string session_dir
+pub fn mgr(backend_t b): ref<repository.manager_t> {
+    return b.manager as ref<repository.manager_t>
 }
 
 // SessionRepo.create: persisted (JSONL) backend in a dedicated directory.
 pub fn create_jsonl(string cwd, string session_dir): backend_t! {
     var manager = repository.create(cwd, session_dir)
-    return backend_t {kind: backend_kind_t.JSONL, manager: manager, session_dir: session_dir,}
+    return backend_t {kind: 'jsonl', manager: manager, session_dir: session_dir, sqlite_db: null,}
 }
 
 // SessionRepo.create: in-memory backend (no file writes).
 pub fn open_memory(string cwd): backend_t! {
     var manager = repository.in_memory(cwd)
-    return backend_t {kind: backend_kind_t.MEMORY, manager: manager, session_dir: '',}
+    return backend_t {kind: 'memory', manager: manager, session_dir: '', sqlite_db: null,}
+}
+
+// SessionRepo.open: reopen an existing session from a SQLite database.
+pub fn open_sqlite_session(string cwd, string db_path, string session_id): backend_t! {
+    var handle = sqlite_repo.open_db(db_path)
+    var manager = sqlite_repo.load_manager(handle, session_id, cwd)
+    manager.persisted = true
+    manager.session_dir = path.dir(db_path)
+    manager.session_file = db_path
+    return backend_t {kind: 'sqlite', manager: manager, session_dir: path.dir(db_path), sqlite_db: handle,}
 }
 
 // SessionRepo.open: reopen an existing JSONL session file.
 pub fn open_jsonl(string file_path): backend_t! {
     var manager = repository.open(file_path)
-    return backend_t {kind: backend_kind_t.JSONL, manager: manager, session_dir: path.dir(file_path),}
+    return backend_t {kind: 'jsonl', manager: manager, session_dir: path.dir(file_path), sqlite_db: null,}
+}
+
+// SessionRepo.create: SQLite backend in a dedicated database file.
+pub fn open_sqlite(string cwd, string db_path): backend_t! {
+    var handle = sqlite_repo.open_db(db_path)
+    var manager = repository.create(cwd, '')
+    manager.persisted = true
+    manager.session_dir = path.dir(db_path)
+    manager.session_file = db_path
+    var backend_ref = backend_t {kind: 'sqlite', manager: manager, session_dir: path.dir(db_path), sqlite_db: handle,}
+    persist_created(backend_ref, manager.header)
+    return backend_ref
+}
+
+// A SQLite backend persists every append through the shared manager into
+// the database (JSONL/memory backends only touch the manager).
+pub fn append_message(backend_t b, ai_types.message_t message): string! {
+    string entry_id = mgr(b).append_message(message)
+    if b.kind == 'sqlite' {
+        persist_entry(b, entry_id)
+    }
+    return entry_id
+}
+
+// SessionRepo.list: identifiers of the backend's sessions (JSONL file
+// paths contain the session id; SQLite returns session ids).
+pub fn list_sessions(backend_t b): [string]! {
+    if b.kind == 'sqlite' {
+        [string] result = []
+        var rows = sqlite_repo.list_sessions(b.sqlite_db as ref<sqlite_repo.db_t>) catch error {
+            throw error
+        }
+        for row in rows {
+            result.push(row.id)
+        }
+        return result
+    }
+    return list_session_paths(b.session_dir)
+}
+
+// SessionRepo.delete: remove the session from its backend.
+pub fn delete_session(backend_t b, string session_id): (bool, string) {
+    if b.kind == 'sqlite' {
+        sqlite_repo.delete_session(b.sqlite_db as ref<sqlite_repo.db_t>, session_id) catch error {
+            return (false, error.msg())
+        }
+        return (true, 'Session deleted from sqlite')
+    }
+    return delete_session_file(mgr(b).session_file, mgr(b).cwd)
+}
+
+// Full fork within the backend: JSONL writes a new file, SQLite creates a
+// new session row with a parent lineage and copies every entry.
+pub fn fork_to(backend_t b, string requested_id): backend_t! {
+    if b.kind == 'sqlite' {
+        string new_id = requested_id == '' ? identity.uuid_v7() : requested_id
+        string timestamp = identity.iso_now()
+        var handle = b.sqlite_db as ref<sqlite_repo.db_t>
+        sqlite_repo.create_session(handle, new_id, timestamp, mgr(b).cwd, mgr(b).header.id)
+        for entry in mgr(b).entries {
+            sqlite_repo.append_entry(handle, new_id, entry.id, entry.parent_id, entry.kind, entry.timestamp, json.serialize(entry.raw))
+        }
+        var manager = sqlite_repo.load_manager(handle, new_id, mgr(b).cwd)
+        manager.persisted = true
+        manager.session_dir = b.session_dir
+        manager.session_file = mgr(b).session_file
+        return backend_t {kind: 'sqlite', manager: manager, session_dir: b.session_dir, sqlite_db: handle,}
+    }
+    var forked = mgr(b).fork_to(mgr(b).cwd, b.session_dir, requested_id)
+    return backend_t {kind: b.kind, manager: forked, session_dir: b.session_dir, sqlite_db: null,}
+}
+
+#local
+fn persist_created(backend_t b, ref<session_types.header_t> header): void! {
+    sqlite_repo.create_session(b.sqlite_db as ref<sqlite_repo.db_t>, header.id, header.timestamp, header.cwd, '')
+    mgr(b).persisted = true
+}
+
+#local
+fn persist_entry(backend_t b, string entry_id): void! {
+    var entry = mgr(b).get_entry(entry_id)
+    if entry is ref<session_types.entry_t> entry_ref {
+        sqlite_repo.append_entry(b.sqlite_db as ref<sqlite_repo.db_t>, mgr(b).header.id, entry_ref.id, entry_ref.parent_id, entry_ref.kind, entry_ref.timestamp, json.serialize(entry_ref.raw))
+    }
 }
 
 // SessionRepo.list: session file paths in a directory, newest file first
@@ -63,9 +161,9 @@ pub fn list_session_paths(string session_dir): [string] {
     return sort_by_mtime(candidates)
 }
 
-// SessionRepo.delete: move to trash when available, else unlink.
+// File-level delete: move to trash when available, else unlink.
 // Returns (deleted, message); message distinguishes the method used.
-pub fn delete_session(string file_path, string cwd): (bool, string) {
+pub fn delete_session_file(string file_path, string cwd): (bool, string) {
     if file_path == '' || !path_utils.exists(file_path) {
         return (false, 'Session file does not exist')
     }
