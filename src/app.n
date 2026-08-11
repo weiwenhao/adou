@@ -59,6 +59,14 @@ pub type rpc_bash_update_state_t = struct {
     ref<rpc_sink_t> sink
 }
 
+// Instance-exit hook: RPC prompt workers report provider failures through
+// this so the supervisor can transition the instance to exited when the
+// error is not retryable (the in-process equivalent of the upstream RPC
+// child process exiting).  --mode rpc has no instance and passes null.
+type rpc_exit_hook_t = struct {
+    fn(string reason) report
+}
+
 // RPC output abstraction shared by --mode rpc (stdout) and the Phase 7.1
 // IPC server (TCP connections).  The write callback must always be invoked
 // under the lock; rpc_write owns that locking contract.
@@ -876,7 +884,7 @@ fn serve_request(ref<ipc_supervisor.supervisor_t> sup, {string:any} object, stri
         string instance_id = rpc_string(object, 'instanceId')
         var instance = sup.get(instance_id)
         if instance is ref<ipc_supervisor.instance_t> live {
-            return ipc_protocol.status_result(live.summary)
+            return ipc_protocol.status_result(live.snapshot())
         }
         return ipc_protocol.error_response('Unknown instance: ' + instance_id)
     }
@@ -894,6 +902,9 @@ fn serve_request(ref<ipc_supervisor.supervisor_t> sup, {string:any} object, stri
             return ipc_protocol.error_response('Unknown instance: ' + instance_id)
         }
         var live = instance as ref<ipc_supervisor.instance_t>
+        if live.state_status() != ipc_supervisor.INSTANCE_ONLINE {
+            return ipc_protocol.error_response('Instance ' + instance_id + ' is not running')
+        }
         if !object.contains('command') || !(object['command'] is {string:any}) {
             return ipc_protocol.error_response('rpc requires a command object')
         }
@@ -922,6 +933,12 @@ fn rpc_bridge_response(ref<ipc_supervisor.supervisor_t> sup, ref<ipc_supervisor.
     string command_kind = rpc_string(command_obj, 'type')
     string id = rpc_string(command_obj, 'id')
     var state = new rpc_capture_state_t(lock = mutex.mutex_t.new(), command_kind = command_kind)
+    ref<rpc_exit_hook_t>? exit_hook = null
+    if command_kind == 'prompt' {
+        exit_hook = new rpc_exit_hook_t(report = fn(string reason) {
+            instance.observe_prompt_failure(reason)
+        })
+    }
     var sink = new rpc_sink_t(lock = state.lock, write = fn(string line) {
         // Invoked under state.lock by rpc_write.
         if state.terminal {
@@ -953,7 +970,7 @@ fn rpc_bridge_response(ref<ipc_supervisor.supervisor_t> sup, ref<ipc_supervisor.
     if sup.offline && command_kind == 'prompt' {
         rpc_write(sink, rpc_error(id, 'prompt', 'Offline mode cannot send prompts to a provider'))
     } else {
-        rpc_dispatch(instance.runner, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns)
+        rpc_dispatch(instance.runner, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, exit_hook)
     }
     for true {
         state.lock.lock()
@@ -972,10 +989,13 @@ fn rpc_bridge_response(ref<ipc_supervisor.supervisor_t> sup, ref<ipc_supervisor.
             break
         }
         // The wait is bounded by the provider/network timeout of the running
-        // command, not by the bridge.  Only an instance stop aborts it early.
-        var found = sup.get(instance.summary.id)
-        if !(found is ref<ipc_supervisor.instance_t>) {
+        // command, not by the bridge.  A terminal instance aborts it early.
+        string instance_status = instance.state_status()
+        if instance_status == ipc_supervisor.INSTANCE_STOPPED {
             return ipc_protocol.error_response('instance stopped during command')
+        }
+        if instance_status == ipc_supervisor.INSTANCE_EXITED {
+            return ipc_protocol.error_response('instance exited during command')
         }
         co.sleep(10)
     }
@@ -996,11 +1016,20 @@ fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, 
         return
     }
     var live = instance as ref<ipc_supervisor.instance_t>
+    if live.state_status() != ipc_supervisor.INSTANCE_ONLINE {
+        ipc_server.write_line(conn, ipc_protocol.error_response('Instance ' + instance_id + ' is not running'))
+        conn.close()
+        return
+    }
     var sink = conn_rpc_sink(conn)
-    ipc_server.write_line(conn, ipc_protocol.rpc_ready(live.summary))
+    ipc_server.write_line(conn, ipc_protocol.rpc_ready(live.snapshot()))
     int subscriber_id = sup.subscribe(live, sink.lock, fn(string line) {
         var bytes = (line + '\n') as [u8]
         conn.write(bytes) catch error {}
+    })
+    ref<rpc_exit_hook_t>? exit_hook = null
+    exit_hook = new rpc_exit_hook_t(report = fn(string reason) {
+        live.observe_prompt_failure(reason)
     })
     for true {
         string line = ipc_server.read_line(conn) catch error {
@@ -1026,13 +1055,19 @@ fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, 
             continue
         }
         string id = rpc_string(command_obj, 'id')
+        // The instance may have exited since the stream opened (upstream
+        // rejects sends to a dead RPC process and keeps the socket open).
+        if live.state_status() != ipc_supervisor.INSTANCE_ONLINE {
+            rpc_write(sink, ipc_protocol.error_response('Instance ' + instance_id + ' is not running'))
+            continue
+        }
         if sup.offline && command_kind == 'prompt' {
             rpc_write(sink, rpc_error(id, 'prompt', 'Offline mode cannot send prompts to a provider'))
             continue
         }
         // A dispatch failure must not kill the connection loop; answer with
         // the error shape and keep the stream open.
-        rpc_dispatch(live.runner, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns) catch error {
+        rpc_dispatch(live.runner, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, exit_hook) catch error {
             rpc_write(sink, ipc_protocol.error_response(error.msg()))
         }
     }
@@ -1129,10 +1164,10 @@ fn build_spawned_runner(config_types.config_t config, string cwd): ref<session.r
 // sinks).  Responses and events are written through the sink asynchronously
 // where the operation is a background worker (prompt/compact/bash).
 #local
-fn rpc_dispatch(ref<session.runner_t> runner, {string:any} object, string command, string id, ref<rpc_sink_t> sink, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): void! {
+fn rpc_dispatch(ref<session.runner_t> runner, {string:any} object, string command, string id, ref<rpc_sink_t> sink, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns, ref<rpc_exit_hook_t>? exit_hook): void! {
     if command == 'prompt' {
         string prompt_behavior = rpc_string(object, 'streamingBehavior')
-        rpc_run_prompt(runner, id, rpc_string(object, 'message'), prompt_behavior, sink)
+        rpc_run_prompt(runner, id, rpc_string(object, 'message'), prompt_behavior, sink, exit_hook)
     } else if command == 'steer' {
         rpc_queue_message(runner, id, rpc_string(object, 'message'), true, sink)
     } else if command == 'follow_up' {
@@ -1281,7 +1316,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
         var object = parsed as {string:any}
         string command = rpc_string(object, 'type')
         string id = rpc_string(object, 'id')
-        rpc_dispatch(runner, object, command, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns)
+        rpc_dispatch(runner, object, command, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, null)
     }
     // A piped RPC client may close stdin immediately after sending a prompt.
     // Keep the process alive until the background operation has emitted its
@@ -1294,7 +1329,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
 }
 
 #local
-fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string streaming_behavior, ref<rpc_sink_t> sink): void! {
+fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string streaming_behavior, ref<rpc_sink_t> sink, ref<rpc_exit_hook_t>? exit_hook): void! {
     // Pi lets clients use `prompt` as a convenience queue operation while an
     // assistant turn is already running.  Keep explicit steer/follow_up
     // commands equivalent, but accept the streamingBehavior spelling too.
@@ -1312,11 +1347,11 @@ fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string
         return
     }
     runner.require_rpc_delivery(stream)
-    go rpc_prompt_worker(runner, stream, id, sink)
+    go rpc_prompt_worker(runner, stream, id, sink, exit_hook)
 }
 
 #local
-fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<rpc_sink_t> sink): void! {
+fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<rpc_sink_t> sink, ref<rpc_exit_hook_t>? exit_hook): void! {
     rpc_write(sink, rpc_ok(id, 'prompt'))
     for true {
         var (event, received) = stream.try_recv() catch error {break}
@@ -1337,6 +1372,9 @@ fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> 
     }
     stream.result() catch error {
         rpc_write(sink, rpc_error(id, 'prompt', error.msg()))
+        if exit_hook is ref<rpc_exit_hook_t> hook {
+            hook.report(error.msg())
+        }
         runner.finish_rpc_delivery(stream)
         return
     }

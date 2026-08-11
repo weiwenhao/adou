@@ -1,6 +1,7 @@
 import adou.src.agent.event_json
 import adou.src.agent.session
 import adou.src.agent.session_stream
+import adou.src.ai.errors
 import adou.src.server.protocol
 import adou.src.session.identity
 import co.mutex
@@ -11,6 +12,16 @@ import co.mutex
 // docs/phase7-storage-design.md Phase 7.1), so a real `--mode rpc` child
 // process cannot receive commands; each spawn therefore gets its own
 // session.runner_t with an independent in-memory repository.
+
+// Instance lifecycle states (upstream InstanceStatus).  The in-process
+// equivalent of the RPC child process lifecycle: an instance starts, comes
+// online, and reaches a terminal state when its runner hits an
+// unrecoverable error (prompt provider failure, spawn initialization
+// failure) or when stop completes.
+pub const INSTANCE_STARTING = 'starting'
+pub const INSTANCE_ONLINE = 'online'
+pub const INSTANCE_EXITED = 'exited'
+pub const INSTANCE_STOPPED = 'stopped'
 
 // A line writer that must always be invoked under its own lock.  An
 // rpc_stream connection uses one of these as both its command-response sink
@@ -28,6 +39,12 @@ pub type instance_t = struct {
     ref<mutex.mutex_t> subscriber_lock
     [subscriber_t] subscribers
     int next_subscriber_id = 1
+    // Lifecycle state and its guard.  The state is what status_result reports
+    // (via snapshot) and what gatekeepers use to refuse commands on terminal
+    // instances, so every transition and read must hold state_lock.
+    ref<mutex.mutex_t> state_lock = mutex.mutex_t.new()
+    string status = INSTANCE_ONLINE
+    string exit_reason
 }
 
 pub type spawn_runner_fn = fn(string cwd): ref<session.runner_t>!
@@ -83,43 +100,82 @@ pub fn supervisor_t.get(&self, string instance_id): ref<instance_t>? {
 
 pub fn supervisor_t.list(&self): [protocol.instance_summary_t] {
     self.lock.lock()
-    [protocol.instance_summary_t] result = []
-    for instance in self.instances {
-        result.push(instance.summary)
-    }
+    [ref<instance_t>] current = self.instances
     self.lock.unlock()
+    [protocol.instance_summary_t] result = []
+    for instance in current {
+        result.push(instance.snapshot())
+    }
     return result
 }
 
-// Stop one instance without touching the others: remove it from the table
-// first, then cooperatively abort its runner outside the table lock.  Returns
+// Snapshot the summary with the live lifecycle state merged in, so
+// status/list always reflect starting/online/exited/stopped.
+pub fn instance_t.snapshot(&self): protocol.instance_summary_t {
+    self.state_lock.lock()
+    var result = self.summary
+    result.status = self.status
+    result.exit_error = self.exit_reason
+    self.state_lock.unlock()
+    return result
+}
+
+pub fn instance_t.state_status(&self): string {
+    self.state_lock.lock()
+    string result = self.status
+    self.state_lock.unlock()
+    return result
+}
+
+// Transition the lifecycle state.  A no-op when the state is unchanged, so
+// stop() is idempotent on an already stopped instance.
+pub fn instance_t.set_state(&self, string next_status, string exit_reason) {
+    self.state_lock.lock()
+    string current = self.status
+    if current == next_status {
+        self.state_lock.unlock()
+        return
+    }
+    self.status = next_status
+    if exit_reason != '' {
+        self.exit_reason = exit_reason
+    }
+    self.state_lock.unlock()
+}
+
+// RPC prompt workers report provider failures here.  Transient errors stay
+// online (they can be retried); an unrecoverable provider error is the
+// in-process equivalent of the upstream RPC child process exiting, so the
+// instance transitions to exited with the reason observable via status.
+pub fn instance_t.observe_prompt_failure(&self, string reason) {
+    if errors.is_retryable_error_message(reason) {
+        return
+    }
+    self.set_state(INSTANCE_EXITED, reason)
+}
+
+// Stop one instance without touching the others.  The instance stays
+// observable in status/list as 'stopped' (unlike upstream, which drops the
+// live record), so stop() is idempotent and the exit reason remains
+// inspectable.  The runner is aborted outside the table lock.  Returns
 // false when the id is unknown.
 pub fn supervisor_t.stop(&self, string instance_id): bool {
     self.lock.lock()
     ref<instance_t>? found = null
-    int found_index = -1
-    for index, instance in self.instances {
+    for instance in self.instances {
         if instance.summary.id == instance_id {
             found = instance
-            found_index = index
             break
         }
     }
-    if found is ref<instance_t> && found_index >= 0 {
-        [ref<instance_t>] remaining = []
-        for index, candidate in self.instances {
-            if index != found_index {
-                remaining.push(candidate)
-            }
-        }
-        self.instances = remaining
-    }
     self.lock.unlock()
-    if found is ref<instance_t> instance {
-        instance.runner.abort_and_wait()
-        return true
+    if !(found is ref<instance_t>) {
+        return false
     }
-    return false
+    var live = found as ref<instance_t>
+    live.set_state(INSTANCE_STOPPED, '')
+    live.runner.abort_and_wait()
+    return true
 }
 
 // Subscribe a connection to every session event line the instance emits.
