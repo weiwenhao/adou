@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.adou.opencode-supervisor</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/sh</string>
+        <string>/Users/liulianfuren/Code/adou/scripts/adou-opencode-supervisor.sh</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/liulianfuren/Code/adou</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HERDR_ENV</key>
+        <string>1</string>
+        <key>HERDR_SOCKET_PATH</key>
+        <string>/Users/liulianfuren/.config/herdr/herdr.sock</string>
+        <key>PATH</key>
+        <string>/Users/liulianfuren/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>ThrottleInterval</key>
+    <integer>60</integer>
+
+    <key>StandardOutPath</key>
+    <string>/Users/liulianfuren/Library/Logs/adou-opencode-supervisor.jsonl</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/liulianfuren/Library/Logs/adou-opencode-supervisor.err.log</string>
+</dict>
+</plist>
