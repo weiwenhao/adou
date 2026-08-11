@@ -144,6 +144,13 @@ Phase 8 完成标准：harness 可重复运行 smoke 集合，并输出稳定的
 - live smoke：`ADOU_LIVE_SMOKE=1 ADOU_BIN=./build/bin/adou sh tests/e2e/live-smoke.sh` 通过（`deepseek/deepseek-v4-flash`、thinking off、64 max tokens、0 retries、60s timeout）；默认（无开关）跳过。日志只输出 key 配置状态，不打印 key。
 - 遗留：`tui-tree-fork.sh` 中 up 方向键（`[A`）经 PTY 输入会被拆包并在 10ms ESC 窗口外判定为 escape，测试改用 tree 的 `f` 过滤键选择非 leaf entry；真实键盘单次传输不受影响。该项记录为测试基础设施限制，不作为 Adou 缺陷。
 
+## 2026-08-11 第三批实跑证据（剩余风险收口）
+
+- 风险 1（无凭据快速失败 + 网络挂死）：完全无凭据（`PI_CODING_AGENT_DIR` 隔离 + env 清空）时 piped prompt 0.03s 内 `Error: No API key found for deepseek.` 退出——preflight 已存在。真正的挂死根因是 Nature TLS runtime：TCP 连接成功后停止超时 timer，mbedtls 握手阶段无超时（坏代理下永久挂）。应用层修复：headless（print/json）请求加 watchdog 协程，超时后 stderr 写 `Error: provider request timed out after N ms` 并 exit 1（与 TUI 的 syscall.exit 先例一致）。实跑：黑盒代理 + `--timeout-ms 12000 --max-retries 0` → 12.4s 退出（此前永久挂）。
+- 风险 2（help 文本核对）：adou HELP 覆盖解析器全部参数（此前 `--debug` 已解析但未列出，已补行）；extension/skill/prompt-template/theme 参数按排除/等价（/config 资源启停）记录。9 个 CLI 上游模块对照：args.ts → `src/config/args.n`（含 help-matrix.sh 参数矩阵 e2e）；config-selector.ts → /config 资源启停（tui-config.sh）；credential-print.ts → `run_auth_print_api_key`（auth-print.sh，本批 stderr 隔离）；file-processor.ts → `load_file_arguments`（initial-messages.sh）；initial-message.ts → 启动消息合并；list-models.ts → `models.list_filtered`（model-selection.sh）；project-trust.ts → `--approve/--no-approve`（project-config.sh）；session-picker.ts → `--resume` picker（tui-session-selector.sh）；startup-ui.ts → setup overlay（tui-setup.sh）。`help-matrix.sh` 断言 HELP 含全部 35 个参数与 13 个短别名、--help/--version 退出 0 且 stderr 干净。
+- 风险 3（PTY ESC 输入）：`ESCAPE_SEQUENCE_TIMEOUT_MS` 10ms → 50ms（xterm 惯例）；PTY 拆包的 `\x1b[A` 不再塌缩为 escape。`tui-tree-fork.sh` 改用真实上方向键导航 tree（移除 f 过滤绕行），全流程通过。
+- 风险 4（全量回归）：137 个单测文件串行全量实跑（`tests/*.n` 逐个 guarded 调用，约 2 小时，16GB 机器满内存下 7 个文件编译器 OOM abort，单独重跑全部通过；1 个真实回归 `deepseek_http_stream_test.n` 已修复——fixture 需显式声明 `compat.thinking_format = 'deepseek'`（595f4de 起为运行时检测））。结论：137/137 通过（130 直接 + 7 重跑）。
+
 ## 2026-08-11 审查与实跑证据
 
 - `make build`：退出 0；现有产物已是最新，Make 报告无需重新构建。
