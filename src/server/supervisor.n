@@ -35,7 +35,9 @@ pub type subscriber_t = struct {
 
 pub type instance_t = struct {
     protocol.instance_summary_t summary
-    ref<session.runner_t> runner
+    // Null while the spawn initialization coroutine is still building the
+    // runner (status 'starting').
+    ref<session.runner_t>? runner = null
     ref<mutex.mutex_t> subscriber_lock
     [subscriber_t] subscribers
     int next_subscriber_id = 1
@@ -60,29 +62,53 @@ pub fn new(spawn_runner_fn spawner, bool offline): ref<supervisor_t> {
     return new supervisor_t(lock = mutex.mutex_t.new(), instances = [], spawner = spawner, offline = offline)
 }
 
-// Create an instance record and its isolated runner.  Throws when the runner
-// cannot be built; the caller answers with an error response and the failed
-// instance id is never observable (upstream failSpawn removes it).
+// Create the instance record synchronously and finish the runner
+// initialization on a background coroutine (upstream spawn has a
+// starting->online transition).  The spawn response therefore reports
+// 'starting'; status polls observe the transition to 'online' (with the
+// session metadata filled in), or to 'exited' when the runner cannot be
+// built.  Commands are refused until the instance is online.
 pub fn supervisor_t.spawn(&self, string cwd, string label): protocol.instance_summary_t! {
-    var runner = self.spawner(cwd) catch error {
+    string instance_id = identity.uuid_v7() catch error {
         throw error
     }
     var summary = protocol.instance_summary_t {
-        id: identity.uuid_v7(),
-        status: 'online',
+        id: instance_id,
+        status: INSTANCE_STARTING,
         cwd: cwd,
         label: label,
-        session_id: runner.repository.get_session_id(),
-        session_file: runner.repository.get_session_file(),
+        session_id: '',
+        session_file: '',
     }
-    var instance = new instance_t(summary = summary, runner = runner, subscriber_lock = mutex.mutex_t.new(), subscribers = [],)
-    runner.set_event_sink(fn(session_stream.event_t event) {
-        instance.emit(event)
-    })
+    var instance = new instance_t(summary = summary, runner = null, subscriber_lock = mutex.mutex_t.new(), subscribers = [], status = INSTANCE_STARTING)
     self.lock.lock()
     self.instances.push(instance)
     self.lock.unlock()
+    go finish_spawn(self, instance, cwd)
     return summary
+}
+
+// Complete the asynchronous spawn: build the isolated runner, wire its event
+// sink to the instance fan-out, publish the session metadata, and transition
+// the instance to online (or exited on failure).
+#local
+fn finish_spawn(ref<supervisor_t> sup, ref<instance_t> instance, string cwd) {
+    var runner = sup.spawner(cwd) catch error {
+        instance.set_state(INSTANCE_EXITED, 'Failed to initialize instance: ' + error.msg())
+        return
+    }
+    if instance.state_status() == INSTANCE_STOPPED {
+        // stop() won the race against the slow initialization; abandon the
+        // freshly built runner without changing the stopped state.
+        runner.abort_and_wait()
+        return
+    }
+    instance.runner = runner
+    runner.set_event_sink(fn(session_stream.event_t event) {
+        instance.emit(event)
+    })
+    instance.update_summary(runner.repository.get_session_id(), runner.repository.get_session_file())
+    instance.set_state(INSTANCE_ONLINE, '')
 }
 
 pub fn supervisor_t.get(&self, string instance_id): ref<instance_t>? {
@@ -127,8 +153,9 @@ pub fn instance_t.state_status(&self): string {
     return result
 }
 
-// Transition the lifecycle state.  A no-op when the state is unchanged, so
-// stop() is idempotent on an already stopped instance.
+// Transition the lifecycle state and broadcast the change to every open
+// rpc_stream subscriber.  A no-op when the state is unchanged, so stop() is
+// idempotent on an already stopped instance.
 pub fn instance_t.set_state(&self, string next_status, string exit_reason) {
     self.state_lock.lock()
     string current = self.status
@@ -140,6 +167,16 @@ pub fn instance_t.set_state(&self, string next_status, string exit_reason) {
     if exit_reason != '' {
         self.exit_reason = exit_reason
     }
+    self.state_lock.unlock()
+    self.emit(session_stream.event_t {kind: session_stream.EVENT_INSTANCE_STATUS, instance_id: self.summary.id, instance_status: next_status, instance_exit_reason: exit_reason,})
+}
+
+// Publish the session metadata discovered by the spawn initialization
+// coroutine (the runner owns the repository that produces it).
+pub fn instance_t.update_summary(&self, string session_id, string session_file) {
+    self.state_lock.lock()
+    self.summary.session_id = session_id
+    self.summary.session_file = session_file
     self.state_lock.unlock()
 }
 
@@ -174,7 +211,10 @@ pub fn supervisor_t.stop(&self, string instance_id): bool {
     }
     var live = found as ref<instance_t>
     live.set_state(INSTANCE_STOPPED, '')
-    live.runner.abort_and_wait()
+    ref<session.runner_t>? runner = live.runner
+    if runner is ref<session.runner_t> r {
+        r.abort_and_wait()
+    }
     return true
 }
 
@@ -232,7 +272,10 @@ pub fn supervisor_t.shutdown(&self): void {
         }
         self.lock.unlock()
         if first is ref<instance_t> instance {
-            instance.runner.abort_and_wait()
+            ref<session.runner_t>? runner = instance.runner
+            if runner is ref<session.runner_t> r {
+                r.abort_and_wait()
+            }
         } else {
             break
         }

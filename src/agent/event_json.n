@@ -51,6 +51,11 @@ pub fn encode(session_stream.event_t event): string! {
     if event.kind == session_stream.EVENT_SESSION_INFO_CHANGED && event.session_name != '' {
         object['name'] = event.session_name
     }
+    if event.kind == session_stream.EVENT_INSTANCE_STATUS {
+        object['instanceId'] = event.instance_id
+        object['status'] = event.instance_status
+        if event.instance_exit_reason != '' {object['exitReason'] = event.instance_exit_reason}
+    }
     if event.kind == session_stream.EVENT_THINKING_LEVEL_CHANGED {
         object['level'] = event.thinking_level
     }

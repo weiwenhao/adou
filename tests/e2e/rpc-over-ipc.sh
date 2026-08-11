@@ -74,6 +74,17 @@ def send_line(sock, line):
     sock.sendall((line + "\n").encode())
 
 
+def wait_online(instance_id, timeout=10.0):
+    deadline = time.time() + timeout
+    while True:
+        resp = request(json.dumps({"type": "status", "instanceId": instance_id}))
+        if resp.get("type") == "status_result" and resp["instance"].get("status") == "online":
+            return resp["instance"]
+        if time.time() > deadline:
+            raise SystemExit(f"instance {instance_id} did not become online: {resp!r}")
+        time.sleep(0.05)
+
+
 try:
     deadline = time.time() + 10
     while True:
@@ -86,17 +97,21 @@ try:
                 raise SystemExit("ipc server did not come up")
             time.sleep(0.1)
 
-    # Two spawns: distinct ids, cwd, label.
+    # Two spawns: distinct ids, cwd, label.  Spawn answers synchronously with
+    # the starting state; status polling observes the transition to online.
     spawn_a = request(json.dumps({"type": "spawn", "cwd": proj_a, "label": "alpha"}))
     if spawn_a.get("type") != "spawn_result" or spawn_a.get("ok") is not True:
         raise SystemExit(f"spawn A failed: {spawn_a!r}")
     inst_a = spawn_a["instance"]
-    if not inst_a.get("id") or inst_a.get("status") != "online":
+    if not inst_a.get("id") or inst_a.get("status") != "starting":
         raise SystemExit(f"spawn A summary wrong: {spawn_a!r}")
     if inst_a.get("cwd") != proj_a or inst_a.get("label") != "alpha":
         raise SystemExit(f"spawn A cwd/label wrong: {spawn_a!r}")
-    if not inst_a.get("sessionId"):
-        raise SystemExit(f"spawn A missing sessionId: {spawn_a!r}")
+    if "sessionId" in inst_a:
+        raise SystemExit(f"spawn A must not report sessionId while starting: {spawn_a!r}")
+    online_a = wait_online(inst_a["id"])
+    if not online_a.get("sessionId"):
+        raise SystemExit(f"online instance A missing sessionId: {online_a!r}")
 
     spawn_b = request(json.dumps({"type": "spawn", "cwd": proj_b, "label": "beta"}))
     if spawn_b.get("type") != "spawn_result" or spawn_b.get("ok") is not True:
@@ -106,7 +121,9 @@ try:
         raise SystemExit(f"spawn returned the same id twice: {inst_a.get('id')}")
     if inst_b.get("cwd") != proj_b or inst_b.get("label") != "beta":
         raise SystemExit(f"spawn B cwd/label wrong: {spawn_b!r}")
+    online_b = wait_online(inst_b["id"])
     id_a, id_b = inst_a["id"], inst_b["id"]
+    sess_a, sess_b = online_a["sessionId"], online_b["sessionId"]
 
     # list: two instances with both ids.
     listed = request('{"type":"list"}')
@@ -131,10 +148,10 @@ try:
     resp_a = state_a["response"]
     if resp_a.get("command") != "get_state" or resp_a.get("success") is not True or resp_a.get("id") != "g-a":
         raise SystemExit(f"rpc get_state A response wrong: {state_a!r}")
-    if resp_a.get("data", {}).get("sessionId") != inst_a.get("sessionId"):
+    if resp_a.get("data", {}).get("sessionId") != sess_a:
         raise SystemExit(f"rpc get_state A routed to wrong instance: {state_a!r}")
     state_b = request(json.dumps({"type": "rpc", "instanceId": id_b, "command": {"type": "get_state", "id": "g-b"}}))
-    if state_b.get("response", {}).get("data", {}).get("sessionId") != inst_b.get("sessionId"):
+    if state_b.get("response", {}).get("data", {}).get("sessionId") != sess_b:
         raise SystemExit(f"rpc get_state B routed to wrong instance: {state_b!r}")
     if state_a.get("response", {}).get("data", {}).get("sessionId") == state_b.get("response", {}).get("data", {}).get("sessionId"):
         raise SystemExit("instances share the same session; isolation broken")
