@@ -1,0 +1,110 @@
+import adou.src.session.repository
+import adou.src.session.types as session_types
+import adou.src.tools.command
+import adou.src.tools.path_utils
+import os
+import path
+import syscall
+
+// Phase 7 repository backend contract: the minimal shared boundary for the
+// two SessionRepo backends (Pi SessionRepo: create/open/list/delete/fork).
+// JSONL remains the default backend; memory backends share the same
+// manager_t surface.  This module concentrates the file-level list/delete
+// helpers used by the contract tests; existing TUI call sites are not
+// switched over in this batch (documented in docs/phase7-storage-design.md).
+
+pub type backend_kind_t = enum {
+    JSONL,
+    MEMORY,
+}
+
+pub type backend_t = struct {
+    backend_kind_t kind
+    ref<repository.manager_t> manager
+    string session_dir
+}
+
+// SessionRepo.create: persisted (JSONL) backend in a dedicated directory.
+pub fn create_jsonl(string cwd, string session_dir): backend_t! {
+    var manager = repository.create(cwd, session_dir)
+    return backend_t {kind: backend_kind_t.JSONL, manager: manager, session_dir: session_dir,}
+}
+
+// SessionRepo.create: in-memory backend (no file writes).
+pub fn open_memory(string cwd): backend_t! {
+    var manager = repository.in_memory(cwd)
+    return backend_t {kind: backend_kind_t.MEMORY, manager: manager, session_dir: '',}
+}
+
+// SessionRepo.open: reopen an existing JSONL session file.
+pub fn open_jsonl(string file_path): backend_t! {
+    var manager = repository.open(file_path)
+    return backend_t {kind: backend_kind_t.JSONL, manager: manager, session_dir: path.dir(file_path),}
+}
+
+// SessionRepo.list: session file paths in a directory, newest file first
+// (same semantics as the resume picker's scan; concentrated here so both
+// backends and future SQLite listing share one shape).
+pub fn list_session_paths(string session_dir): [string] {
+    [string] result = []
+    if session_dir == '' {
+        return result
+    }
+    var names = os.listdir(session_dir) catch error {
+        return result
+    }
+    [string] candidates = []
+    for name in names {
+        if !name.ends_with('.jsonl') {
+            continue
+        }
+        candidates.push(path.join(session_dir, name))
+    }
+    return sort_by_mtime(candidates)
+}
+
+// SessionRepo.delete: move to trash when available, else unlink.
+// Returns (deleted, message); message distinguishes the method used.
+pub fn delete_session(string file_path, string cwd): (bool, string) {
+    if file_path == '' || !path_utils.exists(file_path) {
+        return (false, 'Session file does not exist')
+    }
+    var trashed = command.argv(cwd, '/bin/sh', ['trash', file_path]) catch error {
+        command.result_t {}
+    }
+    if trashed.exit_code == 0 || !path_utils.exists(file_path) {
+        return (true, 'Session moved to trash')
+    }
+    os.remove(file_path) catch error {
+        return (false, 'Could not delete session: ' + error.msg())
+    }
+    return (true, 'Session deleted')
+}
+
+#local
+fn sort_by_mtime([string] values): [string] {
+    [string] remaining = values.slice(0, values.len())
+    [string] result = vec<string>.cap_of(values.len())
+    for remaining.len() > 0 {
+        int newest = 0
+        i64 newest_sec = 0
+        i64 newest_nsec = 0
+        for index, value in remaining {
+            var stat = syscall.stat(value) catch error {continue}
+            if index == 0 || stat.mtim.sec > newest_sec || (stat.mtim.sec == newest_sec && stat.mtim.nsec > newest_nsec) {
+                newest = index
+                newest_sec = stat.mtim.sec
+                newest_nsec = stat.mtim.nsec
+            }
+        }
+        result.push(remaining[newest])
+        [string] next = vec<string>.cap_of(remaining.len() - 1)
+        for index, value in remaining {
+            if index != newest {
+                next.push(value)
+            }
+        }
+        remaining = next
+    }
+    return result
+}
