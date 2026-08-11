@@ -872,8 +872,11 @@ fn serve_request(ref<ipc_supervisor.supervisor_t> sup, {string:any} object, stri
         if cwd == '' {
             return ipc_protocol.error_response('spawn requires a cwd')
         }
+        // Answers synchronously with 'starting'; the instance transitions to
+        // online/exited on the initialization coroutine (observable via
+        // status polling).
         var summary = sup.spawn(cwd, rpc_string(object, 'label')) catch error {
-            return ipc_protocol.error_response(error.msg())
+            return ipc_protocol.error_response('Failed to spawn instance: ' + error.msg())
         }
         return ipc_protocol.spawn_result(summary)
     }
@@ -970,7 +973,7 @@ fn rpc_bridge_response(ref<ipc_supervisor.supervisor_t> sup, ref<ipc_supervisor.
     if sup.offline && command_kind == 'prompt' {
         rpc_write(sink, rpc_error(id, 'prompt', 'Offline mode cannot send prompts to a provider'))
     } else {
-        rpc_dispatch(instance.runner, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, exit_hook)
+        rpc_dispatch(instance.runner as ref<session.runner_t>, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, exit_hook)
     }
     for true {
         state.lock.lock()
@@ -1067,7 +1070,7 @@ fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, 
         }
         // A dispatch failure must not kill the connection loop; answer with
         // the error shape and keep the stream open.
-        rpc_dispatch(live.runner, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, exit_hook) catch error {
+        rpc_dispatch(live.runner as ref<session.runner_t>, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, exit_hook) catch error {
             rpc_write(sink, ipc_protocol.error_response(error.msg()))
         }
     }

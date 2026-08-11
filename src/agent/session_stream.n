@@ -26,6 +26,9 @@ pub const EVENT_QUEUE_UPDATE = 'queue_update'
 pub const EVENT_SUMMARIZATION_RETRY_SCHEDULED = 'summarization_retry_scheduled'
 pub const EVENT_SUMMARIZATION_RETRY_ATTEMPT_START = 'summarization_retry_attempt_start'
 pub const EVENT_SUMMARIZATION_RETRY_FINISHED = 'summarization_retry_finished'
+// Supervisor lifecycle broadcast: emitted on instance state transitions
+// (starting->online, ->exited, ->stopped) to every rpc_stream subscriber.
+pub const EVENT_INSTANCE_STATUS = 'instance_status_changed'
 
 pub type event_t = struct {
     string kind
@@ -64,6 +67,9 @@ pub type event_t = struct {
     string retry_reason
     [string] queue_steering = []
     [string] queue_follow_up = []
+    string instance_id
+    string instance_status
+    string instance_exit_reason
 }
 
 // Settings and session metadata can change while no operation stream exists.
