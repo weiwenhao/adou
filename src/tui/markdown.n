@@ -261,8 +261,15 @@ fn strip_quote_prefix(string content, int depth): string {
     return content.slice(cursor, content.len())
 }
 
+// A "word" byte for flanking purposes: ASCII alphanumerics plus any
+// multi-byte UTF-8 byte (CJK ideographs, combining marks, emoji) -- a
+// byte >= 0x80 can never act as a flanking boundary, so 中文_变量_名 and
+// 你_好 keep their underscores literal like foo_bar_baz.
 #local
-fn is_alnum_byte(u8 value): bool {
+fn is_word_byte(u8 value): bool {
+    if value >= 0x80 {
+        return true
+    }
     return (value >= 'a'.char() && value <= 'z'.char()) || (value >= 'A'.char() && value <= 'Z'.char()) || (value >= '0'.char() && value <= '9'.char())
 }
 
@@ -271,10 +278,22 @@ fn inline(string text): string {
     string result = ''
     int cursor = 0
     for cursor < text.len() {
-        if cursor + 2 <= text.len() && (text.slice(cursor, cursor + 2) == '**' || text.slice(cursor, cursor + 2) == '__') {
+        if cursor + 2 <= text.len() && text.slice(cursor, cursor + 2) == '**' {
             string delimiter = text.slice(cursor, cursor + 2)
             int end = text.find_after(delimiter, cursor + 2)
             if end >= 0 {
+                result += theme.bold(text.slice(cursor + 2, end))
+                cursor = end + 2
+                continue
+            }
+        }
+        // Double underscore needs flanking like single underscore:
+        // foo__bar__baz keeps its underscores literal.
+        if cursor + 2 <= text.len() && text.slice(cursor, cursor + 2) == '__' {
+            bool can_open = cursor == 0 || !is_word_byte(text[cursor - 1] as u8)
+            int end = text.find_after('__', cursor + 2)
+            bool can_close = end > cursor + 2 && (end + 2 >= text.len() || !is_word_byte(text[end + 2] as u8))
+            if can_open && can_close {
                 result += theme.bold(text.slice(cursor + 2, end))
                 cursor = end + 2
                 continue
@@ -316,13 +335,13 @@ fn inline(string text): string {
         // closing needs a non-alphanumeric right neighbour (or EOL).
         if text[cursor] == '_'.char() {
             if cursor + 1 < text.len() && text[cursor + 1] == '_'.char() {
-                result += text.slice(cursor, cursor + 1)
-                cursor += 1
+                result += '__'
+                cursor += 2
                 continue
             }
-            bool can_open = cursor == 0 || !is_alnum_byte(text[cursor - 1] as u8)
+            bool can_open = cursor == 0 || !is_word_byte(text[cursor - 1] as u8)
             int end = text.find_after('_', cursor + 1)
-            bool can_close = end > cursor + 1 && (end + 1 >= text.len() || !is_alnum_byte(text[end + 1] as u8))
+            bool can_close = end > cursor + 1 && (end + 1 >= text.len() || !is_word_byte(text[end + 1] as u8))
             if can_open && can_close {
                 result += theme.italic(text.slice(cursor + 1, end))
                 cursor = end + 1

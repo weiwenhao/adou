@@ -196,10 +196,16 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
     }
     var model = new ai_types.model_t(id = model_id, name = model_id, api = api, provider = provider, base_url = base_url, reasoning = reasoning, adaptive_thinking = adaptive_thinking, context_window = context_window, max_tokens = max_tokens)
     if catalog_model is ref<ai_types.model_t> catalog {
+        // Copy the full catalog capability metadata, not just cost/headers:
+        // thinking_level_map and compat drive clamp_thinking_level and the
+        // request encoder, and dropping them degrades explicit/persisted
+        // thinking levels (deepseek max -> high) or alters request shapes.
         model.cost = catalog.cost
         for header_name, header_value in catalog.headers {
             model.headers[header_name] = header_value
         }
+        model.thinking_level_map = catalog.thinking_level_map
+        model.compat = catalog.compat
     }
     if provider == 'deepseek' && model_id == 'deepseek-v4-flash' {
         model.cost.input = 0.14

@@ -105,4 +105,23 @@ test 'intraword underscores stay literal while flanking emphasis still works' {
     var edge = markdown.render('start _mid_ end', 80)
     string edge_joined = strings.join(edge, '\n')
     assert(edge_joined.contains('\x1b[3mmid\x1b[23m'))
+
+    // Double-underscore runs inside words stay literal too.
+    var dbl = markdown.render('foo__bar__baz', 80)
+    string dbl_joined = strings.join(dbl, '\n')
+    assert(dbl_joined.contains('foo__bar__baz'))
+    assert(!dbl_joined.contains('\x1b[1mbar\x1b[22m'))
+
+    // CJK intraword underscores are literal (non-ASCII bytes are word
+    // bytes, not flanking boundaries).
+    var cjk = markdown.render('中文_变量_名 你_好', 80)
+    string cjk_joined = strings.join(cjk, '\n')
+    assert(cjk_joined.contains('中文_变量_名'))
+    assert(cjk_joined.contains('你_好'))
+    assert(!cjk_joined.contains('\x1b[3m变量\x1b[23m'))
+
+    // __bold__ still renders as bold after all of the above.
+    var bold2 = markdown.render('__bold__', 80)
+    string bold2_joined = strings.join(bold2, '\n')
+    assert(bold2_joined.contains('\x1b[1mbold\x1b[22m'))
 }

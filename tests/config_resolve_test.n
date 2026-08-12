@@ -1,4 +1,5 @@
 import adou.src.config.args
+import adou.src.config.models as config_models
 import adou.src.config.resolve
 import fmt
 import fs
@@ -46,6 +47,20 @@ test 'stale mock persisted default with OpenAI credentials still falls back to d
         syscall.set_env('OPENAI_API_KEY', previous_openai) catch error {}
     }
     syscall.set_env('PI_CODING_AGENT_DIR', previous_pi) catch error {}
+}
+
+test 'explicit --thinking max survives resolution with catalog capability metadata' {
+    isolate_env()
+    var arguments = args.parse(['adou', '--provider', 'deepseek', '--model', 'deepseek-v4-flash', '--thinking', 'max'])
+    var config = resolve.resolve(arguments, '/tmp')
+    assert(config.thinking == 'max')
+    assert(config.stream_options.reasoning_effort == 'max')
+    // The resolved model must carry the catalog thinking map so clamping
+    // sees max as supported and unsupported levels fall back to high.
+    assert(config_models.clamp_thinking_level(config.model, 'max') == 'max')
+    assert(config_models.clamp_thinking_level(config.model, 'high') == 'high')
+    assert(config_models.clamp_thinking_level(config.model, 'medium') == 'high')
+    assert(config_models.clamp_thinking_level(config.model, 'off') == 'off')
 }
 
 test 'explicit provider still wins over the fallback' {
