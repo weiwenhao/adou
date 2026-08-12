@@ -17,4 +17,6 @@ The release binary links a statically bundled SQLite 3.50.4 amalgamation
 ## Nature standard library and runtime
 
 Adou is implemented in the Nature programming language and links the
-Nature runtime. See the Nature project for its licensing terms.
+Nature runtime (MIT). The authoritative license text is bundled as
+`licenses/NATURE-MIT-LICENSE.txt` in this repository and included in
+release archives (see the Nature project for the full source).

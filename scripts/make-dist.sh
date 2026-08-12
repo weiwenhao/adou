@@ -1,6 +1,8 @@
 #!/bin/sh
 #
 # Stage and archive the darwin-arm64 release artifact for `make dist`.
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
 # Environment-driven so the Makefile stays the single entry point:
 #
 #   ADOU_VERSION         version from src/app.n (source of truth)
@@ -89,19 +91,24 @@ Distribution and signing
 ------------------------
   This archive is the official unsigned direct distribution channel:
   GitHub unsigned tar.gz.  The binaries carry only an ad-hoc/linker-generated signature;
-  they are not Developer ID signed and not notarized.  On first launch macOS Gatekeeper may block the binary;
-  if so, remove the quarantine attribute:
+  they are not Developer ID signed and not notarized.  On first launch macOS Gatekeeper may block the binaries;
+  if so, remove the quarantine attribute from the unpacked directory
+  (run from inside that directory):
 
-    xattr -cr ./adou
+    xattr -cr .
 
-  Developer ID signing, .pkg packaging, and notarization are optional
+  An unsigned native .pkg build also exists (make pkg) but is not the
+  main channel.  Developer ID signed .pkg and notarization are optional
   future enhancements, not blockers for this distribution channel.
 EOF
 
+cp "$SCRIPT_DIR/../LICENSE" "$stage/LICENSE"
+cp "$SCRIPT_DIR/../THIRD_PARTY_NOTICES.md" "$stage/THIRD_PARTY_NOTICES.md"
+cp "$SCRIPT_DIR/../licenses/NATURE-MIT-LICENSE.txt" "$stage/NATURE-MIT-LICENSE.txt"
 chmod 0755 "$stage/adou" "$stage/adou-process-group"
-chmod 0644 "$stage/RELEASE-README"
+chmod 0644 "$stage/RELEASE-README" "$stage/LICENSE" "$stage/THIRD_PARTY_NOTICES.md" "$stage/NATURE-MIT-LICENSE.txt"
 
-(cd "$stage" && shasum -a 256 adou adou-process-group RELEASE-README > SHA256SUMS)
+(cd "$stage" && shasum -a 256 adou adou-process-group RELEASE-README LICENSE THIRD_PARTY_NOTICES.md NATURE-MIT-LICENSE.txt > SHA256SUMS)
 
 tar -C "$dist_dir" -czf "$dist_dir/$dist_name.tar.gz" "$dist_name"
 (cd "$dist_dir" && shasum -a 256 "$dist_name.tar.gz" > "$dist_name.tar.gz.sha256")

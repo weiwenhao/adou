@@ -1,9 +1,10 @@
 # Release Hardening Plan
 
 状态：unsigned tar.gz 直接分发为当前正式选择（已完成）；Developer ID/.pkg/notarization 为可选未来增强（不再阻塞发布）。
-（macOS signing readiness——本地预检与离线编排测试）已完成，2026-08-12（见
-`docs/macos-signing.md`）；Batch 2B（真实 Developer ID 签名与公证）未开始，
-需要新权限。macOS native installer 批次已完成（见
+Batch 1（dist/artifact/install staging）与 Batch 2A（macOS signing readiness——
+本地预检与离线编排测试）均已完成，2026-08-12（见 `docs/macos-signing.md`）；
+Batch 2B（真实 Developer ID 签名与公证）未开始，需要新权限。macOS native
+installer（unsigned .pkg）批次已完成（见
 `docs/macos-installer.md`）；Linux 按当前优先级暂缓。当前两个发布二进制的实际签名状态为 linker 生成的 ad-hoc
 签名（`Signature=adhoc`、`TeamIdentifier=not set`、无 Authority），不是
 Developer ID signed，未 notarized。

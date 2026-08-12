@@ -28,11 +28,14 @@ Source repository: <https://github.com/weiwenhao/adou>
    ```
 
    The archive contains `adou`, `adou-process-group` (a helper that must
-   stay next to the main binary), `RELEASE-README`, and `SHA256SUMS`.
-4. macOS Gatekeeper may block the unsigned binary on first launch:
+   stay next to the main binary), `RELEASE-README`, `SHA256SUMS`,
+   `LICENSE`, `THIRD_PARTY_NOTICES.md`, and `NATURE-MIT-LICENSE.txt`.
+4. macOS Gatekeeper may block the unsigned binaries on first launch;
+   clear the quarantine attribute for the whole unpacked directory
+   (run from inside the directory you changed into in step 3):
 
    ```sh
-   xattr -cr ./adou
+   xattr -cr .
    ```
 
    The binaries carry only a linker-generated ad-hoc signature; they are
@@ -88,8 +91,10 @@ concurrently.
 - Pi extensions remain disabled (no extension runtime, no QuickJS/Node).
 - Linux builds and cross-compilation are deferred.
 - OAuth login flows and interactive image rendering are not claimed.
-- Real Developer ID signing, notarization, and `.pkg` packaging are
-  optional future enhancements.
+- The chosen distribution channel is the unsigned `tar.gz`; an unsigned
+  native `.pkg` build also exists (`make pkg`) but is not the main
+  channel. Developer ID signed `.pkg` and notarization are optional
+  future enhancements.
 
 ## License
 

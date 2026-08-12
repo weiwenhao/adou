@@ -31,6 +31,8 @@ set -eu
 
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/adou-release-artifact-XXXXXX")
+
 tarball=${ADOU_TARBALL:-}
 if [ -z "$tarball" ]; then
     tarball=$(ls "$repo_root"/build/dist/adou-*-darwin-arm64.tar.gz 2>/dev/null | head -n 1 || true)
@@ -41,7 +43,9 @@ if [ -z "$tarball" ] || [ ! -f "$tarball" ]; then
 fi
 
 # External checksum: must exist next to the tarball, verify the archive
-# before unpacking, and fail when the archive is tampered with.
+# before unpacking, and fail when the archive is tampered with.  The
+# official build/dist tarball is READ-ONLY here: verification and the
+# tamper check run against a copy in the temp dir.
 checksum="$tarball.sha256"
 if [ ! -f "$checksum" ]; then
     echo "e2e: external checksum missing: $checksum" >&2
@@ -51,17 +55,27 @@ if ! (cd "$(dirname "$tarball")" && shasum -a 256 -c "$(basename "$checksum")") 
     echo "e2e: external checksum does not verify the tarball" >&2
     exit 1
 fi
-if printf 'tampered' >> "$tarball" 2>/dev/null; then
-    if (cd "$(dirname "$tarball")" && shasum -a 256 -c "$(basename "$checksum")") >/dev/null 2>&1; then
-        echo "e2e: tampered tarball still verifies" >&2
+tarball_before=$(shasum -a 256 "$tarball" | awk '{print $1}')
+tarball_copy="$tmp/$(basename "$tarball")"
+cp "$tarball" "$tarball_copy"
+cp "$checksum" "$tmp/"
+if printf 'tampered' >> "$tarball_copy" 2>/dev/null; then
+    if (cd "$tmp" && shasum -a 256 -c "$(basename "$checksum")") >/dev/null 2>&1; then
+        echo "e2e: tampered tarball copy still verifies" >&2
         exit 1
     fi
-    # restore the original tarball for the remainder of the test
-    truncate -s -8 "$tarball"
+else
+    echo "e2e: could not tamper the tarball copy" >&2
+    exit 1
 fi
+# The official artifact must be untouched.
+if [ "$(shasum -a 256 "$tarball" | awk '{print $1}')" != "$tarball_before" ]; then
+    echo "e2e: official tarball changed during the test" >&2
+    exit 1
+fi
+rm -f "$tarball_copy" "$tmp/$(basename "$checksum")"
 
 
-tmp=$(mktemp -d "${TMPDIR:-/tmp}/adou-release-artifact-XXXXXX")
 server_pid=
 
 cleanup() {
@@ -70,7 +84,7 @@ cleanup() {
     fi
     rm -rf "$tmp"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT HUP INT TERM
 
 fail() {
     echo "e2e: release artifact check failed: $*" >&2
@@ -97,7 +111,7 @@ if [ -z "$version" ]; then
 fi
 
 actual=$(echo "$entries" | sed "s|^$dist_dir/||" | grep -v '^$' | sort)
-expected=$(printf 'RELEASE-README\nSHA256SUMS\nadou\nadou-process-group' | sort)
+expected=$(printf 'RELEASE-README\nSHA256SUMS\nadou\nadou-process-group\nLICENSE\nTHIRD_PARTY_NOTICES.md\nNATURE-MIT-LICENSE.txt' | sort)
 if [ "$actual" != "$expected" ]; then
     fail "archive file list is not the fixed set:"$'\n'"$(printf 'expected:\n%s\nactual:\n%s' "$expected" "$actual")"
 fi
@@ -330,6 +344,11 @@ for phrase in "ad-hoc/linker-generated signature" "not Developer ID signed" "not
         fail "RELEASE-README must declare '$phrase'"
     fi
 done
+# Gatekeeper guidance must be context-correct: run inside the unpacked
+# directory (xattr -cr .), not a path that only exists outside it.
+if ! grep -q "xattr -cr ." "$stage/RELEASE-README"; then
+    fail "RELEASE-README must give the in-directory xattr -cr . guidance"
+fi
 
 for bin_name in adou adou-process-group; do
     bin_path="$stage/$bin_name"
