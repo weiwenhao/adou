@@ -41,8 +41,8 @@
 - `make notarize` → `scripts/notarize.sh`：公证入口，**fail closed**；必须是
   单独显式目标，默认 `release-check`/`signing-smoke` 不调用 notarytool、
   不触网。
-- `make signing-check` → 串行 `dist` + `tests/e2e/macos-signing-workflow.sh`。
-- `tests/e2e/macos-signing-workflow.sh`：预检行为、fail-closed、fake-tools
+- `make signing-check` → 串行 `dist` + `tests/e2e/release/macos-signing-workflow.sh`。
+- `tests/e2e/release/macos-signing-workflow.sh`：预检行为、fail-closed、fake-tools
   编排断言、副本 ad-hoc 签名校验、README 与签名状态一致性；不创建 notary
   profile、不真实提交、不打印 keychain 凭据。
 
@@ -111,8 +111,8 @@
 ## 测试与验证（2026-08-12 实跑，Nature 串行规则同 AGENTS.md）
 
 - `sh -n` 全部新/改脚本通过；
-- `make build` → `make dist` → `tests/e2e/release-artifact.sh` →
-  `tests/e2e/macos-signing-workflow.sh` → `make signing-check` →
+- `make build` → `make dist` → `tests/e2e/release/release-artifact.sh` →
+  `tests/e2e/release/macos-signing-workflow.sh` → `make signing-check` →
   `make release-check` 全绿；
 - 0 identity 下 `signing-preflight` 输出 `status=no-identity` 并 exit 21
   （确定性）；

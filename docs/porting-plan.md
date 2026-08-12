@@ -164,7 +164,7 @@ Phase 8 验收结果（2026-08-12 关闭）：`make build` 退出 0；`make eval
 - `cli-startup-boundaries.sh`：7 个断言（no-TTY 诊断、/dev/null、空 pipe、有内容 pipe、regular file、损坏 session `Error: session file has no valid header` + 非零退出、缺失 session）全部自然退出通过。
 - `auth-print.sh`：成功路径 stdout 仅 credential；失败路径 stdout 空、stderr `Error:` 前缀、退出码非零。
 - Phase 5 收尾：`ADOU_BIN=./build/bin/adou sh tests/e2e/tui-tree-fork.sh` 通过（/tree 打开与 label、ESC 取消与重开、过滤导航 → `Summarize branch?` → `No summary` → `Navigated to selected point`、`/fork` → `Forked to new session`、`/quit` 退出码 0）。
-- live smoke：`ADOU_LIVE_SMOKE=1 ADOU_BIN=./build/bin/adou sh tests/e2e/live-smoke.sh` 通过（`deepseek/deepseek-v4-flash`、thinking off、64 max tokens、0 retries、60s timeout）；默认（无开关）跳过。日志只输出 key 配置状态，不打印 key。
+- live smoke：`ADOU_LIVE_SMOKE=1 ADOU_BIN=./build/bin/adou sh tests/e2e/live/live-smoke.sh` 通过（`deepseek/deepseek-v4-flash`、thinking off、64 max tokens、0 retries、60s timeout）；默认（无开关）跳过。日志只输出 key 配置状态，不打印 key。live 集合统一由 `make e2e-live` 串行展开，普通 `make e2e` 不包含。
 - 遗留：`tui-tree-fork.sh` 中 up 方向键（`[A`）经 PTY 输入会被拆包并在 10ms ESC 窗口外判定为 escape，测试改用 tree 的 `f` 过滤键选择非 leaf entry；真实键盘单次传输不受影响。该项记录为测试基础设施限制，不作为 Adou 缺陷。
 
 ## 2026-08-11 第三批实跑证据（剩余风险收口）

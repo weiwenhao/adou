@@ -51,7 +51,7 @@
 - 2026-08-11 第四批：Phase 5 收尾——`tui-tree-fork.sh` PTY 闭环覆盖 `/tree`（打开/取消/重开/过滤导航）、branch summary（`Summarize branch?` → `No summary` → `Navigated to selected point`）、`/fork`（`Forked to new session`）与 `/quit` 终端恢复（退出码 0）。
 - 历史上的全量 `make test` 通过记录早于最新 Phase 5/6 提交，不代表当前 137 个单测文件已在同一 HEAD 全量重跑。
 - 常规模型与测试密钥的项目约定维护在 `docs/porting-plan.md` 的“测试模型、密钥与成本约束”章节；集中实现于 `tests/e2e/lib/deepseek-test-config.sh`（被 source、不会被 `make e2e` 的 `tests/e2e/*.sh` glob 匹配）；普通回归优先 offline/local mock，live smoke 显式开启（`ADOU_LIVE_SMOKE=1`）并限制消费。
-- 2026-08-11 live smoke 实跑：`ADOU_LIVE_SMOKE=1 ADOU_BIN=./build/bin/adou sh tests/e2e/live-smoke.sh` 通过（`deepseek/deepseek-v4-flash`，thinking off、64 max tokens、0 retries、60s timeout）；日志只输出 key 的配置状态，不打印 key 本身。
+- 2026-08-11 live smoke 实跑：`ADOU_LIVE_SMOKE=1 ADOU_BIN=./build/bin/adou sh tests/e2e/live/live-smoke.sh` 通过（`deepseek/deepseek-v4-flash`，thinking off、64 max tokens、0 retries、60s timeout）；日志只输出 key 的配置状态，不打印 key 本身。
 - 若 `nature --version` 已更新但 `/usr/local/nature/lib/darwin_arm64/libruntime.a` 仍是旧文件，Adou 仍会链接旧 runtime；需用管理员权限覆盖该静态库后再重新 `make clean && make build`。
 - TUI 退出路径使用 Nature 标准输入接口；输入读取在独立协程中阻塞等待 `fs/libuv` 数据，解析协程通过 Nature channel 接收字节并用定时协程处理 ESC 超时，不修改 stdin fd flags。退出时先恢复终端再结束 CLI，避免后台监听协程拖住进程。
 

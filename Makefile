@@ -23,6 +23,11 @@ ICU_CFLAGS := $(if $(ICU_INCLUDE),-I$(ICU_INCLUDE),)
 NATURE_SOURCES := main.n package.toml $(shell find src -type f -name '*.n' -print)
 TEST_SOURCES := $(sort $(wildcard tests/*.n))
 E2E_SOURCES := $(sort $(wildcard tests/e2e/*.sh))
+# Opt-in live suites live under tests/e2e/live/ and are never picked up by
+# the plain e2e glob above (make e2e stays offline/mocked and consumes no
+# provider quota).  Each live script self-skips unless its ADOU_LIVE_*
+# switch is set.
+E2E_LIVE_SOURCES := $(sort $(wildcard tests/e2e/live/*.sh))
 EVAL_ENTRY := tests/evals/smoke_evals.n
 EVAL_BIN := $(BIN_DIR)/adou-evals
 ADOU_VERSION := $(shell sed -n "s/^pub const VERSION = '\([^']*\)'.*/\1/p" $(CURDIR)/src/app.n)
@@ -31,7 +36,7 @@ DIST_NAME := adou-$(ADOU_VERSION)-darwin-arm64
 DIST_STAGE := $(DIST_DIR)/$(DIST_NAME)
 DIST_TARBALL := $(DIST_DIR)/$(DIST_NAME).tar.gz
 
-.PHONY: all build run test e2e eval check install dist release-check clean signing-preflight signing-smoke signed-dist notarize signing-check help
+.PHONY: all build run test e2e e2e-live eval check install dist release-check clean signing-preflight signing-smoke signed-dist notarize signing-check help
 
 all: build
 
@@ -79,6 +84,16 @@ e2e: build
 		ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/$$test_file"; \
 	done
 
+# Serial opt-in live suite against the real model.  Individual scripts gate
+# themselves behind ADOU_LIVE_SMOKE / ADOU_LIVE_JOURNEY so this target is
+# safe to invoke without the switch set; with the switches on it consumes
+# provider quota (see docs/e2e-journey-matrix.md).
+e2e-live: build
+	@set -e; for test_file in $(E2E_LIVE_SOURCES); do \
+		echo "==> $$test_file"; \
+		ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/$$test_file"; \
+	done
+
 # Phase 8 eval harness: one guarded build of the smoke eval entry point, then
 # a serial run of its cases against local scripted HTTP mocks.
 eval: build $(EVAL_BIN)
@@ -116,7 +131,7 @@ dist: build
 # documented in docs/macos-signing.md.
 release-check: build eval dist
 	@set -e; \
-	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/release-artifact.sh"; \
+	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/release/release-artifact.sh"; \
 	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/rpc-over-ipc.sh"; \
 	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/rpc-bash-stream.sh"; \
 	echo "release-check: build+eval+dist+artifact+ipc+bash OK"
@@ -153,7 +168,7 @@ notarize:
 # README/signature consistency).
 signing-check: dist
 	@set -e; \
-	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/macos-signing-workflow.sh"; \
+	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/release/macos-signing-workflow.sh"; \
 	echo "signing-check: dist+macos-signing-workflow OK"
 
 clean:
@@ -165,7 +180,8 @@ help:
 		'make build   Build Adou through the guarded Nature compiler' \
 		'make run     Build and run Adou' \
 		'make test    Run every Nature test serially through the guard' \
-		'make e2e     Build once, then run CLI end-to-end tests' \
+		'make e2e     Build once, then run CLI end-to-end tests (offline/mocked)' \
+		'make e2e-live Build once, then run opt-in live DeepSeek tests serially (scripts self-gate on ADOU_LIVE_SMOKE / ADOU_LIVE_JOURNEY; consumes quota)' \
 		'make eval    Run the Phase 8 smoke evals against local mocks' \
 		'make check   Run unit tests followed by end-to-end tests' \
 		'make dist    Package build/dist/adou-<version>-darwin-arm64.tar.gz' \
