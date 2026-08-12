@@ -77,6 +77,12 @@ concurrently.
 
 ## Test layering
 
+Real-machine (interactive) acceptance: see
+[`docs/herdr-real-machine-testing.md`](docs/herdr-real-machine-testing.md)
+for the repeatable Herdr SOP (real DeepSeek login, latency, Unicode
+rendering, full coding journey, resume, evidence retention).
+
+
 - `make e2e`: deterministic offline/mocked scenarios only (no network, no
   API keys required).
 - `tests/e2e/live/`: opt-in real DeepSeek journeys (`ADOU_LIVE_SMOKE=1`,

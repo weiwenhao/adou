@@ -6,6 +6,11 @@
 
 ## 入口与分层
 
+真机交互式验收（真实 TUI/DeepSeek/渲染，Herdr 内可重复执行）见
+`docs/herdr-real-machine-testing.md`；本矩阵只覆盖自动化旅程。
+
+
+
 | 入口 | 内容 | 模型/网络 |
 | --- | --- | --- |
 | `make e2e` | `tests/e2e/*.sh`（glob 天然排除子目录） | 全部 offline：本地 mock HTTP fixture 或直接 CLI/RPC/PTY |
