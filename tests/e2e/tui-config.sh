@@ -113,7 +113,8 @@ def quit_tui(fd, pid, status):
 
 try:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-    collect(timeout=1.0)
+    if not collect(b"\x1b[>1u", timeout=10.0):
+        raise SystemExit("TUI did not become ready for keyboard input")
 
     # Change the theme in /settings; the selection is saved.
     if not key(b"/settings\r", b"Settings", timeout=5.0):
@@ -155,7 +156,8 @@ try:
             return until is not None and until in output2
 
         fcntl.ioctl(fd2, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-        collect2(timeout=1.0)
+        if not collect2(b"\x1b[>1u", timeout=10.0):
+            raise SystemExit("restarted TUI did not become ready for keyboard input")
         # The /config selector lists the seeded skill and prompt.
         os.write(fd2, b"/config\r")
         if not collect2(b"Resources", timeout=5.0):

@@ -97,7 +97,12 @@ def paste_text(text, until, timeout=4.0):
 
 try:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-    collect(timeout=1.0)
+    # Do not send input on a fixed startup delay.  Adou enters raw mode with
+    # TCSAFLUSH, so a key queued before the keyboard-protocol marker can be
+    # discarded on a slow or contended launch.  Waiting for this sequence
+    # proves raw mode is active and turns the PTY interaction deterministic.
+    if not collect(until=b"\x1b[>1u", timeout=10.0):
+        raise SystemExit("TUI did not become ready for keyboard input")
 
     # Open the model selector with Ctrl+L.
     if not key(b"\x0c", b"Select model:", timeout=5.0):
