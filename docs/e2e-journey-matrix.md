@@ -53,16 +53,18 @@ request/session 顺序，因此这两层里 PTY 只承担**持久化/恢复桥�
 
 ## 剩余缺口（不宣称覆盖）
 
-- 真实签名/公证（Batch 2B）：本地只做 preflight/fail-closed/ad-hoc 副本
-  smoke，不真实签名上传、不 notarytool（见 `docs/macos-signing.md`）。
+- 真实签名/公证（Batch 2B）：本地做 preflight/fail-closed/ad-hoc 副本 smoke
+  与 `.pkg` 双证书签名、公证、staple 的 fake-tool 编排；不使用真实 Developer
+  ID、不真实上传（见 `docs/macos-signing.md` 与 `docs/macos-installer.md`）。
 - OAuth/账号登录：未纳入任何 e2e（live 用测试 key 经环境变量）。
 - 真实 provider eval（Batch 5）：`make eval` 只用本地脚本化 HTTP mock；
   对真实 DeepSeek 的发布级冒烟受 opt-in 开关与成本约束限制（thinking off、
   低 max tokens、最多一次受控重试）。
 - 其他 provider（OpenAI/Anthropic/…）：本地 mock 有覆盖；真实端点只对
   DeepSeek 有 live 旅程。
-- Linux 构建、安装器、stapler、extension 兼容：见
-  `docs/release-hardening-plan.md` 后续批次。
+- macOS `.pkg` 构建与离线签名/notary/staple 编排已有专门 E2E，见
+  `docs/macos-installer.md`；真实 Developer ID/notary 仍需新权限。Linux
+  暂缓，extension 兼容仍为独立 RFC。
 - 非 opt-in 的真实 TUI 模型轮：`make e2e`/`make release-check` 保持全
   离线（成本与脆弱性考虑）；真实 TUI 工具轮由 opt-in 的 live TUI 双轮
   旅程承担，普通 PTY 恢复桥接仍不驱动真实模型轮。
