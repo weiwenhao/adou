@@ -14,13 +14,13 @@ fi
 # shellcheck source=../lib/deepseek-test-config.sh
 . "$(dirname -- "$0")/../lib/deepseek-test-config.sh"
 
-if ! deepseek_live_smoke_enabled; then
+if [ "${ADOU_LIVE_SMOKE:-0}" != "1" ]; then
     echo "e2e: live smoke skipped (set ADOU_LIVE_SMOKE=1 to enable)"
     exit 0
 fi
 
-if [ -z "${DEEPSEEK_TEST_API_KEY:-}" ]; then
-    echo "e2e: live smoke requires the test key in deepseek-test-config.sh" >&2
+if [ "${DEEPSEEK_TEST_API_KEY_IS_EXPLICIT:-0}" != "1" ]; then
+    echo "e2e: live smoke requires DEEPSEEK_TEST_API_KEY or DEEPSEEK_API_KEY" >&2
     exit 1
 fi
 deepseek_log_key_state
