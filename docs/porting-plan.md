@@ -185,7 +185,14 @@ selector`），单独复跑 3 次全绿；第四次（最终，全部改动落�
 逐脚本日志与本次失败的脱敏字节级证据保留在 `/tmp/adou-rc-gate/`（失败帧显示 model
 行 id 渲染为同长度空格、当前模型 ✓ 缺失）。
 
-### nature#302：外部 Nature runtime blocker（不修 runtime，不做 Adou 内伪修复）
+### nature#302 → PR #303 已合并（2026-08-12 closure）
+
+- 历史复现数据保留：Open 期间最小用例 v0.7.4 10/10 SIGABRT、weekly.2026.33 5/5；两个控制组 5/5 通过；TUI model selector 旧 runtime 72 次中 11 次内容损坏。
+- 现状：`nature-lang/nature#302` 由 PR #303（`fix-concurrent-string-pool`）合并修复；上游 `20260812_00_const_string_pool` CTest 通过。
+- 专用 toolchain：`/Users/liulianfuren/Code/nature-adou-toolchain`（commit `ad567d14`，nature v0.7.4 release build 2026-08-12）；`make clean && make build`（显式 NATURE/NATURE_ROOT）后 `nm build/bin/adou | grep const_str_pool_locker` 存在。
+- closure 实测（2026-08-12，严格串行）：`tui-model-selector.sh` 连续 50 次 47 通过 / 3 失败（失败集中在 iter 2-4、无 SIGABRT/panic/crash report，复跑 20/20 全绿 → 分类为冷启动 PTY 测试竞态，非内容损坏）；`make eval` 连续 5 次全绿；完整 `make e2e` 3 次运行 2 绿 1 偶发失败（同类竞态，复跑全绿）；`make release-check`、`make signing-check` 全绿。旧 runtime 的 model 行同长度空格损坏未再观测。
+- 残余观测：连续快速 PTY 启动仍有低概率无输出退出（iter 2-4 模式，无崩溃证据），已记录为测试竞态；若复现且伴随 SIGABRT 则按外部 blocker 上报。
+- 未调用真实 DeepSeek；未做真实签名/公证/发布。
 
 - issue：https://github.com/nature-lang/nature/issues/302 ——
   `runtime: concurrent short dynamic strings corrupt const_str_pool and abort in sc_map_put_sv`
