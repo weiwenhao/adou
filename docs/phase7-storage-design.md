@@ -12,9 +12,9 @@
 | `packages/agent/src/harness/types.ts` `SessionRepo` | 契约：create/open/list/delete/fork | 已映射（见 adapter API） |
 | `packages/agent/src/harness/session/jsonl-repo.ts` | JSONL 实现 | 对应 `src/session/repository.n`（既有） |
 | `packages/agent/src/harness/session/jsonl-storage.ts` | 文件读写 | 对应 `src/session/jsonl.n`（既有） |
-| `packages/storage/sqlite-node/src/sqlite/migrations.ts` | schema 迁移 | 下一批 |
-| `packages/storage/sqlite-node/src/sqlite/repo.ts` | SQLite SessionRepo | 下一批 |
-| `packages/storage/sqlite-node/src/sqlite/storage/{sessions,session-entries,branch-entries,session-sequences,session-materialized}.ts` | 表访问层 | 下一批 |
+| `packages/storage/sqlite-node/src/sqlite/migrations.ts` | schema 迁移 | 已完成（batch 2 落地） |
+| `packages/storage/sqlite-node/src/sqlite/repo.ts` | SQLite SessionRepo | 已完成（batch 2 落地） |
+| `packages/storage/sqlite-node/src/sqlite/storage/{sessions,session-entries,branch-entries,session-sequences,session-materialized}.ts` | 表访问层 | 已完成（batch 2 落地） |
 
 ## Adapter API（本批落地：`src/session/backend.n`）
 
@@ -32,7 +32,7 @@ delete_session(file_path, cwd): (bool, string) // SessionRepo.delete（trash →
 fork 语义复用既有 `manager_t`：`fork_before`/`fork_at`/`fork_to`（完整 fork 含
 `header.parent_session` 血缘）。TUI 调用点（resume picker 扫描、
 `session_actions.delete_session_file`）本批**不切换**，后续批次统一迁移到
-backend helper。
+backend helper（该迁移已由 batch 4 落地，见下）。
 
 ## 双后端契约测试（`tests/repository_contract_test.n`）
 
@@ -110,16 +110,14 @@ parent_session 血缘、重复 id 错误、list/delete（持久化后端）与�
   “No persisted sessions are available” 分支）。tui-session-selector.sh /
   tui-tree-fork.sh 回归通过。
 
-## 下一批边界
+## 下一批边界（2026-08-12 复核：均已收口）
 
-- radius（OAuth/遥测）按排除项评估。
-- IPC 多实例 supervisor：上游 `rpc-process.ts`/`supervisor.ts` 的
-  spawn 进程管理、多实例实例表与 handler.ts 命令面（rpc_stream 双向
-  连接态协议依赖它）。
-- 若系统 SQLite 头/库需要动态链接（如降级打包），单独验证 Darwin/Linux ABI，
-  本批静态 .o 链接不改变。
+- radius（OAuth/遥测）：已按排除项评估并排除，不移植。
+- IPC 多实例 supervisor：已由下方 Phase 7.1 落地（进程内隔离 runner 方案；
+  上游 `rpc-process.ts` 子进程方案因 Nature 运行时硬阻塞被否决，证据见下）。
+- 系统 SQLite 动态链接：维持静态 .o 链接不变，本批不引入系统库依赖。
 
-## Phase 7.1：server 协议 parity closeout（2026-08-11 落地，2026-08-12 验收中）
+## Phase 7.1：server 协议 parity closeout（2026-08-11 落地，2026-08-12 已完成验收）
 
 ### 上游 → Nature 实现映射
 
