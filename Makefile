@@ -25,8 +25,13 @@ TEST_SOURCES := $(sort $(wildcard tests/*.n))
 E2E_SOURCES := $(sort $(wildcard tests/e2e/*.sh))
 EVAL_ENTRY := tests/evals/smoke_evals.n
 EVAL_BIN := $(BIN_DIR)/adou-evals
+ADOU_VERSION := $(shell sed -n "s/^pub const VERSION = '\([^']*\)'.*/\1/p" $(CURDIR)/src/app.n)
+DIST_DIR := $(BUILD_DIR)/dist
+DIST_NAME := adou-$(ADOU_VERSION)-darwin-arm64
+DIST_STAGE := $(DIST_DIR)/$(DIST_NAME)
+DIST_TARBALL := $(DIST_DIR)/$(DIST_NAME).tar.gz
 
-.PHONY: all build run test e2e eval check install clean help
+.PHONY: all build run test e2e eval check install dist release-check clean help
 
 all: build
 
@@ -93,7 +98,25 @@ install: build
 	@cp "$(ADOU_BIN)" "$(DESTDIR)$(PREFIX)/bin/adou"
 	@cp "$(PROCESS_GROUP_HELPER)" "$(DESTDIR)$(PREFIX)/bin/adou-process-group"
 	@mkdir -p "$(DESTDIR)$(PREFIX)/share/adou/docs"
-	@cp docs/mvp-implementation-spec.md docs/nature-issues.md "$(DESTDIR)$(PREFIX)/share/adou/docs/"
+	@cp docs/mvp-implementation-spec.md "$(DESTDIR)$(PREFIX)/share/adou/docs/"
+
+# darwin-arm64 release tarball.  src/app.n's VERSION is the single source of
+# truth; package.toml must agree or dist fails.  File list and permissions are
+# fixed; byte-level reproducibility is not claimed (see
+# docs/release-hardening-plan.md).  The staging/archiving work lives in
+# scripts/make-dist.sh (same convention as the guarded Nature wrapper).
+dist: build
+	@ADOU_VERSION="$(ADOU_VERSION)" ADOU_BIN="$(ADOU_BIN)" PROCESS_GROUP_HELPER="$(PROCESS_GROUP_HELPER)" DIST_DIR="$(DIST_DIR)" DIST_NAME="$(DIST_NAME)" PACKAGE_VERSION="$(shell sed -n 's/^version = "\([^"]*\)".*/\1/p' $(CURDIR)/package.toml)" "$(CURDIR)/scripts/make-dist.sh"
+
+# Serial release gate: build, evals, dist, artifact e2e, RPC-over-IPC e2e and
+# the bash-stream e2e (covers bash execution through the process-group
+# helper).  Deliberately does not run the full make test / make e2e suites.
+release-check: build eval dist
+	@set -e; \
+	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/release-artifact.sh"; \
+	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/rpc-over-ipc.sh"; \
+	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/rpc-bash-stream.sh"; \
+	echo "release-check: build+eval+dist+artifact+ipc+bash OK"
 
 clean:
 	@rm -rf "$(BUILD_DIR)"
@@ -107,5 +130,7 @@ help:
 		'make e2e     Build once, then run CLI end-to-end tests' \
 		'make eval    Run the Phase 8 smoke evals against local mocks' \
 		'make check   Run unit tests followed by end-to-end tests' \
+		'make dist    Package build/dist/adou-<version>-darwin-arm64.tar.gz' \
+		'make release-check  Serial release gate: build, eval, dist, artifact e2e, IPC e2e, bash e2e' \
 		'make install Install the binary and docs (PREFIX=/usr/local)' \
 		'make clean   Remove generated build files'
