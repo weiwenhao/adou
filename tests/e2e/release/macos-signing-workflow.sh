@@ -31,7 +31,10 @@ set -eu
 # Requires the `make dist` staging (fails with exit 2 when missing, so it
 # is safe for the make e2e glob).
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+# This script lives one directory below the plain `make e2e` glob
+# (tests/e2e/release/), so the repository root is three levels up.
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 adou_bin=${ADOU_BIN:-"$repo_root/build/bin/adou"}
 helper_bin=${ADOU_PROCESS_GROUP_HELPER:-"$repo_root/build/bin/adou-process-group"}
 

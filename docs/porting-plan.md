@@ -3,10 +3,11 @@
 状态：Phase 5、Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
 release hardening：进行中（Batch 1 已完成，Batch 2A 进行中，见 `docs/release-hardening-plan.md` 与 `docs/macos-signing.md`）
+RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make release-check`、`make signing-check` 证据见下）；发现外部 runtime blocker `nature#302`（const_str_pool 竞态，见下），TUI model selector 内容损坏为其同族静默表现
 
 ## 当前进度快照
 
-- Adou 当前有 218 个 `src/**/*.n` 文件、41,925 行 Nature 源码、138 个 Nature 单元测试文件（665 个 test case、2,724 个 `assert`）和 45 个 e2e 脚本。
+- Adou 当前有 218 个 `src/**/*.n` 文件、41,925 行 Nature 源码、138 个 Nature 单元测试文件（665 个 test case、2,724 个 `assert`）和 46 个 e2e 脚本。
 - Phase 1–6 已完成并有源码差分、单元测试和跨模块验收记录；137 个单测文件在 2026-08-11 全量串行通过（7 个 OOM abort 单独重跑全过，deepseek fixture 回归已修复）。
 - Phase 7（storage + server）已完成：storage 已完成（JSONL/memory/SQLite 三后端契约测试 + migrations + materialized 表），server supervisor/protocol/rpc_stream 已验收（Phase 7.1 于 2026-08-12 关闭）。
 - 历史失败记录（cli-startup-boundaries 挂起、auth stdout 泄漏、ESC 10ms、deepseek fixture、全量 7 文件 OOM）均已由后续修复或重跑覆盖，见各批实跑证据。
@@ -173,6 +174,82 @@ Phase 8 验收结果（2026-08-12 关闭）：`make build` 退出 0；`make eval
 - 风险 2（help 文本核对）：adou HELP 覆盖解析器全部参数（此前 `--debug` 已解析但未列出，已补行）；extension/skill/prompt-template/theme 参数按排除/等价（/config 资源启停）记录。9 个 CLI 上游模块对照：args.ts → `src/config/args.n`（含 help-matrix.sh 参数矩阵 e2e）；config-selector.ts → /config 资源启停（tui-config.sh）；credential-print.ts → `run_auth_print_api_key`（auth-print.sh，本批 stderr 隔离）；file-processor.ts → `load_file_arguments`（initial-messages.sh）；initial-message.ts → 启动消息合并；list-models.ts → `models.list_filtered`（model-selection.sh）；project-trust.ts → `--approve/--no-approve`（project-config.sh）；session-picker.ts → `--resume` picker（tui-session-selector.sh）；startup-ui.ts → setup overlay（tui-setup.sh）。`help-matrix.sh` 断言 HELP 含全部 35 个参数与 13 个短别名、--help/--version 退出 0 且 stderr 干净。
 - 风险 3（PTY ESC 输入）：`ESCAPE_SEQUENCE_TIMEOUT_MS` 10ms → 50ms（xterm 惯例）；PTY 拆包的 `\x1b[A` 不再塌缩为 escape。`tui-tree-fork.sh` 改用真实上方向键导航 tree（移除 f 过滤绕行），全流程通过。
 - 风险 4（全量回归）：137 个单测文件串行全量实跑（`tests/*.n` 逐个 guarded 调用，约 2 小时，16GB 机器满内存下 7 个文件编译器 OOM abort，单独重跑全部通过；1 个真实回归 `deepseek_http_stream_test.n` 已修复——fixture 需显式声明 `compat.thinking_format = 'deepseek'`（595f4de 起为运行时检测））。结论：137/137 通过（130 直接 + 7 重跑）。
+
+## 2026-08-12 RC 稳定性门禁证据（外部 blocker：nature#302）
+
+完整 `make e2e`（46 个脚本，offline/PTY，全部不出网）串行实跑 4 次：
+第一次 46/46 绿（官方 `make e2e` 目标，总耗时 1:00.31）；第二次逐脚本计时循环
+46/46 绿（总耗时 57s，单脚本最长 `tui-config.sh` 18s，其余 PTY 脚本 2–6s）；第三次
+33/46 处 `tui-model-selector.sh` 失败（`current model check mark missing from the
+selector`），单独复跑 3 次全绿；第四次（最终，全部改动落定后）46/46 绿（57.8s）。
+逐脚本日志与本次失败的脱敏字节级证据保留在 `/tmp/adou-rc-gate/`（失败帧显示 model
+行 id 渲染为同长度空格、当前模型 ✓ 缺失）。
+
+### nature#302：外部 Nature runtime blocker（不修 runtime，不做 Adou 内伪修复）
+
+- issue：https://github.com/nature-lang/nature/issues/302 ——
+  `runtime: concurrent short dynamic strings corrupt const_str_pool and abort in sc_map_put_sv`
+  （Open，fix PR #303 未合并）。Nature runtime 的 coroutine 调度在多个 processor
+  线程上并行执行；`string_new_with_pool` 无同步地访问进程全局 `const_str_pool`，
+  并发创建 capacity <= 8 的动态字符串时 get/put/remap 竞态可损坏分配器并 SIGABRT。
+- 纯 Nature 最小用例（64 coroutine × 20000 次 `fmt.sprintf('%06d', …)`，无应用代码/
+  FFI/fs/网络）：v0.7.4 10/10 SIGABRT（栈顶 `sc_map_put_sv ← string_new_with_pool ←
+  rt_vec_to_string_out ← utils.itos_with ← sprintf ← main.churn ← coroutine_wrapper`）；
+  本地 weekly.2026.33 构建 5/5 SIGABRT。对照组均 5/5 通过：单 coroutine 同总分配量
+  （WORKERS=1、ITERATIONS=1280000）；`%08d`（8 字节结果 capacity 9，绕过 pool）。
+  复现期 crash report：`~/Library/Logs/DiagnosticReports/repro-2026-08-12-140606.ips`
+  （v0.7.4）与 `repro-weekly-2026-08-12-141202*.ips`（weekly.2026.33），栈与 issue
+  完全一致。
+- Adou 侧同族静默表现（本批实测）：`tui-model-selector.sh` 的 model selector 首帧
+  内容损坏——"deepseek-v4-flash [deepseek] ✓" 的 id/name 渲染为同长度空格、✓ 缺失，
+  损坏帧之后 2s 内无重绘帧到达；与分配强度一致地 ~15%（11/72 次复跑）触发。该现象
+  **早于 1249714 的 render_lock/quitting 修复**：1fec547（父提交）二进制同脚本 3/20
+  触发，非本批回归。`render_lock` 只是串行化 render() 的防御性措施，**不修复 #302**
+  （选项构建/输入处理等处的并发字符串创建不在锁内，且竞态发生在 runtime 线程之间）。
+  已同步修正 `src/tui/session_view.n` 中此前"并发写竞态 runtime fs 层"的不准确注释，
+  改为准确引用 #302 并明确 render_lock 不修复该 issue。
+- 本批还观察到 #302 同族在 **Nature 编译器**上的崩溃：`make eval` 首次构建
+  `adou-evals` 时编译器 SIGABRT（`~/Library/Logs/DiagnosticReports/nature-2026-08-12-144705.ips`，
+  栈 `arm64_lower ← build ← cmd_entry`，malloc `free_list_checksum_botch` 堆损坏），
+  属编译器自身 runtime 问题；按此前编译器 abort 的既有处置（单独重跑）复跑一次通过，
+  共记录 1 次崩溃、1 次重试成功，不做无限重试。当日 01:16/01:44/01:51 的
+  `nature-*.ips` 为先前最小用例复现期留下的同类 SIGABRT。
+- 处理边界：不修改 Nature 仓库、不在 Adou 内做覆盖 runtime 的伪修复、不弱化
+  `tui-model-selector.sh`（其断言正确检测到真实的内容损坏）；本批完整 `make e2e`
+  **未**触发 #302 的 SIGABRT 崩溃（`make eval` 编译器崩溃为本批唯一一次 #302 族
+  崩溃，已按上一条记录）。修复须等待上游 PR #303 合并后更新系统 `libruntime.a`/
+  编译器，再复测本条目与 `tui-model-selector.sh`。
+
+### 门禁链（make e2e 之后串行执行）
+
+- `make eval`：首次执行时 Nature 编译器构建 `adou-evals` SIGABRT（#302 同族，见上），
+  单独复跑一次后 3/3 绿（basic-prompt / tool-call-read / provider-error-handling，
+  exit 0）。
+- `make release-check`：首次执行被上面的确定性 repo_root 缺陷挡下（见下），修复后
+  build → eval 3/3 → dist → release-artifact → rpc-over-ipc → rpc-bash-stream 全绿。
+- `make signing-check`：dist + macos-signing-workflow 全绿（preflight、fail-closed、
+  fake-tool dry-runs、ad-hoc 副本 smoke、README 一致性；不真实签名/公证）。
+- 分层检查：`make -n e2e` 展开 46 个 `tests/e2e/` 根目录脚本，**不含**
+  `live/`、`release/` 任何子目录；`make -n e2e-live` 只含 live-smoke、
+  live-coding-journey、live-tui-coding-journey 三个 DeepSeek 场景。`make e2e-live`
+  无开关运行时 3 个脚本各自 skip（exit 0），不消耗额度、不调用真实 DeepSeek。
+- 本批未调用真实 DeepSeek（live 场景全部 opt-in 关闭）。
+
+### 本批发现的确定性测试缺陷（已修复，5/5 复跑）
+
+`tests/e2e/release/release-artifact.sh` 与 `tests/e2e/release/macos-signing-workflow.sh`
+在 1fec547 移入 `tests/e2e/release/` 子目录时未同步调整 `repo_root` 计算
+（`dirname $0/../..` 只上溯两层，解析到 `tests/`），导致 `make release-check` /
+`make signing-check` 在 dist 产物已生成时仍报 `release tarball not found`（确定性失败，
+非竞态；Batch 1 时两脚本位于 e2e 根目录故未触发）。已改为 `../../..`（三层上溯），
+修复后两脚本各 5/5 连续通过，`make release-check`、`make signing-check` 全绿。
+
+### render_lock/quitting 回归检查（1249714）
+
+重点脚本 `tui-bash-output.sh`、`tui-editor-wrapping.sh`、`tui-session-selector.sh`、
+`tui-tree-fork.sh` 在 4 次完整 e2e 与一次定向复跑中全部通过：无死锁、/quit 退出码 0、
+termios 恢复、无遗留 adou 进程、无丢帧断言失败。`tui-model-selector.sh` 的内容损坏为
+#302 同族外部 blocker（见上），与 render_lock 无关（父提交同概率复现）。
 
 ## 2026-08-11 审查与实跑证据
 
