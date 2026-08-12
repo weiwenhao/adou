@@ -40,6 +40,27 @@ if [ -z "$tarball" ] || [ ! -f "$tarball" ]; then
     exit 2
 fi
 
+# External checksum: must exist next to the tarball, verify the archive
+# before unpacking, and fail when the archive is tampered with.
+checksum="$tarball.sha256"
+if [ ! -f "$checksum" ]; then
+    echo "e2e: external checksum missing: $checksum" >&2
+    exit 2
+fi
+if ! (cd "$(dirname "$tarball")" && shasum -a 256 -c "$(basename "$checksum")") >/dev/null 2>&1; then
+    echo "e2e: external checksum does not verify the tarball" >&2
+    exit 1
+fi
+if printf 'tampered' >> "$tarball" 2>/dev/null; then
+    if (cd "$(dirname "$tarball")" && shasum -a 256 -c "$(basename "$checksum")") >/dev/null 2>&1; then
+        echo "e2e: tampered tarball still verifies" >&2
+        exit 1
+    fi
+    # restore the original tarball for the remainder of the test
+    truncate -s -8 "$tarball"
+fi
+
+
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/adou-release-artifact-XXXXXX")
 server_pid=
 

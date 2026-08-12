@@ -80,19 +80,22 @@ Verification
 
 Sources and build
 -----------------
-  Repository: source repository URL supplied by distributor
+  Repository: https://github.com/weiwenhao/adou
   Phase 1-8 porting complete; see docs/porting-plan.md and
   docs/release-hardening-plan.md in the source tree.
   Build: make build && make dist (guarded serial Nature compiler workflow).
 
-Scope and signing
------------------
-  This batch of the release hardening plan only ships darwin-arm64.
-  The binaries carry only an ad-hoc/linker-generated signature; they
-  are not Developer ID signed and not notarized.  On first launch
-  Gatekeeper may warn about an unidentified developer.  Real Developer
-  ID signing and notarization are Batch 2B, gated on an explicit
-  identity and notary profile (see docs/macos-signing.md).
+Distribution and signing
+------------------------
+  This archive is the official unsigned direct distribution channel:
+  GitHub unsigned tar.gz.  The binaries carry only an ad-hoc/linker-generated signature;
+  they are not Developer ID signed and not notarized.  On first launch macOS Gatekeeper may block the binary;
+  if so, remove the quarantine attribute:
+
+    xattr -cr ./adou
+
+  Developer ID signing, .pkg packaging, and notarization are optional
+  future enhancements, not blockers for this distribution channel.
 EOF
 
 chmod 0755 "$stage/adou" "$stage/adou-process-group"
@@ -101,6 +104,8 @@ chmod 0644 "$stage/RELEASE-README"
 (cd "$stage" && shasum -a 256 adou adou-process-group RELEASE-README > SHA256SUMS)
 
 tar -C "$dist_dir" -czf "$dist_dir/$dist_name.tar.gz" "$dist_name"
+(cd "$dist_dir" && shasum -a 256 "$dist_name.tar.gz" > "$dist_name.tar.gz.sha256")
+echo "dist: $dist_dir/$dist_name.tar.gz (+$dist_name.tar.gz.sha256)"
 
 ls -la "$stage"
 echo "make-dist: $dist_dir/$dist_name.tar.gz"
