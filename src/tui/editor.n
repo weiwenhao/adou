@@ -92,6 +92,10 @@ pub type visual_cursor_t = struct {
     int visual_col
     int source_line
     int source_col
+    // UTF-8 byte offset of the cursor within the current visual line's
+    // text.  visual_col is a display column and must never be used as a
+    // string offset (it slices into multi-byte code points).
+    int byte_offset
 }
 
 pub fn new(): ref<editor_t> {
@@ -652,7 +656,7 @@ pub fn editor_t.visual_lines(&self): [visual_line_t]! {
 pub fn editor_t.visual_cursor(&self): visual_cursor_t! {
     var visual = self.visual_lines()
     if visual.len() == 0 {
-        return visual_cursor_t {visual_index: 0, visual_col: 0, source_line: 0, source_col: 0,}
+        return visual_cursor_t {visual_index: 0, visual_col: 0, source_line: 0, source_col: 0, byte_offset: 0,}
     }
     int index = -1
     for visual_index, candidate in visual {
@@ -680,7 +684,11 @@ pub fn editor_t.visual_cursor(&self): visual_cursor_t! {
     if self.cursor_col >= target.source_col {
         visual_col = visible_prefix_width(target.text, self.cursor_col - target.source_col)
     }
-    return visual_cursor_t {visual_index: index, visual_col: visual_col, source_line: target.source_line, source_col: target.source_col,}
+    int byte_offset = 0
+    if self.cursor_col >= target.source_col {
+        byte_offset = self.cursor_col - target.source_col
+    }
+    return visual_cursor_t {visual_index: index, visual_col: visual_col, source_line: target.source_line, source_col: target.source_col, byte_offset: byte_offset,}
 }
 
 pub fn editor_t.visual_line_count(&self): int {

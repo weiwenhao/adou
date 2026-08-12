@@ -30,6 +30,7 @@ import adou.src.session.types as session_types
 import adou.src.tui.chat
 import adou.src.tui.editor
 import adou.src.tui.input_buffer
+import adou.src.tui.unicode
 import adou.src.tui.keys
 import adou.src.tui.model_search
 import adou.src.tui.path_completion
@@ -2051,6 +2052,39 @@ fn read_input(ref<view_t> view, chan<terminal_input_t> input, chan<input_t> outp
     }
 }
 
+// UTF-8 code point boundary around `offset` in `value`.  Walks back over
+// continuation bytes (0x80..0xBF) to the leading byte and forward to the
+// next leading byte; guarantees a slice that never splits a code point,
+// even if offset lands mid-codepoint.
+#local
+fn codepoint_boundary(string value, int offset): (int, int) {
+    int length = value.len()
+    if offset >= length {
+        // Never index value[length]; an offset at/behind EOL has no
+        // codepoint to wrap.
+        return (length, length)
+    }
+    int start = offset
+    for start > 0 {
+        u8 byte = value[start] as u8
+        if byte >= 0x80 && byte <= 0xBF {
+            start -= 1
+        } else {
+            break
+        }
+    }
+    int end = start + 1
+    for end < length {
+        u8 byte = value[end] as u8
+        if byte >= 0x80 && byte <= 0xBF {
+            end += 1
+        } else {
+            break
+        }
+    }
+    return (start, end)
+}
+
 #local
 fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int command_index, string thinking, int terminal_rows): [string]! {
     [string] result = vec<string>.cap_of(16)
@@ -2081,10 +2115,38 @@ fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int 
         string value = visual.text
         string display = value
         if index == cursor.visual_index {
-            int cursor_offset = cursor.visual_col
+            // The cursor must be inserted on a UTF-8 grapheme boundary:
+            // visual_col is a display column and would slice into
+            // multi-byte code points (CJK/combining/emoji/ZWJ).  Use the
+            // byte offset carried by the cursor and extend it over the
+            // full grapheme under the caret.
+            int cursor_offset = cursor.byte_offset
+            if cursor_offset > value.len() {
+                cursor_offset = value.len()
+            }
+            int glyph_start = cursor_offset
+            int glyph_end = cursor_offset
             if cursor_offset < value.len() {
-                display = value.slice(0, cursor_offset) + theme.cursor(value.slice(cursor_offset, cursor_offset + 1)) + value.slice(cursor_offset + 1, value.len())
+                var segments = unicode.graphemes(value) catch error {[]}
+                bool found = false
+                for segment in segments {
+                    if segment.start <= cursor_offset && cursor_offset < segment.end {
+                        glyph_start = segment.start
+                        glyph_end = segment.end
+                        found = true
+                        break
+                    }
+                }
+                if !found {
+                    // Fail-safe: never fall back to a single-byte slice.
+                    // Use explicit UTF-8 code point boundaries instead.
+                    var (safe_start, safe_end) = codepoint_boundary(value, cursor_offset)
+                    glyph_start = safe_start
+                    glyph_end = safe_end
+                }
+                display = value.slice(0, glyph_start) + theme.cursor(value.slice(glyph_start, glyph_end)) + value.slice(glyph_end, value.len())
             } else {
+                // Cursor at EOL: render a space, never touch the text.
                 display += theme.cursor(' ')
             }
         }

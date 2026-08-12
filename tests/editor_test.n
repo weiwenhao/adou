@@ -313,3 +313,43 @@ test 'history browsing snapshots the draft for undo like Pi' {
     editor.undo()
     assert(editor.get_text() == 'current draft')
 }
+
+test 'visual cursor carries a byte offset that never slices UTF-8' {
+    var editor = editor.new()
+    editor.set_text('你好')
+    // set_text leaves the cursor at EOL (byte 6, display col 4): the old
+    // renderer sliced at visual_col 4 and cut into the second hanzi.
+    var at_end = editor.visual_cursor()
+    assert(at_end.byte_offset == 6)
+    assert(at_end.visual_col == 4)
+    // between the two hanzi: byte offset 3, display col 2.
+    editor.move_line_start()
+    editor.move_right()
+    var cursor = editor.visual_cursor()
+    assert(cursor.byte_offset == 3)
+    assert(cursor.visual_col == 2)
+    // slicing at byte_offset keeps the following code point intact.
+    var rest = '你好'.slice(cursor.byte_offset, '你好'.len())
+    assert(rest == '好')
+}
+
+test 'visual cursor byte offset covers combining and ZWJ graphemes' {
+    var first = editor.new()
+    first.set_text('a' + '\xcc\x81')  // a + combining acute: one grapheme, 3 bytes
+    first.move_right()
+    var cursor = first.visual_cursor()
+    assert(cursor.byte_offset == 3)
+    var second = editor.new()
+    second.set_text('👨' + '\xe2\x80\x8d' + '💻')  // ZWJ family: one grapheme, 11 bytes
+    second.move_right()
+    assert(second.visual_cursor().byte_offset == 11)
+}
+
+test 'visual cursor at EOL keeps byte offset at line length' {
+    var editor = editor.new()
+    editor.set_text('abc')
+    editor.move_line_end()
+    var cursor = editor.visual_cursor()
+    assert(cursor.byte_offset == 3)
+    assert(cursor.visual_col == 3)
+}
