@@ -138,6 +138,7 @@ pub type view_t = struct {
     int command_index
     bool kitty_protocol
     bool quitting
+    int cached_auth_provider_count = 0
     // --resume opens the selector before the normal prompt. Escape/cancel
     // exits that startup flow instead of silently continuing a session.
     bool startup_session_picker
@@ -182,6 +183,7 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
         thinking = 'on'
     }
     view.chat.configure(runner.agent_config.model.context_window, thinking)
+    refresh_auth_provider_count(view)
     view.chat.set_auto_compaction(runner.compaction_settings.enabled)
     view.chat.git_branch = detect_git_branch(cwd)
     view.chat.load_messages(runner.active_messages)
@@ -1146,6 +1148,7 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         }
         self.chat.error_message = ''
         self.chat.status = 'Logged in to ' + provider
+        refresh_auth_provider_count(self)
         self.redraw()
         return null
     }
@@ -1176,6 +1179,7 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         }
         self.chat.error_message = ''
         self.chat.status = 'Logged out of ' + provider
+        refresh_auth_provider_count(self)
         self.redraw()
         return null
     }
@@ -1686,7 +1690,10 @@ fn env_name(string provider): string {
 pub fn view_t.render_lines(&self, int width, int height): [string]! {
     self.chat.model = self.runner.agent_config.model.id
     self.chat.provider = self.runner.agent_config.model.provider
-    self.chat.set_provider_visibility(authenticated_provider_count(self.runner) > 1)
+    // Hot path: read the cached count only.  Authentication I/O and the
+    // model table scan happen in refresh_auth_provider_count, which runs
+    // at view init and after every auth change.
+    self.chat.set_provider_visibility(self.cached_auth_provider_count > 1)
     self.chat.session_name = self.runner.repository.get_session_name() catch error {''}
     self.chat.set_usage_totals(self.runner.repository.usage_totals())
     self.chat.set_latest_cache_hit_rate(self.runner.repository.latest_cache_hit_rate())
@@ -1766,13 +1773,26 @@ fn view_t.write_terminal(&self, string output): void! {
     debug.log_terminal_output(output)
 }
 
+// Authentication visibility is a provider-level property, not a per-model
+// one: models.all() has ~1200 entries, and auth.effective() opens and
+// parses auth.json on every call.  Deduplicate providers first so the
+// whole scan performs one auth read per provider, and cache the result on
+// the view (refreshed at init and after /login // /logout) so the render
+// hot path never re-scans the model table or the credential file.
+// Recompute and cache the authenticated-provider count.  Called exactly
+// once at view initialization and from every auth.save/auth.remove success
+// path (/login, /logout, API-key overlay, logout overlay).  The render hot
+// path must never call this: it scans models.all() (~1200 entries) and
+// reads auth.json once per provider.
 #local
-fn authenticated_provider_count(ref<session.runner_t> runner): int {
+fn refresh_auth_provider_count(ref<view_t> view) {
+    view.cached_auth_provider_count = count_authenticated_providers(view.runner)
+}
+
+#local
+fn count_authenticated_providers(ref<session.runner_t> runner): int {
     [string] seen = []
     for model in models.all() {
-        if !model_is_authenticated(runner, model) {
-            continue
-        }
         bool already_seen = false
         for provider in seen {
             if provider == model.provider {
@@ -1784,7 +1804,15 @@ fn authenticated_provider_count(ref<session.runner_t> runner): int {
             seen.push(model.provider)
         }
     }
-    return seen.len()
+    int count = 0
+    for provider in seen {
+        if auth.effective(provider) != '' {
+            count += 1
+        } else if runner.agent_config.model.provider == provider && runner.agent_config.stream_options.api_key != '' {
+            count += 1
+        }
+    }
+    return count
 }
 
 #local
@@ -2991,6 +3019,7 @@ pub fn view_t.complete_api_key_login(&self, ref<overlay_t> overlay) {
     }
     self.chat.error_message = ''
     self.chat.status = 'Saved API key for ' + overlay.provider
+    refresh_auth_provider_count(self)
     self.overlay = null
     self.redraw()
 }
@@ -3127,6 +3156,7 @@ pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
             return
         }
         self.chat.status = 'Removed stored API key for ' + selected
+        refresh_auth_provider_count(self)
         self.overlay = null
         self.redraw()
         return

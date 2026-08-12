@@ -114,7 +114,14 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
         provider = preferences.default_provider
     }
     if provider == '' {
-        provider = infer_provider()
+        // No explicit CLI/env provider and no valid persisted default:
+        // fall back to deepseek/deepseek-v4-flash deterministically instead
+        // of inferring from whichever API key happens to exist on this
+        // machine (a stray OpenAI credential must not turn a fresh start
+        // into a GPT session).  Explicit selection, valid persisted
+        // defaults, project settings and session restore keep their higher
+        // priority because they set `provider` before this point.
+        provider = 'deepseek'
     }
     provider = provider.to_lower()
     if !is_known_provider(provider) {
@@ -217,19 +224,6 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
 }
 
 #local
-fn infer_provider(): string {
-    if syscall.get_env('DEEPSEEK_API_KEY') != '' || auth.read('deepseek') != '' {
-        return 'deepseek'
-    }
-    if syscall.get_env('OPENAI_API_KEY') != '' || auth.read('openai') != '' {
-        return 'openai'
-    }
-    if syscall.get_env('ANTHROPIC_API_KEY') != '' || auth.read('anthropic') != '' {
-        return 'anthropic'
-    }
-    return 'deepseek'
-}
-
 pub fn first(string primary, string fallback): string {
     return primary != '' ? primary : fallback
 }

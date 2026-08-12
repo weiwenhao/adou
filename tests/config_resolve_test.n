@@ -1,5 +1,60 @@
 import adou.src.config.args
 import adou.src.config.resolve
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+#local
+fn isolate_env(): string! {
+    string previous = syscall.get_env('PI_CODING_AGENT_DIR')
+    string root = path.join('/tmp', 'adou-resolver-isolated-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    syscall.set_env('PI_CODING_AGENT_DIR', path.join(root, 'agent'))
+    return path.join(root, 'agent')
+}
+
+test 'no explicit selection and no valid persisted default falls back to deepseek-v4-flash' {
+    isolate_env()
+    var arguments = args.parse(['adou'])
+    var config = resolve.resolve(arguments, '/tmp')
+    assert(config.provider == 'deepseek')
+    assert(config.model.id == 'deepseek-v4-flash')
+}
+
+test 'stale mock persisted default with OpenAI credentials still falls back to deepseek-v4-flash' {
+    string agent_dir = isolate_env()
+    os.mkdirs(agent_dir, 0o755) catch error {}
+    var file = fs.open(path.join(agent_dir, 'settings.json'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644) catch error {
+        assert(false)
+        return
+    }
+    file.write('{"defaultProvider":"mock","defaultModel":"mock-next"}' as [u8])
+    file.close()
+    var previous_openai = syscall.get_env('OPENAI_API_KEY')
+    syscall.set_env('OPENAI_API_KEY', 'sk-stray-openai') catch error {}
+    var previous_pi = syscall.get_env('PI_CODING_AGENT_DIR')
+    syscall.set_env('PI_CODING_AGENT_DIR', agent_dir) catch error {}
+    var arguments = args.parse(['adou'])
+    var config = resolve.resolve(arguments, '/tmp')
+    assert(config.provider == 'deepseek')
+    assert(config.model.id == 'deepseek-v4-flash')
+    if previous_openai == '' {
+        syscall.set_env('OPENAI_API_KEY', '') catch error {}
+    } else {
+        syscall.set_env('OPENAI_API_KEY', previous_openai) catch error {}
+    }
+    syscall.set_env('PI_CODING_AGENT_DIR', previous_pi) catch error {}
+}
+
+test 'explicit provider still wins over the fallback' {
+    isolate_env()
+    var arguments = args.parse(['adou', '--provider', 'openai', '--model', 'gpt-5.1-codex'])
+    var config = resolve.resolve(arguments, '/tmp')
+    assert(config.provider == 'openai')
+    assert(config.model.id == 'gpt-5.1-codex')
+}
 
 test 'unknown provider is a recoverable configuration error' {
     var arguments = args.parse(['adou', '--provider', 'mock'])

@@ -10,6 +10,7 @@ import adou.src.compaction.serialize
 import adou.src.compaction.types as compaction_types
 import adou.src.context.skills
 import adou.src.session.repository
+import adou.src.config.settings
 import adou.src.session.types as session_types
 import adou.src.tools.types as tool_types
 import co
@@ -112,6 +113,16 @@ pub fn make_runner(ref<repository.manager_t> manager, ref<provider_fixture_t> fi
     var config = new agent_types.config_t(model = model(context_window), stream_options = new ai_types.stream_options_t(api_key = 'fixture-key', max_retries = 0))
     var settings = compaction_types.settings_t {reserve_tokens: reserve_tokens, keep_recent_tokens: keep_recent_tokens,}
     return session.new(manager, context, config, provider_fn(fixture), settings)
+}
+
+// Guard against persisting test fixtures into the real user agent
+// directory: every test that calls a settings-persisting runner method
+// (set_model, set_thinking_level, ...) must run with PI_CODING_AGENT_DIR
+// redirected to a throwaway directory.
+#local
+fn isolate_agent_dir(): void {
+    string root = path.join('/tmp', 'adou-agent-session-isolated-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    syscall.set_env('PI_CODING_AGENT_DIR', path.join(root, 'agent')) catch error {}
 }
 
 pub fn write_settings_file(string file_path, string content): void! {
@@ -522,6 +533,7 @@ test 'tree branch summary captures the abandoned branch and attaches at target p
 }
 
 test 'thinking level changes persist once and update provider options' {
+    isolate_agent_dir()
     var manager = repository.in_memory('/tmp')
     var fixture = new provider_fixture_t()
     var runner = make_runner(manager, fixture, 1000, 100, 20)
@@ -543,6 +555,7 @@ test 'thinking level changes persist once and update provider options' {
 }
 
 test 'model selection preserves an explicit in-memory API key' {
+    isolate_agent_dir()
     var manager = repository.in_memory('/tmp')
     var fixture = new provider_fixture_t()
     var runner = make_runner(manager, fixture, 1000, 100, 20)
@@ -551,6 +564,12 @@ test 'model selection preserves an explicit in-memory API key' {
     runner.set_model(next)
     assert(runner.agent_config.model.id == 'mock-next')
     assert(runner.agent_config.stream_options.api_key == 'runtime-key')
+    // set_model persists a default model: it must land in the isolated
+    // agent dir, never in the real user configuration.
+    string agent_dir = syscall.get_env('PI_CODING_AGENT_DIR')
+    var stored = settings.load()
+    assert(stored.default_model == 'mock-next')
+    assert(agent_dir.starts_with('/tmp/adou-agent-session-isolated-'))
 }
 
 test 'transient provider errors retry with the failed message removed from active context' {
