@@ -1843,10 +1843,14 @@ fn deferred_redraw(ref<view_t> view): void! {
         }
         // The whole render (diff computation, commit, terminal write) runs
         // under the render lock.  Without this a burst of events can start a
-        // second deferred coroutine mid-frame; concurrent terminal/file
-        // writes then race in the runtime fs layer and one frame's write can
-        // fail and be dropped while the renderer already committed the next
-        // diff state, silently skipping transcript rows forever.
+        // second deferred coroutine mid-frame and two frames can overlap on
+        // the same terminal/file handles, dropping rows or corrupting state.
+        // The historical SIGABRTs associated with this area were traced to an
+        // external Nature runtime bug, nature-lang/nature#302 (concurrent
+        // creation of capacity <= 8 dynamic strings races on the global
+        // const_str_pool, heap corruption abort).  Serializing frames here is
+        // a defensive frame-integrity measure only; it does NOT fix #302,
+        // which remains an external blocker (see docs/porting-plan.md).
         view.render_lock.lock()
         view.render() catch error {
             view.chat.error_message = error.msg()

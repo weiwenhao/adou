@@ -26,7 +26,10 @@ set -eu
 # is safe to be picked up by the `make e2e` glob (fails with exit 2 when the
 # tarball has not been built).
 
-repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../.." && pwd)
+# This script lives one directory below the plain `make e2e` glob
+# (tests/e2e/release/), so the repository root is three levels up.
+
+repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/../../.." && pwd)
 
 tarball=${ADOU_TARBALL:-}
 if [ -z "$tarball" ]; then
