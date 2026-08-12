@@ -120,9 +120,6 @@ try:
     ]
 
     for label, text in cases:
-        for grapheme in [text] if len(text) < 4 else [text]:
-            # multi-grapheme strings are typed grapheme by grapheme
-            pass
         if label == "hanzi":
             type_grapheme(text[0])
             type_grapheme(text[1])

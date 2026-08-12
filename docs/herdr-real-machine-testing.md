@@ -21,17 +21,19 @@ Herdr 终端内的真实用户操作：真实 DeepSeek、真实 TUI、真实终�
 
 1. `echo $HERDR_ENV` 应为 `1`；否则本 SOP 的 pane/焦点约定不适用，
    先进入 Herdr 环境再继续。
-2. `herdr panes` / 对应 pane 状态：确认目标测试 pane 存在、可聚焦、
-   没有正在运行的长任务。不要在其他 agent pane 或用户工作 pane 中
-   执行干扰性命令。
+2. `herdr pane list --workspace "$HERDR_WORKSPACE_ID"`：确认目标测试
+   pane 存在（用返回的显式 pane id，如 `w1:pN`，不要凭侧栏顺序猜测）、
+   可聚焦、没有正在运行的长任务。不要在其他 agent pane 或用户工作
+   pane 中执行干扰性命令。
 3. 二进制身份（分别记录，禁止混淆）：
    - `shasum -a 256 build/bin/adou`（开发产物）
    - `shasum -a 256 /usr/local/bin/adou`（已安装产物）
    - 记录两者的 mtime 与 `file` 输出的架构（Mach-O arm64）。
    - 若两份产物来自不同构建，在报告中明确以哪份为准；发布验收用
      `/usr/local/bin/adou`。
-4. 隔离环境：为每次测试创建唯一临时目录
-   `TMPDIR=$(mktemp -d ...)`，并设
+4. 隔离环境：为每次测试创建唯一临时目录（变量名避开系统 `TMPDIR`）：
+   `ADOU_REAL_TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/adou-real-test.XXXXXX")`
+   （macOS mktemp 模板须以 `XXXXXX` 结尾），并设
    `PI_CODING_AGENT_DIR`、`PI_CODING_AGENT_SESSION_DIR` 指向其子目录；
    结束时整目录删除（或按证据留存规则保留）。
 5. 确认无 `ADOU_PROVIDER`/`ADOU_MODEL` 覆盖：`env | rg '^ADOU_'`
@@ -48,8 +50,9 @@ Herdr 终端内的真实用户操作：真实 DeepSeek、真实 TUI、真实终�
 
 ## 3. 真实凭据与默认模型
 
-1. 交互式 `/login deepseek`，按提示粘贴 API key（**不得写入任何命令、
-   日志、文档或提交**；不要在命令行参数中携带 key）。
+1. 交互式 `/login`（不带 provider 参数），在弹出的 provider selector 中
+   选择 DeepSeek，再按提示粘贴 API key（**不得写入任何命令、日志、文档
+   或提交**；不要在命令行参数中携带 key）。
 2. 确认 provider：`/model` 或状态区应显示 deepseek；随后
    `ls -la "$PI_CODING_AGENT_DIR"` 确认 `auth.json` 存在（只记文件名，
    不 cat 内容、不打印 key）。

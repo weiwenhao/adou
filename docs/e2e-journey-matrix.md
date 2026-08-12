@@ -10,7 +10,6 @@
 `docs/herdr-real-machine-testing.md`；本矩阵只覆盖自动化旅程。
 
 
-
 | 入口 | 内容 | 模型/网络 |
 | --- | --- | --- |
 | `make e2e` | `tests/e2e/*.sh`（glob 天然排除子目录） | 全部 offline：本地 mock HTTP fixture 或直接 CLI/RPC/PTY |
