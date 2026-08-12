@@ -1754,6 +1754,14 @@ pub fn view_t.handle_debug_command(&self) {
 
 #local
 fn view_t.write_terminal(&self, string output): void! {
+    // A deferred redraw can still be in flight when /quit takes effect: the
+    // quitting flag is set before the run loop exits, but the render
+    // coroutine may have already passed its own checks.  Suppressing writes
+    // here keeps terminal.restore()'s sequences the last output on screen
+    // instead of flashing one stale frame on the restored terminal.
+    if self.quitting {
+        return
+    }
     self.terminal.write(output)
     debug.log_terminal_output(output)
 }
@@ -1833,10 +1841,25 @@ fn deferred_redraw(ref<view_t> view): void! {
         if !dirty {
             break
         }
+        // The whole render (diff computation, commit, terminal write) runs
+        // under the render lock.  Without this a burst of events can start a
+        // second deferred coroutine mid-frame; concurrent terminal/file
+        // writes then race in the runtime fs layer and one frame's write can
+        // fail and be dropped while the renderer already committed the next
+        // diff state, silently skipping transcript rows forever.
+        view.render_lock.lock()
         view.render() catch error {
             view.chat.error_message = error.msg()
             view.chat.status = 'Render failed'
+            // A failed frame must not leave the diff state ahead of the
+            // screen: forget the committed lines so the next render repaints
+            // the complete frame instead of skipping the lost rows.
+            view.renderer.previous_lines = []
+            view.redraw_dirty = true
+            view.render_lock.unlock()
+            continue
         }
+        view.render_lock.unlock()
         if view.quitting {
             view.render_lock.lock()
             view.redraw_dirty = false

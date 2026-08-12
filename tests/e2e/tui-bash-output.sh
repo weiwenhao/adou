@@ -102,7 +102,10 @@ try:
     if not send_and_collect("!false\r", b"(exit 1)", timeout=8.0):
         raise SystemExit("failed bash output lacks the (exit 1) footer")
 
-    # Clear the editor and quit through the slash command path.
+    # Clear the editor and quit through the slash command path.  The restore
+    # sequences must be the LAST bytes the TUI writes: a deferred redraw that
+    # lands after terminal.restore() would flash a stale frame on the
+    # restored terminal (quit-flash regression).
     os.write(fd, b"\x01\x0b")
     time.sleep(0.3)
     os.write(fd, b"/quit\r")
@@ -110,9 +113,22 @@ try:
     if status is None:
         os.kill(pid, signal.SIGKILL)
         _, status = os.waitpid(pid, 0)
+    fcntl.fcntl(fd, fcntl.F_SETFL, os.O_NONBLOCK)
+    while True:
+        try:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            output.extend(chunk)
+        except OSError as exc:
+            if exc.errno in (errno.EIO, errno.EAGAIN):
+                break
+            raise
     exit_code = os.waitstatus_to_exitcode(status)
     if exit_code != 0:
         raise SystemExit(f"TUI exited with status {exit_code}")
+    if not bytes(output).endswith(b"\x1b[<u\x1b[?2004l\x1b[?25h"):
+        raise SystemExit("TUI terminal restore was not its last output (quit-flash regression)")
 finally:
     try:
         os.close(fd)
