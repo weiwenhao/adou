@@ -1850,7 +1850,8 @@ fn deferred_redraw(ref<view_t> view): void! {
         // creation of capacity <= 8 dynamic strings races on the global
         // const_str_pool, heap corruption abort).  Serializing frames here is
         // a defensive frame-integrity measure only; it does NOT fix #302,
-        // which remains an external blocker (see docs/porting-plan.md).
+        // which has been resolved upstream by PR #303 and verified with the
+        // dedicated toolchain (see docs/porting-plan.md).
         view.render_lock.lock()
         view.render() catch error {
             view.chat.error_message = error.msg()
