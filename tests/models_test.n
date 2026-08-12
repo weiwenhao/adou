@@ -31,8 +31,12 @@ test 'clamps invalid one-hour cache counts to the total cache write count' {
 test 'clamps DeepSeek V4 thinking levels like Pi' {
     var model = config_models.find('deepseek/deepseek-v4-flash') as ref<types.model_t>
     assert(config_models.clamp_thinking_level(model, 'off') == 'off')
+    assert(config_models.clamp_thinking_level(model, 'minimal') == 'high')
     assert(config_models.clamp_thinking_level(model, 'medium') == 'high')
+    assert(config_models.clamp_thinking_level(model, 'high') == 'high')
     assert(config_models.clamp_thinking_level(model, 'xhigh') == 'max')
+    // Explicit/persisted max must survive resolution (regression: it was
+    // degraded to high because the catalog capability map was missing).
     assert(config_models.clamp_thinking_level(model, 'max') == 'max')
 }
 

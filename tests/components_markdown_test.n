@@ -1,6 +1,7 @@
 import adou.src.tui.components
 import adou.src.tui.markdown
 import adou.src.tui.text_utils
+import strings
 
 test 'container text spacer box and truncation stay within width' {
     var root = components.container()
@@ -83,4 +84,25 @@ test 'narrow tables shrink to the terminal width' {
     for line in lines {
         assert(text_utils.visible_width(line) <= 24)
     }
+}
+
+test 'intraword underscores stay literal while flanking emphasis still works' {
+    // CommonMark: foo_bar_baz and PARITY_TOOL_OK keep their underscores;
+    // _italic_ and __bold__ still render as emphasis.
+    var literal = markdown.render('foo_bar_baz and PARITY_TOOL_OK', 80)
+    string joined = strings.join(literal, '\n')
+    assert(joined.contains('foo_bar_baz'))
+    assert(joined.contains('PARITY_TOOL_OK'))
+    // No italic ANSI (ESC 'm' with 3=italic) must wrap "bar".
+    assert(!joined.contains('\x1b[3mbar\x1b[23m'))
+
+    var emphasis = markdown.render('_italic_ and __bold__', 80)
+    string em = strings.join(emphasis, '\n')
+    assert(em.contains('\x1b[3mitalic\x1b[23m'))
+    assert(em.contains('\x1b[1mbold\x1b[22m'))
+
+    // _x_ delimiters at word edges still work.
+    var edge = markdown.render('start _mid_ end', 80)
+    string edge_joined = strings.join(edge, '\n')
+    assert(edge_joined.contains('\x1b[3mmid\x1b[23m'))
 }

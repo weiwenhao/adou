@@ -262,6 +262,11 @@ fn strip_quote_prefix(string content, int depth): string {
 }
 
 #local
+fn is_alnum_byte(u8 value): bool {
+    return (value >= 'a'.char() && value <= 'z'.char()) || (value >= 'A'.char() && value <= 'Z'.char()) || (value >= '0'.char() && value <= '9'.char())
+}
+
+#local
 fn inline(string text): string {
     string result = ''
     int cursor = 0
@@ -291,7 +296,7 @@ fn inline(string text): string {
                 continue
             }
         }
-        if text[cursor] == '*'.char() || text[cursor] == '_'.char() {
+        if text[cursor] == '*'.char() {
             string delimiter = text.slice(cursor, cursor + 1)
             if cursor + 1 < text.len() && text[cursor + 1] == text[cursor] {
                 result += text.slice(cursor, cursor + 1)
@@ -304,6 +309,28 @@ fn inline(string text): string {
                 cursor = end + 1
                 continue
             }
+        }
+        // CommonMark underscore emphasis requires flanking delimiters:
+        // an intraword underscore (foo_bar_baz, PARITY_TOOL_OK) must stay
+        // literal.  Opening needs a non-alphanumeric left neighbour;
+        // closing needs a non-alphanumeric right neighbour (or EOL).
+        if text[cursor] == '_'.char() {
+            if cursor + 1 < text.len() && text[cursor + 1] == '_'.char() {
+                result += text.slice(cursor, cursor + 1)
+                cursor += 1
+                continue
+            }
+            bool can_open = cursor == 0 || !is_alnum_byte(text[cursor - 1] as u8)
+            int end = text.find_after('_', cursor + 1)
+            bool can_close = end > cursor + 1 && (end + 1 >= text.len() || !is_alnum_byte(text[end + 1] as u8))
+            if can_open && can_close {
+                result += theme.italic(text.slice(cursor + 1, end))
+                cursor = end + 1
+                continue
+            }
+            result += '_'
+            cursor += 1
+            continue
         }
         if text[cursor] == '['.char() {
             int label_end = text.find_after(']', cursor + 1)

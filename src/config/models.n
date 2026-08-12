@@ -443,6 +443,14 @@ fn deepseek_v4_flash(): ref<ai_types.model_t> {
     model.compat.max_tokens_field = 'max_tokens'
     model.compat.supports_reasoning_effort = true
     model.compat.supports_usage_in_streaming = true
+    // Pi catalog capability metadata (docs/models.md deepseek family):
+    // only high and max are supported thinking levels; the rest are null.
+    model.thinking_level_map['minimal'] = ''
+    model.thinking_level_map['low'] = ''
+    model.thinking_level_map['medium'] = ''
+    model.thinking_level_map['high'] = 'high'
+    model.thinking_level_map['xhigh'] = ''
+    model.thinking_level_map['max'] = 'max'
     return model
 }
 
