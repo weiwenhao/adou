@@ -15,12 +15,8 @@
 # to produce a release artifact.  The deterministic status lines report
 # per-binary sign exit code, whether the signature was actually replaced
 # (replaced=yes only when the resulting signature carries the hardened
-# runtime flag), and the verify result.  On this machine codesign cannot
-# replace the linker-generated ad-hoc signature of the Nature-produced
-# main binary in place (it fails with "internal error in Code Signing
-# subsystem" and the original valid signature is retained); that is
-# reported as replaced=no, never as a success, and is tracked as a
-# Batch 2B blocker in docs/macos-signing.md.
+# runtime flag), and the verify result.  Signing, replacement, and strict
+# verification must all succeed for each binary.
 #
 # Environment:
 #   ADOU_BIN             path to the built adou binary
@@ -32,7 +28,7 @@
 #   0  smoke OK: order executed, both copies verify, originals untouched
 #   64 missing required environment
 #   66 dist staging or a required binary is missing
-#   1  verification or originals-unchanged check failed
+#   1  signing, replacement, verification, or originals-unchanged check failed
 
 set -eu
 
@@ -90,8 +86,17 @@ sign_one() {
             *'internal error in Code Signing subsystem'*) reason=codesign-internal-error ;;
             *) reason="exit=$code" ;;
         esac
+    elif [ "$replaced" != "yes" ]; then
+        reason=signature-not-replaced
     fi
-    echo "signing-smoke: $(basename "$path"): sign-exit=$code replaced=$replaced verify=$(verify_one "$path") $reason"
+    verification=$(verify_one "$path")
+    if [ "$verification" != "ok" ]; then
+        reason=verification-failed
+    fi
+    echo "signing-smoke: $(basename "$path"): sign-exit=$code replaced=$replaced verify=$verification $reason"
+    if [ "$code" -ne 0 ] || [ "$replaced" != "yes" ] || [ "$verification" != "ok" ]; then
+        return 1
+    fi
 }
 
 verify_one() {

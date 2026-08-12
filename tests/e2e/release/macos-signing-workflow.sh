@@ -17,8 +17,11 @@ set -eu
 #     through to the real codesign; a fake xcrun records the notarytool
 #     submit command shape without executing any submission
 #   - a real local ad-hoc smoke on a scratch copy of the dist staging:
-#     both copies pass codesign --verify --strict --deep, build/bin and
-#     the default dist hashes are unchanged before and after
+#     both signatures are replaced with hardened-runtime signatures and
+#     pass codesign --verify --strict --deep, while build/bin and the
+#     default dist hashes remain unchanged
+#   - a no-op main-binary signer is rejected even though the untouched
+#     linker signature still passes strict verification
 #   - the RELEASE-README signing declaration matches the actual
 #     codesign -d --verbose=4 state (ad-hoc: TeamIdentifier not set,
 #     no Authority); a real TeamIdentifier or Authority line fails the
@@ -238,7 +241,35 @@ if [ "$actual_submit" != "$expected_submit" ]; then
 fi
 echo "e2e: fake xcrun submit command shape OK (no real submission executed)"
 
-# --- 4. real local ad-hoc smoke on a scratch copy ---------------------------
+# --- 4. unchanged valid signature must fail closed --------------------------
+
+noop_fake="$tmp/noop-fake"
+mkdir -p "$noop_fake"
+cat > "$noop_fake/codesign" <<EOF
+#!/bin/sh
+case "\$*" in
+    *"--sign"*"/adou-process-group"*) exec "$real_codesign" "\$@" ;;
+    *"--sign"*) exit 0 ;;
+    *) exec "$real_codesign" "\$@" ;;
+esac
+EOF
+chmod +x "$noop_fake/codesign"
+
+set +e
+out=$(PATH="$noop_fake:$PATH" env $smoke_env "$repo_root/scripts/signing-smoke.sh" 2>&1)
+code=$?
+set -e
+if [ "$code" -ne 1 ]; then
+    fail "signing-smoke must reject a main signature that was not replaced, got $code: $out"
+fi
+case "$out" in
+    *"adou: sign-exit=0 replaced=no verify=ok signature-not-replaced"*) ;;
+    *) fail "unchanged main signature failure must be explicit: $out" ;;
+esac
+assert_originals_unchanged
+echo "e2e: unchanged valid main signature fails closed"
+
+# --- 5. real local ad-hoc smoke on a scratch copy ---------------------------
 
 set +e
 out=$(env $smoke_env "$repo_root/scripts/signing-smoke.sh" 2>&1)
@@ -255,25 +286,17 @@ done
 helper_line=$(echo "$out" | grep 'adou-process-group:' | head -n 1 || true)
 main_line=$(echo "$out" | grep ': adou:' | head -n 1 || true)
 case "$helper_line" in
-    *"verify=ok"*) ;;
-    *) fail "helper copy must verify with --strict --deep: $out" ;;
+    *"sign-exit=0"*"replaced=yes"*"verify=ok"*) ;;
+    *) fail "helper copy must be re-signed with hardened runtime and verify: $out" ;;
 esac
 case "$main_line" in
-    *"verify=ok"*) ;;
-    *) fail "adou copy must verify with --strict --deep: $out" ;;
-esac
-case "$main_line" in
-    *"replaced=no"*)
-        case "$main_line" in
-            *"codesign-internal-error"*) ;;
-            *) fail "adou re-sign failure must be reported as the known internal-error finding, not masked: $main_line" ;;
-        esac
-        ;;
+    *"sign-exit=0"*"replaced=yes"*"verify=ok"*) ;;
+    *) fail "adou copy must be re-signed with hardened runtime and verify: $out" ;;
 esac
 assert_originals_unchanged
-echo "e2e: real ad-hoc signing-smoke OK (copies verify, originals untouched)"
+echo "e2e: real ad-hoc signing-smoke OK (signatures replaced, copies verify, originals untouched)"
 
-# --- 5. RELEASE-README declaration vs actual signing state ------------------
+# --- 6. RELEASE-README declaration vs actual signing state ------------------
 
 readme="$stage_dir/RELEASE-README"
 for phrase in "ad-hoc/linker-generated signature" "not Developer ID signed" "not notarized"; do
