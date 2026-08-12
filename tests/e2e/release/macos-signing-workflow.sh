@@ -7,15 +7,14 @@ set -eu
 #   - signing-preflight behavior with zero Developer ID Application
 #     identities: deterministic exit code (21) and a deterministic status
 #     line (no-identity); with identities present it must exit 0 (ok)
-#   - signed-dist / notarize fail closed without ADOU_CODESIGN_IDENTITY /
-#     ADOU_NOTARY_PROFILE (exit 64), with '-' (exit 64), and with an
-#     identity that is not a Developer ID Application identity (exit 65);
-#     nothing in build/bin or the dist staging may change
+#   - signed-dist fails closed without ADOU_CODESIGN_IDENTITY (exit 64),
+#     with '-' (exit 64), and with an identity that is not a Developer ID
+#     Application identity (exit 65); nothing in build/bin or the dist
+#     staging may change
 #   - fake-tool dry runs: a PATH-preprended fake codesign records the
 #     invocation order and options (helper signed before the main binary;
 #     --force --sign - --options runtime --timestamp=none) and passes
-#     through to the real codesign; a fake xcrun records the notarytool
-#     submit command shape without executing any submission
+#     through to the real codesign
 #   - a real local ad-hoc smoke on a scratch copy of the dist staging:
 #     both signatures are replaced with hardened-runtime signatures and
 #     pass codesign --verify --strict --deep, while build/bin and the
@@ -27,9 +26,9 @@ set -eu
 #     no Authority); a real TeamIdentifier or Authority line fails the
 #     check marked as "非 Developer ID"
 #
-# Never creates a notary profile, never runs a real `xcrun notarytool
-# submit`, never prints keychain credential contents, and never signs
-# with a real identity.
+# Never creates a notary profile, never prints keychain credential contents,
+# and never signs with a real identity. Native package signing/notarization
+# orchestration is covered by macos-pkg-signing.sh.
 #
 # Requires the `make dist` staging (fails with exit 2 when missing, so it
 # is safe for the make e2e glob).
@@ -82,11 +81,12 @@ assert_originals_unchanged() {
 # --- 1. signing-preflight with zero Developer ID identities ----------------
 
 devid_count=$(security find-identity -v -p codesigning 2>/dev/null | grep -c 'Developer ID Application' || true)
+installer_count=$(security find-identity -v -p basic 2>/dev/null | grep -c 'Developer ID Installer' || true)
 set +e
 pre_out=$(ADOU_BIN="$adou_bin" "$repo_root/scripts/signing-preflight.sh" 2>&1)
 pre_code=$?
 set -e
-if [ "$devid_count" -eq 0 ]; then
+if [ "$devid_count" -eq 0 ] || [ "$installer_count" -eq 0 ]; then
     if [ "$pre_code" -ne 21 ]; then
         fail "preflight with 0 Developer ID identities must exit 21, got $pre_code: $pre_out"
     fi
@@ -103,9 +103,9 @@ else
         *) fail "preflight must print status=ok with identities: $pre_out" ;;
     esac
 fi
-echo "e2e: preflight behavior OK (identities=$devid_count exit=$pre_code)"
+echo "e2e: preflight behavior OK (application=$devid_count installer=$installer_count exit=$pre_code)"
 
-# --- 2. fail-closed signed-dist / notarize --------------------------------
+# --- 2. fail-closed signed-dist --------------------------------------------
 
 set +e
 out=$(env -u ADOU_CODESIGN_IDENTITY DIST_DIR="$repo_root/build/dist" "$repo_root/scripts/signed-dist.sh" 2>&1)
@@ -131,36 +131,17 @@ if [ "$code" -ne 65 ] || ! echo "$out" | grep -q "not a Developer ID Application
     fail "signed-dist with a non-Developer-ID identity must fail (65), got $code: $out"
 fi
 
-set +e
-out=$(env -u ADOU_NOTARY_PROFILE ADOU_TARBALL="$tarball" "$repo_root/scripts/notarize.sh" 2>&1)
-code=$?
-set -e
-if [ "$code" -ne 64 ] || ! echo "$out" | grep -q "ADOU_NOTARY_PROFILE"; then
-    fail "notarize without profile must fail closed (64 + message), got $code: $out"
-fi
-
-set +e
-out=$(ADOU_NOTARY_PROFILE=- ADOU_TARBALL="$tarball" "$repo_root/scripts/notarize.sh" 2>&1)
-code=$?
-set -e
-if [ "$code" -ne 64 ] || ! echo "$out" | grep -q "must not be '-'"; then
-    fail "notarize with profile '-' must fail closed (64), got $code: $out"
-fi
-
 assert_originals_unchanged
-echo "e2e: fail-closed signed-dist/notarize OK"
+echo "e2e: fail-closed signed-dist OK"
 
-# --- 3. fake-tool dry runs (order, options, submit command shape) ----------
+# --- 3. fake-tool signing dry run (order and options) ----------------------
 
 fake="$tmp/fake"
 mkdir -p "$fake"
 codesign_log="$tmp/fake/codesign.log"
-xcrun_log="$tmp/fake/xcrun.log"
 : > "$codesign_log"
-: > "$xcrun_log"
 
 real_codesign=$(command -v codesign)
-real_xcrun=$(command -v xcrun)
 
 cat > "$fake/codesign" <<EOF
 #!/bin/sh
@@ -168,16 +149,7 @@ printf '%s\n' "\$*" >> "$codesign_log"
 exec "$real_codesign" "\$@"
 EOF
 
-cat > "$fake/xcrun" <<EOF
-#!/bin/sh
-printf '%s\n' "\$*" >> "$xcrun_log"
-case "\$1" in
-    notarytool) exit 0 ;;
-    *) exec "$real_xcrun" "\$@" ;;
-esac
-EOF
-
-chmod +x "$fake/codesign" "$fake/xcrun"
+chmod +x "$fake/codesign"
 
 smoke_env="ADOU_BIN=$adou_bin PROCESS_GROUP_HELPER=$helper_bin DIST_DIR=$repo_root/build/dist DIST_NAME=$(basename "$stage_dir")"
 set +e
@@ -219,27 +191,7 @@ for line in "$first" "$second"; do
         *) fail "--sign invocation missing required options: $line" ;;
     esac
 done
-if [ -s "$xcrun_log" ]; then
-    fail "signing-smoke must never invoke xcrun, log: $(cat "$xcrun_log")"
-fi
 echo "e2e: fake codesign order/options OK"
-
-set +e
-out=$(PATH="$fake:$PATH" ADOU_NOTARY_PROFILE=fake-profile ADOU_TARBALL="$tarball" "$repo_root/scripts/notarize.sh" 2>&1)
-code=$?
-set -e
-if [ "$code" -ne 0 ]; then
-    fail "notarize dry run must exit 0, got $code: $out"
-fi
-if ! echo "$out" | grep -q "submitting $tarball"; then
-    fail "notarize must report the submitted tarball: $out"
-fi
-expected_submit="notarytool submit $tarball --keychain-profile fake-profile"
-actual_submit=$(cat "$xcrun_log")
-if [ "$actual_submit" != "$expected_submit" ]; then
-    fail "fake xcrun must record exactly the submit command, got: $actual_submit"
-fi
-echo "e2e: fake xcrun submit command shape OK (no real submission executed)"
 
 # --- 4. unchanged valid signature must fail closed --------------------------
 
@@ -324,4 +276,4 @@ for bin_name in adou adou-process-group; do
 done
 echo "e2e: RELEASE-README declaration matches actual ad-hoc signature state"
 
-echo "e2e: macos-signing-workflow OK (preflight, fail-closed, dry-runs, smoke, README consistency)"
+echo "e2e: macos-signing-workflow OK (preflight, signed-dist fail-closed, signing smoke, README consistency)"

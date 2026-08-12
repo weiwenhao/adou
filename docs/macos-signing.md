@@ -13,8 +13,8 @@
 - 本批红线（全程未违反）：不执行真实 Developer ID 签名（codesign 不携带
   真实 identity）、不创建 notary profile、不执行 `xcrun notarytool
   submit`、不 `gh release`、不读取/打印 keychain 凭据内容、不发布。
-- 本机当前 `security find-identity -v -p codesigning` 无 Developer ID
-  Application identity（只有 Apple Development 身份，不用于分发签名）。
+- 本机当前无 Developer ID Application 或 Developer ID Installer identity
+  （只有 Apple Development 身份，不用于分发签名或安装包签名）。
 
 ## Batch 2A（本批）：本地 readiness
 
@@ -24,10 +24,9 @@
 交付物：
 
 - `make signing-preflight` → `scripts/signing-preflight.sh`：只读检查，不
-  修改任何产物。检查 `codesign`/`security`/`xcrun`（含 `xcrun --find
-  notarytool`）、Developer ID Application identity 数量、当前 artifact
-  版本与签名状态（`codesign -d --verbose=4` 解析：adhoc/linker-signed
-  判定、TeamIdentifier、Authority）。
+  修改任何产物。检查 codesign/security/xcrun/pkgbuild/productsign/pkgutil/
+  spctl、notarytool/stapler、Developer ID Application 与 Installer identity
+  数量、当前 artifact 版本与签名状态。
 - `make signing-smoke` → `scripts/signing-smoke.sh`：把当前 dist staging
   复制到临时目录，对副本按「先 helper、后主程序」顺序执行
   `codesign --force --sign - --options runtime --timestamp=none`，再对副本
@@ -39,10 +38,10 @@
   **fail closed**（见下）；有真实 identity 时按 helper→主程序顺序签名并
   校验 authority/team/strict，产出
   `build/dist/adou-<ver>-darwin-arm64-signed.tar.gz`，不动默认 dist。
-- `make notarize` → `scripts/notarize.sh`：公证入口，**fail closed**；必须是
-  单独显式目标，默认 `release-check`/`signing-smoke` 不调用 notarytool、
-  不触网。
-- `make signing-check` → 串行 `dist` + `tests/e2e/release/macos-signing-workflow.sh`。
+- `make signed-pkg` / `make notarize`：macOS native installer 的真实签名、
+  公证和 staple 入口，详见 `docs/macos-installer.md`；均 fail closed，默认
+  `release-check`/`signing-check` 不触网。
+- `make signing-check` → 串行构建 tar/pkg，并运行 package/signing workflows。
 - `tests/e2e/release/macos-signing-workflow.sh`：预检行为、fail-closed、fake-tools
   编排断言、副本 ad-hoc 签名校验、README 与签名状态一致性；不创建 notary
   profile、不真实提交、不打印 keychain 凭据。
@@ -51,12 +50,12 @@
 
 | 退出码 | 含义 |
 |---|---|
-| 0 | 就绪：工具齐备且 ≥1 个 Developer ID Application identity |
-| 20 | 缺少工具（codesign/security/xcrun） |
-| 21 | 无 Developer ID Application identity（本机当前状态） |
+| 0 | 就绪：工具齐备且 Application、Installer identity 都存在 |
+| 20 | 缺少 Apple 签名/打包/公证工具 |
+| 21 | 缺少 Developer ID Application 或 Installer identity（本机当前状态） |
 | 22 | artifact 缺失、不可执行或版本不一致 |
 
-状态行确定性格式：`signing-preflight: status=<ok|missing-tools|no-identity|artifact-error> identities=<n> developer-id-application=<m> notarytool=<yes|no> artifact=<path> version=<v> signature=<adhoc|adhoc-linker-signed> team-identifier=<...> authority=<yes|no>`。
+状态行确定性格式：`signing-preflight: status=<ok|missing-tools|no-identity|artifact-error> identities=<n> developer-id-application=<m> developer-id-installer=<i> notarytool=<yes|no> stapler=<yes|no> artifact=<path> version=<v> signature=<adhoc|adhoc-linker-signed> team-identifier=<...> authority=<yes|no>`。
 
 ### 本批实测发现（2026-08-12）
 
@@ -88,10 +87,11 @@
 1. 用户提供 Developer ID Application identity（`security find-identity -v
    -p codesigning` 中出现的 Developer ID Application 条目），且用户授权
    执行真实签名——属新权限动作；
-2. 用户显式提供 notarytool keychain profile（由用户执行
+2. 用户提供 Developer ID Installer identity，用于对外层 flat `.pkg` 签名；
+3. 用户显式提供 notarytool keychain profile（由用户执行
    `xcrun notarytool store-credentials` 创建，或等价显式凭证）；本批及
    Batch 2A 任何测试都**不得创建** profile；
-3. 用户显式授权执行 `xcrun notarytool submit`（属新权限动作）。
+4. 用户显式授权执行真实签名和 `xcrun notarytool submit`（属新权限动作）。
 
 2B 入口与校验：
 
@@ -102,32 +102,28 @@
   Application`、TeamIdentifier 存在、hardened runtime flag。注意：notarization
   通常要求安全时间戳，2B 可能需把 `--timestamp=none` 改为 `--timestamp`
   （本批无法实跑验证，届时以实际公证为准）。
-- `make notarize`：`ADOU_NOTARY_PROFILE` 必填且不得为 `-`；只提交
-  `xcrun notarytool submit <tarball> --keychain-profile <profile>`，
-  不 stapler（见下）。
+- `make signed-pkg`：payload 使用 Developer ID Application、hardened runtime
+  和 secure timestamp，外层使用 Developer ID Installer + timestamp。
+- `make notarize`：只接受已用 Developer ID Installer 签名的 `.pkg`，执行
+  `notarytool submit --wait`、staple/validate 和 Gatekeeper install assessment。
 
 ### notarization / stapling 边界（准确）
 
-- tar.gz / zip 可以提交给 notarytool 公证（获得 ticket），但**不可
-  stapler**——stapling（把 ticket 嵌进产物）只适用于 dmg/pkg 等容器。
-- 因此：本批及 `make notarize` 的当前实现**不声称** tar.gz 可 staple，也
-  不执行 stapler；如需无对话框体验（Gatekeeper 不再警告），必须先做
-  dmg/pkg 打包（Batch 4 候选），届时 stapler 在 dmg/pkg 上使用。
+- tar.gz / zip 可以提交公证但不能直接 staple；flat `.pkg` 可以提交并 staple。
+- Adou 的最终 macOS 交付路径已统一到 signed `.pkg`。tar.gz 仍是便携归档，
+  但不再是 `make notarize` 的输入。
 
 ## 测试与验证（2026-08-12 实跑，Nature 串行规则同 AGENTS.md）
 
 - `sh -n` 全部新/改脚本通过；
-- `make build` → `make dist` → `tests/e2e/release/release-artifact.sh` →
-  `tests/e2e/release/macos-signing-workflow.sh` → `make signing-check` →
-  `make release-check` 全绿；
-- 0 identity 下 `signing-preflight` 输出 `status=no-identity` 并 exit 21
+- `make pkg-check`、`make signing-check`、`make release-check` 全绿；
+- 0 Application/Installer identity 下 `signing-preflight` 输出
+  `status=no-identity` 并 exit 21
   （确定性）；
-- identity/profile 缺失时 `signed-dist`/`notarize` exit 64、非 Developer ID
-  identity exit 65，且 build/bin 与默认 dist 哈希不变（fail closed）；
-- fake codesign 日志断言：先 helper 后主程序、每次 `--force --sign - --
-  options runtime --timestamp=none`；fake xcrun 只记录
-  `notarytool submit <tarball> --keychain-profile <profile>`，不执行真实
-  提交；signing-smoke 从不调用 xcrun；另用 no-op 主程序 signer 验证
+- signed-pkg 对缺失/错误 Application、Installer identity 分别 fail closed；
+  notarize 对缺 profile 或 unsigned pkg fail closed；
+- fake tools 断言 helper→main→Installer 签名顺序，以及 submit --wait→staple→
+  validate→spctl 顺序；另用 no-op 主程序 signer 验证
   `sign-exit=0` 但 `replaced=no` 时仍 fail closed；
 - `codesign_allocate -a arm64 200000` 可扩容 Nature 产出的主程序签名槽；
   helper 与主程序副本均完成 hardened-runtime ad-hoc 重签，输出

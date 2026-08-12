@@ -2,7 +2,7 @@
 
 状态：Phase 5、Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
-release hardening：进行中（Batch 1、Batch 2A 已完成；Batch 2B 需 Developer ID/notary 新权限，见 `docs/release-hardening-plan.md` 与 `docs/macos-signing.md`）
+release hardening：macOS 主线进行中（Batch 1、Batch 2A、native `.pkg` installer 已完成；Batch 2B 真实签名/公证需新权限；Linux 暂缓，见 `docs/release-hardening-plan.md`、`docs/macos-signing.md` 与 `docs/macos-installer.md`）
 RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make release-check`、`make signing-check` 证据见下）；历史 runtime blocker `nature#302` 已由上游 PR #303 修复并用专用 toolchain 验证，后续 PTY 冷启动失败也已定位为测试在 raw mode 前过早发键的同步缺陷并修复
 
 ## 当前进度快照

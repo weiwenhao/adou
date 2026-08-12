@@ -3,7 +3,8 @@
 状态：Batch 1（darwin-arm64）已完成，2026-08-12（验收证据见下）。Batch 2A
 （macOS signing readiness——本地预检与离线编排测试）已完成，2026-08-12（见
 `docs/macos-signing.md`）；Batch 2B（真实 Developer ID 签名与公证）未开始，
-需要新权限。当前两个发布二进制的实际签名状态为 linker 生成的 ad-hoc
+需要新权限。macOS native installer 批次已完成（见
+`docs/macos-installer.md`）；Linux 按当前优先级暂缓。当前两个发布二进制的实际签名状态为 linker 生成的 ad-hoc
 签名（`Signature=adhoc`、`TeamIdentifier=not set`、无 Authority），不是
 Developer ID signed，未 notarized。
 
@@ -87,13 +88,14 @@ staging。
   用户绕过 Gatekeeper 或手动临时签名。Batch 2A（已完成）只做本地
   readiness：工具/identity 预检、签名/公证命令编排的离线测试（dry-run/
   fake tools），不真实签名上传；真实签名/公证属 Batch 2B（未来，需用户
-  提供 Developer ID identity 与显式 notarytool profile 后执行）——见
+  提供 Developer ID Application、Developer ID Installer identities 与显式
+  notarytool profile 后执行）——见
   `docs/macos-signing.md`。
-- Linux 交叉构建：`package.toml` 已声明 linux_amd64/linux_arm64 链接对象，
-  未构建、未验证；归属 Batch 3。
-- 系统安装器（pkg/dmg/brew formula）：只提供 `make install` DESTDIR
-  staging 校验，不产出安装器；dmg/pkg 同时是公证后 stapler 的前提
-  （tar.gz 可 notarize 但不可 staple），归属 Batch 4。
+- Linux 交叉构建：按当前产品优先级显式暂缓，不属于接下来的 release
+  hardening 主线。
+- 系统安装器：flat `.pkg` 构建、内容 E2E、Application+Installer 双证书签名
+  入口及 submit/staple/validate/Gatekeeper 编排已完成；真实签名/公证仍受
+  Batch 2B 权限阻塞，见 `docs/macos-installer.md`。
 - 真实 provider eval：`make eval` 只跑本地脚本化 HTTP mock；不对真实
   DeepSeek/OpenAI/Anthropic 端点做发布级冒烟（live smoke 需显式开启且限制
   消费，见 porting-plan）；归属 Batch 5。
@@ -121,12 +123,13 @@ mtime（`--mtime`/`SOURCE_DATE_EPOCH`）、gzip `-n` 与排序固定，作为独
   [nature-lang/nature#304](https://github.com/nature-lang/nature/pull/304)，目标、
   退出码、实测证据与 2B 阻塞条件见 `docs/macos-signing.md`。
 - Batch 2B（未来，需新权限）：真实 Developer ID 签名 + notarization
-  （用户提供 Developer ID Application identity 与显式 notarytool profile
-  后才允许执行；主程序签名槽扩容、hardened-runtime 重签与严格校验的本地
-  技术路径已经验证）。
-- Batch 3：Linux（amd64/arm64）交叉构建与对应 artifact e2e。
-- Batch 4：系统安装器（pkg/dmg 或 brew formula）与升级路径；dmg/pkg 上
-  才可 stapler。
+  （用户提供 Developer ID Application、Developer ID Installer identity
+  与显式 notarytool profile 后才允许执行；主程序签名槽扩容、双层签名、
+  公证和 staple 技术路径已经离线验证）。
+- macOS native installer（已完成，2026-08-12）：`make pkg`/`pkg-check`/
+  `signed-pkg` 与 `.pkg` notarize/staple/Gatekeeper 路径，见
+  `docs/macos-installer.md`。
+- Linux：按用户当前优先级暂缓，不作为下一批。
 - Batch 5：发布候选上的真实 provider eval（有限消费、失败快速）与
   远端 catalog 刷新冒烟。
 - 独立 RFC（不并入上述批次）：Pi extension compatibility。

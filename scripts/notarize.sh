@@ -1,23 +1,20 @@
 #!/bin/sh
 #
-# notarize the release tarball for `make notarize`.  FAILS CLOSED: without
+# Notarize and staple the signed flat installer for `make notarize`.
+# FAILS CLOSED: without
 # an explicit ADOU_NOTARY_PROFILE (non-empty and not '-') nothing is
 # submitted and no network call happens.
 #
-# Boundary (accurate, see docs/macos-signing.md): a tar.gz can be
-# notarized by notarytool, but a tar.gz cannot be stapled (stapling is
-# only possible for containers such as dmg/pkg).  This target therefore
-# only submits the ticket request and never runs the stapler; dmg/pkg
-# packaging is a later batch.
-#
 # xcrun is resolved through PATH so tests can prepend a fake xcrun that
-# records the invocation instead of submitting; this batch never executes
-# a real `xcrun notarytool submit`.
+# records the invocation instead of submitting. Real use waits for the
+# notary result, staples and validates the ticket, then runs the Gatekeeper
+# installer assessment.
 #
 # Exit codes:
 #   64 ADOU_NOTARY_PROFILE missing, empty or '-'
-#   66 tarball not found
-#   otherwise the exit status of `xcrun notarytool submit`
+#   66 signed package not found
+#   67 package lacks a Developer ID Installer signature
+#   otherwise the failing notarytool/stapler/spctl status
 
 set -eu
 
@@ -27,15 +24,25 @@ if [ -z "$profile" ] || [ "$profile" = "-" ]; then
     exit 64
 fi
 
-tarball=${ADOU_TARBALL:-}
-if [ -z "$tarball" ]; then
+package=${ADOU_SIGNED_PKG:-}
+if [ -z "$package" ]; then
     repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-    tarball=$(ls "$repo_root"/build/dist/adou-*-darwin-arm64.tar.gz 2>/dev/null | head -n 1 || true)
+    package=$(ls "$repo_root"/build/dist/adou-*-darwin-arm64-signed.pkg 2>/dev/null | head -n 1 || true)
 fi
-if [ -z "$tarball" ] || [ ! -f "$tarball" ]; then
-    echo "notarize: release tarball not found (run make dist, or set ADOU_TARBALL)" >&2
+if [ -z "$package" ] || [ ! -f "$package" ]; then
+    echo "notarize: signed installer package not found (run make signed-pkg, or set ADOU_SIGNED_PKG)" >&2
     exit 66
 fi
 
-echo "notarize: submitting $tarball with keychain profile '$profile'"
-xcrun notarytool submit "$tarball" --keychain-profile "$profile"
+package_signature=$(pkgutil --check-signature "$package" 2>&1 || true)
+case "$package_signature" in
+    *'Developer ID Installer'*) ;;
+    *) echo "notarize: package lacks a Developer ID Installer signature" >&2; exit 67 ;;
+esac
+
+echo "notarize: submitting $package with keychain profile '$profile'"
+xcrun notarytool submit "$package" --keychain-profile "$profile" --wait
+xcrun stapler staple "$package"
+xcrun stapler validate "$package"
+spctl --assess --verbose=4 --type install "$package"
+echo "notarize: status=ok artifact=$package"

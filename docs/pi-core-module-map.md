@@ -1,6 +1,6 @@
 # Pi Core Module Map
 
-状态：MVP 核心路径已完成逐模块核对（Pi 基线 `0.82.1`, commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`）；Phase 1–8 全部完成（8/8，与 `docs/porting-plan.md` 一致），release hardening 进行中（Batch 1、Batch 2A 已完成；Batch 2B 需新权限，见 `docs/release-hardening-plan.md` 与 `docs/macos-signing.md`），Pi extension 运行时已停用。
+状态：MVP 核心路径已完成逐模块核对（Pi 基线 `0.82.1`, commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`）；Phase 1–8 全部完成（8/8，与 `docs/porting-plan.md` 一致），macOS release hardening 进行中（Batch 1、Batch 2A、native `.pkg` installer 已完成；Batch 2B 需新权限，Linux 暂缓），Pi extension 运行时已停用。
 
 本文把 `vendors/pi` 中必须翻译到 Nature 的核心边界固定下来。判断标准是 Pi 的可观察 coding-agent 行为，而不是 TypeScript 文件是否已经有一个同名 Nature 文件。每个模块只有在完成源码差分、单元测试和至少一个跨模块集成测试后，才可标记为完成。
 
