@@ -336,62 +336,73 @@ pub fn chat_t.render(&self, int width): [string]! {
             }
         }
     }
-    if self.model != '' || self.cwd != '' {
-        result.push('')
-        string cwd_display = shorten_cwd(self.cwd)
-        if self.git_branch != '' {
-            cwd_display += ' (' + self.git_branch + ')'
-        }
-        if self.session_name != '' {
-            cwd_display += ' • ' + self.session_name
-        }
-        string cwd_line = theme.fg(theme.dim_color(), text_utils.truncate_to_width(cwd_display, width, '...', false))
-        result.append(wrapped_lines(cwd_line, width))
-        [string] stats = []
-        if self.total_input_tokens > 0 {stats.push('↑' + format_tokens(self.total_input_tokens))}
-        if self.total_output_tokens > 0 {stats.push('↓' + format_tokens(self.total_output_tokens))}
-        if self.total_cache_read > 0 {stats.push('R' + format_tokens(self.total_cache_read))}
-        if self.total_cache_write > 0 {stats.push('W' + format_tokens(self.total_cache_write))}
-        if (self.total_cache_read > 0 || self.total_cache_write > 0) && self.latest_cache_hit_rate >= 0.0 {
-            stats.push(fmt.sprintf('CH%.1f%%', self.latest_cache_hit_rate))
-        }
-        if self.total_cost > 0.0 {stats.push(fmt.sprintf('$%.3f', self.total_cost))}
-        if self.context_window > 0 {
-            string context_display = ''
-            if !self.context_known {
-                context_display = '?/' + format_tokens(self.context_window) + (self.auto_compaction ? ' (auto)' : '')
-            } else {
-                var estimate = token_estimate.estimate_context_tokens(self.messages)
-                float percent_value = estimate.tokens as float * 100.0 / self.context_window as float
-                context_display = format_percent(estimate.tokens, self.context_window) + '/' + format_tokens(self.context_window) + (self.auto_compaction ? ' (auto)' : '')
-                if percent_value > 90.0 {
-                    context_display = theme.fg(theme.ERROR, context_display)
-                } else if percent_value > 70.0 {
-                    context_display = theme.fg(theme.WARNING, context_display)
-                }
-            }
-            stats.push(context_display)
-        }
-        string left = strings.join(stats, ' ')
-        string right = self.model != '' ? self.model : 'no-model'
-        right += self.thinking == 'off' ? ' • thinking off' : ' • ' + self.thinking
-        if self.provider != '' && self.show_provider {
-            right = '(' + self.provider + ') ' + right
-        }
-        int left_width = text_utils.visible_width(left)
-        int right_width = text_utils.visible_width(right)
-        string footer = left
-        if left_width + 2 + right_width <= width {
-            footer += repeat_spaces(width - left_width - right_width) + right
-        } else if left == '' && right_width <= width {
-            footer = repeat_spaces(width - right_width) + right
-        } else if left_width < width {
-            int available = width - left_width - 2
-            string fitted = available > 0 ? text_utils.truncate_to_width(right, available, '', false) : ''
-            footer += repeat_spaces(width - left_width - text_utils.visible_width(fitted)) + fitted
-        }
-        result.push(theme.fg(theme.dim_color(), text_utils.truncate_to_width(footer, width, '...', false)))
+    return result
+}
+
+// The footer is a sibling of the editor in Pi, not part of the transcript.
+// Keeping it separate lets the session view preserve Pi's vertical order:
+// transcript/status, spacer, editor, then cwd and usage/model metadata.
+pub fn chat_t.render_footer(&self, int width): [string]! {
+    if width <= 0 {
+        throw errorf('footer width must be positive')
     }
+    [string] result = []
+    if self.model == '' && self.cwd == '' {
+        return result
+    }
+    string cwd_display = shorten_cwd(self.cwd)
+    if self.git_branch != '' {
+        cwd_display += ' (' + self.git_branch + ')'
+    }
+    if self.session_name != '' {
+        cwd_display += ' • ' + self.session_name
+    }
+    string cwd_line = theme.fg(theme.dim_color(), text_utils.truncate_to_width(cwd_display, width, '...', false))
+    result.append(wrapped_lines(cwd_line, width))
+    [string] stats = []
+    if self.total_input_tokens > 0 {stats.push('↑' + format_tokens(self.total_input_tokens))}
+    if self.total_output_tokens > 0 {stats.push('↓' + format_tokens(self.total_output_tokens))}
+    if self.total_cache_read > 0 {stats.push('R' + format_tokens(self.total_cache_read))}
+    if self.total_cache_write > 0 {stats.push('W' + format_tokens(self.total_cache_write))}
+    if (self.total_cache_read > 0 || self.total_cache_write > 0) && self.latest_cache_hit_rate >= 0.0 {
+        stats.push(fmt.sprintf('CH%.1f%%', self.latest_cache_hit_rate))
+    }
+    if self.total_cost > 0.0 {stats.push(fmt.sprintf('$%.3f', self.total_cost))}
+    if self.context_window > 0 {
+        string context_display = ''
+        if !self.context_known {
+            context_display = '?/' + format_tokens(self.context_window) + (self.auto_compaction ? ' (auto)' : '')
+        } else {
+            var estimate = token_estimate.estimate_context_tokens(self.messages)
+            float percent_value = estimate.tokens as float * 100.0 / self.context_window as float
+            context_display = format_percent(estimate.tokens, self.context_window) + '/' + format_tokens(self.context_window) + (self.auto_compaction ? ' (auto)' : '')
+            if percent_value > 90.0 {
+                context_display = theme.fg(theme.ERROR, context_display)
+            } else if percent_value > 70.0 {
+                context_display = theme.fg(theme.WARNING, context_display)
+            }
+        }
+        stats.push(context_display)
+    }
+    string left = strings.join(stats, ' ')
+    string right = self.model != '' ? self.model : 'no-model'
+    right += self.thinking == 'off' ? ' • thinking off' : ' • ' + self.thinking
+    if self.provider != '' && self.show_provider {
+        right = '(' + self.provider + ') ' + right
+    }
+    int left_width = text_utils.visible_width(left)
+    int right_width = text_utils.visible_width(right)
+    string footer = left
+    if left_width + 2 + right_width <= width {
+        footer += repeat_spaces(width - left_width - right_width) + right
+    } else if left == '' && right_width <= width {
+        footer = repeat_spaces(width - right_width) + right
+    } else if left_width < width {
+        int available = width - left_width - 2
+        string fitted = available > 0 ? text_utils.truncate_to_width(right, available, '', false) : ''
+        footer += repeat_spaces(width - left_width - text_utils.visible_width(fitted)) + fitted
+    }
+    result.push(theme.fg(theme.dim_color(), text_utils.truncate_to_width(footer, width, '...', false)))
     return result
 }
 

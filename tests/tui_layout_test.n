@@ -1,0 +1,16 @@
+import adou.src.tui.layout
+
+test 'interactive footer stays below the editor like Pi' {
+    var lines = layout.compose_interactive(
+        ['assistant response'],
+        ['editor top', 'prompt', 'editor bottom'],
+        ['~/Code/agent-test', 'usage and model'],
+    )
+    assert(lines.len() == 7)
+    assert(lines[0] == 'assistant response')
+    assert(lines[1] == '')
+    assert(lines[2] == 'editor top')
+    assert(lines[4] == 'editor bottom')
+    assert(lines[5] == '~/Code/agent-test')
+    assert(lines[6] == 'usage and model')
+}

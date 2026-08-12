@@ -30,6 +30,7 @@ import adou.src.session.types as session_types
 import adou.src.tui.chat
 import adou.src.tui.editor
 import adou.src.tui.input_buffer
+import adou.src.tui.layout
 import adou.src.tui.unicode
 import adou.src.tui.keys
 import adou.src.tui.model_search
@@ -1699,15 +1700,15 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     self.chat.set_usage_totals(self.runner.repository.usage_totals())
     self.chat.set_latest_cache_hit_rate(self.runner.repository.latest_cache_hit_rate())
     self.chat.set_context_known(self.runner.repository.context_usage_known())
-    [string] lines = self.chat.render(width)
+    [string] transcript_lines = self.chat.render(width)
     [string] editor_lines = []
     if self.overlay is ref<overlay_t> active_overlay {
         editor_lines = render_overlay(active_overlay, width, self.runner.repository.session_dir, self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id, self.runner)
     } else {
         editor_lines = render_editor(self.editor, width, self.command_menu, self.command_index, self.chat.thinking, height)
     }
-    lines.append(editor_lines)
-    return lines
+    [string] footer_lines = self.chat.render_footer(width)
+    return layout.compose_interactive(transcript_lines, editor_lines, footer_lines)
 }
 
 pub fn view_t.render(&self): void! {

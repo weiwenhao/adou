@@ -1,0 +1,11 @@
+// Assemble the fixed interactive regions in the same vertical order as Pi.
+// The spacer belongs above the editor; the footer follows the editor without
+// an additional blank row.
+pub fn compose_interactive([string] transcript, [string] editor, [string] footer): [string] {
+    [string] result = vec<string>.cap_of(transcript.len() + editor.len() + footer.len() + 1)
+    result.append(transcript)
+    result.push('')
+    result.append(editor)
+    result.append(footer)
+    return result
+}

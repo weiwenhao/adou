@@ -62,7 +62,7 @@ test 'chat restores history and renders configured context state in the footer' 
     value.configure(100, 'high')
     types.message_t history = new types.user_message_t(content = 'hello')
     value.load_messages([history])
-    string rendered = strings.join(value.render(120), '\n')
+    string rendered = strings.join(value.render(120), '\n') + '\n' + strings.join(value.render_footer(120), '\n')
     assert(rendered.contains('hello'))
     assert(rendered.contains('mock-model • high'))
     assert(rendered.contains('/100 (auto)'))
@@ -90,7 +90,7 @@ test 'footer keeps Pi-style provider, session and cache details' {
     value.total_output_tokens = 300
     value.total_cache_read = 900
     value.latest_cache_hit_rate = 75.0
-    string rendered = strings.join(value.render(160), '\n')
+    string rendered = strings.join(value.render_footer(160), '\n')
     assert(rendered.contains('deepseek-v4-flash • thinking off'))
     assert(rendered.contains('(deepseek)'))
     assert(rendered.contains('/Users/tester/project (main)'))
@@ -102,7 +102,7 @@ test 'footer marks post-compaction context usage unknown until a response report
     var value = chat.new('deepseek-v4-flash', '/Users/tester/project')
     value.configure(1000000, 'off')
     value.set_context_known(false)
-    string rendered = strings.join(value.render(160), '\n')
+    string rendered = strings.join(value.render_footer(160), '\n')
     assert(rendered.contains('?/1M (auto)'))
 }
 
