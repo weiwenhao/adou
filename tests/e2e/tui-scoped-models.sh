@@ -86,7 +86,8 @@ def key(key_bytes, until, timeout=4.0):
 
 try:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-    collect(timeout=1.0)
+    if not collect(b"\x1b[>1u", timeout=10.0):
+        raise SystemExit("TUI did not become ready for keyboard input")
 
     # Open the scoped-models configuration with the slash command.
     if not key(b"/scoped-models\r", b"Model Configuration", timeout=5.0):

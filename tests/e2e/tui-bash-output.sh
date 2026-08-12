@@ -84,7 +84,8 @@ def send_and_collect(text, until, timeout=6.0):
 
 try:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 60, 0, 0))
-    collect(timeout=1.0)
+    if not collect(b"\x1b[>1u", timeout=10.0):
+        raise SystemExit("TUI did not become ready for keyboard input")
 
     # A long-running command with 80 lines of output: the completed message
     # must collapse to the last visual lines with an expand hint.

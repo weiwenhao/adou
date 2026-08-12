@@ -75,7 +75,8 @@ def collect(until=None, timeout=4.0):
 
 try:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 160, 0, 0))
-    collect(timeout=1.0)
+    if not collect(b"\x1b[>1u", timeout=10.0):
+        raise SystemExit("TUI did not become ready for keyboard input")
     os.write(fd, b"/login\r")
     if not collect(b"Select authentication method:"):
         raise SystemExit("/login did not open the authentication selector")

@@ -155,7 +155,8 @@ try:
         return until is not None and until in output2
 
     fcntl.ioctl(fd2, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
-    collect2(timeout=1.5)
+    if not collect2(b"\x1b[>1u", timeout=10.0):
+        raise SystemExit("restarted TUI did not become ready for keyboard input")
     if b"Welcome to Adou" in bytes(output2):
         raise SystemExit("setup reopened after the marker was written")
     os.write(fd2, b"/quit\r")

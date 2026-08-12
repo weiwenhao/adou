@@ -3,7 +3,7 @@
 状态：Phase 5、Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
 release hardening：进行中（Batch 1 已完成，Batch 2A 进行中，见 `docs/release-hardening-plan.md` 与 `docs/macos-signing.md`）
-RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make release-check`、`make signing-check` 证据见下）；发现外部 runtime blocker `nature#302`（const_str_pool 竞态，见下），TUI model selector 内容损坏为其同族静默表现
+RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make release-check`、`make signing-check` 证据见下）；历史 runtime blocker `nature#302` 已由上游 PR #303 修复并用专用 toolchain 验证，后续 PTY 冷启动失败也已定位为测试在 raw mode 前过早发键的同步缺陷并修复
 
 ## 当前进度快照
 
@@ -175,7 +175,7 @@ Phase 8 验收结果（2026-08-12 关闭）：`make build` 退出 0；`make eval
 - 风险 3（PTY ESC 输入）：`ESCAPE_SEQUENCE_TIMEOUT_MS` 10ms → 50ms（xterm 惯例）；PTY 拆包的 `\x1b[A` 不再塌缩为 escape。`tui-tree-fork.sh` 改用真实上方向键导航 tree（移除 f 过滤绕行），全流程通过。
 - 风险 4（全量回归）：137 个单测文件串行全量实跑（`tests/*.n` 逐个 guarded 调用，约 2 小时，16GB 机器满内存下 7 个文件编译器 OOM abort，单独重跑全部通过；1 个真实回归 `deepseek_http_stream_test.n` 已修复——fixture 需显式声明 `compat.thinking_format = 'deepseek'`（595f4de 起为运行时检测））。结论：137/137 通过（130 直接 + 7 重跑）。
 
-## 2026-08-12 RC 稳定性门禁证据（外部 blocker：nature#302）
+## 2026-08-12 RC 稳定性门禁证据（历史 blocker：nature#302）
 
 完整 `make e2e`（46 个脚本，offline/PTY，全部不出网）串行实跑 4 次：
 第一次 46/46 绿（官方 `make e2e` 目标，总耗时 1:00.31）；第二次逐脚本计时循环
@@ -190,13 +190,14 @@ selector`），单独复跑 3 次全绿；第四次（最终，全部改动落�
 - 历史复现数据保留：Open 期间最小用例 v0.7.4 10/10 SIGABRT、weekly.2026.33 5/5；两个控制组 5/5 通过；TUI model selector 旧 runtime 72 次中 11 次内容损坏。
 - 现状：`nature-lang/nature#302` 由 PR #303（`fix-concurrent-string-pool`）合并修复；上游 `20260812_00_const_string_pool` CTest 通过。
 - 专用 toolchain：`/Users/liulianfuren/Code/nature-adou-toolchain`（commit `ad567d14`，nature v0.7.4 release build 2026-08-12）；`make clean && make build`（显式 NATURE/NATURE_ROOT）后 `nm build/bin/adou | grep const_str_pool_locker` 存在。
-- closure 实测（2026-08-12，严格串行）：`tui-model-selector.sh` 连续 50 次 47 通过 / 3 失败（失败集中在 iter 2-4、无 SIGABRT/panic/crash report，复跑 20/20 全绿 → 分类为冷启动 PTY 测试竞态，非内容损坏）；`make eval` 连续 5 次全绿；完整 `make e2e` 3 次运行 2 绿 1 偶发失败（同类竞态，复跑全绿）；`make release-check`、`make signing-check` 全绿。旧 runtime 的 model 行同长度空格损坏未再观测。
-- 残余观测：连续快速 PTY 启动仍有低概率无输出退出（iter 2-4 模式，无崩溃证据），已记录为测试竞态；若复现且伴随 SIGABRT 则按外部 blocker 上报。
+- closure 实测（2026-08-12，严格串行）：修复后的专用 runtime 下，`tui-model-selector.sh` 首轮连续 50 次 47 通过 / 3 失败，但失败已不是旧 runtime 的 model 行内容损坏；`make eval` 连续 5 次全绿，`make release-check`、`make signing-check` 全绿。
+- PTY follow-up 定位：测试原先固定等待 1 秒后就发送 `Ctrl+L`；Adou 进入 raw mode 时使用 `tcsetattr(..., TCSAFLUSH, ...)`，冷启动超过 1 秒时会丢弃已排队的按键，随后是测试超时杀掉仍正常运行的 Adou，并非 Adou 自行无输出退出。人为延迟启动 2 秒时修复前稳定复现，改为等待 raw mode 之后的 `ESC[>1u` 键盘协议开启标记后同样场景通过。同类等待已覆盖 9 个会立即发键的 PTY 脚本；修复后 model selector 连续 50/50 通过，9 个定向 PTY 脚本及完整 `make e2e` 全绿。
+- 当前结论：#302 内容损坏和独立 PTY 启动测试竞态均已有根因与验证闭环，不再是 RC blocker。
 - 未调用真实 DeepSeek；未做真实签名/公证/发布。
 
-- issue：https://github.com/nature-lang/nature/issues/302 ——
+- 历史 issue：https://github.com/nature-lang/nature/issues/302 ——
   `runtime: concurrent short dynamic strings corrupt const_str_pool and abort in sc_map_put_sv`
-  （Open，fix PR #303 未合并）。Nature runtime 的 coroutine 调度在多个 processor
+  （已由 fix PR #303 合并修复）。Nature runtime 的 coroutine 调度在多个 processor
   线程上并行执行；`string_new_with_pool` 无同步地访问进程全局 `const_str_pool`，
   并发创建 capacity <= 8 的动态字符串时 get/put/remap 竞态可损坏分配器并 SIGABRT。
 - 纯 Nature 最小用例（64 coroutine × 20000 次 `fmt.sprintf('%06d', …)`，无应用代码/
@@ -221,11 +222,11 @@ selector`），单独复跑 3 次全绿；第四次（最终，全部改动落�
   属编译器自身 runtime 问题；按此前编译器 abort 的既有处置（单独重跑）复跑一次通过，
   共记录 1 次崩溃、1 次重试成功，不做无限重试。当日 01:16/01:44/01:51 的
   `nature-*.ips` 为先前最小用例复现期留下的同类 SIGABRT。
-- 处理边界：不修改 Nature 仓库、不在 Adou 内做覆盖 runtime 的伪修复、不弱化
+- 当时的处理边界：不修改 Nature 仓库、不在 Adou 内做覆盖 runtime 的伪修复、不弱化
   `tui-model-selector.sh`（其断言正确检测到真实的内容损坏）；本批完整 `make e2e`
   **未**触发 #302 的 SIGABRT 崩溃（`make eval` 编译器崩溃为本批唯一一次 #302 族
-  崩溃，已按上一条记录）。修复须等待上游 PR #303 合并后更新系统 `libruntime.a`/
-  编译器，再复测本条目与 `tui-model-selector.sh`。
+  崩溃，已按上一条记录）。后续上游 PR #303 已合并，专用 `libruntime.a`/
+  编译器与 `tui-model-selector.sh` 已按上述 closure 证据复测。
 
 ### 门禁链（make e2e 之后串行执行）
 
@@ -255,8 +256,8 @@ selector`），单独复跑 3 次全绿；第四次（最终，全部改动落�
 
 重点脚本 `tui-bash-output.sh`、`tui-editor-wrapping.sh`、`tui-session-selector.sh`、
 `tui-tree-fork.sh` 在 4 次完整 e2e 与一次定向复跑中全部通过：无死锁、/quit 退出码 0、
-termios 恢复、无遗留 adou 进程、无丢帧断言失败。`tui-model-selector.sh` 的内容损坏为
-#302 同族外部 blocker（见上），与 render_lock 无关（父提交同概率复现）。
+termios 恢复、无遗留 adou 进程、无丢帧断言失败。`tui-model-selector.sh` 的历史内容损坏来自
+#302，与 render_lock 无关（父提交同概率复现）；该 runtime 缺陷和后续 PTY 测试同步缺陷现均已关闭。
 
 ## 2026-08-11 审查与实跑证据
 

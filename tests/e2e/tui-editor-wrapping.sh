@@ -80,7 +80,8 @@ def collect(until=None, timeout=4.0):
 try:
     # Narrow terminal so the prompt wraps across visual lines.
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 160, 0, 0))
-    collect(timeout=1.0)
+    if not collect(b"\x1b[>1u", timeout=10.0):
+        raise SystemExit("TUI did not become ready for keyboard input")
 
     # Type 60 characters: at width 40 the editor must wrap into two visual
     # lines, and the wrapped tail must be visible in the render.
