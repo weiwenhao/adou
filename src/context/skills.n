@@ -268,7 +268,35 @@ fn skill_source_info(string base_dir, string source): source_info_t {
     return source_info_t {source: source, scope: 'temporary', origin: 'top-level', base_dir: base_dir,}
 }
 
-pub fn load_skills(string cwd, string agent_dir, [string] skill_paths, bool include_defaults): load_skills_result_t {
+pub fn load_skills(string cwd, string agent_dir, [string] skill_paths, bool include_defaults, bool project_trusted): load_skills_result_t {
+    string home = syscall.get_env('HOME')
+    if home == '' {
+        home = '/'
+    }
+    return load_skills_full(cwd, agent_dir, home, skill_paths, include_defaults, project_trusted)
+}
+
+// Full discovery control for tests: home substitutes for ~ in the user-level
+// ~/.agents/skills layer.  Default discovery order (first wins on collision)
+// mirrors Pi's package-manager resourcePrecedenceRank: project auto (rank 1)
+// beats user auto (rank 3), and a stable sort keeps insertion order within a
+// rank, so `.pi/skills` beats project `.agents` layers and nearest `.agents`
+// layers beat farther ones:
+//   1. project (trusted only): <cwd>/.pi/skills
+//   2. project (trusted only): <cwd>/.agents/skills, then each parent layer
+//      up to and including the git root (nearest layer wins; the user's own
+//      ~/.agents/skills is never a project layer even when cwd lives under
+//      HOME, mirroring Pi's resolved-path filter)
+//   3. user:  <agent_dir>/skills
+//   4. user:  <home>/.agents/skills
+// `.agents` layers use the "agents" discovery mode (recursive SKILL.md roots
+// only, root *.md ignored); `.pi/skills` and the user agent dir use the "pi"
+// mode (direct root *.md children also load).
+// Explicit --skill paths always load afterwards (they pierce --no-skills and
+// the project trust gate).  When defaults are disabled the explicit path
+// keeps Pi's source attribution: a path under <agent_dir>/skills or
+// <cwd>/.pi/skills still resolves to user/project scope.
+pub fn load_skills_full(string cwd, string agent_dir, string home, [string] skill_paths, bool include_defaults, bool project_trusted): load_skills_result_t {
     load_skills_result_t result = load_skills_result_t {}
     {string:ref<skill_t>} skill_map = {}
     {string:bool} real_path_set = {}
@@ -295,9 +323,17 @@ pub fn load_skills(string cwd, string agent_dir, [string] skill_paths, bool incl
     }
 
     if include_defaults {
+        if project_trusted {
+            add_skills(load_skills_from_dir_internal(path.join(cwd, CONFIG_DIR_NAME, 'skills'), 'project', true, [], path.join(cwd, CONFIG_DIR_NAME, 'skills')))
+            for layer in agents_skill_dirs(cwd, home) {
+                add_skills(load_skills_from_dir_internal(layer, 'project', false, [], layer))
+            }
+        }
         add_skills(load_skills_from_dir_internal(path.join(agent_dir, 'skills'), 'user', true, [], path.join(agent_dir, 'skills')))
-        add_skills(load_skills_from_dir_internal(path.join(cwd, CONFIG_DIR_NAME, 'skills'), 'project', true, [], path.join(cwd, CONFIG_DIR_NAME, 'skills')))
+        add_skills(load_skills_from_dir_internal(path.join(home, '.agents', 'skills'), 'user', false, [], path.join(home, '.agents', 'skills')))
     }
+    string user_skills_dir = path.join(agent_dir, 'skills')
+    string project_skills_dir = path.join(cwd, CONFIG_DIR_NAME, 'skills')
     for raw_path in skill_paths {
         string resolved = path_utils.resolve_to_cwd(raw_path, cwd)
         if !path_utils.exists(resolved) {
@@ -305,9 +341,9 @@ pub fn load_skills(string cwd, string agent_dir, [string] skill_paths, bool incl
             continue
         }
         if is_directory(resolved) {
-            add_skills(load_skills_from_dir_internal(resolved, 'path', true, [], resolved))
+            add_skills(load_skills_from_dir_internal(resolved, explicit_source(resolved, user_skills_dir, project_skills_dir, include_defaults), true, [], resolved))
         } else if resolved.ends_with('.md') {
-            var loaded = load_skill_from_file(resolved, 'path')
+            var loaded = load_skill_from_file(resolved, explicit_source(resolved, user_skills_dir, project_skills_dir, include_defaults))
             if loaded.skill is ref<skill_t> skill_value {
                 load_skills_result_t single = load_skills_result_t {}
                 single.skills.push(skill_value)
@@ -334,6 +370,74 @@ pub fn load_skills(string cwd, string agent_dir, [string] skill_paths, bool incl
         result.diagnostics.push(diagnostic)
     }
     return result
+}
+
+// Project .agents/skills layers from cwd up to the git root, nearest first.
+// Mirrors Pi's collectAncestorAgentsSkillDirs: the walk stops at the first
+// ancestor carrying a .git marker (directory or worktree file, no HEAD
+// content required), and the user's own ~/.agents/skills is filtered out by
+// resolved-path equality so a cwd under HOME never sees it twice (once as a
+// user layer, once as a project layer).
+fn agents_skill_dirs(string cwd, string home): [string] {
+    [string] layers = []
+    string top = git_root(cwd)
+    string user_skills = path_utils.clean(path.join(home, '.agents', 'skills'))
+    string dir = cwd
+    for true {
+        string layer = path.join(dir, '.agents', 'skills')
+        if path_utils.clean(layer) != user_skills {
+            layers.push(layer)
+        }
+        if top != '' && path_utils.clean(dir) == path_utils.clean(top) {
+            break
+        }
+        string parent = path.dir(dir)
+        if parent == dir || parent == '' {
+            break
+        }
+        dir = parent
+    }
+    return layers
+}
+
+// Pi's findGitRepoRoot: the first ancestor with a .git path caps the walk.
+// Only the marker's existence matters, not its contents (a bare init or a
+// worktree pointer is enough), so layers above the repository never load.
+fn git_root(string cwd): string {
+    string dir = cwd
+    for true {
+        if path_utils.exists(path.join(dir, '.git')) {
+            return dir
+        }
+        string parent = path.dir(dir)
+        if parent == dir || parent == '' {
+            return ''
+        }
+        dir = parent
+    }
+    return ''
+}
+
+// Pi's getSource: explicit paths resolve to their natural scope only when
+// default discovery is disabled; otherwise they are plain "path" sources.
+fn explicit_source(string resolved, string user_skills_dir, string project_skills_dir, bool include_defaults): string {
+    if !include_defaults {
+        if is_under_path(resolved, user_skills_dir) {
+            return 'user'
+        }
+        if is_under_path(resolved, project_skills_dir) {
+            return 'project'
+        }
+    }
+    return 'path'
+}
+
+fn is_under_path(string target, string root): bool {
+    if target == root {
+        return true
+    }
+    string prefix = root.ends_with('/') ? root : root + '/'
+    return target.starts_with(prefix)
 }
 
 pub fn format_skills_for_prompt([ref<skill_t>] skills): string {

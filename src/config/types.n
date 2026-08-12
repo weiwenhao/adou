@@ -48,6 +48,8 @@ pub type cli_args_t = struct {
     bool help
     bool version
     bool thinking_explicit
+    [string] skill_paths = []
+    bool no_skills
     [string] messages = []
     [string] file_args = []
     [string] errors = []
@@ -98,5 +100,21 @@ pub type config_t = struct {
     string steering_mode = 'one-at-a-time'
     string follow_up_mode = 'one-at-a-time'
     bool hide_thinking
+    [string] skill_paths = []
+    bool no_skills
     [string] initial_messages = []
+}
+
+// Skills options shared by every runtime entry that rebuilds project-bound
+// resources (session context, spawned serve instances, RPC get_commands).
+// Explicit --skill paths always load; no_skills only gates default discovery;
+// project_trusted gates project-scope discovery (.pi/skills, .agents/skills).
+// The trust override fields are carried so the decision can be re-resolved
+// per project cwd (a spawn or session rebind may leave the launch cwd).
+pub type skills_options_t = struct {
+    [string] skill_paths = []
+    bool no_skills
+    bool project_trusted
+    bool trust_override
+    bool trust_override_explicit
 }

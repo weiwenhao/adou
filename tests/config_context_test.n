@@ -174,6 +174,28 @@ test 'tool scope flags preserve order and exclusions' {
     assert(config.no_tools && config.tool_names.len() == 3 && config.exclude_tool_names[0] == 'bash')
 }
 
+test 'skill flags collect repeatable paths and no-skills aliases like Pi' {
+    var parsed = args.parse(['adou', '--skill', 'one', '--no-skills', '--skill', 'two/dir', '-ns'])
+    assert(parsed.errors.len() == 0)
+    assert(parsed.no_skills)
+    assert(parsed.skill_paths.len() == 2)
+    assert(parsed.skill_paths[0] == 'one' && parsed.skill_paths[1] == 'two/dir')
+    // Relative --skill paths are fixed against the launch cwd at resolve
+    // time so a later --session/rebind to another project cannot drift them.
+    var config = resolve.resolve(parsed, '/tmp/work')
+    assert(config.no_skills)
+    assert(config.skill_paths.len() == 2)
+    assert(config.skill_paths[0] == '/tmp/work/one' && config.skill_paths[1] == '/tmp/work/two/dir')
+
+    // Absolute paths pass through untouched.
+    var absolute = args.parse(['adou', '--skill', '/abs/skill'])
+    var absolute_config = resolve.resolve(absolute, '/tmp/work')
+    assert(absolute_config.skill_paths.len() == 1 && absolute_config.skill_paths[0] == '/abs/skill')
+
+    var missing = args.parse(['adou', '--skill'])
+    assert(missing.errors.len() == 1 && missing.errors[0] == '--skill requires a value')
+}
+
 test 'CLI reports missing invalid conflicting and unknown options together' {
     var parsed = args.parse(['adou', '--provider', '--thinking', 'impossible', '--session', 'one', '--continue', '--unknown'])
     assert(parsed.errors.len() == 4)

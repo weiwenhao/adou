@@ -69,6 +69,28 @@ test 'has_trust_requiring_resources detects .pi resources and agents skills' {
     assert(trust.has_trust_requiring_resources(root))
 }
 
+test 'resolve_trust applies stored decisions per cwd and explicit overrides win' {
+    // A project with trust-requiring resources picks up its stored decision.
+    string project = path.join('/tmp', 'adou-trust-res-' + suffix())
+    os.mkdirs(path.join(project, '.pi', 'skills'), 0o700)
+    var file = fs.open(path.join(project, '.pi', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    file.write('x' as [u8])
+    file.close()
+    assert(trust.resolve_trust(false, true, project))
+    trust.save(project, false) catch error {}
+    assert(!trust.resolve_trust(false, true, project))
+    // Without trust-requiring resources the default stays trusted even when
+    // a stored decision exists (Pi returns true before consulting the store).
+    string plain = path.join('/tmp', 'adou-trust-plain-' + suffix())
+    trust.save(plain, false) catch error {}
+    assert(trust.resolve_trust(false, true, plain))
+    // An explicit --approve/--no-approve always wins for any cwd.
+    assert(trust.resolve_trust(true, true, project))
+    assert(!trust.resolve_trust(true, false, project))
+    assert(trust.resolve_trust(true, true, plain))
+    assert(!trust.resolve_trust(true, false, plain))
+}
+
 fn suffix(): string {
     return fmt.sprintf('%d', time.now().ms_timestamp())
 }

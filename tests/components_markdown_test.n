@@ -1,6 +1,7 @@
 import adou.src.tui.components
 import adou.src.tui.markdown
 import adou.src.tui.text_utils
+import fmt
 import strings
 
 test 'container text spacer box and truncation stay within width' {
@@ -124,4 +125,34 @@ test 'intraword underscores stay literal while flanking emphasis still works' {
     var bold2 = markdown.render('__bold__', 80)
     string bold2_joined = strings.join(bold2, '\n')
     assert(bold2_joined.contains('\x1b[1mbold\x1b[22m'))
+}
+
+test 'long underscore input segments the line once and stays literal' {
+    // A long intraword underscore line (generated identifiers like
+    // word0_word1_..._word399) must stay literal end-to-end; each underscore
+    // shares one Unicode word segmentation of the line instead of re-walking
+    // the whole string, so long inputs cannot degrade to quadratic behavior.
+    [string] pieces = []
+    for int index = 0; index < 400; index += 1 {
+        pieces.push('word' + fmt.sprintf('%d', index))
+    }
+    string source = strings.join(pieces, '_')
+    var literal = markdown.render(source, 120)
+    string joined = strings.join(literal, '\n')
+    assert(joined.contains('word0_word1_word2'))
+    assert(joined.contains('word399'))
+    assert(!joined.contains('\x1b[3m'))
+
+    // Double underscores inside the same long line stay literal too.
+    string doubled = strings.join(pieces, '__')
+    var literal_doubled = markdown.render(doubled, 120)
+    string doubled_joined = strings.join(literal_doubled, '\n')
+    assert(doubled_joined.contains('word0__word1__word2'))
+    assert(!doubled_joined.contains('\x1b[1m'))
+
+    // Flanking emphasis still works right after a long literal line.
+    var mixed = markdown.render(source + ' _italic_', 120)
+    string mixed_joined = strings.join(mixed, '\n')
+    assert(mixed_joined.contains('\x1b[3mitalic\x1b[23m'))
+    assert(mixed_joined.contains('word399'))
 }

@@ -22,13 +22,14 @@ printf '%s' "$out" | rg -q '^Environment:' || { echo "e2e: help lacks Environmen
 
 # Every option the parser accepts must appear in the help text.  The
 # argument matrix below mirrors the options implemented in src/config/args.n
-# plus the startup/auth surfaces; extension/skill/template/theme flags are
+# plus the startup/auth surfaces; extension/template/theme flags are
 # intentionally excluded (resource toggles live in /config).
 for option in \
     --provider --model --models --list-models --base-url --thinking --mode --serve-port \
     --session --session-id --session-dir --continue --resume --fork --name \
     --print --export --system-prompt --append-system-prompt \
     --no-context-files --no-tools --no-builtin-tools --tools --exclude-tools \
+    --skill --no-skills \
     --no-session --approve --no-approve --offline --verbose --debug \
     --context-window --max-tokens --timeout-ms --max-retries \
     --reserve-tokens --keep-recent-tokens --no-compaction --api-key \
@@ -40,7 +41,7 @@ for option in \
 done
 
 # Short aliases are documented too.
-for alias in '-p' '-c' '-r' '-n' '-a' '-na' '-nc' '-nt' '-nbt' '-t' '-xt' '-h' '-v'; do
+for alias in '-p' '-c' '-r' '-n' '-a' '-na' '-nc' '-nt' '-nbt' '-t' '-xt' '-ns' '-h' '-v'; do
     printf '%s' "$out" | rg -q -- "$alias" || {
         echo "e2e: help missing alias $alias" >&2
         exit 1

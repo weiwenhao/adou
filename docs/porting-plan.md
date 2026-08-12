@@ -1,6 +1,6 @@
 # Adou 全量移植计划（Pi 0.82.1，扩展机制暂缓）
 
-状态：Phase 5、Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12
+状态：Phase 5、Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12；Skills parity foundation 增量批次已关闭（2026-08-13 复核收口并验证）
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
 release hardening：macOS 主线进行中（Batch 1、Batch 2A、native `.pkg` installer 已完成；Batch 2B 真实签名/公证需新权限；Linux 暂缓，见 `docs/release-hardening-plan.md`、`docs/macos-signing.md` 与 `docs/macos-installer.md`）
 RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make release-check`、`make signing-check` 证据见下）；历史 runtime blocker `nature#302` 已由上游 PR #303 修复并用专用 toolchain 验证，后续 PTY 冷启动失败也已定位为测试在 raw mode 前过早发键的同步缺陷并修复
@@ -12,6 +12,7 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 - Phase 7（storage + server）已完成：storage 已完成（JSONL/memory/SQLite 三后端契约测试 + migrations + materialized 表），server supervisor/protocol/rpc_stream 已验收（Phase 7.1 于 2026-08-12 关闭）。
 - 历史失败记录（cli-startup-boundaries 挂起、auth stdout 泄漏、ESC 10ms、deepseek fixture、全量 7 文件 OOM）均已由后续修复或重跑覆盖，见各批实跑证据。
 - Phase 8（evals harness）已完成：`make eval` 3/3 绿（2026-08-12），见 `docs/evals-design.md`。
+- Skills parity foundation 增量批次已关闭（2026-08-13）：`--skill`/`--no-skills`、发现优先级、trust 重解析、`/reload`、RPC `get_commands` 与 Markdown 单次分词已落地并验证（见下文 Skills parity foundation 节）。
 - Pi extension 已在生产入口停用：不扫描扩展目录、不初始化 QuickJS、不注册扩展工具/命令、不派发生命周期事件；默认构建不再链接 QuickJS。相关源码暂留作未来重新设计的参考。
 
 | 阶段 | 状态 | 当前结论 |
@@ -147,6 +148,40 @@ Phase 7.1（server 协议 parity closeout，2026-08-11 落地，2026-08-12 已�
 - 本地脚本化 HTTP mock provider（参照 anthropic/deepseek HTTP fixture server 模式），离线确定性，不用真实 API；结构设计与上游映射见 `docs/evals-design.md`。
 
 Phase 8 验收结果（2026-08-12 关闭）：`make build` 退出 0；`make eval` 连续多次全绿（3 passed, 0 failed, exit 0；人为注入断言失败时输出 FAIL 行并 exit 1）；e2e 抽查 `rpc-shape-parity.sh`、`help-matrix.sh` 通过。
+
+## Skills parity foundation 批次（2026-08-13 关闭）
+
+上游对照点：`cli/args.ts` 的 `--skill` 可重复与 `--no-skills`/`-ns`；`core/package-manager.ts` 的 skill 路径合并、`resourcePrecedenceRank` 与 `.agents` 祖先发现；`core/skills.ts` 的 discovery mode、collision 与 `includeDefaults` 语义。
+
+已落地：
+
+- CLI：`--skill` 可重复收集并在启动 cwd 立即解析为绝对路径，后续 `--session`/`--resume`/session rebind 不漂移；`--no-skills` 只关 default discovery（显式路径仍加载），HELP 文本同步说明；HELP/`help-matrix.sh` 同步 `--skill`、`--no-skills`、`-ns`。
+- 发现顺序（name collision 先加载者胜）：可信项目优先于用户：`<cwd>/.pi/skills` → `<cwd>` 至 git root 的各层 `.agents/skills`（近层优先）→ `<agent_dir>/skills` → `~/.agents/skills`。
+  - `.pi/skills` 与 agent_dir 使用 pi mode（允许根部 `*.md`），`.agents/skills` 与 `~/.agents/skills` 使用 agents mode（只识别子目录 `SKILL.md`）。
+  - git root 只按 `.git` marker 存在性封顶（不要求 HEAD）；`~/.agents/skills` 只作为 user 层，不作为 project 层重复（cwd 在 HOME 下同样适用）。
+- trust：共享 `trust.resolve_trust`（显式 `--approve`/`--no-approve` 最高优先级）；启动打开最终 repository 后按 repository cwd 重解析，serve spawn cwd、TUI `/open`/`/import`/session rebind、RPC `get_commands` 均按各自项目 cwd 重解析。
+- system prompt：仅 read 工具可用时注入 `<available_skills>`；`/reload`、session rebind、serve 实例重建、RPC `get_commands` 复用同一技能集合与 `enabledSkills` 过滤。
+- Markdown：含下划线的行只做一次 ICU word segmentation，长标识符输入不再退化为 O(n²) ICU 扫描。
+
+复核发现收口（2026-08-13 全部修复并验证）：
+
+- `run_rpc` 的 skills options 改用 `resolve.skills_options_for`（携带 trust override），直接 RPC `get_commands` 不再丢失显式 `--no-approve`。
+- TUI `view_t` 保存 trust override 字段并新增 `trusted_for(cwd)`；`/open`、`/import`、session rebind 跨项目时按新 cwd 重解析 trust。
+- `config_context_test.n` 改为断言相对 skill 路径在 resolve 时固化为启动 cwd 绝对路径、绝对路径原样保留。
+- `skills_test.n` collision case 改为 project-first（`.pi/skills` 胜 user），并补齐同名 winner 断言；新增项目胜用户、pi mode/agents mode、above-repo 不加载、HOME 下 `.agents` 单层加载等 case（22/22 绿）。
+- `skills-loading.sh`/`skills-reload.sh` 隔离 HOME/agent/session（HOME 隔离防止未信任分支误载入真实 `~/.agents/skills`），改用随机空闲端口；`skills-reload.sh` 增加 child chdir project、completion 输入校验与 fixture 多请求计数校验。
+
+验证结果（2026-08-13，全部串行、不调用真实模型）：
+
+- `make build` 退出 0。
+- `skills_test.n` 22/22、`config_context_test.n` 24/24、`components_markdown_test.n` 9/9（含长下划线单次分词回归）、`trust_test.n` 7/7（含 `resolve_trust` 按 cwd 重解析与显式覆盖）全绿。
+- e2e：`help-matrix.sh`、`skills-loading.sh`（5 场景：信任默认、`--no-tools` 门控、`--no-skills`、显式路径穿透、未信任项目）、`skills-reload.sh`（无技能启动 → 创建 SKILL.md → `/reload` → 完成项/列表/注入/展开 → `--no-skills` 禁用）、`rpc-extension-loading.sh` 全部通过。
+
+### MCP 结论（本批文档化，非缺陷）
+
+- Pi core 明确不内建 MCP：coding-agent README 的 Philosophy 标注 “No MCP”，并说明用户可自行构建 extension 来添加 MCP support；其扩展能力列表也包含 MCP server integration。
+- 因此 MCP 属于 extension/package 生态，不是 core parity 缺陷；Adou 本批不实现 MCP，不引入 Node/JS/QuickJS。
+- Adou extension 机制保持停用（QuickJS 不链接、扩展目录不扫描、扩展工具/命令/UI/provider 不注册、生命周期事件不派发）；未来重新设计扩展机制后再评估 MCP。
 
 ## 测试模型、密钥与成本约束
 

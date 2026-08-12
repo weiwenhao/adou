@@ -41,6 +41,26 @@ pub fn save(string cwd, bool trusted): void! {
     write_object(file_path, object)
 }
 
+// Pi's resolveProjectTrusted re-evaluated against an arbitrary working
+// directory.  Startup resolves trust for the launch cwd, but a --session/
+// --resume target, a serve spawn cwd or a TUI session rebind can bind the
+// runtime to a different project; this is the one shared entry point all of
+// those paths call.  An explicit --approve/--no-approve always wins;
+// otherwise a stored decision applies when the directory hosts
+// trust-requiring resources, and everything else defaults to trusted.
+pub fn resolve_trust(bool explicit_override, bool override_value, string cwd): bool {
+    if explicit_override {
+        return override_value
+    }
+    if has_trust_requiring_resources(cwd) {
+        var decision = decision(cwd)
+        if decision is bool value {
+            return value
+        }
+    }
+    return true
+}
+
 pub type trust_update_t = struct {
     string trust_path
     bool decision

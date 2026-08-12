@@ -168,6 +168,15 @@ pub type view_t = struct {
     [string] append_system_prompts = []
     [ref<prompt_templates.prompt_template_t>] prompt_templates = []
     bool no_context_files
+    // CLI skills options survive /reload and session rebinds: explicit
+    // --skill paths keep loading, --no-skills keeps gating default discovery,
+    // and the trust decision is re-resolved against each project cwd
+    // (explicit --approve/--no-approve still wins) so a /open, /import or
+    // --session rebind to another project uses that project's decision.
+    [string] skill_paths = []
+    bool no_skills
+    bool trust_override
+    bool trust_override_explicit
     // Pi coalesces render requests into one frame per animation interval.
     // Keep the same property so a burst of stream deltas cannot race the
     // differential renderer or write duplicate terminal frames.
@@ -176,8 +185,8 @@ pub type view_t = struct {
     bool redraw_dirty
 }
 
-pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model, string cwd): ref<view_t> {
-    var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, command_menu = false, command_index = 0, kitty_protocol = true)
+pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model, string cwd, [string] skill_paths, bool no_skills, bool trust_override, bool trust_override_explicit): ref<view_t> {
+    var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, command_menu = false, command_index = 0, kitty_protocol = true, skill_paths = skill_paths, no_skills = no_skills, trust_override = trust_override, trust_override_explicit = trust_override_explicit)
     string thinking = runner.agent_config.stream_options.reasoning_effort
     if !runner.agent_config.stream_options.thinking_enabled {
         thinking = 'off'
@@ -191,7 +200,7 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     view.chat.load_messages(runner.active_messages)
     [string] no_extra_prompts = []
     view.prompt_templates = prompt_templates.load_prompt_templates(cwd, paths.agent_dir(), no_extra_prompts, true)
-    refresh_dynamic_commands(cwd)
+    refresh_dynamic_commands(cwd, view.skill_paths, view.no_skills, view.trusted_for(cwd))
     model_scope_patterns_cache = view.model_scope_patterns
     var stored_settings = config_settings.load_for(cwd)
     theme.set_variant(stored_settings.theme)
@@ -964,7 +973,25 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
             }
         }
         string append_prompt = strings.join(resolved_append_prompts, '\n\n')
+        // /reload re-discovers skills and refreshes the /skill:* dynamic
+        // command menu.  The skills prompt only re-enters the system prompt
+        // when the read tool is available, and CLI skill paths, --no-skills
+        // and the project trust decision are preserved.
+        var skills_result = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, self.trusted_for(self.runner.repository.cwd)) catch error {
+            skills.load_skills_result_t {}
+        }
+        var filtered_skills = self.filter_enabled_skills(skills_result.skills)
+        if has_tool_name(tool_names, 'read') {
+            string skills_prompt = skills.format_skills_for_prompt(filtered_skills)
+            if skills_prompt != '' {
+                if append_prompt != '' {
+                    append_prompt += '\n\n'
+                }
+                append_prompt += skills_prompt
+            }
+        }
         self.runner.base_context.system_prompt = system_prompt.build_with_tools(self.runner.repository.cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
+        refresh_dynamic_commands(self.runner.repository.cwd, self.skill_paths, self.no_skills, self.trusted_for(self.runner.repository.cwd))
         self.chat.status = warnings.len() > 0 ? 'Project instructions reloaded with warnings' : 'Project instructions reloaded'
         self.redraw()
         return null
@@ -1246,7 +1273,11 @@ fn view_t.finish_session_switch(&self, ref<repository.manager_t> next): ref<sess
 // Session replacement can move to a different project cwd (for example
 // `/import` or an explicit --session path).  Pi recreates its runtime-bound
 // resources in that case; rebuild the Nature tool executors and system prompt
-// while keeping the current tool selection and CLI prompt overrides.
+// while keeping the current tool selection and CLI prompt overrides.  Skills
+// and the /skill:* command menu are rebuilt for the new cwd with the same
+// CLI options, and the project trust decision is re-resolved against the new
+// cwd (explicit --approve/--no-approve still wins), so a rebound session
+// behaves like one started there.
 #local
 fn view_t.rebind_project_context(&self, string cwd): void! {
     [string] tool_names = []
@@ -1264,7 +1295,29 @@ fn view_t.rebind_project_context(&self, string cwd): void! {
     var tools = tool_names.len() > 0 ? builtins.select_tools(cwd, tool_names, [], false) : []
     self.runner.base_context.tools = tools
     string append_prompt = strings.join(self.append_system_prompts, '\n\n')
+    bool trusted = self.trusted_for(cwd)
+    var skills_result = skills.load_skills(cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, trusted) catch error {
+        skills.load_skills_result_t {}
+    }
+    var filtered_skills = self.filter_enabled_skills(skills_result.skills)
+    if has_tool_name(tool_names, 'read') {
+        string skills_prompt = skills.format_skills_for_prompt(filtered_skills)
+        if skills_prompt != '' {
+            if append_prompt != '' {
+                append_prompt += '\n\n'
+            }
+            append_prompt += skills_prompt
+        }
+    }
     self.runner.base_context.system_prompt = system_prompt.build_with_tools(cwd, context_files, self.system_prompt_override, append_prompt, tool_names)
+    refresh_dynamic_commands(cwd, self.skill_paths, self.no_skills, trusted)
+}
+
+// The trust decision for a project cwd, re-resolved on every session rebind:
+// an explicit --approve/--no-approve wins, otherwise the stored decision
+// applies when the project hosts trust-requiring resources.
+fn view_t.trusted_for(&self, string cwd): bool {
+    return trust.resolve_trust(self.trust_override_explicit, self.trust_override, cwd)
 }
 
 pub fn view_t.set_session_name(&self, string name): ref<session_stream.stream_t>? {
@@ -2303,7 +2356,7 @@ pub fn view_t.show_config_overlay(&self) {
     [string] options = []
     var settings = config_settings.load()
     options.push('Skills')
-    var skills_result = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), [], true) catch error {
+    var skills_result = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, self.trusted_for(self.runner.repository.cwd)) catch error {
         skills.load_skills_result_t {}
     }
     for skill in skills_result.skills {
@@ -2478,7 +2531,7 @@ pub fn view_t.expand_skill_command(&self, string text): string {
         skill_name = text.slice(7, space)
         args = text.slice(space + 1, text.len()).trim([' ', '\t'])
     }
-    var loaded = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), [], true) catch error {
+    var loaded = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, self.trusted_for(self.runner.repository.cwd)) catch error {
         return text
     }
     var expanded_filtered = self.filter_enabled_skills(loaded.skills)
@@ -2507,7 +2560,7 @@ fn read_skill_file(string file_path): string! {
     return content
 }
 
-pub fn view_t.show_skills(&self, string text, [string] parts) {    var loaded = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), [], true) catch error {
+pub fn view_t.show_skills(&self, string text, [string] parts) {    var loaded = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, self.trusted_for(self.runner.repository.cwd)) catch error {
         self.chat.error_message = error.msg()
         self.redraw()
         return
@@ -4123,10 +4176,10 @@ fn builtin_command_names(): [string] {
 [string] model_scope_patterns_cache = []
 bool dynamic_commands_loaded = false
 
-fn refresh_dynamic_commands(string cwd) {
+fn refresh_dynamic_commands(string cwd, [string] skill_paths, bool no_skills, bool project_trusted) {
     [string] no_extra = []
     var templates = prompt_templates.load_prompt_templates(cwd, paths.agent_dir(), no_extra, true)
-    var skills_result = skills.load_skills(cwd, paths.agent_dir(), no_extra, true) catch error {
+    var skills_result = skills.load_skills(cwd, paths.agent_dir(), skill_paths, !no_skills, project_trusted) catch error {
         skills.load_skills_result_t {}
     }
     // The config selector's enable lists filter which dynamic commands are
@@ -4169,6 +4222,16 @@ fn command_names(): [string] {
 fn list_contains([string] values, string target): bool {
     for value in values {
         if value == target {
+            return true
+        }
+    }
+    return false
+}
+
+#local
+fn has_tool_name([string] tool_names, string wanted): bool {
+    for name in tool_names {
+        if name == wanted {
             return true
         }
     }

@@ -266,13 +266,14 @@ fn strip_quote_prefix(string content, int depth): string {
 // not a byte-level approximation: ICU word segmentation (unicode.words)
 // marks CJK ideographs, emoji and combining sequences as word-like, so
 // 中文_变量_名 and 你_好 keep their underscores literal exactly like
-// foo_bar_baz.
+// foo_bar_baz.  The segmentation is computed at most once per inline
+// line and shared by every delimiter flanking check; re-segmenting the
+// whole line for each underscore would turn long identifiers into O(n^2)
+// ICU walks (a 4k-byte line of intraword underscores costs ~1ms per
+// segment call instead of one shared pass).
 #local
-fn is_word_at(string text, int pos): bool {
-    if pos < 0 || pos >= text.len() {
-        return false
-    }
-    var segments = unicode.words(text) catch error {
+fn word_at([unicode.segment_t] segments, int pos): bool {
+    if pos < 0 {
         return false
     }
     for segment in segments {
@@ -285,6 +286,13 @@ fn is_word_at(string text, int pos): bool {
 
 #local
 fn inline(string text): string {
+    // Only lines that actually contain an underscore need word boundaries.
+    [unicode.segment_t] segments = []
+    if text.find('_') >= 0 {
+        segments = unicode.words(text) catch error {
+            []
+        }
+    }
     string result = ''
     int cursor = 0
     for cursor < text.len() {
@@ -300,9 +308,9 @@ fn inline(string text): string {
         // Double underscore needs flanking like single underscore:
         // foo__bar__baz keeps its underscores literal.
         if cursor + 2 <= text.len() && text.slice(cursor, cursor + 2) == '__' {
-            bool can_open = cursor == 0 || !is_word_at(text, cursor - 1)
+            bool can_open = cursor == 0 || !word_at(segments, cursor - 1)
             int end = text.find_after('__', cursor + 2)
-            bool can_close = end > cursor + 2 && (end + 2 >= text.len() || !is_word_at(text, end + 2))
+            bool can_close = end > cursor + 2 && (end + 2 >= text.len() || !word_at(segments, end + 2))
             if can_open && can_close {
                 result += theme.bold(text.slice(cursor + 2, end))
                 cursor = end + 2
@@ -349,9 +357,9 @@ fn inline(string text): string {
                 cursor += 2
                 continue
             }
-            bool can_open = cursor == 0 || !is_word_at(text, cursor - 1)
+            bool can_open = cursor == 0 || !word_at(segments, cursor - 1)
             int end = text.find_after('_', cursor + 1)
-            bool can_close = end > cursor + 1 && (end + 1 >= text.len() || !is_word_at(text, end + 1))
+            bool can_close = end > cursor + 1 && (end + 1 >= text.len() || !word_at(segments, end + 1))
             if can_open && can_close {
                 result += theme.italic(text.slice(cursor + 1, end))
                 cursor = end + 1
