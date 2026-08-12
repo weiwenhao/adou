@@ -29,7 +29,7 @@ staging。
   adou-process-group 0755、RELEASE-README 0644、SHA-256 manifest）与
   `build/dist/adou-<version>-darwin-arm64.tar.gz`。不打包 tests、sessions、
   auth 文件、porting-plan 及任何含 DeepSeek key 的文档。
-- `tests/e2e/release-artifact.sh`：解包后完全离开仓库 cwd 运行
+- `tests/e2e/release/release-artifact.sh`：解包后完全离开仓库 cwd 运行
   `--version`/`--help`；隔离 `PI_CODING_AGENT_DIR`/
   `PI_CODING_AGENT_SESSION_DIR`；验证相邻 adou-process-group 存在且可执行
   且运行时按环境变量或相邻路径发现；offline RPC 冒烟（确定性响应、非挂起）；
@@ -47,7 +47,7 @@ staging。
 2. `otool -L build/bin/adou` 仅 `/usr/lib/libSystem.B.dylib`；
    `file build/bin/adou` 为 Mach-O arm64。
 3. `make dist` 产出目录与 tar.gz，SHA-256 manifest 校验通过。
-4. `tests/e2e/release-artifact.sh` 全绿（解包后运行、隔离环境、offline RPC、
+4. `tests/e2e/release/release-artifact.sh` 全绿（解包后运行、隔离环境、offline RPC、
    IPC 生命周期、Mach-O/动态依赖白名单、签名状态一致性）。
 5. `make release-check` 全绿。
 6. `make install DESTDIR=<tmp> PREFIX=/usr/local` staging 下 `--version` 正常。
@@ -66,7 +66,7 @@ staging。
 - 构建产物审计：`file` 两二进制均为 Mach-O 64-bit executable arm64；
   `otool -L` 两二进制均仅依赖 `/usr/lib/libSystem.B.dylib`（adou 的
   `current version 1356.0.0`）——动态依赖白名单通过。
-- `tests/e2e/release-artifact.sh` 全绿：解包后离开仓库 cwd 运行
+- `tests/e2e/release/release-artifact.sh` 全绿：解包后离开仓库 cwd 运行
   `--version`/`--help`；隔离 `PI_CODING_AGENT_DIR`/
   `PI_CODING_AGENT_SESSION_DIR`；相邻 adou-process-group 运行时发现 +
   bash 工具真实执行；offline RPC 确定性失败响应且非挂起；RPC-over-IPC

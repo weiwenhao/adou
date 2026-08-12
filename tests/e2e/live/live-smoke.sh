@@ -5,14 +5,14 @@ set -eu
 # stays offline/mocked): set ADOU_LIVE_SMOKE=1 to run exactly one request
 # with thinking off, low max tokens and retries disabled.  The API key is
 # supplied via environment and never printed.
-binary=${ADOU_BIN:-$(CDPATH= cd -- "$(dirname -- "$0")/../../build/bin" && pwd)/adou}
+binary=${ADOU_BIN:-$(CDPATH= cd -- "$(dirname -- "$0")/../../../build/bin" && pwd)/adou}
 if [ ! -x "$binary" ]; then
     echo "e2e: Adou binary not found: $binary" >&2
     exit 2
 fi
 
-# shellcheck source=lib/deepseek-test-config.sh
-. "$(dirname -- "$0")/lib/deepseek-test-config.sh"
+# shellcheck source=../lib/deepseek-test-config.sh
+. "$(dirname -- "$0")/../lib/deepseek-test-config.sh"
 
 if ! deepseek_live_smoke_enabled; then
     echo "e2e: live smoke skipped (set ADOU_LIVE_SMOKE=1 to enable)"
