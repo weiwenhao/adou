@@ -8,11 +8,21 @@
 # Project test model/key conventions (docs/porting-plan.md, "测试模型、
 # 密钥与成本约束"): deterministic regressions stay offline or on local
 # mocks; live DeepSeek requests are opt-in, one at a time, with thinking
-# off, low max tokens and retries disabled.
+# off, low max tokens and retries disabled. Public source never embeds a
+# provider credential.
 
 DEEPSEEK_TEST_MODEL="deepseek-v4-flash"
 DEEPSEEK_TEST_MODEL_REF="deepseek/deepseek-v4-flash"
-DEEPSEEK_TEST_API_KEY="REDACTED-PUBLIC-HISTORY"
+if [ -n "${DEEPSEEK_TEST_API_KEY:-}" ]; then
+    DEEPSEEK_TEST_API_KEY_IS_EXPLICIT=1
+elif [ -n "${DEEPSEEK_API_KEY:-}" ]; then
+    DEEPSEEK_TEST_API_KEY=$DEEPSEEK_API_KEY
+    DEEPSEEK_TEST_API_KEY_IS_EXPLICIT=1
+else
+    # Offline credential-selection tests need a non-secret sentinel value.
+    DEEPSEEK_TEST_API_KEY="adou-offline-e2e-key"
+    DEEPSEEK_TEST_API_KEY_IS_EXPLICIT=0
+fi
 
 # Explicit live-smoke switch: ADOU_LIVE_SMOKE=1 enables exactly one live
 # request; anything else keeps the suite offline/mocked.
@@ -24,10 +34,6 @@ DEEPSEEK_SMOKE_MAX_TOKENS="64"
 DEEPSEEK_SMOKE_MAX_RETRIES="0"
 DEEPSEEK_SMOKE_TIMEOUT_MS="60000"
 DEEPSEEK_SMOKE_PROMPT="Reply with exactly: ok"
-
-deepseek_live_smoke_enabled() {
-    [ "${DEEPSEEK_LIVE_SMOKE}" = "1" ]
-}
 
 # Logging helpers never print the key itself.
 deepseek_log_key_state() {

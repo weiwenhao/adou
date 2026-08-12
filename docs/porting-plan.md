@@ -151,8 +151,10 @@ Phase 8 验收结果（2026-08-12 关闭）：`make build` 退出 0；`make eval
 ## 测试模型、密钥与成本约束
 
 - 常规模型统一使用 `deepseek-v4-flash`；需要 provider-qualified reference 时使用 `deepseek/deepseek-v4-flash`。
-- 项目测试用 DeepSeek API key：`REDACTED-PUBLIC-HISTORY`。
-- 允许把该测试 key 保存在本私人项目的文档和测试源码中；测试实现应集中定义，避免在多个 fixture 中重复散落。
+- public 仓库不保存 DeepSeek API key；live 测试从
+  `DEEPSEEK_TEST_API_KEY` 或 `DEEPSEEK_API_KEY` 环境变量读取。
+- 离线 credential-selection 测试使用非秘密 sentinel，不能把它用于公网请求；
+  live 开关只有在显式提供真实环境变量时才会启用 provider 调用。
 - 确定性 unit/e2e 默认使用 offline 或本地 mock，不因为 key 可用就把普通回归测试改成公网调用。
 - Live DeepSeek smoke 必须显式开启，使用 `thinking=off`、低 `max-tokens`、单请求、禁用重试和非必要工具，避免并发和重复消费。
 - 测试日志、失败信息和提交说明不得打印完整 key；credential-print 测试只断言输出通道和匹配结果。

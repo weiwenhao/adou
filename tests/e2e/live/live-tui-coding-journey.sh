@@ -47,8 +47,8 @@ if [ "${ADOU_LIVE_TUI_JOURNEY:-0}" != "1" ]; then
     exit 0
 fi
 
-if [ -z "${DEEPSEEK_TEST_API_KEY:-}" ]; then
-    echo "e2e: live TUI coding journey requires the test key in deepseek-test-config.sh" >&2
+if [ "${DEEPSEEK_TEST_API_KEY_IS_EXPLICIT:-0}" != "1" ]; then
+    echo "e2e: live TUI coding journey requires DEEPSEEK_TEST_API_KEY or DEEPSEEK_API_KEY" >&2
     exit 1
 fi
 deepseek_log_key_state
