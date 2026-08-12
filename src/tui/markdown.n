@@ -1,4 +1,5 @@
 import adou.src.tui.text_utils
+import adou.src.tui.unicode
 import adou.src.tui.theme
 
 pub fn render(string markdown, int width): [string]! {
@@ -261,16 +262,25 @@ fn strip_quote_prefix(string content, int depth): string {
     return content.slice(cursor, content.len())
 }
 
-// A "word" byte for flanking purposes: ASCII alphanumerics plus any
-// multi-byte UTF-8 byte (CJK ideographs, combining marks, emoji) -- a
-// byte >= 0x80 can never act as a flanking boundary, so 中文_变量_名 and
-// 你_好 keep their underscores literal like foo_bar_baz.
+// CommonMark flanking boundaries must use Unicode word classification,
+// not a byte-level approximation: ICU word segmentation (unicode.words)
+// marks CJK ideographs, emoji and combining sequences as word-like, so
+// 中文_变量_名 and 你_好 keep their underscores literal exactly like
+// foo_bar_baz.
 #local
-fn is_word_byte(u8 value): bool {
-    if value >= 0x80 {
-        return true
+fn is_word_at(string text, int pos): bool {
+    if pos < 0 || pos >= text.len() {
+        return false
     }
-    return (value >= 'a'.char() && value <= 'z'.char()) || (value >= 'A'.char() && value <= 'Z'.char()) || (value >= '0'.char() && value <= '9'.char())
+    var segments = unicode.words(text) catch error {
+        return false
+    }
+    for segment in segments {
+        if segment.word_like && segment.start <= pos && pos < segment.end {
+            return true
+        }
+    }
+    return false
 }
 
 #local
@@ -290,9 +300,9 @@ fn inline(string text): string {
         // Double underscore needs flanking like single underscore:
         // foo__bar__baz keeps its underscores literal.
         if cursor + 2 <= text.len() && text.slice(cursor, cursor + 2) == '__' {
-            bool can_open = cursor == 0 || !is_word_byte(text[cursor - 1] as u8)
+            bool can_open = cursor == 0 || !is_word_at(text, cursor - 1)
             int end = text.find_after('__', cursor + 2)
-            bool can_close = end > cursor + 2 && (end + 2 >= text.len() || !is_word_byte(text[end + 2] as u8))
+            bool can_close = end > cursor + 2 && (end + 2 >= text.len() || !is_word_at(text, end + 2))
             if can_open && can_close {
                 result += theme.bold(text.slice(cursor + 2, end))
                 cursor = end + 2
@@ -339,9 +349,9 @@ fn inline(string text): string {
                 cursor += 2
                 continue
             }
-            bool can_open = cursor == 0 || !is_word_byte(text[cursor - 1] as u8)
+            bool can_open = cursor == 0 || !is_word_at(text, cursor - 1)
             int end = text.find_after('_', cursor + 1)
-            bool can_close = end > cursor + 1 && (end + 1 >= text.len() || !is_word_byte(text[end + 1] as u8))
+            bool can_close = end > cursor + 1 && (end + 1 >= text.len() || !is_word_at(text, end + 1))
             if can_open && can_close {
                 result += theme.italic(text.slice(cursor + 1, end))
                 cursor = end + 1
