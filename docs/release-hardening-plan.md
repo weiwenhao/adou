@@ -1,7 +1,7 @@
 # Release Hardening Plan
 
 状态：Batch 1（darwin-arm64）已完成，2026-08-12（验收证据见下）。Batch 2A
-（macOS signing readiness——本地预检与离线编排测试）进行中，2026-08-12（见
+（macOS signing readiness——本地预检与离线编排测试）已完成，2026-08-12（见
 `docs/macos-signing.md`）；Batch 2B（真实 Developer ID 签名与公证）未开始，
 需要新权限。当前两个发布二进制的实际签名状态为 linker 生成的 ad-hoc
 签名（`Signature=adhoc`、`TeamIdentifier=not set`、无 Authority），不是
@@ -84,7 +84,7 @@ staging。
 
 - codesign / notarization：Batch 1 不签名、不公证，产物为 linker 生成的
   ad-hoc 签名（`Signature=adhoc`、`TeamIdentifier=not set`），首次运行需
-  用户绕过 Gatekeeper 或手动临时签名。Batch 2A（进行中）只做本地
+  用户绕过 Gatekeeper 或手动临时签名。Batch 2A（已完成）只做本地
   readiness：工具/identity 预检、签名/公证命令编排的离线测试（dry-run/
   fake tools），不真实签名上传；真实签名/公证属 Batch 2B（未来，需用户
   提供 Developer ID identity 与显式 notarytool profile 后执行）——见
@@ -115,12 +115,15 @@ mtime（`--mtime`/`SOURCE_DATE_EPOCH`）、gzip `-n` 与排序固定，作为独
 
 ## 后续批次占位
 
-- Batch 2A（进行中，本批）：macOS signing readiness——`signing-preflight`/
+- Batch 2A（已完成，2026-08-12）：macOS signing readiness——`signing-preflight`/
   `signing-smoke`/`signed-dist`/`notarize`/`signing-check` 的本地预检与离线
-  编排测试；目标、退出码、实测发现与 2B 阻塞条件见 `docs/macos-signing.md`。
+  编排测试；Nature `__LINKEDIT` 重签阻塞已修复并提交上游
+  [nature-lang/nature#304](https://github.com/nature-lang/nature/pull/304)，目标、
+  退出码、实测证据与 2B 阻塞条件见 `docs/macos-signing.md`。
 - Batch 2B（未来，需新权限）：真实 Developer ID 签名 + notarization
   （用户提供 Developer ID Application identity 与显式 notarytool profile
-  后才允许执行；含 Gatekeeper 运行验证与主程序签名替换问题的解决）。
+  后才允许执行；主程序签名槽扩容、hardened-runtime 重签与严格校验的本地
+  技术路径已经验证）。
 - Batch 3：Linux（amd64/arm64）交叉构建与对应 artifact e2e。
 - Batch 4：系统安装器（pkg/dmg 或 brew formula）与升级路径；dmg/pkg 上
   才可 stapler。
