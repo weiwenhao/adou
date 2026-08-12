@@ -31,7 +31,7 @@ DIST_NAME := adou-$(ADOU_VERSION)-darwin-arm64
 DIST_STAGE := $(DIST_DIR)/$(DIST_NAME)
 DIST_TARBALL := $(DIST_DIR)/$(DIST_NAME).tar.gz
 
-.PHONY: all build run test e2e eval check install dist release-check clean help
+.PHONY: all build run test e2e eval check install dist release-check clean signing-preflight signing-smoke signed-dist notarize signing-check help
 
 all: build
 
@@ -111,12 +111,50 @@ dist: build
 # Serial release gate: build, evals, dist, artifact e2e, RPC-over-IPC e2e and
 # the bash-stream e2e (covers bash execution through the process-group
 # helper).  Deliberately does not run the full make test / make e2e suites.
+# Batch 2A signing targets (signing-preflight/signing-smoke/signing-check)
+# are not part of this gate; they are local readiness checks only and are
+# documented in docs/macos-signing.md.
 release-check: build eval dist
 	@set -e; \
 	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/release-artifact.sh"; \
 	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/rpc-over-ipc.sh"; \
 	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/rpc-bash-stream.sh"; \
 	echo "release-check: build+eval+dist+artifact+ipc+bash OK"
+
+# Batch 2A: read-only macOS signing readiness preflight (no artifacts or
+# keychain state are modified; documented exit codes in
+# docs/macos-signing.md).
+signing-preflight: build
+	@ADOU_BIN="$(ADOU_BIN)" "$(CURDIR)/scripts/signing-preflight.sh"
+
+# Batch 2A: offline ad-hoc signing smoke on a scratch copy of the dist
+# staging (helper first, then the main binary; --options runtime
+# --timestamp=none), verified with --strict --deep.  build/bin and the
+# default dist staging are never modified and their hashes are checked.
+signing-smoke: dist
+	@ADOU_BIN="$(ADOU_BIN)" PROCESS_GROUP_HELPER="$(PROCESS_GROUP_HELPER)" DIST_DIR="$(DIST_DIR)" DIST_NAME="$(DIST_NAME)" "$(CURDIR)/scripts/signing-smoke.sh"
+
+# Fail-closed Developer ID signed artifact: requires ADOU_CODESIGN_IDENTITY
+# (non-empty, not '-', a Developer ID Application identity).  Never invoked
+# by release-check or signing-smoke; in this batch no such identity exists,
+# so only the fail-closed paths run.
+signed-dist: dist
+	@ADOU_VERSION="$(ADOU_VERSION)" DIST_DIR="$(DIST_DIR)" DIST_NAME="$(DIST_NAME)" "$(CURDIR)/scripts/signed-dist.sh"
+
+# Fail-closed notarization: requires ADOU_NOTARY_PROFILE (non-empty, not
+# '-').  An explicit, separate target: nothing in release-check or
+# signing-smoke calls notarytool or the network.  tar.gz is notarizable but
+# not staplable; this target never runs the stapler.
+notarize:
+	@"$(CURDIR)/scripts/notarize.sh"
+
+# Serial Batch 2A gate: dist, then the local signing workflow e2e (preflight
+# behavior, fail-closed paths, fake-tool dry-runs, ad-hoc copy smoke and
+# README/signature consistency).
+signing-check: dist
+	@set -e; \
+	ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/tests/e2e/macos-signing-workflow.sh"; \
+	echo "signing-check: dist+macos-signing-workflow OK"
 
 clean:
 	@rm -rf "$(BUILD_DIR)"
@@ -132,5 +170,10 @@ help:
 		'make check   Run unit tests followed by end-to-end tests' \
 		'make dist    Package build/dist/adou-<version>-darwin-arm64.tar.gz' \
 		'make release-check  Serial release gate: build, eval, dist, artifact e2e, IPC e2e, bash e2e' \
+		'make signing-preflight  Read-only macOS signing readiness check (Batch 2A)' \
+		'make signing-smoke  Ad-hoc re-sign a scratch copy of the dist staging and verify' \
+		'make signed-dist    Developer ID signed artifact (fail-closed; needs ADOU_CODESIGN_IDENTITY)' \
+		'make notarize       notarytool submit (fail-closed; needs ADOU_NOTARY_PROFILE)' \
+		'make signing-check  Serial Batch 2A gate: dist + macos-signing-workflow e2e' \
 		'make install Install the binary and docs (PREFIX=/usr/local)' \
 		'make clean   Remove generated build files'

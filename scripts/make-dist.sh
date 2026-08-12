@@ -80,7 +80,7 @@ Verification
 
 Sources and build
 -----------------
-  Repository: Adou (Nature), https://github.com/anomalyco/opencode
+  Repository: source repository URL supplied by distributor
   Phase 1-8 porting complete; see docs/porting-plan.md and
   docs/release-hardening-plan.md in the source tree.
   Build: make build && make dist (guarded serial Nature compiler workflow).
@@ -88,9 +88,11 @@ Sources and build
 Scope and signing
 -----------------
   This batch of the release hardening plan only ships darwin-arm64.
-  The binary is NOT codesigned or notarized; on first launch Gatekeeper
-  may warn about an unidentified developer.  Linux builds, installers,
-  and notarization are future batches (see docs/release-hardening-plan.md).
+  The binaries carry only an ad-hoc/linker-generated signature; they
+  are not Developer ID signed and not notarized.  On first launch
+  Gatekeeper may warn about an unidentified developer.  Real Developer
+  ID signing and notarization are Batch 2B, gated on an explicit
+  identity and notary profile (see docs/macos-signing.md).
 EOF
 
 chmod 0755 "$stage/adou" "$stage/adou-process-group"

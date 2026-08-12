@@ -1,7 +1,11 @@
 # Release Hardening Plan
 
-状态：Batch 1（darwin-arm64）进行中，2026-08-12。本批只验证 macOS arm64 原生产物；
-其他平台与发布事项见"已知排除项"与"后续批次占位"。
+状态：Batch 1（darwin-arm64）已完成，2026-08-12（验收证据见下）。Batch 2A
+（macOS signing readiness——本地预检与离线编排测试）进行中，2026-08-12（见
+`docs/macos-signing.md`）；Batch 2B（真实 Developer ID 签名与公证）未开始，
+需要新权限。当前两个发布二进制的实际签名状态为 linker 生成的 ad-hoc
+签名（`Signature=adhoc`、`TeamIdentifier=not set`、无 Authority），不是
+Developer ID signed，未 notarized。
 
 ## 目标
 
@@ -10,7 +14,7 @@
 解包后的产物、提供 `make release-check` 串行门禁，并校验 `make install`
 staging。
 
-## 本批范围（只验证 darwin-arm64）
+## Batch 1 范围（只验证 darwin-arm64）
 
 - 文档统一：本文件与 `docs/porting-plan.md`、`docs/pi-core-module-map.md`、
   `docs/phase7-storage-design.md` 的顶部状态互相一致（Phase 1–8 完成，
@@ -44,31 +48,64 @@ staging。
    `file build/bin/adou` 为 Mach-O arm64。
 3. `make dist` 产出目录与 tar.gz，SHA-256 manifest 校验通过。
 4. `tests/e2e/release-artifact.sh` 全绿（解包后运行、隔离环境、offline RPC、
-   IPC 生命周期、Mach-O/动态依赖白名单）。
+   IPC 生命周期、Mach-O/动态依赖白名单、签名状态一致性）。
 5. `make release-check` 全绿。
 6. `make install DESTDIR=<tmp> PREFIX=/usr/local` staging 下 `--version` 正常。
 7. 一个聚焦 commit，工作区干净。
 
-## 已知排除项（本批明确不做）
+## Batch 1 验收证据（2026-08-12 实跑）
 
-- codesign / notarization：本批不签名、不公证；产物为未签名 Mach-O，首次
-  运行需用户绕过 Gatekeeper 或手动 `codesign -s -` 临时签名。
+- `make build`：退出 0。
+- `make dist`：产出 `build/dist/adou-0.1.0-dev-darwin-arm64/`（adou、
+  adou-process-group 0755、RELEASE-README 0644、SHA256SUMS）与
+  `build/dist/adou-0.1.0-dev-darwin-arm64.tar.gz`——**3497293 字节**，
+  SHA-256 `d0e236462a7f3e10e7e46212fc2c1b1e8cfa9c09fc06ff389fb7dcdecdbfe0c1`
+  （归档含固定 mtime，重复打包字节会变化，见 reproducible tar 说明）。
+  目录内 `shasum -a 256 -c SHA256SUMS` 通过；归档仅含固定 4 文件，无
+  tests/sessions/auth/key 材料。
+- 构建产物审计：`file` 两二进制均为 Mach-O 64-bit executable arm64；
+  `otool -L` 两二进制均仅依赖 `/usr/lib/libSystem.B.dylib`（adou 的
+  `current version 1356.0.0`）——动态依赖白名单通过。
+- `tests/e2e/release-artifact.sh` 全绿：解包后离开仓库 cwd 运行
+  `--version`/`--help`；隔离 `PI_CODING_AGENT_DIR`/
+  `PI_CODING_AGENT_SESSION_DIR`；相邻 adou-process-group 运行时发现 +
+  bash 工具真实执行；offline RPC 确定性失败响应且非挂起；RPC-over-IPC
+  spawn→status→stop 生命周期与退出后无遗留进程；Mach-O/动态依赖白名单；
+  RELEASE-README 签名声明与实际 codesign 状态一致（ad-hoc：
+  `Signature=adhoc`、`TeamIdentifier=not set`、无 Authority）。
+- `make release-check` 全绿：build → eval（3/3）→ dist →
+  release-artifact.sh → rpc-over-ipc.sh → rpc-bash-stream.sh 串行门禁通过。
+- `make install DESTDIR=<tmp> PREFIX=/usr/local` staging 校验：
+  `<tmp>/usr/local/bin/{adou,adou-process-group}` 相邻存在且可执行、
+  `<tmp>/usr/local/share/adou/docs/mvp-implementation-spec.md` 存在；
+  staging 下 `adou --version` 输出 `adou 0.1.0-dev`。
+
+## 各批次排除项（Batch 1 未覆盖风险，标注归属批次）
+
+- codesign / notarization：Batch 1 不签名、不公证，产物为 linker 生成的
+  ad-hoc 签名（`Signature=adhoc`、`TeamIdentifier=not set`），首次运行需
+  用户绕过 Gatekeeper 或手动临时签名。Batch 2A（进行中）只做本地
+  readiness：工具/identity 预检、签名/公证命令编排的离线测试（dry-run/
+  fake tools），不真实签名上传；真实签名/公证属 Batch 2B（未来，需用户
+  提供 Developer ID identity 与显式 notarytool profile 后执行）——见
+  `docs/macos-signing.md`。
 - Linux 交叉构建：`package.toml` 已声明 linux_amd64/linux_arm64 链接对象，
-  但本批不构建、不验证 Linux 产物。
-- 系统安装器（pkg/dmg/brew formula）：本批只提供 `make install`
-  DESTDIR staging 校验，不产出安装器。
+  未构建、未验证；归属 Batch 3。
+- 系统安装器（pkg/dmg/brew formula）：只提供 `make install` DESTDIR
+  staging 校验，不产出安装器；dmg/pkg 同时是公证后 stapler 的前提
+  （tar.gz 可 notarize 但不可 staple），归属 Batch 4。
 - 真实 provider eval：`make eval` 只跑本地脚本化 HTTP mock；不对真实
   DeepSeek/OpenAI/Anthropic 端点做发布级冒烟（live smoke 需显式开启且限制
-  消费，见 porting-plan）。
-- Pi extension compatibility：只作为未来独立 RFC 提及，本批不实现任何
-  扩展运行时/ABI 兼容。
-- reproducible tar：本批保证文件清单与权限稳定，不保证字节级可复现——
+  消费，见 porting-plan）；归属 Batch 5。
+- Pi extension compatibility：只作为未来独立 RFC 提及，未实现任何扩展
+  运行时/ABI 兼容。
+- reproducible tar：保证文件清单与权限稳定，不保证字节级可复现——
   macOS bsdtar 与 gzip 会把时间戳写入归档与压缩头，同一版本两次构建的
-  tar.gz 字节可能不同（见下）。
+  tar.gz 字节可能不同（见下）。属独立工作项。
 
 ## 关于 reproducible tar 的准确说明
 
-本批的 `make dist` 采用固定 tar 命令
+Batch 1 的 `make dist` 采用固定 tar 命令
 （`tar -C build/dist -czf <name>.tar.gz <name>`）与固定文件列表/权限，
 因此同一版本产物的**文件清单与权限**是稳定的；但**不声明字节级可复现**：
 (1) macOS 的 bsdtar 在无 `--options` 定制时记录文件 mtime，gzip 头部也写
@@ -78,10 +115,15 @@ mtime（`--mtime`/`SOURCE_DATE_EPOCH`）、gzip `-n` 与排序固定，作为独
 
 ## 后续批次占位
 
-- Batch 2：codesign + notarization（Developer ID、`codesign` 验证、
-  `spctl`/notarytool 流程）与 Gatekeeper 运行验证。
+- Batch 2A（进行中，本批）：macOS signing readiness——`signing-preflight`/
+  `signing-smoke`/`signed-dist`/`notarize`/`signing-check` 的本地预检与离线
+  编排测试；目标、退出码、实测发现与 2B 阻塞条件见 `docs/macos-signing.md`。
+- Batch 2B（未来，需新权限）：真实 Developer ID 签名 + notarization
+  （用户提供 Developer ID Application identity 与显式 notarytool profile
+  后才允许执行；含 Gatekeeper 运行验证与主程序签名替换问题的解决）。
 - Batch 3：Linux（amd64/arm64）交叉构建与对应 artifact e2e。
-- Batch 4：系统安装器（pkg/dmg 或 brew formula）与升级路径。
+- Batch 4：系统安装器（pkg/dmg 或 brew formula）与升级路径；dmg/pkg 上
+  才可 stapler。
 - Batch 5：发布候选上的真实 provider eval（有限消费、失败快速）与
   远端 catalog 刷新冒烟。
 - 独立 RFC（不并入上述批次）：Pi extension compatibility。

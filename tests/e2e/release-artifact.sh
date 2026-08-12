@@ -292,4 +292,37 @@ for bin_name in adou adou-process-group; do
     fi
 done
 
-echo "e2e: release artifact OK (archive, CLI, helper discovery, offline RPC, IPC lifecycle, Mach-O audit)"
+# --- signing state consistency ---------------------------------------------
+#
+# The RELEASE-README declares an ad-hoc/linker-generated signature only
+# (not Developer ID signed, not notarized).  The actual codesign state of
+# every released binary must match: Signature=adhoc, TeamIdentifier not
+# set (or absent), and no Authority lines.  An ad-hoc binary is never
+# passed off as Developer ID signed; a real TeamIdentifier or Authority
+# fails this check marked as "非 Developer ID".
+
+for phrase in "ad-hoc/linker-generated signature" "not Developer ID signed" "not notarized"; do
+    if ! grep -q "$phrase" "$stage/RELEASE-README"; then
+        fail "RELEASE-README must declare '$phrase'"
+    fi
+done
+
+for bin_name in adou adou-process-group; do
+    bin_path="$stage/$bin_name"
+    sig=$(codesign -d --verbose=4 "$bin_path" 2>&1 || true)
+    case "$sig" in
+        *'Signature=adhoc'*) ;;
+        *) fail "$bin_name is not ad-hoc signed: $sig" ;;
+    esac
+    case "$sig" in
+        *'TeamIdentifier=not set'*) ;;
+        *'TeamIdentifier='*) fail "$bin_name carries a Developer ID TeamIdentifier while the release declares ad-hoc only (非 Developer ID): $sig" ;;
+        *) ;;
+    esac
+    auth=$(echo "$sig" | grep '^Authority=' || true)
+    if [ -n "$auth" ]; then
+        fail "$bin_name has signing Authority while the release declares ad-hoc only (非 Developer ID): $auth"
+    fi
+done
+
+echo "e2e: release artifact OK (archive, CLI, helper discovery, offline RPC, IPC lifecycle, Mach-O audit, signing consistency)"

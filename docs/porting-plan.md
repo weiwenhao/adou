@@ -2,6 +2,7 @@
 
 状态：Phase 5、Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
+release hardening：进行中（Batch 1 已完成，Batch 2A 进行中，见 `docs/release-hardening-plan.md` 与 `docs/macos-signing.md`）
 
 ## 当前进度快照
 
@@ -111,7 +112,7 @@ Phase 6 完成标准已满足：9 个上游 CLI 文件逐项有结论；帮助�
 
 Phase 7 完成标准：SQLite migration/storage 单测、JSONL/SQLite 行为一致性测试和 RPC-over-IPC e2e 通过。
 
-Phase 7.1（server 协议 parity closeout，2026-08-11）验收中（e2e 已全绿，2026-08-12 复核）：
+Phase 7.1（server 协议 parity closeout，2026-08-11 落地，2026-08-12 已完成验收）：
 
 - storage 段落关闭；server 段按上游 `packages/server/src/ipc/protocol.ts` 重写：
   `src/server/protocol.n`（响应形状）、`src/server/supervisor.n`（多实例表）、
