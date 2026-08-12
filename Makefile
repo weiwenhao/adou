@@ -25,9 +25,11 @@ TEST_SOURCES := $(sort $(wildcard tests/*.n))
 E2E_SOURCES := $(sort $(wildcard tests/e2e/*.sh))
 # Opt-in live suites live under tests/e2e/live/ and are never picked up by
 # the plain e2e glob above (make e2e stays offline/mocked and consumes no
-# provider quota).  Each live script self-skips unless its ADOU_LIVE_*
-# switch is set.
-E2E_LIVE_SOURCES := $(sort $(wildcard tests/e2e/live/*.sh))
+# provider quota).  The list is explicit: a new live script must be
+# registered here to join make e2e-live.  Each live script self-gates
+# behind an ADOU_LIVE_* switch, so this target is safe to invoke without
+# any switch set.
+E2E_LIVE_SOURCES := tests/e2e/live/live-smoke.sh tests/e2e/live/live-coding-journey.sh tests/e2e/live/live-tui-coding-journey.sh
 EVAL_ENTRY := tests/evals/smoke_evals.n
 EVAL_BIN := $(BIN_DIR)/adou-evals
 ADOU_VERSION := $(shell sed -n "s/^pub const VERSION = '\([^']*\)'.*/\1/p" $(CURDIR)/src/app.n)
