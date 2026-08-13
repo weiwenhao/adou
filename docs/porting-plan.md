@@ -265,6 +265,37 @@ selector`），单独复跑 3 次全绿；第四次（最终，全部改动落�
   崩溃，已按上一条记录）。后续上游 PR #303 已合并，专用 `libruntime.a`/
   编译器与 `tui-model-selector.sh` 已按上述 closure 证据复测。
 
+## 2026-08-13 大请求 TLS EOF 与退出时 double-free 闭环
+
+- 复现场景：项目同时发现 `.pi/skills` / `.agents/skills` 后，完整 system prompt 与
+  用户消息形成约 19 KiB 的 DeepSeek HTTPS 请求；服务端尚未返回事件时客户端报
+  `TLS read failed: end of file`。随后 TUI redraw 触发 `malloc: double free` 并
+  SIGABRT。
+- TLS EOF 根因位于 Nature，而非 Adou provider/Skills：`rt_uv_tls_write` 只调用一次
+  `mbedtls_ssl_write`，但 mbedTLS 每次最多接受一个 TLS record（通常约 16 KiB）；
+  `http.client` 又忽略正数 short write。捕获证据为请求头 `Content-Length: 19010`、
+  服务端实收 `16094`、JSON 不完整。Nature issue
+  [#306](https://github.com/nature-lang/nature/issues/306) 与修复 PR
+  [#307](https://github.com/nature-lang/nature/pull/307) 已建立：runtime 循环写完 TLS
+  buffer，HTTP client 同时处理任意 connable 的正数 short write，并补 runtime
+  多 record、no-progress、错误返回的确定性 C 回归。
+- 修复后同类本地 HTTPS 捕获为 `19016/19016` 且 JSON 可解析；真实
+  `deepseek-v4-flash` headless 与 Herdr TUI 均返回 `PI_ONLY_OK`，未再出现 TLS EOF。
+- double-free 是同次失败中的第二个、独立根因：崩溃栈为
+  `sc_map_put_sv <- string_new_with_pool <- normalize_terminal_output <- render`，旧
+  Adou 二进制仍链接未包含 PR #303 的 runtime。全量重建后同时验证
+  `const_str_pool_locker`、TLS write-all 与 HTTP write-all 符号/字符串存在，TUI
+  重绘未再崩溃。
+- 本机 `/usr/local/nature` 已更新为包含 PR #303 与 #307 本地修复的
+  `weekly.2026.33` toolchain；`/usr/local/bin/adou` 与 `build/bin/adou` 已同步。默认
+  `make build`（不设置 `NATURE`/`NATURE_ROOT`）重建后仍包含三项修复，避免后续回退。
+- 串行验证：Nature `test_tls_write_all`、`20260811_00_tls_handshake_timeout` 2/2；
+  Adou `deepseek_http_stream_test.n` 2/2、
+  `skills_test.n` 22/22、`skills-loading.sh`、`skills-reload.sh`。第一次以相对
+  `ADOU_BIN=./build/bin/adou` 运行 `skills-reload.sh` 时，脚本在 chdir 到临时 project
+  后无法解析二进制路径并报告 TUI 未就绪；脚本现于 chdir 前固化绝对路径，相对与
+  绝对调用均通过，非产品回归。
+
 ### 门禁链（make e2e 之后串行执行）
 
 - `make eval`：首次执行时 Nature 编译器构建 `adou-evals` SIGABRT（#302 同族，见上），

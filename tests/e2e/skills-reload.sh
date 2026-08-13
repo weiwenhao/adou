@@ -9,6 +9,12 @@ if [ ! -x "$binary" ]; then
     echo "e2e: Adou binary not found: $binary" >&2
     exit 2
 fi
+# The fixture process chdirs into a temporary project before exec. Resolve an
+# environment-supplied relative path while it still refers to the repo cwd.
+case "$binary" in
+    /*) ;;
+    *) binary=$(CDPATH= cd -- "$(dirname -- "$binary")" && pwd)/$(basename -- "$binary") ;;
+esac
 ADOU_BIN="$binary" SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)" python3 - <<'PY'
 import errno
 import fcntl
