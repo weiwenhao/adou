@@ -1055,3 +1055,184 @@ session view 只在 `Ctrl+S` 时把 scoped 变更写回 settings；`Escape` 关�
   429/503 或其他外部 catalog API 错误，验收全部使用本地确定性 fixture。
 
 Batch 2 据此验收关闭；下一项工作从 Batch 3 的 Settings 全量契约开始。
+
+## 13. Batch 3 记录（Settings 全量契约，2026-08-16 开工）
+
+### 13.1 源码映射与失败 baseline（实施前）
+
+Pi 0.82.1 权威源（vendors/pi，commit cced6a21）：
+
+- `packages/coding-agent/src/core/settings-manager.ts`（Settings 接口、deepMergeSettings、
+  migrateSettings、persistScopedSettings、全部 getter/setter、env fallback）
+- `packages/coding-agent/src/modes/interactive/components/settings-selector.ts`
+  （settings list 30 个 item、WarningSettingsSubmenu、SelectSubmenu、ThemeSubmenu
+  preview/cancel/apply、HTTP_IDLE_TIMEOUT_CHOICES、DEFAULT_PROJECT_TRUST_LABELS）
+- `packages/coding-agent/src/modes/interactive/interactive-mode.ts`
+  （showSettingsSelector：SettingsConfig 组装与每个 callback 的 runtime effect）
+- `packages/coding-agent/src/core/http-dispatcher.ts`
+  （DEFAULT_HTTP_IDLE_TIMEOUT_MS=300000，choices 30s/1m/2m/5m/disabled）
+
+Adou 现状源：
+
+- `src/config/settings.n`：settings_t 13 个字段（defaultProvider/Model、thinking、
+  autoCompaction、steering/followUp、hideThinkingBlock、retry 扁平三键、
+  compaction 两子键、enabledModels、theme、enabledSkills/Prompts、
+  autocompleteMaxVisible）；load_for/load_trusted_for/save 已具备
+  global+project 合并与 unknown-key 保留。
+- `src/tui/session_view.n`：OVERLAY_SETTINGS 固定 7 行列表（Thinking/Auto-compaction/
+  Steering/Follow-up/Hide thinking/Auto-retry/Theme），enter 直接翻转或进 thinking 子菜单，
+  无 preview/cancel/apply。
+- `src/config/resolve.n:219-229`：preferences 注入 runtime config 的唯一组装点。
+- `src/config/trust.n resolve_trust`：无默认信任回退参数，无决策时恒 true。
+- `src/tui/session_view.n:515-527`：ESC ESC 固定打开 tree overlay。
+- `src/tui/session_view.n:3195`：tree_filter 在 overlay 内 0..4 循环，无 settings 种子。
+- `src/context/slash_commands.n:84`：compose_resource_commands 无条件注册
+  /skill:name 命令。
+- `src/ai/types.n` stream_options_t.transport（仅 Codex 用）、timeout_ms=120000；
+  `src/ai/providers/*` 经 http.client 的 `.timeout(state.options.timeout_ms)`。
+- `src/tui/theme.n`：仅 light/dark 单值变体；`src/tui/chat.n render_padded_text`
+  固定 1 空格 output padding；`src/tui/editor.n` 无 paddingX；
+  `src/tui/renderer.n` 无 clearOnShrink；`native/term.c`/`src/tui/term.n` 无
+  cursor 显隐与 OSC 9;4。
+
+字段级 gap 表（Pi 设置键 → Adou 动作）：
+
+| Pi 键（默认值/规则） | Pi scope | Adou 现状 | Batch 3 动作 |
+|---|---|---|---|
+| defaultProvider/defaultModel/defaultThinkingLevel | g+p | 已有 | 保持 |
+| transport（auto；sse/websocket/websocket-cached/auto） | g+p | 无 | 新增；UI 四选；resolve.n 注入 stream_options.transport |
+| httpIdleTimeoutMs（300000；30s/1m/2m/5m/disabled；"disabled"/数字解析） | g+p | 无 | 新增；作为 --timeout 未显式给出时的默认值；0=禁用 |
+| steeringMode/followUpMode（one-at-a-time） | g+p | 已有 | 保持 |
+| theme（dark/light/自定义/"light/dark" 自动对） | g+p | 仅 light/dark 单值 | 扩展存储形状接受 "a/b"；UI 子菜单 Automatic+preview/apply |
+| compaction.enabled/reserveTokens/keepRecentTokens | g+p | enabled 以扁平 autoCompaction 落盘，子键已嵌套 | autoCompaction 磁盘形状迁移为 compaction.enabled |
+| retry.{enabled,maxRetries,baseDelayMs,provider}（3/2000） | g+p | 扁平 retryEnabled/retryMaxAttempts/retryBaseDelayMs | 磁盘形状迁移为嵌套 retry；不进 UI |
+| hideThinkingBlock | g+p | 已有 | 保持 |
+| showCacheMissNotices（false） | g+p | 无 | 新增；gate cache miss 提示 |
+| collapseChangelog（false） | g+p | 无 | 新增；Adou 无 changelog 横幅，runtime NOP 记录 |
+| quietStartup（false；隐藏 version header/context info/scope line） | g+p | 无 | 新增；gate 启动状态行 |
+| enableInstallTelemetry（true） | g+p | 无 | 新增；Adou 无 update ping，runtime NOP 记录 |
+| defaultProjectTrust（ask/always/never；仅 global） | g | 无 | 新增；resolve_trust 回退参数 |
+| enableSkillCommands（true） | g+p | 无 | 新增；gate compose_resource_commands 的 /skill:name |
+| doubleEscapeAction（tree；tree/fork/none） | g+p | 无（ESC ESC 固定 tree） | 新增；分支到 tree/fork/none |
+| treeFilterMode（default；5 档） | g+p | 无（overlay 内循环） | 新增；/tree 打开时种子 overlay.tree_filter |
+| showHardwareCursor（false；PI_HARDWARE_CURSOR env） | g+p | 无 | 新增；term cursor 显隐 |
+| editorPaddingX（0；0-3 clamp） | g+p | 无 | 新增；editor 左侧 padding |
+| outputPad（1；0/1） | g+p | 无（固定 1 空格） | 新增；chat 输出 padding |
+| autocompleteMaxVisible（5；3-20 clamp；UI 值 3/5/7/10/15/20） | g+p | load/clamp 已有，UI 无 | UI 六选接入 |
+| terminal.clearOnShrink（false；PI_CLEAR_ON_SHRINK env） | g+p | 无 | 新增；renderer 收缩清理 |
+| terminal.showTerminalProgress（false） | g+p | 无 | 新增；OSC 9;4 |
+| warnings.anthropicExtraUsage（true） | g+p | 无 | 新增；子菜单；Adou 无 Anthropic 订阅鉴权路径，runtime NOP 记录 |
+| terminal.showImages/imageWidthCells、images.autoResize/blockImages | g+p | 无 | EXCLUDED：UI 显示 EXCLUDED 行，不伪实现，不落盘语义 |
+
+失败 baseline（Batch 3 开工时的事实）：
+
+1. /settings 仅 7 行，Pi 为 26 个可见 item（含 EXCLUDED 4 项图像设置）；
+2. 无任何 submenu 组件（除 thinking 7 选）、无 theme preview/cancel/apply；
+3. retry 落盘形状与 Pi 不同（扁平 vs 嵌套 retry 对象）；
+4. autoCompaction 落盘形状与 Pi 不同（顶层 vs compaction.enabled）；
+5. 15 个 Pi 设置键在 Adou 无法 load/save，全部新键 default/load/save/project
+   override 五类断言缺失；
+6. transport/httpIdleTimeoutMs/showHardwareCursor/editorPaddingX/outputPad/
+   clearOnShrink/terminalProgress/doubleEscapeAction/treeFilterMode/
+   enableSkillCommands/quietStartup/defaultProjectTrust 无 runtime effect；
+7. theme 无法表达 Pi 的 "light/dark" 自动模式值（load 时被丢弃）。
+
+### 13.2 实施记录
+
+- `src/config/settings.n`：settings_t 全量扩展（transport/httpIdleTimeoutMs/
+  showCacheMissNotices/collapseChangelog/quietStartup/enableInstallTelemetry/
+  defaultProjectTrust/enableSkillCommands/doubleEscapeAction/treeFilterMode/
+  showHardwareCursor/editorPaddingX/outputPad/terminal.clearOnShrink/
+  terminal.showTerminalProgress/warnings.anthropicExtraUsage）；磁盘形状迁移
+  （autoCompaction→compaction.enabled、retry 扁平键→retry.{enabled,maxRetries,
+  baseDelayMs}，旧键读取兼容并在保存时删除）；Pi env fallback
+  （PI_CLEAR_ON_SHRINK/PI_HARDWARE_CURSOR）；defaultProjectTrust 仅 global
+  （项目文件不可覆盖）；theme 接受 "light/dark" 自动对；逐项 clamp 对齐 Pi
+  （padding 0-3、outputPad 0|1、autocomplete 3-20、httpIdleTimeoutMs
+  "disabled"/数字解析）。
+- `src/config/trust.n`：resolve_trust 增加 default_project_trust 回退参数
+  （always/never 生效；ask 保持现状，交互式信任提示为 Batch 5 范围）。
+- `src/config/resolve.n` + `src/config/types.n`：preferences 注入 runtime
+  config（transport→stream_options.transport；httpIdleTimeoutMs 作为
+  --timeout-ms 未显式给出时的默认请求超时，0 流经 std 客户端无超时值）；
+  新 config_t/skills_options_t 字段。
+- `src/context/slash_commands.n` + `src/context/resource_snapshot.n`：
+  compose_resource_commands 增加 enable_skill_commands 门控。
+- `src/agent/session.n`：apply_preferences_snapshot/publish_rpc_resources
+  应用 transport 与 timeout；新增带锁 runtime setter。
+- `src/tui/chat.n`：outputPad 贯穿 user/assistant/thinking 渲染
+  （pad_sides 0|1）；cache-miss 通知（EVENT_MESSAGE_END 检测、Pi 阈值
+  missedTokens>=20000 或 missedCost>=0.1、模型切换/空闲标签、warning 色）。
+- `src/tui/renderer.n`：clearOnShrink 默认 off（Pi 默认）；开启时才清理
+  收缩行。
+- `src/tui/term.n`：set_hardware_cursor（?25h/l）与 OSC 9;4 set_progress。
+- `src/tui/session_view.n`：Settings UI 重写为 Pi 顺序 27 行（Enter 循环
+  value 行、EXCLUDED 图像四行、Warnings/Thinking/Theme 子菜单）；Theme
+  子菜单 single/automatic 双模式 + live preview/apply/cancel（Esc 恢复
+  原值）；ESC ESC 按 doubleEscapeAction 分支 tree/fork/none；/tree 打开
+  时以 treeFilterMode 种子 overlay.tree_filter；raw 进入时按
+  showHardwareCursor 决定隐藏光标；stream 起止按 terminalProgress 发
+  OSC 9;4；render_editor 应用 editorPaddingX；quietStartup 门控启动状态
+  行；save_preferences 改为从 trust-aware snapshot 全量持久化。
+- 测试：settings_test 12/12（新增 B3 默认值/嵌套形状加载/保存形状/
+  项目合并+global-only trust/重开五类断言）；config_resolve_test 7/7
+  （transport/timeout/trust runtime effect）；trust_test 8/8（回退矩阵）；
+  chat_test 13/13（outputPad/cache-miss）；renderer_test 14/14（默认 off
+  + 开启清理）；agent_session_test 33/33（snapshot transport/timeout）；
+  slash_commands_test 7/7（门控签名）。e2e：tui-settings.sh（Pi 顺序、
+  EXCLUDED 行、transport 循环、thinking 子菜单、settings.json 持久化）
+  与 tui-config.sh（theme 子菜单应用 + 重启恢复）通过。
+
+### 13.3 验收记录
+
+本地确定性验收（2026-08-16）：
+
+- `make build` 干净重建 exit 0；`git diff --check` 干净；凭据扫描仅命中
+  fixture 假 key。
+- 串行针对性单测：settings_test 12/12、config_resolve_test 7/7、
+  trust_test 8/8、chat_test 13/13、renderer_test 14/14、
+  agent_session_test 33/33、slash_commands_test 7/7、
+  settings_persistence_test 1/1、config_context_test 25/25、
+  skills_test 22/22、editor_test 25/25、model_selector_test 4/4、
+  scoped_models_test 4/4、term_test 9/9。
+- e2e：tui-settings.sh 与 tui-config.sh 均 exit 0。
+- Pi oracle 同键对照：`tests/e2e/lib/pi-oracle/settings-parity.py`（本地 PTY
+  版，--self-test 通过）与 `herdr-settings-parity.py`（Herdr 真实终端版）
+  已实现。本地 PTY 版被环境阻塞：vendored Pi 0.82.1 TUI 在本地 PTY 下
+  渲染首帧后丢弃全部输入（含 Batch 1 的 slash-open 按键流；历史证据
+  同样无法本地复跑）。经用户启用 Herdr 后，在真实终端 pane 中确认 Pi
+  0.82.1 输入完全正常（/settings 立即打开 27 项列表），本地阻塞确认为
+  PTY 环境问题，与 Adou 无关。Herdr 版驱动按同一契约跑 3 轮，
+  证据落盘 docs/pi-batch3-evidence/herdr-*/。
+- Herdr 对照发现的真实 parity 偏差（均已修复）：(1) Pi 的主题子菜单
+  预选中当前主题（SelectSubmenu setSelectedIndex），Adou 原先固定从
+  Automatic 开始——show_theme_overlay 现按当前 single 主题预选
+  （dark→index 1）；(2) Pi 设置行标签为 'Thinking level'，Adou 原为
+  'Thinking:'——设置列表行已改为 'Thinking level:'（Pi oracle 3 轮
+  labels 顺序对照暴露，e2e 同步更新）。
+- Herdr 调试中排查的"屏幕冻结"结论（非 bug）：esc 关闭 selector 后屏幕
+  仍显示旧行，是 Pi 默认 clearOnShrink=false 的既定行为（收缩时保留旧
+  行，Pi 同款默认）；本地 46×50 PTY 复现，开启 terminal.clearOnShrink
+  后旧行即被清除。输入侧全程正常（esc 后 /quit 正常退出、settings.json
+  正确落盘）。据此 Herdr 驱动改用输入真相/文件真相断言，屏幕残留不再
+  作为 FAIL 判据。
+- B3-EXT-01（间歇性假成功删除，已修复）：早前两次运行
+  repository_contract_test.n 第 1 例在 delete 后仍列出被删会话。根因在
+  `src/session/backend.n delete_session_file`：spawn `/bin/sh trash` 抛错时
+  `catch` 填入空 `command.result_t{}`，其 exit_code 默认 0，函数即返回
+  `(true, 'Session moved to trash')` 而未真正删除，也不走 os.remove 回退。
+  修复：spawn 失败按失败处理（exit_code 置 -1），且 trash 成功只以
+  “exit 0 且文件确实消失”为准，否则一律落到 os.remove。回归测试：
+  `tests/backend_list_session_paths_test.n` 新增两例（PATH 清空使 trash
+  查找失败→回退 unlink 且文件确实消失；缺失文件视为已删除）。验证：
+  repository_contract_test.n 连跑 3 次均 5/5。
+
+- Herdr 真实终端同键对照（`herdr-settings-parity.py`，3 轮 × 2 侧）：
+  **PASS，0 failures**。每轮双方 labels 顺序 23/23 一致（含 Thinking
+  level）、transport auto→sse、theme 落盘 light、/quit 干净退出；泄漏
+  检查通过。证据：docs/pi-batch3-evidence/herdr-*-round{1,2,3}.json +
+  herdr-settings-parity-summary.json。本地 PTY 版 settings-parity.py
+  因 vendored Pi 在本地 PTY 丢弃输入而无法执行（环境阻塞，与 Adou
+  无关），Herdr 版为正式对照证据。
+
+残余 FAIL：无。按协议不提交/推送半成品，等主代理裁决。

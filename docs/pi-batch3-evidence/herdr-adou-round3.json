@@ -1,0 +1,51 @@
+{
+  "adou_head": "ebc157efb5bf033aaba1ab4615137ed1c3f5d1d2",
+  "labels_full": [
+    "Auto-compact",
+    "Skill commands",
+    "Show hardware cursor",
+    "Editor padding",
+    "Output padding",
+    "Autocomplete max items",
+    "Clear on shrink",
+    "Terminal progress",
+    "Steering mode",
+    "Follow-up mode",
+    "Transport",
+    "HTTP idle timeout",
+    "Hide thinking",
+    "Cache miss notices",
+    "Collapse changelog",
+    "Quiet startup",
+    "Install telemetry",
+    "Default project trust",
+    "Double-escape action",
+    "Tree filter mode",
+    "Warnings",
+    "Thinking level",
+    "Theme"
+  ],
+  "labels_open": [
+    "Auto-compact",
+    "Skill commands",
+    "Show hardware cursor",
+    "Editor padding",
+    "Output padding",
+    "Autocomplete max items",
+    "Clear on shrink"
+  ],
+  "milestones": {
+    "open": "<run>/build/bin/adou -\n-offline --no-context-files --no-session --pro\nvider deepseek --model deepseek-v4-flash\n<user>@<user>deMacBook-Air cwd % /\nUsers/<user>/Code/adou/build/bin/adou --\noffline --no-context-files --no-session --prov\nider deepseek --model deepseek-v4-flash\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n Settings\n\n \u2192 Auto-compact: on\n   Show images: EXCLUDED\n   Image width: EXCLUDED\n   Auto-resize images: EXCLUDED\n   Block images: EXCLUDED\n   Skill commands: on\n   Show hardware cursor: off\n   Editor padding: 0\n   Output padding: 1\n   Autocomplete max items: 5\n   Clear on shrink: off\n",
+    "theme_row": "<run>/build/bin/adou -\n-offline --no-context-files --no-session --pro\nvider deepseek --model deepseek-v4-flash\n<user>@<user>deMacBook-Air cwd % /\nUsers/<user>/Code/adou/build/bin/adou --\noffline --no-context-files --no-session --prov\nider deepseek --model deepseek-v4-flash\nTransport: sse\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n Settings\n\n  ...\n   HTTP idle timeout: 5 min\n   Hide thinking: off\n   Cache miss notices: off\n   Collapse changelog: off\n   Quiet startup: off\n   Install telemetry: on\n   Default project trust: Ask\n   Double-escape action: tree\n   Tree filter mode: default\n   Warnings: configure                  (e...\n   Thinking level: high           (enter: ...\n \u2192 Theme: dark                 (enter: the...\n\n\u2191\u2193 navigate   enter select   escape/ctrl+c\ncancel\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n/private/var/folders/4z/kcwqp2t91sj1v10rrwr...\n0.0%/1M (auto)        deepseek-v4-flash \u2022 high\n0.0%/1M (auto)        deepseek-v4-flash \u2022 high\n",
+    "transport_after": "<run>/build/bin/adou -\n-offline --no-context-files --no-session --pro\nvider deepseek --model deepseek-v4-flash\n<user>@<user>deMacBook-Air cwd % /\nUsers/<user>/Code/adou/build/bin/adou --\noffline --no-context-files --no-session --prov\nider deepseek --model deepseek-v4-flash\nTransport: sse\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n Settings\n\n  ...\n   Auto-resize images: EXCLUDED\n   Block images: EXCLUDED\n   Skill commands: on\n   Show hardware cursor: off\n   Editor padding: 0\n   Output padding: 1\n   Autocomplete max items: 5\n   Clear on shrink: off\n   Terminal progress: off\n   Steering mode: one-at-a-time\n   Follow-up mode: one-at-a-time\n \u2192 Transport: sse\n  ...\n\n\u2191\u2193 navigate   enter select   escape/ctrl+c\ncancel\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n/private/var/folders/4z/kcwqp2t91sj1v10rrwr...\n0.0%/1M (auto)        deepseek-v4-flash \u2022 high\n",
+    "transport_row": "<run>/build/bin/adou -\n-offline --no-context-files --no-session --pro\nvider deepseek --model deepseek-v4-flash\n<user>@<user>deMacBook-Air cwd % /\nUsers/<user>/Code/adou/build/bin/adou --\noffline --no-context-files --no-session --prov\nider deepseek --model deepseek-v4-flash\n\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n\n Settings\n\n  ...\n   Auto-resize images: EXCLUDED\n   Block images: EXCLUDED\n   Skill commands: on\n   Show hardware cursor: off\n   Editor padding: 0\n   Output padding: 1\n   Autocomplete max items: 5\n   Clear on shrink: off\n   Terminal progress: off\n   Steering mode: one-at-a-time\n   Follow-up mode: one-at-a-time\n \u2192 Transport: auto\n  ...\n\n\u2191\u2193 navigate   enter select   escape/ctrl+c\ncancel\n\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n/private/var/folders/4z/kcwqp2t91sj1v10rrwr...\n0.0%/1M (auto)        deepseek-v4-flash \u2022 high\n"
+  },
+  "pane": "w7:p1P",
+  "quit_confirmed": true,
+  "run": 3,
+  "side": "adou",
+  "theme_file_value": "light",
+  "theme_light_applied": true,
+  "transport_after": "sse",
+  "transport_before": "auto"
+}
