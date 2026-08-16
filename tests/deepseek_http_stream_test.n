@@ -5,8 +5,10 @@ import co
 import fmt
 import http
 import net.tcp
+import time
 
 pub const DEEPSEEK_PORT = 18790
+pub const DEEPSEEK_KEEPALIVE_ERROR_PORT = 18791
 
 pub type capture_t = struct {
     string body
@@ -16,6 +18,21 @@ pub type capture_t = struct {
 
 pub fn serve_fixture(ref<http.server_t> server): void! {
     server.listen(server.port)
+}
+
+pub fn serve_keepalive_error_fixture(): void! {
+    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', DEEPSEEK_KEEPALIVE_ERROR_PORT))
+    var conn = server.accept()
+    var request = vec<u8>.new(0, 4096)
+    conn.read(request)
+    string body = '{"error":{"message":"invalid key"}}'
+    string response = fmt.sprintf('HTTP/1.1 401 Authorization Required\r\nContent-Type: application/json\r\nContent-Length: %d\r\nConnection: keep-alive\r\n\r\n%s', body.len(), body)
+    conn.write(response as [u8])
+    // Keep the socket open longer than the assertion threshold. The client
+    // must stop at Content-Length instead of waiting for connection EOF.
+    co.sleep(1200)
+    conn.close()
+    server.close()
 }
 
 pub fn fixture_model(int port): ref<types.model_t> {
@@ -92,6 +109,23 @@ test 'streams a real DeepSeek HTTP response through the completions provider' {
     var text = text_block(result)
     assert(text.text == '你好')
     assert(result.usage.total_tokens == 7)
+}
+
+test 'bounded error body does not wait for keep-alive EOF' {
+    go serve_keepalive_error_fixture()
+    co.sleep(100)
+    var options = new types.stream_options_t(api_key = 'invalid-key', timeout_ms = 5000, max_retries = 0,)
+    i64 started = time.now().ms_timestamp()
+    var stream = openai_completions_provider.stream(fixture_model(DEEPSEEK_KEEPALIVE_ERROR_PORT), fixture_context(), options)
+    var event = stream.recv()
+    var result = stream.result()
+    i64 elapsed = time.now().ms_timestamp() - started
+    assert(event.kind == types.EVENT_ERROR)
+    assert(result.stop_reason == types.STOP_ERROR)
+    assert(result.error_message.find('HTTP 401 Authorization Required') >= 0)
+    assert(result.error_message.find('invalid key') >= 0)
+    assert(elapsed < 800)
+    co.sleep(1200)
 }
 
 pub fn text_block(ref<types.assistant_message_t> message): ref<types.text_content_t> {

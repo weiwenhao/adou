@@ -191,16 +191,25 @@ pub fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state,
 pub fn read_error_body(ref<client.response_t> response): string! {
     [u8] result = []
     [u8] scratch = vec<u8>.new(0, 4096)
-    for result.len() < ERROR_BODY_LIMIT {
-        int n = response.read(scratch) catch error {
+    int body_limit = ERROR_BODY_LIMIT
+    string content_length = response.header('Content-Length')
+    if content_length != '' {
+        int declared_length = content_length.to_int() catch error {-1}
+        if declared_length >= 0 && declared_length < body_limit {
+            body_limit = declared_length
+        }
+    }
+    for result.len() < body_limit {
+        int remaining = body_limit - result.len()
+        int read_size = remaining < scratch.len() ? remaining : scratch.len()
+        int n = response.read(scratch.slice(0, read_size)) catch error {
             if provider_retry.is_clean_eof(error.msg()) {
                 break
             }
             throw error
         }
-        int allowed = ERROR_BODY_LIMIT - result.len()
-        if n > allowed {
-            n = allowed
+        if n <= 0 {
+            break
         }
         result.append(scratch.slice(0, n))
     }
