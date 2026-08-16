@@ -499,9 +499,9 @@
         "vendor_dirty_unrelated": [
           "packages/coding-agent/test/fixtures/before-compaction.jsonl"
         ],
-        "adou_head": "5da8bb0144b392a01eee76eb0e2c702a3493b721",
-        "adou_binary_sha256": "31ece50708ec0c55eb6384a73b15bced9f9952d06e5dfa82b433894b2fe3cce8",
-        "adou_source_fingerprint": "62804516732fd30f712d36fc03200bbbe829f75e721441481ccc2ef23bfca446",
+        "adou_head": "d6bedace61df10001aa11d64aa5ac730173f784d",
+        "adou_binary_sha256": "5f59f3d66333e29147b09fa65b8ed5c011a688e622bc4292eec320fb36dfe51e",
+        "adou_source_fingerprint": "52d12b5970d88e934bb4685c53582b3a93e711fc5ff66732aaac613589f236b2",
         "adou_source_inputs": [
           "main.n",
           "native/process_group_helper.c",
@@ -688,6 +688,7 @@
           "src/platform/cwd.n",
           "src/server/ipc_server.n",
           "src/server/protocol.n",
+          "src/server/rpc_process.n",
           "src/server/supervisor.n",
           "src/session/ansi_to_html.n",
           "src/session/backend.n",
@@ -1318,9 +1319,9 @@
         "vendor_dirty_unrelated": [
           "packages/coding-agent/test/fixtures/before-compaction.jsonl"
         ],
-        "adou_head": "5da8bb0144b392a01eee76eb0e2c702a3493b721",
-        "adou_binary_sha256": "31ece50708ec0c55eb6384a73b15bced9f9952d06e5dfa82b433894b2fe3cce8",
-        "adou_source_fingerprint": "62804516732fd30f712d36fc03200bbbe829f75e721441481ccc2ef23bfca446",
+        "adou_head": "d6bedace61df10001aa11d64aa5ac730173f784d",
+        "adou_binary_sha256": "5f59f3d66333e29147b09fa65b8ed5c011a688e622bc4292eec320fb36dfe51e",
+        "adou_source_fingerprint": "52d12b5970d88e934bb4685c53582b3a93e711fc5ff66732aaac613589f236b2",
         "adou_source_inputs": [
           "main.n",
           "native/process_group_helper.c",
@@ -1507,6 +1508,7 @@
           "src/platform/cwd.n",
           "src/server/ipc_server.n",
           "src/server/protocol.n",
+          "src/server/rpc_process.n",
           "src/server/supervisor.n",
           "src/session/ansi_to_html.n",
           "src/session/backend.n",
@@ -2144,9 +2146,9 @@
         "vendor_dirty_unrelated": [
           "packages/coding-agent/test/fixtures/before-compaction.jsonl"
         ],
-        "adou_head": "5da8bb0144b392a01eee76eb0e2c702a3493b721",
-        "adou_binary_sha256": "31ece50708ec0c55eb6384a73b15bced9f9952d06e5dfa82b433894b2fe3cce8",
-        "adou_source_fingerprint": "62804516732fd30f712d36fc03200bbbe829f75e721441481ccc2ef23bfca446",
+        "adou_head": "d6bedace61df10001aa11d64aa5ac730173f784d",
+        "adou_binary_sha256": "5f59f3d66333e29147b09fa65b8ed5c011a688e622bc4292eec320fb36dfe51e",
+        "adou_source_fingerprint": "52d12b5970d88e934bb4685c53582b3a93e711fc5ff66732aaac613589f236b2",
         "adou_source_inputs": [
           "main.n",
           "native/process_group_helper.c",
@@ -2333,6 +2335,7 @@
           "src/platform/cwd.n",
           "src/server/ipc_server.n",
           "src/server/protocol.n",
+          "src/server/rpc_process.n",
           "src/server/supervisor.n",
           "src/session/ansi_to_html.n",
           "src/session/backend.n",
