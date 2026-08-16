@@ -10,12 +10,14 @@ pub const ACTION_NONE = 0
 pub const ACTION_KILL = 1
 pub const ACTION_YANK = 2
 pub const ACTION_TYPE_WORD = 3
-pub const ACTION_SUBMIT = 'submit'
-pub const ACTION_NEWLINE = 'newline'
-pub const ACTION_CANCEL = 'cancel'
-pub const ACTION_TAB = 'tab'
-pub const ACTION_SCROLL_UP = 'scroll_up'
-pub const ACTION_SCROLL_DOWN = 'scroll_down'
+// Batch 4: editor actions are the Pi registry ids so editor and app keys
+// share one data source (keybindings.current()).
+pub const ACTION_SUBMIT = keybindings.INPUT_SUBMIT
+pub const ACTION_NEWLINE = keybindings.INPUT_NEWLINE
+pub const ACTION_CANCEL = keybindings.SELECT_CANCEL
+pub const ACTION_TAB = keybindings.INPUT_TAB
+pub const ACTION_SCROLL_UP = keybindings.EDITOR_PAGE_UP
+pub const ACTION_SCROLL_DOWN = keybindings.EDITOR_PAGE_DOWN
 pub const ACTION_IGNORED = 'ignored'
 
 pub type key_result_t = struct {
@@ -47,17 +49,10 @@ pub type submit_t = struct {
     string text
 }
 
-// The editor keymap is built once per process; handle_key resolves through
-// it instead of maintaining a hard-coded branch table.
-fn editor_keybindings(): ref<keybindings.keybindings_t> {
-    if keybinding_cache == 0 {
-        var built = keybindings.default_keybindings()
-        keybinding_cache = built as anyptr
-    }
-    return keybinding_cache as ref<keybindings.keybindings_t>
-}
-
-anyptr keybinding_cache = 0
+// Batch 4: the editor resolves through the process-wide registry
+// (keybindings.current()), shared with the app dispatch and every hint
+// surface.  The view installs its instance at init; tests use the lazy
+// default registry.
 
 pub type editor_t = struct {
     [string] lines
@@ -361,7 +356,7 @@ pub fn editor_t.handle_key(&self, string data, bool kitty_protocol): key_result_
     // second jump key cancels the pending operation; other control input is
     // allowed to fall through to its normal editor action.
     if self.jump_mode != 0 {
-        if key == 'ctrl+]' || key == 'ctrl+alt+]' {
+        if keybindings.current().matches(key, keybindings.EDITOR_JUMP_FORWARD) || keybindings.current().matches(key, keybindings.EDITOR_JUMP_BACKWARD) {
             self.jump_mode = 0
             return key_result_t {action: 'handled',}
         }
@@ -379,17 +374,17 @@ pub fn editor_t.handle_key(&self, string data, bool kitty_protocol): key_result_
 
     // Two-key jump arming happens before the registry so the pending state
     // can cancel and fall through.
-    if key == 'ctrl+]' {
+    if keybindings.current().matches(key, keybindings.EDITOR_JUMP_FORWARD) {
         self.jump_mode = 1
         return key_result_t {action: 'handled',}
     }
-    if key == 'ctrl+alt+]' {
+    if keybindings.current().matches(key, keybindings.EDITOR_JUMP_BACKWARD) {
         self.jump_mode = -1
         return key_result_t {action: 'handled',}
     }
 
-    string action = editor_keybindings().lookup(key)
-    if action == keybindings.ACTION_SUBMIT {
+    string action = keybindings.current().lookup(key)
+    if action == keybindings.INPUT_SUBMIT {
         // Pi's fallback for terminals which cannot distinguish Shift+Enter:
         // a backslash immediately before Enter inserts a newline and removes
         // the escape character instead of submitting the message.
@@ -401,15 +396,15 @@ pub fn editor_t.handle_key(&self, string data, bool kitty_protocol): key_result_
         var submitted = self.submit()
         return key_result_t {action: ACTION_SUBMIT, submitted: true, text: submitted.text,}
     }
-    if action == keybindings.ACTION_NEWLINE {
+    if action == keybindings.INPUT_NEWLINE {
         self.add_newline()
         return key_result_t {action: ACTION_NEWLINE,}
     }
-    if action == keybindings.ACTION_CANCEL {
+    if action == keybindings.SELECT_CANCEL {
         return key_result_t {action: ACTION_CANCEL,}
     }
-    if action == keybindings.ACTION_MOVE_LEFT {self.move_left(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_MOVE_RIGHT {self.move_right(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_CURSOR_LEFT {self.move_left(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_CURSOR_RIGHT {self.move_right(); return key_result_t {action: 'handled',}}
     if key == 'up' {
         if self.get_text() == '' || (self.cursor_line == 0 && self.cursor_col == 0) {
             self.navigate_history(-1)
@@ -432,26 +427,26 @@ pub fn editor_t.handle_key(&self, string data, bool kitty_protocol): key_result_
         }
         return key_result_t {action: 'handled',}
     }
-    if action == keybindings.ACTION_MOVE_WORD_LEFT {self.move_word_left(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_MOVE_WORD_RIGHT {self.move_word_right(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_LINE_START {self.move_line_start(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_LINE_END {self.move_line_end(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_BACKSPACE {self.backspace(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_DELETE_WORD_BACKWARD {self.delete_word_backward(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_DELETE_FORWARD {self.delete_forward(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_DELETE_WORD_FORWARD {self.delete_word_forward(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_DELETE_TO_LINE_START {self.delete_to_line_start(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_DELETE_TO_LINE_END {self.delete_to_line_end(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_YANK {self.yank(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_YANK_POP {self.yank_pop(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_UNDO {self.undo(); return key_result_t {action: 'handled',}}
-    if action == keybindings.ACTION_TAB {return key_result_t {action: ACTION_TAB,}}
+    if action == keybindings.EDITOR_CURSOR_WORD_LEFT {self.move_word_left(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_CURSOR_WORD_RIGHT {self.move_word_right(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_CURSOR_LINE_START {self.move_line_start(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_CURSOR_LINE_END {self.move_line_end(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_DELETE_CHAR_BACKWARD {self.backspace(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_DELETE_WORD_BACKWARD {self.delete_word_backward(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_DELETE_CHAR_FORWARD {self.delete_forward(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_DELETE_WORD_FORWARD {self.delete_word_forward(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_DELETE_TO_LINE_START {self.delete_to_line_start(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_DELETE_TO_LINE_END {self.delete_to_line_end(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_YANK {self.yank(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_YANK_POP {self.yank_pop(); return key_result_t {action: 'handled',}}
+    if action == keybindings.EDITOR_UNDO {self.undo(); return key_result_t {action: 'handled',}}
+    if action == keybindings.INPUT_TAB {return key_result_t {action: ACTION_TAB,}}
     if key == 'shift+space' {
         self.insert_character(' ')
         return key_result_t {action: 'handled',}
     }
-    if action == keybindings.ACTION_SCROLL_UP {return key_result_t {action: ACTION_SCROLL_UP,}}
-    if action == keybindings.ACTION_SCROLL_DOWN {return key_result_t {action: ACTION_SCROLL_DOWN,}}
+    if action == keybindings.EDITOR_PAGE_UP {return key_result_t {action: ACTION_SCROLL_UP,}}
+    if action == keybindings.EDITOR_PAGE_DOWN {return key_result_t {action: ACTION_SCROLL_DOWN,}}
     string printable = keys.decode_printable(data)
     if printable != '' {
         self.insert_character(printable)

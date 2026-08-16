@@ -2,9 +2,9 @@
   "case": "slash-menu",
   "side": "adou",
   "fixture": "batch1",
-  "adou_head": "d6bedace61df10001aa11d64aa5ac730173f784d",
-  "binary_sha256": "5f59f3d66333e29147b09fa65b8ed5c011a688e622bc4292eec320fb36dfe51e",
-  "source_fingerprint": "52d12b5970d88e934bb4685c53582b3a93e711fc5ff66732aaac613589f236b2",
+  "adou_head": "2236c586dcd52043eddbe6289ed063c4116d991e",
+  "binary_sha256": "3f560c4a41c1ce806f04b070c47eb300f3d2251adcb1789c9659afee9579e7a3",
+  "source_fingerprint": "a198db959c64af2921d9b40e4cf44df22dece1d06628d0b401eadf5e3b1df3d9",
   "run": 2,
   "terminal": {
     "rows": 24,
@@ -289,6 +289,7 @@
     {
       "milestone": "startup",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         "",
@@ -311,20 +312,20 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fc71b9d82669b64dedd655fb2571539718e3ca9b6860723e0286675e61f9ca51",
+      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
       "cursor": [
-        5,
+        6,
         80
       ],
-      "normalized_raw_sha256": "561656b15245a7d87099c7e181c89ebe5eab41a1ad34c3917ce8a8504549297d",
-      "normalized_raw_bytes": 806
+      "normalized_raw_sha256": "30a04a73823567805b4b15404ff7cdc00c2886bb597ad7b434fcca0a6280fbb7",
+      "normalized_raw_bytes": 925
     },
     {
       "milestone": "slash-open",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /",
@@ -347,12 +348,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "12005b3e13e34462b10b01ea70d69c26ac6c28aa8a8d93405107ab393f3fa9d2",
+      "screen_sha256": "9b018bd616dc343e6d1b49384ce95f2b012c87bd23348068afddc6ea318801e4",
       "cursor": [
-        11,
+        12,
         80
       ],
       "normalized_raw_sha256": "8c91acf9d2c1a218f4715d1ac10aad27093acea66c52b33b218b6a174fba750d",
@@ -361,6 +361,7 @@
     {
       "milestone": "slash-up-wrap",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /",
@@ -383,12 +384,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "f23a7a4469abae5815df2df365f8902f0cdb8a5eab1f7d2050b25f34d25e7509",
+      "screen_sha256": "8119a51bbb2b738f9c1c6e7198e1c85454d45321b317360546a2ab4c7e2fd575",
       "cursor": [
-        9,
+        10,
         9
       ],
       "normalized_raw_sha256": "b1845db9439674eb0a842f7a3826a558bec93a8ffd0be5a4a262400d28a3d4c6",
@@ -397,6 +397,7 @@
     {
       "milestone": "slash-down",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /",
@@ -419,12 +420,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "01acd92cfcc274a67fd7c96f7e60f0eff7eb7bc13cce3a1bc9807214155037ef",
+      "screen_sha256": "5e35caee6e353dc9ffdf83ca8381cb816ed80300c37eb7734347d1e09d7e21c0",
       "cursor": [
-        9,
+        10,
         9
       ],
       "normalized_raw_sha256": "572d28c4825d50f3ee503ec53a9b1f9a9277f7d15ab53aba7f09e2e5bbe1788c",
@@ -433,6 +433,7 @@
     {
       "milestone": "slash-page",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /",
@@ -455,12 +456,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "01acd92cfcc274a67fd7c96f7e60f0eff7eb7bc13cce3a1bc9807214155037ef",
+      "screen_sha256": "5e35caee6e353dc9ffdf83ca8381cb816ed80300c37eb7734347d1e09d7e21c0",
       "cursor": [
-        9,
+        10,
         9
       ],
       "normalized_raw_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
@@ -469,6 +469,7 @@
     {
       "milestone": "slash-skill-filter",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /skill:",
@@ -491,12 +492,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "94c9288c690faea22ddccb90b144d835265a2ebeed480dadbbd83b4a6e31359d",
+      "screen_sha256": "1e272d5b0f20c66eaa3fd0a5356a1bd39e52cd9d48d2c9617a48b587be916309",
       "cursor": [
-        7,
+        8,
         0
       ],
       "normalized_raw_sha256": "9afd773bec94a7e4c4fb0b5f3b19992c285928f4606adb9e764846d1a0d01a1e",
@@ -505,6 +505,7 @@
     {
       "milestone": "slash-esc-closed",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /skill:",
@@ -527,12 +528,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "6cf57cce5f78ff8cb209ce1e26e49150933149c87920ce4f9e7c6598fbc3e1fc",
+      "screen_sha256": "fb35c6c8a36426cccc9039b4863e95182914d89c18f5a407eed0354081c7a4ea",
       "cursor": [
-        5,
+        6,
         0
       ],
       "normalized_raw_sha256": "61b83441ee5cc5e6cea271014f5c9c2b9177de36611ceb207b45c01d1ed941bc",
@@ -541,6 +541,7 @@
     {
       "milestone": "slash-ctrl-c",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         "",
@@ -563,12 +564,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fc71b9d82669b64dedd655fb2571539718e3ca9b6860723e0286675e61f9ca51",
+      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
       "cursor": [
-        2,
+        3,
         2
       ],
       "normalized_raw_sha256": "069af1f4a696f561a736889918c51a3fa4c5b8745bcf47135df6d4d21343f1bb",
@@ -577,6 +577,7 @@
     {
       "milestone": "slash-tab-reopen",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /mo",
@@ -599,12 +600,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "5ff8a39688c91990c3fd68490e221bcc6e3c652a7e3c1d314dc8f7af57226057",
+      "screen_sha256": "3dacb0917faff45e37439aed91280e0f97ebf3021117a698924b82d19559c537",
       "cursor": [
-        8,
+        9,
         80
       ],
       "normalized_raw_sha256": "c31ba82d31cff7e42ee3d845eef52bdf24e34750df9f11dcd789a4810dfd08e4",
@@ -613,6 +613,7 @@
     {
       "milestone": "slash-tab-apply",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /model",
@@ -635,12 +636,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "c6954e2e485b1a122f3c4f2e2035270c26a56b90067d92532810fcf9a2fae717",
+      "screen_sha256": "0ab1b20eb69f5ed943b72dd7d0161813f24ba5695e57874bffdbb6bc58ac6e0d",
       "cursor": [
-        5,
+        6,
         0
       ],
       "normalized_raw_sha256": "1a92e93170446d90f6d5a99739c199713bba240ef75455080239e3d9ae7996f0",
@@ -649,6 +649,7 @@
     {
       "milestone": "slash-arg-enter",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /model deepseek/deepseek-v4-flash",
@@ -671,12 +672,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "bab86f45d3da02bb028dcc12e9a003c88eaf08a79b5a2e2d41911c864a1eb99f",
+      "screen_sha256": "d9be2545cadbfd0670260bf089d010de05fb8e661e971ede4e08815482df03fb",
       "cursor": [
-        2,
+        3,
         35
       ],
       "normalized_raw_sha256": "0a07d02a77ae3a05a4d7d96e6a65267c9e36e0bcaed7164bae13ee92e1fe0189",
@@ -685,6 +685,7 @@
     {
       "milestone": "slash-paste",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /",
@@ -707,12 +708,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "eb62e54716187f2b65a79515ec6773f9a11231ef00c349591cc90f8ccc0147d5",
+      "screen_sha256": "acd17230cd25fe75829f01b0ad910a2e23aa4ab40b9756d41f457dde1694a294",
       "cursor": [
-        2,
+        3,
         3
       ],
       "normalized_raw_sha256": "3c752140575038ef5d417398423d7f21fce60956973cd9c13f5b45a2a0a83b3a",
@@ -721,6 +721,7 @@
     {
       "milestone": "slash-multiline",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " x",
@@ -743,12 +744,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "cfcbb8065aa0b1dcf5ddc1261d4d7ce816fbf78b3f091ede5d8914931aafa8b1",
+      "screen_sha256": "e24c1e85e3dd08462a6c0a14ed742216f801d01805173206d1e6900c8c74a021",
       "cursor": [
-        6,
+        7,
         80
       ],
       "normalized_raw_sha256": "3748dd89273865cf8f61790ad6a37ec865ba04b3ff2142f41cb78959e35f1e1b",
@@ -757,6 +757,7 @@
     {
       "milestone": "slash-model-enter",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         "",
@@ -779,20 +780,20 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "2f964f08010349d014633772cd6fcd308ef7bba1b702b30dc75a05e63e399d8a",
+      "screen_sha256": "76710e018e09e8e4979341de32634d306ec3b2aa0d8f1d0ebe28a5dca19c74b4",
       "cursor": [
-        16,
+        17,
         80
       ],
-      "normalized_raw_sha256": "78ae30094fc1f76e787f5962fc382b3346b7e9ca01a20ea51643f3577f524252",
-      "normalized_raw_bytes": 1518
+      "normalized_raw_sha256": "1b3b419a5dab167127839357bf7dd78be7e6f052b3a858a7aee29a5c0acf7a5e",
+      "normalized_raw_bytes": 2070
     },
     {
       "milestone": "slash-model-esc",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         "",
@@ -815,12 +816,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fc71b9d82669b64dedd655fb2571539718e3ca9b6860723e0286675e61f9ca51",
+      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
       "cursor": [
-        5,
+        6,
         0
       ],
       "normalized_raw_sha256": "e8d60e7f9e4302a0eb567cd28205439d699dc17dbedd6efb258dbbd50ecfff17",
@@ -829,6 +829,7 @@
     {
       "milestone": "at-email-literal",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " me@domain",
@@ -851,12 +852,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "db71b0616f4902a402bdf09c62dc27f8e41eb25aad8a158fbcc55e8a578994c2",
+      "screen_sha256": "7838f3035ccf8dbc35fb5c6a69865fced86f36514387f723a7599722bde13797",
       "cursor": [
-        2,
+        3,
         11
       ],
       "normalized_raw_sha256": "e8fa6095ca3ad87afe634ff3703244a1961c3ff4f867728ae5244ef61bd6c556",
@@ -865,6 +865,7 @@
     {
       "milestone": "at-clear-1",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         "",
@@ -887,12 +888,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fc71b9d82669b64dedd655fb2571539718e3ca9b6860723e0286675e61f9ca51",
+      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
       "cursor": [
-        2,
+        3,
         2
       ],
       "normalized_raw_sha256": "bb55badb9711d388d6effcc6dd30579c0f47dc5cbff055d61b2f1a395b53bdbc",
@@ -901,6 +901,7 @@
     {
       "milestone": "at-one-candidate",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " @co",
@@ -923,12 +924,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "bdc3896ad361116eca909fe2307469ccd0d5656bc684043ec4212f671117dfd1",
+      "screen_sha256": "1da85792abbd4310a1d9151ec46d9539c4b0fbef7ac07f8596d0b06e2e5d90dd",
       "cursor": [
-        7,
+        8,
         80
       ],
       "normalized_raw_sha256": "67495e9968d2cfde0e57a55e5dcf07af3509714bcb47ff102f5f364bd829eed0",
@@ -937,6 +937,7 @@
     {
       "milestone": "at-type-requery",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " @com",
@@ -959,12 +960,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "d79490a97fe5ca485337552c7cf9dacc10a965f1d81e1a18fdc50ad4930831a0",
+      "screen_sha256": "d75205b9af762f467a948c1ecae89fb893f3cda191024b71ee78c5353c6d4627",
       "cursor": [
-        6,
+        7,
         0
       ],
       "normalized_raw_sha256": "7b2228b98612f04e29ea458f7a843891e8d1e7965532c0d30462d1c60d06506f",
@@ -973,6 +973,7 @@
     {
       "milestone": "at-backspace-requery",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " @co",
@@ -995,12 +996,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "bdc3896ad361116eca909fe2307469ccd0d5656bc684043ec4212f671117dfd1",
+      "screen_sha256": "1da85792abbd4310a1d9151ec46d9539c4b0fbef7ac07f8596d0b06e2e5d90dd",
       "cursor": [
-        7,
+        8,
         80
       ],
       "normalized_raw_sha256": "367e862ceeef3caa64ef1c01f9d29cfc41ffaf86de27bdfdbec55cd9cf33cc7f",
@@ -1009,6 +1009,7 @@
     {
       "milestone": "at-wrap-up",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " @co",
@@ -1031,12 +1032,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "9491a02da8dc20f038380bbe542590138c0651d93b4d6b586f36243c2fc000fd",
+      "screen_sha256": "2cb2026d5ad680e1be3f8a8555e25d54aaf96a373457a5a99af1994018512746",
       "cursor": [
-        5,
+        6,
         59
       ],
       "normalized_raw_sha256": "fc4823d0d2ee3a3d281118c1ffa15a2dba0473b571e2efb5e5bd40bd58ee781a",
@@ -1045,6 +1045,7 @@
     {
       "milestone": "at-wrap-down",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " @co",
@@ -1067,12 +1068,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "bdc3896ad361116eca909fe2307469ccd0d5656bc684043ec4212f671117dfd1",
+      "screen_sha256": "1da85792abbd4310a1d9151ec46d9539c4b0fbef7ac07f8596d0b06e2e5d90dd",
       "cursor": [
-        5,
+        6,
         59
       ],
       "normalized_raw_sha256": "65cc12972287097bebfa3a9134a7d75b26486e966ead9e38b2756015182e81cf",
@@ -1081,6 +1081,7 @@
     {
       "milestone": "at-active-tab",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " @.pi/prompts/code-review.md",
@@ -1103,12 +1104,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "44c6650c5926b7c0d2d1976be1d019ccefd138322494c4148217b827ce95ef00",
+      "screen_sha256": "2675559c94f54f1b735a5756d7d1debf7a46219ef22ae49757e0cd706331603a",
       "cursor": [
-        5,
+        6,
         0
       ],
       "normalized_raw_sha256": "b9a0e7152d57b6f1e6cb3ad6ce2e2932de8d7d4243677396930a39a79e6366af",
@@ -1117,6 +1117,7 @@
     {
       "milestone": "at-clear-2",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         "",
@@ -1139,12 +1140,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fc71b9d82669b64dedd655fb2571539718e3ca9b6860723e0286675e61f9ca51",
+      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
       "cursor": [
-        2,
+        3,
         2
       ],
       "normalized_raw_sha256": "069af1f4a696f561a736889918c51a3fa4c5b8745bcf47135df6d4d21343f1bb",
@@ -1153,6 +1153,7 @@
     {
       "milestone": "at-dir-apply",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " @.pi/",
@@ -1175,12 +1176,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "a7cae4dbb5cfe6eec2fe24a09e0cd811bf242796a475945f4e17bd770e0cc954",
+      "screen_sha256": "5910f39dfb82515af8a65ff1dc23e79ef4addadfcd358460bb06583eb5576ef0",
       "cursor": [
-        2,
+        3,
         7
       ],
       "normalized_raw_sha256": "97fd88d0b9bac37cae81380222c5073593f115e8116bf8a2f75dbce071ee9100",
@@ -1189,6 +1189,7 @@
     {
       "milestone": "at-clear-3",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         "",
@@ -1211,12 +1212,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fc71b9d82669b64dedd655fb2571539718e3ca9b6860723e0286675e61f9ca51",
+      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
       "cursor": [
-        2,
+        3,
         2
       ],
       "normalized_raw_sha256": "bb55badb9711d388d6effcc6dd30579c0f47dc5cbff055d61b2f1a395b53bdbc",
@@ -1225,6 +1225,7 @@
     {
       "milestone": "at-no-candidate-tab",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " zzzz-no-such-entry",
@@ -1247,12 +1248,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "47d32f6a36a335548ac65f306e32c3457894b46fff48374f7894e756ad7f8a75",
+      "screen_sha256": "577e8a1682034f71b68800c4ee2a58062938280b284ae984db24ec1f308fb688",
       "cursor": [
-        2,
+        3,
         20
       ],
       "normalized_raw_sha256": "26149d4ac700dd0e270109c155dea499a250f0a3cd3f7fba8facafba4ddde7fc",
@@ -1261,6 +1261,7 @@
     {
       "milestone": "at-clear-4",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         "",
@@ -1283,12 +1284,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fc71b9d82669b64dedd655fb2571539718e3ca9b6860723e0286675e61f9ca51",
+      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
       "cursor": [
-        2,
+        3,
         2
       ],
       "normalized_raw_sha256": "bb55badb9711d388d6effcc6dd30579c0f47dc5cbff055d61b2f1a395b53bdbc",
@@ -1297,6 +1297,7 @@
     {
       "milestone": "at-blank-tab-single",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " .pi/",
@@ -1319,12 +1320,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "f36cdf87b62fcc86bac36cad78f8af79d89c139d5acc6b360d72cc6a2d361d36",
+      "screen_sha256": "f31d27cca49e609c8d33705a997a3a96883be48787d7fa2712e9de3620c0c54d",
       "cursor": [
-        2,
+        3,
         6
       ],
       "normalized_raw_sha256": "e3456acad09b4dbb051eb310b4a536892b4776ab0320c94e4f8b7da028bb0c2b",
@@ -1333,6 +1333,7 @@
     {
       "milestone": "at-clear-5",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         "",
@@ -1355,12 +1356,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fc71b9d82669b64dedd655fb2571539718e3ca9b6860723e0286675e61f9ca51",
+      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
       "cursor": [
-        2,
+        3,
         2
       ],
       "normalized_raw_sha256": "bb55badb9711d388d6effcc6dd30579c0f47dc5cbff055d61b2f1a395b53bdbc",
@@ -1369,6 +1369,7 @@
     {
       "milestone": "slash-prompt-filter",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /code-r",
@@ -1391,12 +1392,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "b9bccfc38c4cd1661883b724865f490e3530a2f9780cee1fcd62ad044d6d8a80",
+      "screen_sha256": "b256717ecc12c4ebe606b9714a0bf24c6c2d5b0d20c029d496fb2c3ea8abf384",
       "cursor": [
-        6,
+        7,
         80
       ],
       "normalized_raw_sha256": "4099fa0ca062d803d65fb576859d4a5264eda5fa2f134183611ae2342a828292",
@@ -1405,6 +1405,7 @@
     {
       "milestone": "at-esc-1",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /code-r",
@@ -1427,12 +1428,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fd62b3a556bed066d9bfcd7c5052683f85fa8a7b368449d69a3fb1cb717d4b23",
+      "screen_sha256": "b30fd90330ed5709dc7635cab222db8e9fd662e85c81f922ea50203045726c99",
       "cursor": [
-        5,
+        6,
         0
       ],
       "normalized_raw_sha256": "270b640813970dfda963f21c40b0a616c79bfa27e81e0c2e4959e8b13287a16b",
@@ -1441,6 +1441,7 @@
     {
       "milestone": "at-clear-6",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         "",
@@ -1463,12 +1464,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fc71b9d82669b64dedd655fb2571539718e3ca9b6860723e0286675e61f9ca51",
+      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
       "cursor": [
-        2,
+        3,
         2
       ],
       "normalized_raw_sha256": "069af1f4a696f561a736889918c51a3fa4c5b8745bcf47135df6d4d21343f1bb",
@@ -1477,6 +1477,7 @@
     {
       "milestone": "slash-prompt-filter-2",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /commit",
@@ -1499,12 +1500,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "d2f8408448889308e0c8028b0871cb373e23c8083bd63c09e7f6983a2fd44761",
+      "screen_sha256": "a86ba86d8910e6fc1a1593beed5deabd81005c7edc47ddac47a384d4bf210750",
       "cursor": [
-        6,
+        7,
         80
       ],
       "normalized_raw_sha256": "6c89edeeb2a528fa836304b1f82e3d21a0bdc462d0c85080e8f283dd45d82bcd",
@@ -1513,6 +1513,7 @@
     {
       "milestone": "at-esc-2",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /commit",
@@ -1535,12 +1536,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fdbe75bde293118eec4e71663d9b47ba102ca4f1b75784cfde237bf81ea48b7d",
+      "screen_sha256": "04360435962cd339a0d3f987f370e2bfbdea9ae17d0ff041c6a68127fae10718",
       "cursor": [
-        5,
+        6,
         0
       ],
       "normalized_raw_sha256": "270b640813970dfda963f21c40b0a616c79bfa27e81e0c2e4959e8b13287a16b",
@@ -1549,6 +1549,7 @@
     {
       "milestone": "at-clear-7",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         "",
@@ -1571,12 +1572,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fc71b9d82669b64dedd655fb2571539718e3ca9b6860723e0286675e61f9ca51",
+      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
       "cursor": [
-        2,
+        3,
         2
       ],
       "normalized_raw_sha256": "069af1f4a696f561a736889918c51a3fa4c5b8745bcf47135df6d4d21343f1bb",
@@ -1585,6 +1585,7 @@
     {
       "milestone": "slash-login-filter",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /login deepseek",
@@ -1607,12 +1608,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "8f6c1635c9774982b3973e3ba6ef26493f8d7373d9d51f900f1de2106d400c5d",
+      "screen_sha256": "b8ee405e0669bdc964416f3fe5f2388d1d788e5eb3a0e4ce2fbefd799dcf5e7e",
       "cursor": [
-        6,
+        7,
         80
       ],
       "normalized_raw_sha256": "f82210af584032eeedee373b0033419816e39b320e4f03f227f30b2928642ebd",
@@ -1621,6 +1621,7 @@
     {
       "milestone": "at-esc-3",
       "screen": [
+        "escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o more",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
         " /login deepseek",
@@ -1643,12 +1644,11 @@
         "",
         "",
         "",
-        "",
         ""
       ],
-      "screen_sha256": "fb92e2880305434051c9d178f7c5ab44f1cc775b7a0983d936c8c35270bad2eb",
+      "screen_sha256": "d4fde8837bf24fc17216091f2b116cae9f326064feb6a4541249e6955aece50c",
       "cursor": [
-        5,
+        6,
         0
       ],
       "normalized_raw_sha256": "270b640813970dfda963f21c40b0a616c79bfa27e81e0c2e4959e8b13287a16b",

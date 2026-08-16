@@ -1,102 +1,501 @@
-// Pi's keybindings surface: a named registry of editor key actions with
-// their terminal key names and aliases.  handle_key resolves through the
-// registry instead of hard-coding every branch; two-key operations (jump)
-// and stateful keys (history) stay in the editor.
+import adou.src.json_util
+import adou.src.tools.path_utils
+import fs
+import json
+import os
+import path
+import syscall
 
-pub type keybinding_t = struct {
-    string key
-    string action
+// Pi's keybindings surface: a named registry over TUI (editor/input/select)
+// and app actions.  Every action has default keys and a description; user
+// mappings come from <agent_dir>/keybindings.json (string or array per
+// action, legacy names migrated).  The registry resolves each key to ONE
+// action, detects conflicts (two actions claiming the same key), and feeds
+// every hint surface so behavior and displayed keys can never diverge.
+
+pub type keybinding_def_t = struct {
+    [string] keys = []
     string description
 }
 
-pub const ACTION_JUMP_FORWARD = 'jump_forward'
-pub const ACTION_JUMP_BACKWARD = 'jump_backward'
-pub const ACTION_SUBMIT = 'submit'
-pub const ACTION_NEWLINE = 'newline'
-pub const ACTION_CANCEL = 'cancel'
-pub const ACTION_MOVE_LEFT = 'move_left'
-pub const ACTION_MOVE_RIGHT = 'move_right'
-pub const ACTION_MOVE_WORD_LEFT = 'move_word_left'
-pub const ACTION_MOVE_WORD_RIGHT = 'move_word_right'
-pub const ACTION_LINE_START = 'line_start'
-pub const ACTION_LINE_END = 'line_end'
-pub const ACTION_BACKSPACE = 'backspace'
-pub const ACTION_DELETE_WORD_BACKWARD = 'delete_word_backward'
-pub const ACTION_DELETE_FORWARD = 'delete_forward'
-pub const ACTION_DELETE_WORD_FORWARD = 'delete_word_forward'
-pub const ACTION_DELETE_TO_LINE_START = 'delete_to_line_start'
-pub const ACTION_DELETE_TO_LINE_END = 'delete_to_line_end'
-pub const ACTION_YANK = 'yank'
-pub const ACTION_YANK_POP = 'yank_pop'
-pub const ACTION_UNDO = 'undo'
-pub const ACTION_TAB = 'tab'
-pub const ACTION_SCROLL_UP = 'scroll_up'
-pub const ACTION_SCROLL_DOWN = 'scroll_down'
-
-pub type keybindings_t = struct {
-    [keybinding_t] bindings = []
+pub type conflict_t = struct {
+    string key
+    [string] actions = []
 }
 
-// Pi's built-in editor keymap: primary key followed by aliases, matched in
-// order so the first registered spelling wins.
+pub type keybindings_t = struct {
+    {string:keybinding_def_t} definitions = {}
+    // Stable display order for /hotkeys (Nature maps do not keep insertion
+    // order).
+    [string] action_order = []
+    {string:[string]} user_bindings = {}
+    {string:[string]} resolved = {}
+    [conflict_t] conflicts = []
+}
+
+// --- TUI action ids (Pi tui/keybindings.ts) -------------------------------
+
+pub const EDITOR_CURSOR_UP = 'tui.editor.cursorUp'
+pub const EDITOR_CURSOR_DOWN = 'tui.editor.cursorDown'
+pub const EDITOR_CURSOR_LEFT = 'tui.editor.cursorLeft'
+pub const EDITOR_CURSOR_RIGHT = 'tui.editor.cursorRight'
+pub const EDITOR_CURSOR_WORD_LEFT = 'tui.editor.cursorWordLeft'
+pub const EDITOR_CURSOR_WORD_RIGHT = 'tui.editor.cursorWordRight'
+pub const EDITOR_CURSOR_LINE_START = 'tui.editor.cursorLineStart'
+pub const EDITOR_CURSOR_LINE_END = 'tui.editor.cursorLineEnd'
+pub const EDITOR_JUMP_FORWARD = 'tui.editor.jumpForward'
+pub const EDITOR_JUMP_BACKWARD = 'tui.editor.jumpBackward'
+pub const EDITOR_PAGE_UP = 'tui.editor.pageUp'
+pub const EDITOR_PAGE_DOWN = 'tui.editor.pageDown'
+pub const EDITOR_DELETE_CHAR_BACKWARD = 'tui.editor.deleteCharBackward'
+pub const EDITOR_DELETE_CHAR_FORWARD = 'tui.editor.deleteCharForward'
+pub const EDITOR_DELETE_WORD_BACKWARD = 'tui.editor.deleteWordBackward'
+pub const EDITOR_DELETE_WORD_FORWARD = 'tui.editor.deleteWordForward'
+pub const EDITOR_DELETE_TO_LINE_START = 'tui.editor.deleteToLineStart'
+pub const EDITOR_DELETE_TO_LINE_END = 'tui.editor.deleteToLineEnd'
+pub const EDITOR_YANK = 'tui.editor.yank'
+pub const EDITOR_YANK_POP = 'tui.editor.yankPop'
+pub const EDITOR_UNDO = 'tui.editor.undo'
+pub const INPUT_NEWLINE = 'tui.input.newLine'
+pub const INPUT_SUBMIT = 'tui.input.submit'
+pub const INPUT_TAB = 'tui.input.tab'
+pub const INPUT_COPY = 'tui.input.copy'
+pub const SELECT_UP = 'tui.select.up'
+pub const SELECT_DOWN = 'tui.select.down'
+pub const SELECT_PAGE_UP = 'tui.select.pageUp'
+pub const SELECT_PAGE_DOWN = 'tui.select.pageDown'
+pub const SELECT_CONFIRM = 'tui.select.confirm'
+pub const SELECT_CANCEL = 'tui.select.cancel'
+
+// --- App action ids (Pi coding-agent/src/core/keybindings.ts) -------------
+
+pub const APP_INTERRUPT = 'app.interrupt'
+pub const APP_CLEAR = 'app.clear'
+pub const APP_EXIT = 'app.exit'
+pub const APP_SUSPEND = 'app.suspend'
+pub const APP_THINKING_CYCLE = 'app.thinking.cycle'
+pub const APP_MODEL_CYCLE_FORWARD = 'app.model.cycleForward'
+pub const APP_MODEL_CYCLE_BACKWARD = 'app.model.cycleBackward'
+pub const APP_MODEL_SELECT = 'app.model.select'
+pub const APP_TOOLS_EXPAND = 'app.tools.expand'
+pub const APP_THINKING_TOGGLE = 'app.thinking.toggle'
+pub const APP_SESSION_TOGGLE_NAMED_FILTER = 'app.session.toggleNamedFilter'
+pub const APP_EDITOR_EXTERNAL = 'app.editor.external'
+pub const APP_MESSAGE_COPY = 'app.message.copy'
+pub const APP_MESSAGE_FOLLOW_UP = 'app.message.followUp'
+pub const APP_MESSAGE_DEQUEUE = 'app.message.dequeue'
+pub const APP_CLIPBOARD_PASTE_IMAGE = 'app.clipboard.pasteImage'
+pub const APP_SESSION_NEW = 'app.session.new'
+pub const APP_SESSION_TREE = 'app.session.tree'
+pub const APP_SESSION_FORK = 'app.session.fork'
+pub const APP_SESSION_RESUME = 'app.session.resume'
+pub const APP_TREE_FOLD_OR_UP = 'app.tree.foldOrUp'
+pub const APP_TREE_UNFOLD_OR_DOWN = 'app.tree.unfoldOrDown'
+pub const APP_TREE_EDIT_LABEL = 'app.tree.editLabel'
+pub const APP_TREE_TOGGLE_LABEL_TIMESTAMP = 'app.tree.toggleLabelTimestamp'
+pub const APP_SESSION_TOGGLE_PATH = 'app.session.togglePath'
+pub const APP_SESSION_TOGGLE_SORT = 'app.session.toggleSort'
+pub const APP_SESSION_RENAME = 'app.session.rename'
+pub const APP_SESSION_DELETE = 'app.session.delete'
+pub const APP_SESSION_DELETE_NONINVASIVE = 'app.session.deleteNoninvasive'
+pub const APP_MODELS_SAVE = 'app.models.save'
+pub const APP_MODELS_ENABLE_ALL = 'app.models.enableAll'
+pub const APP_MODELS_CLEAR_ALL = 'app.models.clearAll'
+pub const APP_MODELS_TOGGLE_PROVIDER = 'app.models.toggleProvider'
+pub const APP_MODELS_REORDER_UP = 'app.models.reorderUp'
+pub const APP_MODELS_REORDER_DOWN = 'app.models.reorderDown'
+pub const APP_TREE_FILTER_DEFAULT = 'app.tree.filter.default'
+pub const APP_TREE_FILTER_NO_TOOLS = 'app.tree.filter.noTools'
+pub const APP_TREE_FILTER_USER_ONLY = 'app.tree.filter.userOnly'
+pub const APP_TREE_FILTER_LABELED_ONLY = 'app.tree.filter.labeledOnly'
+pub const APP_TREE_FILTER_ALL = 'app.tree.filter.all'
+pub const APP_TREE_FILTER_CYCLE_FORWARD = 'app.tree.filter.cycleForward'
+pub const APP_TREE_FILTER_CYCLE_BACKWARD = 'app.tree.filter.cycleBackward'
+
+// Pi legacy config names -> current action ids (built lazily: Nature
+// module-level maps must be empty).
+fn legacy_name_migrations(): {string:string} {
+    return {
+    'cursorUp': EDITOR_CURSOR_UP,
+    'cursorDown': EDITOR_CURSOR_DOWN,
+    'cursorLeft': EDITOR_CURSOR_LEFT,
+    'cursorRight': EDITOR_CURSOR_RIGHT,
+    'cursorWordLeft': EDITOR_CURSOR_WORD_LEFT,
+    'cursorWordRight': EDITOR_CURSOR_WORD_RIGHT,
+    'cursorLineStart': EDITOR_CURSOR_LINE_START,
+    'cursorLineEnd': EDITOR_CURSOR_LINE_END,
+    'jumpForward': EDITOR_JUMP_FORWARD,
+    'jumpBackward': EDITOR_JUMP_BACKWARD,
+    'pageUp': EDITOR_PAGE_UP,
+    'pageDown': EDITOR_PAGE_DOWN,
+    'deleteCharBackward': EDITOR_DELETE_CHAR_BACKWARD,
+    'deleteCharForward': EDITOR_DELETE_CHAR_FORWARD,
+    'deleteWordBackward': EDITOR_DELETE_WORD_BACKWARD,
+    'deleteWordForward': EDITOR_DELETE_WORD_FORWARD,
+    'deleteToLineStart': EDITOR_DELETE_TO_LINE_START,
+    'deleteToLineEnd': EDITOR_DELETE_TO_LINE_END,
+    'yank': EDITOR_YANK,
+    'yankPop': EDITOR_YANK_POP,
+    'undo': EDITOR_UNDO,
+    'newLine': INPUT_NEWLINE,
+    'submit': INPUT_SUBMIT,
+    'tab': INPUT_TAB,
+    'copy': INPUT_COPY,
+    'selectUp': SELECT_UP,
+    'selectDown': SELECT_DOWN,
+    'selectPageUp': SELECT_PAGE_UP,
+    'selectPageDown': SELECT_PAGE_DOWN,
+    'selectConfirm': SELECT_CONFIRM,
+    'selectCancel': SELECT_CANCEL,
+    'interrupt': APP_INTERRUPT,
+    'clear': APP_CLEAR,
+    'exit': APP_EXIT,
+    'suspend': APP_SUSPEND,
+    'cycleThinkingLevel': APP_THINKING_CYCLE,
+    'cycleModelForward': APP_MODEL_CYCLE_FORWARD,
+    'cycleModelBackward': APP_MODEL_CYCLE_BACKWARD,
+    'selectModel': APP_MODEL_SELECT,
+    'expandTools': APP_TOOLS_EXPAND,
+    'toggleThinking': APP_THINKING_TOGGLE,
+    'toggleSessionNamedFilter': APP_SESSION_TOGGLE_NAMED_FILTER,
+    'externalEditor': APP_EDITOR_EXTERNAL,
+    'followUp': APP_MESSAGE_FOLLOW_UP,
+    'dequeue': APP_MESSAGE_DEQUEUE,
+    'pasteImage': APP_CLIPBOARD_PASTE_IMAGE,
+    'newSession': APP_SESSION_NEW,
+    'tree': APP_SESSION_TREE,
+    'fork': APP_SESSION_FORK,
+    'resume': APP_SESSION_RESUME,
+    'treeFoldOrUp': APP_TREE_FOLD_OR_UP,
+    'treeUnfoldOrDown': APP_TREE_UNFOLD_OR_DOWN,
+    'treeEditLabel': APP_TREE_EDIT_LABEL,
+    'treeToggleLabelTimestamp': APP_TREE_TOGGLE_LABEL_TIMESTAMP,
+    'toggleSessionPath': APP_SESSION_TOGGLE_PATH,
+    'toggleSessionSort': APP_SESSION_TOGGLE_SORT,
+    'renameSession': APP_SESSION_RENAME,
+    'deleteSession': APP_SESSION_DELETE,
+    'deleteSessionNoninvasive': APP_SESSION_DELETE_NONINVASIVE,
+    }
+}
+
+// Pi KEYBINDINGS default keys (darwin variants) + descriptions, in Pi's
+// display order: TUI keys first, then app keys.
 pub fn default_keybindings(): ref<keybindings_t> {
     var registry = new keybindings_t()
-    registry.bindings.push(keybinding_t {key: 'ctrl+]', action: ACTION_JUMP_FORWARD, description: 'Jump forward to a character'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+alt+]', action: ACTION_JUMP_BACKWARD, description: 'Jump backward to a character'})
-    registry.bindings.push(keybinding_t {key: 'enter', action: ACTION_SUBMIT, description: 'Submit the message'})
-    registry.bindings.push(keybinding_t {key: 'shift+enter', action: ACTION_NEWLINE, description: 'Insert a newline'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+j', action: ACTION_NEWLINE, description: 'Insert a newline'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+c', action: ACTION_CANCEL, description: 'Cancel the prompt'})
-    registry.bindings.push(keybinding_t {key: 'left', action: ACTION_MOVE_LEFT, description: 'Move left'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+b', action: ACTION_MOVE_LEFT, description: 'Move left'})
-    registry.bindings.push(keybinding_t {key: 'right', action: ACTION_MOVE_RIGHT, description: 'Move right'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+f', action: ACTION_MOVE_RIGHT, description: 'Move right'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+left', action: ACTION_MOVE_WORD_LEFT, description: 'Move to the previous word'})
-    registry.bindings.push(keybinding_t {key: 'alt+left', action: ACTION_MOVE_WORD_LEFT, description: 'Move to the previous word'})
-    registry.bindings.push(keybinding_t {key: 'alt+b', action: ACTION_MOVE_WORD_LEFT, description: 'Move to the previous word'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+right', action: ACTION_MOVE_WORD_RIGHT, description: 'Move to the next word'})
-    registry.bindings.push(keybinding_t {key: 'alt+right', action: ACTION_MOVE_WORD_RIGHT, description: 'Move to the next word'})
-    registry.bindings.push(keybinding_t {key: 'alt+f', action: ACTION_MOVE_WORD_RIGHT, description: 'Move to the next word'})
-    registry.bindings.push(keybinding_t {key: 'home', action: ACTION_LINE_START, description: 'Move to the start of the line'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+a', action: ACTION_LINE_START, description: 'Move to the start of the line'})
-    registry.bindings.push(keybinding_t {key: 'end', action: ACTION_LINE_END, description: 'Move to the end of the line'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+e', action: ACTION_LINE_END, description: 'Move to the end of the line'})
-    registry.bindings.push(keybinding_t {key: 'backspace', action: ACTION_BACKSPACE, description: 'Delete the previous character'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+h', action: ACTION_BACKSPACE, description: 'Delete the previous character'})
-    registry.bindings.push(keybinding_t {key: 'alt+backspace', action: ACTION_DELETE_WORD_BACKWARD, description: 'Delete the previous word'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+backspace', action: ACTION_DELETE_WORD_BACKWARD, description: 'Delete the previous word'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+w', action: ACTION_DELETE_WORD_BACKWARD, description: 'Delete the previous word'})
-    registry.bindings.push(keybinding_t {key: 'delete', action: ACTION_DELETE_FORWARD, description: 'Delete the next character'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+d', action: ACTION_DELETE_FORWARD, description: 'Delete the next character'})
-    registry.bindings.push(keybinding_t {key: 'shift+delete', action: ACTION_DELETE_FORWARD, description: 'Delete the next character'})
-    registry.bindings.push(keybinding_t {key: 'alt+d', action: ACTION_DELETE_WORD_FORWARD, description: 'Delete the next word'})
-    registry.bindings.push(keybinding_t {key: 'alt+delete', action: ACTION_DELETE_WORD_FORWARD, description: 'Delete the next word'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+u', action: ACTION_DELETE_TO_LINE_START, description: 'Delete to the start of the line'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+k', action: ACTION_DELETE_TO_LINE_END, description: 'Delete to the end of the line'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+y', action: ACTION_YANK, description: 'Yank the kill ring'})
-    registry.bindings.push(keybinding_t {key: 'alt+y', action: ACTION_YANK_POP, description: 'Yank the previous kill ring entry'})
-    registry.bindings.push(keybinding_t {key: 'ctrl+-', action: ACTION_UNDO, description: 'Undo the last edit'})
-    registry.bindings.push(keybinding_t {key: 'tab', action: ACTION_TAB, description: 'Complete the current token'})
-    registry.bindings.push(keybinding_t {key: 'pageUp', action: ACTION_SCROLL_UP, description: 'Scroll the transcript up'})
-    registry.bindings.push(keybinding_t {key: 'pageDown', action: ACTION_SCROLL_DOWN, description: 'Scroll the transcript down'})
+    define(registry, EDITOR_CURSOR_UP, ['up'], 'Move cursor up')
+    define(registry, EDITOR_CURSOR_DOWN, ['down'], 'Move cursor down')
+    define(registry, EDITOR_CURSOR_LEFT, ['left', 'ctrl+b'], 'Move cursor left')
+    define(registry, EDITOR_CURSOR_RIGHT, ['right', 'ctrl+f'], 'Move cursor right')
+    define(registry, EDITOR_CURSOR_WORD_LEFT, ['alt+left', 'ctrl+left', 'alt+b'], 'Move cursor word left')
+    define(registry, EDITOR_CURSOR_WORD_RIGHT, ['alt+right', 'ctrl+right', 'alt+f'], 'Move cursor word right')
+    define(registry, EDITOR_CURSOR_LINE_START, ['home', 'ctrl+a'], 'Move to line start')
+    define(registry, EDITOR_CURSOR_LINE_END, ['end', 'ctrl+e'], 'Move to line end')
+    define(registry, EDITOR_JUMP_FORWARD, ['ctrl+]'], 'Jump forward to character')
+    define(registry, EDITOR_JUMP_BACKWARD, ['ctrl+alt+]'], 'Jump backward to character')
+    define(registry, EDITOR_PAGE_UP, ['pageUp'], 'Page up')
+    define(registry, EDITOR_PAGE_DOWN, ['pageDown'], 'Page down')
+    define(registry, EDITOR_DELETE_CHAR_BACKWARD, ['backspace'], 'Delete character backward')
+    define(registry, EDITOR_DELETE_CHAR_FORWARD, ['delete', 'ctrl+d'], 'Delete character forward')
+    define(registry, EDITOR_DELETE_WORD_BACKWARD, ['ctrl+w', 'alt+backspace'], 'Delete word backward')
+    define(registry, EDITOR_DELETE_WORD_FORWARD, ['alt+d', 'alt+delete'], 'Delete word forward')
+    define(registry, EDITOR_DELETE_TO_LINE_START, ['ctrl+u'], 'Delete to line start')
+    define(registry, EDITOR_DELETE_TO_LINE_END, ['ctrl+k'], 'Delete to line end')
+    define(registry, EDITOR_YANK, ['ctrl+y'], 'Yank')
+    define(registry, EDITOR_YANK_POP, ['alt+y'], 'Yank pop')
+    define(registry, EDITOR_UNDO, ['ctrl+-'], 'Undo')
+    define(registry, INPUT_NEWLINE, ['shift+enter', 'ctrl+j'], 'Insert newline')
+    define(registry, INPUT_SUBMIT, ['enter'], 'Submit input')
+    define(registry, INPUT_TAB, ['tab'], 'Tab / autocomplete')
+    define(registry, INPUT_COPY, ['ctrl+c'], 'Copy selection')
+    define(registry, SELECT_UP, ['up'], 'Move selection up')
+    define(registry, SELECT_DOWN, ['down'], 'Move selection down')
+    define(registry, SELECT_PAGE_UP, ['pageUp'], 'Selection page up')
+    define(registry, SELECT_PAGE_DOWN, ['pageDown'], 'Selection page down')
+    define(registry, SELECT_CONFIRM, ['enter'], 'Confirm selection')
+    define(registry, SELECT_CANCEL, ['escape', 'ctrl+c'], 'Cancel selection')
+    define(registry, APP_INTERRUPT, ['escape'], 'Cancel or abort')
+    define(registry, APP_CLEAR, ['ctrl+c'], 'Clear editor')
+    define(registry, APP_EXIT, ['ctrl+d'], 'Exit when editor is empty')
+    define(registry, APP_SUSPEND, ['ctrl+z'], 'Suspend to background')
+    define(registry, APP_THINKING_CYCLE, ['shift+tab'], 'Cycle thinking level')
+    define(registry, APP_MODEL_CYCLE_FORWARD, ['ctrl+p'], 'Cycle to next model')
+    define(registry, APP_MODEL_CYCLE_BACKWARD, ['shift+ctrl+p'], 'Cycle to previous model')
+    define(registry, APP_MODEL_SELECT, ['ctrl+l'], 'Open model selector')
+    define(registry, APP_TOOLS_EXPAND, ['ctrl+o'], 'Toggle tool output')
+    define(registry, APP_THINKING_TOGGLE, ['ctrl+t'], 'Toggle thinking blocks')
+    define(registry, APP_SESSION_TOGGLE_NAMED_FILTER, ['ctrl+n'], 'Toggle named session filter')
+    define(registry, APP_EDITOR_EXTERNAL, ['ctrl+g'], 'Open external editor')
+    define(registry, APP_MESSAGE_COPY, ['ctrl+x'], 'Copy message to clipboard')
+    define(registry, APP_MESSAGE_FOLLOW_UP, ['alt+enter'], 'Queue follow-up message')
+    define(registry, APP_MESSAGE_DEQUEUE, ['alt+up'], 'Restore queued messages')
+    define(registry, APP_CLIPBOARD_PASTE_IMAGE, ['ctrl+v'], 'Paste image from clipboard (text fallback)')
+    define(registry, APP_SESSION_NEW, [], 'Start a new session')
+    define(registry, APP_SESSION_TREE, [], 'Open session tree')
+    define(registry, APP_SESSION_FORK, [], 'Fork current session')
+    define(registry, APP_SESSION_RESUME, [], 'Resume a session')
+    define(registry, APP_TREE_FOLD_OR_UP, ['alt+left', 'ctrl+left'], 'Fold tree branch or move up')
+    define(registry, APP_TREE_UNFOLD_OR_DOWN, ['alt+right', 'ctrl+right'], 'Unfold tree branch or move down')
+    define(registry, APP_TREE_EDIT_LABEL, ['shift+l'], 'Edit tree label')
+    define(registry, APP_TREE_TOGGLE_LABEL_TIMESTAMP, ['shift+t'], 'Toggle tree label timestamps')
+    define(registry, APP_SESSION_TOGGLE_PATH, ['ctrl+p'], 'Toggle session path display')
+    define(registry, APP_SESSION_TOGGLE_SORT, ['ctrl+s'], 'Toggle session sort mode')
+    define(registry, APP_SESSION_RENAME, ['ctrl+r'], 'Rename session')
+    define(registry, APP_SESSION_DELETE, ['ctrl+d'], 'Delete session')
+    define(registry, APP_SESSION_DELETE_NONINVASIVE, ['ctrl+backspace'], 'Delete session when query is empty')
+    define(registry, APP_MODELS_SAVE, ['ctrl+s'], 'Save model selection')
+    define(registry, APP_MODELS_ENABLE_ALL, ['ctrl+a'], 'Enable all models')
+    define(registry, APP_MODELS_CLEAR_ALL, ['ctrl+x'], 'Clear all models')
+    define(registry, APP_MODELS_TOGGLE_PROVIDER, ['ctrl+p'], 'Toggle all models for provider')
+    define(registry, APP_MODELS_REORDER_UP, ['alt+up'], 'Move model up in order')
+    define(registry, APP_MODELS_REORDER_DOWN, ['alt+down'], 'Move model down in order')
+    define(registry, APP_TREE_FILTER_DEFAULT, ['ctrl+d'], 'Tree filter: default view')
+    define(registry, APP_TREE_FILTER_NO_TOOLS, ['ctrl+t'], 'Tree filter: hide tool results')
+    define(registry, APP_TREE_FILTER_USER_ONLY, ['ctrl+u'], 'Tree filter: user messages only')
+    define(registry, APP_TREE_FILTER_LABELED_ONLY, ['ctrl+l'], 'Tree filter: labeled entries only')
+    define(registry, APP_TREE_FILTER_ALL, ['ctrl+a'], 'Tree filter: show all entries')
+    define(registry, APP_TREE_FILTER_CYCLE_FORWARD, ['ctrl+o'], 'Tree filter: cycle forward')
+    define(registry, APP_TREE_FILTER_CYCLE_BACKWARD, ['shift+ctrl+o'], 'Tree filter: cycle backward')
+    rebuild(registry)
     return registry
 }
 
-// Resolve a key name to its action; '' when unbound.
+#local
+fn define(ref<keybindings_t> registry, string action, [string] keys, string description) {
+    var definition = keybinding_def_t {description: description,}
+    for key in keys {
+        definition.keys.push(key)
+    }
+    registry.definitions[action] = definition
+    registry.action_order.push(action)
+}
+
+// Rebuild the resolved key table and the conflict list from the current
+// definitions + user bindings (Pi KeybindingsManager.rebuild).
+pub fn rebuild(ref<keybindings_t> registry) {
+    registry.resolved = {}
+    registry.conflicts = []
+    // Pi only treats USER claims as conflicts: shared default keys
+    // (ctrl+p = model cycle + session path, ctrl+c = copy + clear + cancel)
+    // are contextual by design.
+    {string:[string]} claims = {}
+    [string] claim_order = []
+    for raw_action, keys in registry.user_bindings {
+        for key in keys {
+            if !claims.contains(key) {
+                claims[key] = []
+                claim_order.push(key)
+            }
+            claims[key].push(raw_action)
+        }
+    }
+    for key in claim_order {
+        var actions = claims[key]
+        if actions.len() > 1 {
+            var conflict = conflict_t {key: key,}
+            for action in actions {
+                conflict.actions.push(action)
+            }
+            registry.conflicts.push(conflict)
+        }
+    }
+    for action in registry.action_order {
+        [string] keys = user_keys(registry, action)
+        registry.resolved[action] = []
+        for key in keys {
+            registry.resolved[action].push(key)
+        }
+    }
+}
+
+#local
+fn user_keys(ref<keybindings_t> registry, string action): [string] {
+    [string] result = []
+    if registry.user_bindings.contains(action) {
+        for key in registry.user_bindings[action] {
+            if key != '' {
+                result.push(key)
+            }
+        }
+        return result
+    }
+    if registry.definitions.contains(action) {
+        for key in registry.definitions[action].keys {
+            result.push(key)
+        }
+    }
+    return result
+}
+
+// Resolve one key name to its action id; '' when unbound.  First registered
+// spelling wins (Pi matchesKey iterates the resolved lists in action order).
 pub fn keybindings_t.lookup(&self, string key): string {
-    for binding in self.bindings {
-        if binding.key == key {
-            return binding.action
+    for action in self.action_order {
+        for candidate in self.resolved[action] {
+            if candidate == key {
+                return action
+            }
         }
     }
     return ''
 }
 
-pub fn keybindings_t.describe(&self, string action): string {
-    for binding in self.bindings {
-        if binding.action == action {
-            return binding.description
+pub fn keybindings_t.matches(&self, string key, string action): bool {
+    if !self.resolved.contains(action) {return false}
+    for candidate in self.resolved[action] {
+        if candidate == key {
+            return true
         }
     }
+    return false
+}
+
+pub fn keybindings_t.get_keys(&self, string action): [string] {
+    [string] result = []
+    if !self.resolved.contains(action) {return result}
+    for key in self.resolved[action] {
+        result.push(key)
+    }
+    return result
+}
+
+pub fn keybindings_t.describe(&self, string action): string {
+    if self.definitions.contains(action) {
+        return self.definitions[action].description
+    }
     return ''
+}
+
+pub fn keybindings_t.get_conflicts(&self): [conflict_t] {
+    [conflict_t] result = []
+    for conflict in self.conflicts {
+        var copy = conflict_t {key: conflict.key,}
+        for action in conflict.actions {
+            copy.actions.push(action)
+        }
+        result.push(copy)
+    }
+    return result
+}
+
+// Replace the user bindings and rebuild (Pi setUserBindings).
+pub fn keybindings_t.set_user_bindings(&self, {string:[string]} bindings) {
+    self.user_bindings = bindings
+    rebuild(self)
+}
+
+// Load the user config file and rebuild (Pi KeybindingsManager.reload).
+pub fn keybindings_t.reload(&self, string agent_dir) {
+    self.user_bindings = load_user_bindings(keybindings_path(agent_dir))
+    rebuild(self)
+}
+
+// Pi create(): defaults + <agent_dir>/keybindings.json.
+pub fn create(string agent_dir): ref<keybindings_t> {
+    var registry = default_keybindings()
+    registry.user_bindings = load_user_bindings(keybindings_path(agent_dir))
+    rebuild(registry)
+    return registry
+}
+
+// Pi formatting: alt displays as option on darwin; keys joined with '+'.
+pub fn format_key_text(string key): string {
+    [string] parts = key.split('+')
+    [string] formatted = []
+    for part in parts {
+        if part == 'alt' {
+            formatted.push('option')
+        } else {
+            formatted.push(part)
+        }
+    }
+    return strings_join(formatted, '+')
+}
+
+pub fn key_text(ref<keybindings_t> registry, string action): string {
+    [string] keys = registry.get_keys(action)
+    if keys.len() == 0 {
+        return ''
+    }
+    [string] formatted = []
+    for key in keys {
+        formatted.push(format_key_text(key))
+    }
+    return strings_join(formatted, '/')
+}
+
+#local
+fn strings_join([string] values, string separator): string {
+    string result = ''
+    for index, value in values {
+        if index > 0 {
+            result += separator
+        }
+        result += value
+    }
+    return result
+}
+
+pub fn keybindings_path(string agent_dir): string {
+    return path.join(agent_dir, 'keybindings.json')
+}
+
+#local
+fn load_user_bindings(string file_path): {string:[string]} {
+    {string:[string]} result = {}
+    if !path_utils.exists(file_path) {
+        return result
+    }
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return result}
+    string content = input.content() catch error {
+        input.close()
+        return result
+    }
+    input.close()
+    var root = json_util.parse(content) catch error {return result}
+    if !json_util.is_obj(root) {
+        return result
+    }
+    var object = root as {string:any}
+    // Pi migrateKeybindingsConfig: legacy names move to current ids; a
+    // legacy key is dropped when the current id is also present.
+    var migrations = legacy_name_migrations()
+    for raw_key, value in object {
+        string action = raw_key
+        if migrations.contains(raw_key) {
+            action = migrations[raw_key]
+            if action != raw_key && object.contains(action) {
+                continue
+            }
+        }
+        [string] keys = []
+        if value is string && (value as string) != '' {
+            keys.push(value as string)
+        } else if value is [any] {
+            for entry in value as [any] {
+                if entry is string && (entry as string) != '' {
+                    keys.push(entry as string)
+                }
+            }
+        }
+        if keys.len() > 0 {
+            result[action] = keys
+        }
+    }
+    return result
+}
+
+// --- process-wide current registry (Pi setKeybindings/getKeybindings) -----
+
+anyptr current_registry = 0
+
+pub fn set_current(ref<keybindings_t> registry) {
+    current_registry = registry as anyptr
+}
+
+pub fn current(): ref<keybindings_t> {
+    if current_registry == 0 {
+        var defaults = default_keybindings()
+        current_registry = defaults as anyptr
+    }
+    return current_registry as ref<keybindings_t>
 }

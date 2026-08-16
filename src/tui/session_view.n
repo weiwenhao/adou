@@ -9,6 +9,7 @@ import adou.src.ai.types as ai_types
 import adou.src.config.auth
 import adou.src.config.models
 import adou.src.config.paths
+import adou.src.tui.keybindings
 import adou.src.config.settings as config_settings
 import adou.src.config.trust as trust
 import adou.src.config.types
@@ -143,6 +144,9 @@ pub type overlay_t = struct {
     string theme_light = 'light'
     string theme_dark = 'dark'
     string theme_select_target
+    // Pi app.tree.toggleLabelTimestamp: show each entry's timestamp next
+    // to its label in the tree rows.
+    bool label_timestamps
 }
 
 pub type view_t = struct {
@@ -238,6 +242,9 @@ pub type view_t = struct {
     ref<mutex.mutex_t> render_lock = mutex.mutex_t.new()
     bool redraw_scheduled
     bool redraw_dirty
+    // Batch 4: one keybinding registry shared by the app dispatch, the
+    // editor and every hint surface (Pi setKeybindings/getKeybindings).
+    ref<keybindings.keybindings_t> keybindings = keybindings.current()
 }
 
 pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model, string cwd, [string] skill_paths, bool no_skills, bool trust_override, bool trust_override_explicit, [string] initial_model_scope_patterns, bool model_scope_explicit, string system_prompt_override, [string] append_system_prompts, bool no_context_files): ref<view_t> {
@@ -245,7 +252,11 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     // the initial model-candidate cache and the menu already honor them
     // (B1-R2-06 scope timing: no naked post-construction assignments in
     // app.n).
-    var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, autocomplete = new autocomplete.autocomplete_state_t (), kitty_protocol = true, skill_paths = skill_paths, no_skills = no_skills, trust_override = trust_override, trust_override_explicit = trust_override_explicit, model_scope_patterns = initial_model_scope_patterns, model_scope_explicit = model_scope_explicit, system_prompt_override = system_prompt_override, append_system_prompts = append_system_prompts, no_context_files = no_context_files)
+    // Batch 4: keybindings.json + defaults become the process registry
+    // before the view is built so the editor resolves the same instance.
+    var keybinding_registry = keybindings.create(paths.agent_dir())
+    keybindings.set_current(keybinding_registry)
+    var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, autocomplete = new autocomplete.autocomplete_state_t (), kitty_protocol = true, skill_paths = skill_paths, no_skills = no_skills, trust_override = trust_override, trust_override_explicit = trust_override_explicit, model_scope_patterns = initial_model_scope_patterns, model_scope_explicit = model_scope_explicit, system_prompt_override = system_prompt_override, append_system_prompts = append_system_prompts, no_context_files = no_context_files, keybindings = keybinding_registry)
     string thinking = runner.agent_config.stream_options.reasoning_effort
     if !runner.agent_config.stream_options.thinking_enabled {
         thinking = 'off'
@@ -560,7 +571,7 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
             return self.apply_autocomplete(true)
         }
     }
-    if key == 'escape' {
+    if self.keybindings.matches(key, keybindings.APP_INTERRUPT) {
         if self.editor.get_text().trim([' ', '\t', '\n', '\r']) == '' {
             i64 now = time.now().ms_timestamp()
             if now - self.last_escape_time < 500 {
@@ -580,7 +591,7 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
         }
         return null
     }
-    if key == 'ctrl+c' {
+    if self.keybindings.matches(key, keybindings.APP_CLEAR) {
         i64 now = time.now().ms_timestamp()
         if now - self.last_sigint_time < 500 {
             self.quitting = true
@@ -594,53 +605,53 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
         }
         return null
     }
-    if key == 'ctrl+d' && self.editor.get_text() == '' {
+    if self.keybindings.matches(key, keybindings.APP_EXIT) && self.editor.get_text() == '' {
         self.quitting = true
         return null
     }
-    if key == 'ctrl+z' {
+    if self.keybindings.matches(key, keybindings.APP_SUSPEND) {
         self.suspend_terminal()
         return null
     }
-    if key == 'ctrl+g' {
+    if self.keybindings.matches(key, keybindings.APP_EDITOR_EXTERNAL) {
         self.open_external_editor()
         return null
     }
-    if key == 'shift+tab' {
+    if self.keybindings.matches(key, keybindings.APP_THINKING_CYCLE) {
         self.cycle_thinking_level()
         return null
     }
-    if key == 'ctrl+p' {
+    if self.keybindings.matches(key, keybindings.APP_MODEL_CYCLE_FORWARD) {
         self.cycle_model(1)
         return null
     }
-    if key == 'shift+ctrl+p' {
+    if self.keybindings.matches(key, keybindings.APP_MODEL_CYCLE_BACKWARD) {
         self.cycle_model(-1)
         return null
     }
-    if key == 'ctrl+l' {
+    if self.keybindings.matches(key, keybindings.APP_MODEL_SELECT) {
         self.show_model_overlay('')
         self.redraw()
         return null
     }
-    if key == 'ctrl+o' {
+    if self.keybindings.matches(key, keybindings.APP_TOOLS_EXPAND) {
         bool expanded = self.chat.toggle_tool_output()
         self.chat.status = 'Tool output: ' + (expanded ? 'expanded' : 'collapsed')
         self.redraw()
         return null
     }
-    if key == 'ctrl+t' {
+    if self.keybindings.matches(key, keybindings.APP_THINKING_TOGGLE) {
         bool visible = self.chat.toggle_thinking_visibility()
         self.chat.status = 'Thinking blocks: ' + (visible ? 'visible' : 'hidden')
         self.save_preferences()
         self.redraw()
         return null
     }
-    if key == 'ctrl+x' {
+    if self.keybindings.matches(key, keybindings.APP_MESSAGE_COPY) {
         self.copy_last_response()
         return null
     }
-    if key == 'alt+enter' {
+    if self.keybindings.matches(key, keybindings.APP_MESSAGE_FOLLOW_UP) {
         var submitted = self.editor.submit()
         if submitted.text != '' {
             self.editor.add_history(submitted.text)
@@ -690,34 +701,36 @@ pub fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, in
         return
     }
     string key = keys.parse_key(input.data)
-    if key == 'escape' || key == 'ctrl+c' {
+    // Adou aborts on escape (app.interrupt) and ctrl+c (app.clear) while
+    // streaming; both resolve through the registry.
+    if self.keybindings.matches(key, keybindings.APP_INTERRUPT) || self.keybindings.matches(key, keybindings.APP_CLEAR) {
         stream.abort()
         self.chat.status = 'Cancelling...'
         self.redraw()
         return
     }
-    if key == 'ctrl+z' {
+    if self.keybindings.matches(key, keybindings.APP_SUSPEND) {
         self.suspend_terminal()
         return
     }
-    if key == 'ctrl+o' {
+    if self.keybindings.matches(key, keybindings.APP_TOOLS_EXPAND) {
         bool expanded = self.chat.toggle_tool_output()
         self.chat.status = 'Tool output: ' + (expanded ? 'expanded' : 'collapsed')
         self.redraw()
         return
     }
-    if key == 'ctrl+t' {
+    if self.keybindings.matches(key, keybindings.APP_THINKING_TOGGLE) {
         bool visible = self.chat.toggle_thinking_visibility()
         self.chat.status = 'Thinking blocks: ' + (visible ? 'visible' : 'hidden')
         self.save_preferences()
         self.redraw()
         return
     }
-    if key == 'alt+up' {
+    if self.keybindings.matches(key, keybindings.APP_MESSAGE_DEQUEUE) {
         self.restore_queued_messages()
         return
     }
-    if key == 'alt+enter' {
+    if self.keybindings.matches(key, keybindings.APP_MESSAGE_FOLLOW_UP) {
         var submitted = self.editor.submit()
         if submitted.text != '' {
             var message = new ai_types.user_message_t(content = submitted.text, timestamp = time.now().ms_timestamp())
@@ -1228,7 +1241,20 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
             }
         }
         self.runner.base_context.system_prompt = system_prompt.build_with_tools(cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
-        self.chat.status = warnings.len() > 0 ? 'Project instructions reloaded with warnings' : 'Project instructions reloaded'
+        // Batch 4: /reload re-reads keybindings.json and reports conflicts
+        // (Pi KeybindingsManager.reload + getConflicts).
+        self.keybindings.reload(paths.agent_dir())
+        keybindings.set_current(self.keybindings)
+        string reload_status = warnings.len() > 0 ? 'Project instructions reloaded with warnings' : 'Project instructions reloaded'
+        var keybinding_conflicts = self.keybindings.get_conflicts()
+        if keybinding_conflicts.len() > 0 {
+            [string] conflict_texts = []
+            for conflict in keybinding_conflicts {
+                conflict_texts.push(keybindings.format_key_text(conflict.key) + ' -> ' + strings.join(conflict.actions, ', '))
+            }
+            reload_status += '\nKeybinding conflicts: ' + strings.join(conflict_texts, '; ')
+        }
+        self.chat.status = reload_status
         self.redraw()
         return null
     }
@@ -1750,14 +1776,7 @@ fn tree_filter_index(string mode): int {
 }
 
 pub fn view_t.show_tree_overlay(&self) {
-    [string] options = []
-    for entry in self.runner.repository.get_entries() {
-        if entry.kind == session_types.ENTRY_LABEL {
-            continue
-        }
-        string label = self.runner.repository.get_label(entry.id)
-        options.push(entry.id + (label == '' ? '' : ' [' + label + ']') + ' ' + entry.kind)
-    }
+    var options = tree_rows(self.runner, false)
     if options.len() == 0 {
         self.chat.status = 'Session tree is empty'
         return
@@ -1780,6 +1799,69 @@ pub fn view_t.show_tree_overlay(&self) {
             break
         }
     }
+}
+
+// Tree rows: '<id> [<label>] <kind>' with an optional relative timestamp
+// suffix when app.tree.toggleLabelTimestamp is on.
+#local
+fn tree_rows(ref<session.runner_t> runner, bool label_timestamps): [string] {
+    [string] options = []
+    for entry in runner.repository.get_entries() {
+        if entry.kind == session_types.ENTRY_LABEL {
+            continue
+        }
+        string label = runner.repository.get_label(entry.id)
+        string row = entry.id + (label == '' ? '' : ' [' + label + ']') + ' ' + entry.kind
+        if label_timestamps {
+            string relative = relative_time(entry.timestamp)
+            if relative != '' {
+                row += '  ' + relative
+            }
+        }
+        options.push(row)
+    }
+    return options
+}
+
+// A short relative timestamp for tree rows ('2m ago', '3h ago', '2d ago').
+#local
+fn relative_time(string timestamp): string {
+    i64 then = iso_timestamp_ms(timestamp)
+    if then <= 0 {
+        return ''
+    }
+    i64 elapsed = time.now().ms_timestamp() - then
+    if elapsed < 0 {
+        elapsed = 0
+    }
+    int minutes = (elapsed / 60000) as int
+    if minutes < 1 {
+        return 'just now'
+    }
+    if minutes < 60 {
+        return fmt.sprintf('%dm ago', minutes)
+    }
+    int hours = minutes / 60
+    if hours < 24 {
+        return fmt.sprintf('%dh ago', hours)
+    }
+    return fmt.sprintf('%dd ago', hours / 24)
+}
+
+#local
+fn iso_timestamp_ms(string timestamp): i64 {
+    // Entry timestamps are Pi-style ISO strings ('2026-08-16T09-46-42-603Z');
+    // parse the date/time prefix into a millisecond epoch.
+    if timestamp.len() < 17 {
+        return 0
+    }
+    int year = timestamp.slice(0, 4).to_int() catch error {return 0}
+    int month = timestamp.slice(5, 7).to_int() catch error {return 0}
+    int day = timestamp.slice(8, 10).to_int() catch error {return 0}
+    int hour = timestamp.slice(11, 13).to_int() catch error {return 0}
+    int minute = timestamp.slice(14, 16).to_int() catch error {return 0}
+    int second = timestamp.slice(17, 19).to_int() catch error {return 0}
+    return (year as i64) * 31536000000 + (month as i64) * 2628000000 + (day as i64) * 86400000 + (hour as i64) * 3600000 + (minute as i64) * 60000 + (second as i64) * 1000
 }
 
 pub fn view_t.restore_tree_overlay(&self, string entry_id) {
@@ -2025,6 +2107,20 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     self.chat.set_latest_cache_hit_rate(self.runner.repository.latest_cache_hit_rate())
     self.chat.set_context_known(self.runner.repository.context_usage_known())
     [string] transcript_lines = self.chat.render(width)
+    // Pi's built-in header: the compact keybinding hint line derived from
+    // the registry, silenced by quietStartup.  It wraps to the terminal
+    // width (the renderer forbids over-wide rows).
+    if !self.settings_snapshot.quiet_startup {
+        [string] with_header = []
+        var header_lines = text_utils.wrap_text_with_ansi(theme.fg(theme.dim_color(), header_hint_line(self.keybindings)), width)
+        for line in header_lines {
+            with_header.push(line)
+        }
+        for line in transcript_lines {
+            with_header.push(line)
+        }
+        transcript_lines = with_header
+    }
     [string] editor_lines = []
     if self.overlay is ref<overlay_t> active_overlay {
         editor_lines = render_overlay(active_overlay, width, self.runner.repository.session_dir, self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id, self.runner)
@@ -3441,29 +3537,71 @@ pub fn view_t.show_skills(&self, string text, [string] parts) {
 }
 
 pub fn view_t.show_hotkeys_overlay(&self) {
-    [string] options = [
-        'Escape       Cancel or abort; press twice to open tree',
-        'Ctrl+C       Clear editor; press twice to exit',
-        'Ctrl+D       Exit when editor is empty',
-        'Shift+Tab    Cycle thinking level',
-        'Ctrl+P       Cycle to next model',
-        'Ctrl+Shift+P Cycle to previous model',
-        'Ctrl+L       Open model selector',
-        'Ctrl+O       Toggle tool output',
-        'Ctrl+T       Toggle thinking blocks',
-        'Ctrl+X       Copy last assistant response',
-        'Ctrl+G       Edit prompt in external editor',
-        'Ctrl+Z       Suspend to background',
-        'Alt+Enter    Queue follow-up while streaming',
-        'Alt+Up       Restore queued messages',
-        'Enter        Submit or steer while streaming',
-        'Shift+Enter  Insert newline (Ctrl+J also works)',
-        'Ctrl+B/F      Move one character left/right',
-        'Alt+B/F       Move one word left/right',
-        'Ctrl+] char   Jump forward to character',
-        'Ctrl+Alt+]    Jump backward to character',
-    ]
-    self.overlay = new overlay_t(kind = OVERLAY_HELP, title = 'Keyboard shortcuts', options = options)
+    self.overlay = new overlay_t(kind = OVERLAY_HELP, title = 'Keyboard shortcuts', options = hotkeys_options(self.keybindings))
+}
+
+// Batch 4: /hotkeys rows derive from the SAME registry that dispatches
+// keys, so a user remap changes behavior and this list together (Pi
+// /hotkeys, Navigation/Editing/Other grouping).
+#local
+fn hotkeys_options(ref<keybindings.keybindings_t> registry): [string] {
+    [string] options = []
+    options.push('Navigation')
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_CURSOR_UP) + '  ' + registry.describe(keybindings.EDITOR_CURSOR_UP))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_CURSOR_DOWN) + '  ' + registry.describe(keybindings.EDITOR_CURSOR_DOWN))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_CURSOR_LEFT) + '  ' + registry.describe(keybindings.EDITOR_CURSOR_LEFT))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_CURSOR_RIGHT) + '  ' + registry.describe(keybindings.EDITOR_CURSOR_RIGHT))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_CURSOR_WORD_LEFT) + '  ' + registry.describe(keybindings.EDITOR_CURSOR_WORD_LEFT))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_CURSOR_WORD_RIGHT) + '  ' + registry.describe(keybindings.EDITOR_CURSOR_WORD_RIGHT))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_CURSOR_LINE_START) + '  ' + registry.describe(keybindings.EDITOR_CURSOR_LINE_START))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_CURSOR_LINE_END) + '  ' + registry.describe(keybindings.EDITOR_CURSOR_LINE_END))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_JUMP_FORWARD) + '  ' + registry.describe(keybindings.EDITOR_JUMP_FORWARD))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_JUMP_BACKWARD) + '  ' + registry.describe(keybindings.EDITOR_JUMP_BACKWARD))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_PAGE_UP) + '  ' + registry.describe(keybindings.EDITOR_PAGE_UP))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_PAGE_DOWN) + '  ' + registry.describe(keybindings.EDITOR_PAGE_DOWN))
+    options.push('Editing')
+    options.push(keybindings.key_text(registry, keybindings.INPUT_SUBMIT) + '  ' + registry.describe(keybindings.INPUT_SUBMIT))
+    options.push(keybindings.key_text(registry, keybindings.INPUT_NEWLINE) + '  ' + registry.describe(keybindings.INPUT_NEWLINE))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_DELETE_CHAR_BACKWARD) + '  ' + registry.describe(keybindings.EDITOR_DELETE_CHAR_BACKWARD))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_DELETE_CHAR_FORWARD) + '  ' + registry.describe(keybindings.EDITOR_DELETE_CHAR_FORWARD))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_DELETE_WORD_BACKWARD) + '  ' + registry.describe(keybindings.EDITOR_DELETE_WORD_BACKWARD))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_DELETE_WORD_FORWARD) + '  ' + registry.describe(keybindings.EDITOR_DELETE_WORD_FORWARD))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_DELETE_TO_LINE_START) + '  ' + registry.describe(keybindings.EDITOR_DELETE_TO_LINE_START))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_DELETE_TO_LINE_END) + '  ' + registry.describe(keybindings.EDITOR_DELETE_TO_LINE_END))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_YANK) + '  ' + registry.describe(keybindings.EDITOR_YANK))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_YANK_POP) + '  ' + registry.describe(keybindings.EDITOR_YANK_POP))
+    options.push(keybindings.key_text(registry, keybindings.EDITOR_UNDO) + '  ' + registry.describe(keybindings.EDITOR_UNDO))
+    options.push('Other')
+    options.push(keybindings.key_text(registry, keybindings.INPUT_TAB) + '  ' + registry.describe(keybindings.INPUT_TAB))
+    options.push(keybindings.key_text(registry, keybindings.APP_INTERRUPT) + '  ' + registry.describe(keybindings.APP_INTERRUPT))
+    options.push(keybindings.key_text(registry, keybindings.APP_CLEAR) + '  ' + registry.describe(keybindings.APP_CLEAR))
+    options.push(keybindings.key_text(registry, keybindings.APP_EXIT) + '  ' + registry.describe(keybindings.APP_EXIT))
+    options.push(keybindings.key_text(registry, keybindings.APP_SUSPEND) + '  ' + registry.describe(keybindings.APP_SUSPEND))
+    options.push(keybindings.key_text(registry, keybindings.APP_THINKING_CYCLE) + '  ' + registry.describe(keybindings.APP_THINKING_CYCLE))
+    options.push(keybindings.key_text(registry, keybindings.APP_MODEL_CYCLE_FORWARD) + '  ' + registry.describe(keybindings.APP_MODEL_CYCLE_FORWARD))
+    options.push(keybindings.key_text(registry, keybindings.APP_MODEL_CYCLE_BACKWARD) + '  ' + registry.describe(keybindings.APP_MODEL_CYCLE_BACKWARD))
+    options.push(keybindings.key_text(registry, keybindings.APP_MODEL_SELECT) + '  ' + registry.describe(keybindings.APP_MODEL_SELECT))
+    options.push(keybindings.key_text(registry, keybindings.APP_TOOLS_EXPAND) + '  ' + registry.describe(keybindings.APP_TOOLS_EXPAND))
+    options.push(keybindings.key_text(registry, keybindings.APP_THINKING_TOGGLE) + '  ' + registry.describe(keybindings.APP_THINKING_TOGGLE))
+    options.push(keybindings.key_text(registry, keybindings.APP_EDITOR_EXTERNAL) + '  ' + registry.describe(keybindings.APP_EDITOR_EXTERNAL))
+    options.push(keybindings.key_text(registry, keybindings.APP_MESSAGE_COPY) + '  ' + registry.describe(keybindings.APP_MESSAGE_COPY))
+    options.push(keybindings.key_text(registry, keybindings.APP_MESSAGE_FOLLOW_UP) + '  ' + registry.describe(keybindings.APP_MESSAGE_FOLLOW_UP))
+    options.push(keybindings.key_text(registry, keybindings.APP_MESSAGE_DEQUEUE) + '  ' + registry.describe(keybindings.APP_MESSAGE_DEQUEUE))
+    options.push(keybindings.key_text(registry, keybindings.APP_CLIPBOARD_PASTE_IMAGE) + '  ' + registry.describe(keybindings.APP_CLIPBOARD_PASTE_IMAGE))
+    options.push(keybindings.key_text(registry, keybindings.APP_TREE_FILTER_CYCLE_FORWARD) + '  ' + registry.describe(keybindings.APP_TREE_FILTER_CYCLE_FORWARD))
+    options.push(keybindings.key_text(registry, keybindings.APP_TREE_FOLD_OR_UP) + '  ' + registry.describe(keybindings.APP_TREE_FOLD_OR_UP))
+    options.push(keybindings.key_text(registry, keybindings.APP_TREE_UNFOLD_OR_DOWN) + '  ' + registry.describe(keybindings.APP_TREE_UNFOLD_OR_DOWN))
+    options.push(keybindings.key_text(registry, keybindings.APP_TREE_EDIT_LABEL) + '  ' + registry.describe(keybindings.APP_TREE_EDIT_LABEL))
+    options.push('/            Slash commands')
+    options.push('!            Run bash command')
+    options.push('!!           Run bash command (excluded from context)')
+    return options
+}
+
+// Pi's compact startup instructions line, resolved from the registry.
+#local
+fn header_hint_line(ref<keybindings.keybindings_t> registry): string {
+    return keybindings.key_text(registry, keybindings.APP_INTERRUPT) + ' interrupt · ' + keybindings.key_text(registry, keybindings.APP_CLEAR) + '/' + keybindings.key_text(registry, keybindings.APP_EXIT) + ' clear/exit · / commands · ! bash · ' + keybindings.key_text(registry, keybindings.APP_TOOLS_EXPAND) + ' more'
 }
 
 pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input) {
@@ -3644,12 +3782,12 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             self.redraw()
             return
         }
-        if key == 'ctrl+p' {
+        if self.keybindings.matches(key, keybindings.APP_SESSION_TOGGLE_PATH) {
             overlay.show_paths = !overlay.show_paths
             self.redraw()
             return
         }
-        if key == 'ctrl+s' {
+        if self.keybindings.matches(key, keybindings.APP_SESSION_TOGGLE_SORT) {
             // Pi cycles recent → alpha → relevance; the filtered list is
             // re-derived on render, so switching modes just changes how the
             // query results are ordered.
@@ -3659,21 +3797,21 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             self.redraw()
             return
         }
-        if key == 'ctrl+n' {
+        if self.keybindings.matches(key, keybindings.APP_SESSION_TOGGLE_NAMED_FILTER) {
             overlay.named_only = !overlay.named_only
             overlay.selected = 0
             self.redraw()
             return
         }
-        if key == 'ctrl+d' || (key == 'ctrl+backspace' && overlay.query == '') {
+        if self.keybindings.matches(key, keybindings.APP_SESSION_DELETE) || (self.keybindings.matches(key, keybindings.APP_SESSION_DELETE_NONINVASIVE) && overlay.query == '') {
             self.begin_delete_session(overlay)
             return
         }
-        if key == 'ctrl+r' {
+        if self.keybindings.matches(key, keybindings.APP_SESSION_RENAME) {
             self.begin_rename_session(overlay)
             return
         }
-        if key == 'pageUp' {
+        if self.keybindings.matches(key, keybindings.SELECT_PAGE_UP) {
             int count = filtered_options(self.runner.repository.session_dir, overlay, self.runner).len()
             overlay.selected -= OVERLAY_VISIBLE_OPTIONS
             if overlay.selected < 0 {overlay.selected = 0}
@@ -3681,7 +3819,7 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             self.redraw()
             return
         }
-        if key == 'pageDown' {
+        if self.keybindings.matches(key, keybindings.SELECT_PAGE_DOWN) {
             int count = filtered_options(self.runner.repository.session_dir, overlay, self.runner).len()
             overlay.selected += OVERLAY_VISIBLE_OPTIONS
             if count > 0 && overlay.selected >= count {overlay.selected = count - 1}
@@ -3690,13 +3828,31 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         }
     }
     if overlay.kind == OVERLAY_TREE {
-        if key == 'f' {
-            overlay.tree_filter = (overlay.tree_filter + 1) % 5
+        // Pi's seven tree filter actions: five direct modes plus the
+        // forward/backward cycles.
+        int filter_target = -1
+        if self.keybindings.matches(key, keybindings.APP_TREE_FILTER_DEFAULT) {
+            filter_target = 0
+        } else if self.keybindings.matches(key, keybindings.APP_TREE_FILTER_NO_TOOLS) {
+            filter_target = 1
+        } else if self.keybindings.matches(key, keybindings.APP_TREE_FILTER_USER_ONLY) {
+            filter_target = 2
+        } else if self.keybindings.matches(key, keybindings.APP_TREE_FILTER_LABELED_ONLY) {
+            filter_target = 3
+        } else if self.keybindings.matches(key, keybindings.APP_TREE_FILTER_ALL) {
+            filter_target = 4
+        } else if self.keybindings.matches(key, keybindings.APP_TREE_FILTER_CYCLE_FORWARD) {
+            filter_target = (overlay.tree_filter + 1) % 5
+        } else if self.keybindings.matches(key, keybindings.APP_TREE_FILTER_CYCLE_BACKWARD) {
+            filter_target = (overlay.tree_filter + 4) % 5
+        }
+        if filter_target >= 0 {
+            overlay.tree_filter = filter_target
             overlay.selected = 0
             self.redraw()
             return
         }
-        if key == '[' || key == 'shift+[' {
+        if self.keybindings.matches(key, keybindings.APP_TREE_FOLD_OR_UP) {
             var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
             if options.len() > 0 && overlay.selected < options.len() {
                 string collapsed_id = option_entry_id(options[overlay.selected])
@@ -3707,7 +3863,7 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             self.redraw()
             return
         }
-        if key == ']' || key == 'shift+]' {
+        if self.keybindings.matches(key, keybindings.APP_TREE_UNFOLD_OR_DOWN) {
             var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
             if options.len() > 0 && overlay.selected < options.len() {
                 string expanded_id = option_entry_id(options[overlay.selected])
@@ -3723,7 +3879,24 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             return
         }
     }
-    if overlay.kind == OVERLAY_TREE && (key == 'L' || key == 'shift+l') {
+    if overlay.kind == OVERLAY_TREE && self.keybindings.matches(key, keybindings.APP_TREE_TOGGLE_LABEL_TIMESTAMP) {
+        // Pi toggles relative timestamps next to tree labels; the row set
+        // rebuilds while the selection, collapse set and filter stay.
+        int selected = overlay.selected
+        int filter = overlay.tree_filter
+        [string] collapsed = []
+        for entry in overlay.collapsed_ids {
+            collapsed.push(entry)
+        }
+        overlay.label_timestamps = !overlay.label_timestamps
+        overlay.options = tree_rows(self.runner, overlay.label_timestamps)
+        overlay.selected = selected
+        overlay.tree_filter = filter
+        overlay.collapsed_ids = collapsed
+        self.redraw()
+        return
+    }
+    if overlay.kind == OVERLAY_TREE && self.keybindings.matches(key, keybindings.APP_TREE_EDIT_LABEL) {
         var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
         if options.len() > 0 && overlay.selected >= 0 && overlay.selected < options.len() {
             string entry_id = option_entry_id(options[overlay.selected])
@@ -3886,26 +4059,26 @@ fn view_t.handle_scoped_models_input(&self, ref<overlay_t> overlay, input_t inpu
     }
     string key = keys.parse_key(input.data)
     bool changed = false
-    if key == 'up' || key == 'down' {
-        state.move_selection(key == 'up' ? -1 : 1)
+    if self.keybindings.matches(key, keybindings.SELECT_UP) || self.keybindings.matches(key, keybindings.SELECT_DOWN) {
+        state.move_selection(self.keybindings.matches(key, keybindings.SELECT_UP) ? -1 : 1)
         self.redraw()
         return
-    } else if key == 'enter' {
+    } else if self.keybindings.matches(key, keybindings.SELECT_CONFIRM) {
         state.toggle_selected()
         changed = true
-    } else if key == 'ctrl+a' {
+    } else if self.keybindings.matches(key, keybindings.APP_MODELS_ENABLE_ALL) {
         state.enable_all()
         changed = true
-    } else if key == 'ctrl+x' {
+    } else if self.keybindings.matches(key, keybindings.APP_MODELS_CLEAR_ALL) {
         state.clear_all()
         changed = true
-    } else if key == 'ctrl+p' {
+    } else if self.keybindings.matches(key, keybindings.APP_MODELS_TOGGLE_PROVIDER) {
         state.toggle_selected_provider()
         changed = true
-    } else if key == 'alt+up' || key == 'alt+down' {
-        state.reorder_selected(key == 'alt+up' ? -1 : 1)
+    } else if self.keybindings.matches(key, keybindings.APP_MODELS_REORDER_UP) || self.keybindings.matches(key, keybindings.APP_MODELS_REORDER_DOWN) {
+        state.reorder_selected(self.keybindings.matches(key, keybindings.APP_MODELS_REORDER_UP) ? -1 : 1)
         changed = true
-    } else if key == 'ctrl+s' {
+    } else if self.keybindings.matches(key, keybindings.APP_MODELS_SAVE) {
         config_settings.set_enabled_models(state.enabled_ids, !state.all_enabled) catch error {
             self.chat.error_message = 'Could not save model selection: ' + error.msg()
             self.redraw()
@@ -4718,7 +4891,18 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
         }
     }
     result.push('')
-    string help = overlay.kind == OVERLAY_TREE ? '↑↓ navigate   enter select   f filter   [ ] fold/unfold   shift+l label   escape/ctrl+c cancel' : overlay.kind == OVERLAY_SCOPED_MODELS ? '↑↓ navigate   enter toggle   ctrl+a all   ctrl+x clear   ctrl+p provider   alt+↑↓ reorder   ctrl+s save   escape/ctrl+c cancel' : overlay.kind == OVERLAY_SESSION ? '↑↓ navigate   pgup/pgdn page   ctrl+p path   ctrl+s sort   ctrl+n named   ctrl+r rename   ctrl+d delete   escape cancel' : '↑↓ navigate   enter select   escape/ctrl+c cancel'
+    // Batch 4: overlay hints derive from the registry, so a user remap
+    // updates the displayed keys together with the dispatch.
+    var registry = keybindings.current()
+    string navigate = keybindings.key_text(registry, keybindings.SELECT_UP) + '/' + keybindings.key_text(registry, keybindings.SELECT_DOWN) + ' navigate   ' + keybindings.key_text(registry, keybindings.SELECT_CONFIRM) + ' select   ' + keybindings.key_text(registry, keybindings.SELECT_CANCEL) + ' cancel'
+    string help = navigate
+    if overlay.kind == OVERLAY_TREE {
+        help = navigate + '   ' + keybindings.key_text(registry, keybindings.APP_TREE_FILTER_CYCLE_FORWARD) + ' filter   ' + keybindings.key_text(registry, keybindings.APP_TREE_FOLD_OR_UP) + '/' + keybindings.key_text(registry, keybindings.APP_TREE_UNFOLD_OR_DOWN) + ' fold/unfold   ' + keybindings.key_text(registry, keybindings.APP_TREE_EDIT_LABEL) + ' label   ' + keybindings.key_text(registry, keybindings.APP_TREE_TOGGLE_LABEL_TIMESTAMP) + ' timestamps'
+    } else if overlay.kind == OVERLAY_SCOPED_MODELS {
+        help = navigate + '   ' + keybindings.key_text(registry, keybindings.APP_MODELS_ENABLE_ALL) + ' all   ' + keybindings.key_text(registry, keybindings.APP_MODELS_CLEAR_ALL) + ' clear   ' + keybindings.key_text(registry, keybindings.APP_MODELS_TOGGLE_PROVIDER) + ' provider   ' + keybindings.key_text(registry, keybindings.APP_MODELS_REORDER_UP) + '/' + keybindings.key_text(registry, keybindings.APP_MODELS_REORDER_DOWN) + ' reorder   ' + keybindings.key_text(registry, keybindings.APP_MODELS_SAVE) + ' save'
+    } else if overlay.kind == OVERLAY_SESSION {
+        help = navigate + '   ' + keybindings.key_text(registry, keybindings.SELECT_PAGE_UP) + '/' + keybindings.key_text(registry, keybindings.SELECT_PAGE_DOWN) + ' page   ' + keybindings.key_text(registry, keybindings.APP_SESSION_TOGGLE_PATH) + ' path   ' + keybindings.key_text(registry, keybindings.APP_SESSION_TOGGLE_SORT) + ' sort   ' + keybindings.key_text(registry, keybindings.APP_SESSION_TOGGLE_NAMED_FILTER) + ' named   ' + keybindings.key_text(registry, keybindings.APP_SESSION_RENAME) + ' rename   ' + keybindings.key_text(registry, keybindings.APP_SESSION_DELETE) + ' delete'
+    }
     result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.dim_color(), help), width))
     result.push(theme.border_line(width))
     return result

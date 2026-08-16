@@ -1,4 +1,5 @@
 import adou.src.tui.editor
+import adou.src.tui.keybindings
 
 pub fn repeat(string value, int count): string {
     string result = ''
@@ -140,7 +141,7 @@ test 'Pi editor aliases, escaped enter, and character jump match keybindings' {
 
     value.set_text('hello\\')
     var newline = value.handle_key('\r', false)
-    assert(!newline.submitted && newline.action == 'newline')
+    assert(!newline.submitted && newline.action == editor.ACTION_NEWLINE)
     assert(value.get_text() == 'hello\n')
 
     value.set_text('one two one')
@@ -154,7 +155,7 @@ test 'Kitty Ctrl+J inserts a newline instead of submitting' {
     var value = editor.new()
     value.insert_text('hello')
     var newline = value.handle_key('\x1b[106;5u', true)
-    assert(!newline.submitted && newline.action == 'newline')
+    assert(!newline.submitted && newline.action == editor.ACTION_NEWLINE)
     assert(value.get_text() == 'hello\n')
 }
 
@@ -246,12 +247,12 @@ test 'vertical movement crosses visual wrap boundaries like Pi' {
 }
 
 test 'tab resolves to the completion action for the host to handle' {
-    var editor = editor.new()
-    editor.set_text('hello')
-    var result = editor.handle_key('\t', true)
-    assert(result.action == 'tab')
+    var value = editor.new()
+    value.set_text('hello')
+    var result = value.handle_key('\t', true)
+    assert(result.action == editor.ACTION_TAB)
     // The editor itself does not insert an indentation anymore.
-    assert(editor.get_text() == 'hello')
+    assert(value.get_text() == 'hello')
 }
 
 test 'up at the top edge jumps to the line start like Pi' {

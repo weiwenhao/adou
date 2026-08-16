@@ -1,30 +1,123 @@
+import adou.src.config.paths
 import adou.src.tui.keybindings
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
 
-test 'default keymap resolves actions and aliases like Pi' {
+test 'default keymap resolves Pi action ids and aliases' {
     var registry = keybindings.default_keybindings()
-    assert(registry.lookup('left') == keybindings.ACTION_MOVE_LEFT)
-    assert(registry.lookup('ctrl+b') == keybindings.ACTION_MOVE_LEFT)
-    assert(registry.lookup('ctrl+k') == keybindings.ACTION_DELETE_TO_LINE_END)
-    assert(registry.lookup('enter') == keybindings.ACTION_SUBMIT)
-    assert(registry.lookup('ctrl+-') == keybindings.ACTION_UNDO)
-    assert(registry.lookup('shift+enter') == keybindings.ACTION_NEWLINE)
+    assert(registry.lookup('left') == keybindings.EDITOR_CURSOR_LEFT)
+    assert(registry.lookup('ctrl+b') == keybindings.EDITOR_CURSOR_LEFT)
+    assert(registry.lookup('ctrl+k') == keybindings.EDITOR_DELETE_TO_LINE_END)
+    assert(registry.lookup('enter') == keybindings.INPUT_SUBMIT)
+    assert(registry.lookup('ctrl+-') == keybindings.EDITOR_UNDO)
+    assert(registry.lookup('shift+enter') == keybindings.INPUT_NEWLINE)
     assert(registry.lookup('unbound-key') == '')
+    // App actions resolve through the same registry.  Shared keys are
+    // contextual like Pi (escape/cancel, ctrl+p/path): the single-winner
+    // lookup returns the first TUI claimant while matches() answers per
+    // action for the dispatch context.
+    assert(registry.lookup('escape') == keybindings.SELECT_CANCEL)
+    assert(registry.matches('escape', keybindings.APP_INTERRUPT))
+    assert(registry.matches('escape', keybindings.SELECT_CANCEL))
+    assert(registry.lookup('ctrl+p') == keybindings.APP_MODEL_CYCLE_FORWARD)
+    assert(registry.lookup('ctrl+o') == keybindings.APP_TOOLS_EXPAND)
+    assert(registry.lookup('shift+ctrl+p') == keybindings.APP_MODEL_CYCLE_BACKWARD)
+    assert(registry.lookup('ctrl+l') == keybindings.APP_MODEL_SELECT)
     // Descriptions accompany the actions for UI hints.
-    assert(registry.describe(keybindings.ACTION_UNDO) == 'Undo the last edit')
+    assert(registry.describe(keybindings.EDITOR_UNDO) == 'Undo')
+    assert(registry.describe(keybindings.APP_INTERRUPT) == 'Cancel or abort')
     assert(registry.describe('nope') == '')
 }
 
-test 'every editor action has at least one binding' {
+test 'matches and get_keys mirror Pi KeybindingsManager' {
     var registry = keybindings.default_keybindings()
-    [string] actions = [keybindings.ACTION_SUBMIT, keybindings.ACTION_NEWLINE, keybindings.ACTION_CANCEL, keybindings.ACTION_MOVE_LEFT, keybindings.ACTION_MOVE_RIGHT, keybindings.ACTION_MOVE_WORD_LEFT, keybindings.ACTION_MOVE_WORD_RIGHT, keybindings.ACTION_LINE_START, keybindings.ACTION_LINE_END, keybindings.ACTION_BACKSPACE, keybindings.ACTION_DELETE_WORD_BACKWARD, keybindings.ACTION_DELETE_FORWARD, keybindings.ACTION_DELETE_WORD_FORWARD, keybindings.ACTION_DELETE_TO_LINE_START, keybindings.ACTION_DELETE_TO_LINE_END, keybindings.ACTION_YANK, keybindings.ACTION_YANK_POP, keybindings.ACTION_UNDO, keybindings.ACTION_TAB, keybindings.ACTION_SCROLL_UP, keybindings.ACTION_SCROLL_DOWN]
-    for action in actions {
-        bool found = false
-        for binding in registry.bindings {
-            if binding.action == action {
-                found = true
-                break
-            }
-        }
-        assert(found)
+    assert(registry.matches('ctrl+b', keybindings.EDITOR_CURSOR_LEFT))
+    assert(!registry.matches('ctrl+b', keybindings.EDITOR_CURSOR_RIGHT))
+    var keys = registry.get_keys(keybindings.EDITOR_CURSOR_LEFT)
+    assert(keys.len() == 2 && keys[0] == 'left' && keys[1] == 'ctrl+b')
+    assert(registry.get_keys('nope').len() == 0)
+}
+
+test 'user bindings override defaults and rebuild resolved keys' {
+    var registry = keybindings.default_keybindings()
+    {string:[string]} overrides = {'app.model.cycleForward': ['ctrl+shift+m']}
+    registry.set_user_bindings(overrides)
+    // ctrl+p is still claimed by app.session.togglePath (contextual, like
+    // Pi); the model cycle claim moved away from it.
+    assert(!registry.matches('ctrl+p', keybindings.APP_MODEL_CYCLE_FORWARD))
+    assert(registry.lookup('ctrl+p') == keybindings.APP_SESSION_TOGGLE_PATH)
+    assert(registry.lookup('ctrl+shift+m') == keybindings.APP_MODEL_CYCLE_FORWARD)
+    assert(registry.matches('ctrl+shift+m', keybindings.APP_MODEL_CYCLE_FORWARD))
+    // Unrelated defaults stay intact.
+    assert(registry.lookup('ctrl+o') == keybindings.APP_TOOLS_EXPAND)
+}
+
+test 'conflicts surface when two actions claim one key' {
+    var registry = keybindings.default_keybindings()
+    {string:[string]} overrides = {
+        'app.model.cycleForward': ['ctrl+q'],
+        'app.model.select': ['ctrl+q'],
     }
+    registry.set_user_bindings(overrides)
+    var conflicts = registry.get_conflicts()
+    assert(conflicts.len() == 1)
+    assert(conflicts[0].key == 'ctrl+q')
+    assert(conflicts[0].actions.len() == 2)
+}
+
+test 'keybindings.json loads with legacy name migration' {
+    string dir = path.join('/tmp', 'adou-keybindings-load-' + fmt_s())
+    os.mkdirs(dir, 0o700)
+    var file = fs.open(keybindings.keybindings_path(dir), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    file.write('{"cycleModelForward":"ctrl+shift+m","app.tools.expand":["ctrl+e"],"unknown-action":"ctrl+z"}' as [u8])
+    file.close()
+    var registry = keybindings.create(dir)
+    assert(registry.lookup('ctrl+shift+m') == keybindings.APP_MODEL_CYCLE_FORWARD)
+    // ctrl+o remains claimed by app.tree.filter.cycleForward (contextual).
+    assert(!registry.matches('ctrl+o', keybindings.APP_TOOLS_EXPAND))
+    assert(registry.lookup('ctrl+o') == keybindings.APP_TREE_FILTER_CYCLE_FORWARD)
+    // ctrl+e also belongs to tui.editor.cursorLineEnd by default; matches()
+    // answers per action (the dispatch context decides), like Pi.
+    assert(registry.matches('ctrl+e', keybindings.APP_TOOLS_EXPAND))
+    assert(registry.lookup('ctrl+e') == keybindings.EDITOR_CURSOR_LINE_END)
+    // Unknown actions never claim keys.
+    assert(registry.lookup('ctrl+z') == keybindings.APP_SUSPEND)
+    os.rmdir(dir, true)
+}
+
+test 'reload re-reads the file and updates the resolved keys' {
+    string dir = path.join('/tmp', 'adou-keybindings-reload-' + fmt_s())
+    os.mkdirs(dir, 0o700)
+    var file = fs.open(keybindings.keybindings_path(dir), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    file.write('{"app.model.select":"ctrl+k"}' as [u8])
+    file.close()
+    var registry = keybindings.create(dir)
+    assert(registry.matches('ctrl+k', keybindings.APP_MODEL_SELECT))
+    assert(registry.lookup('ctrl+k') == keybindings.EDITOR_DELETE_TO_LINE_END)
+    var update = fs.open(keybindings.keybindings_path(dir), syscall.O_WRONLY | syscall.O_TRUNC, 0o600)
+    update.write('{"app.model.select":"ctrl+j"}' as [u8])
+    update.close()
+    registry.reload(dir)
+    assert(registry.lookup('ctrl+k') == keybindings.EDITOR_DELETE_TO_LINE_END)
+    // ctrl+j stays the newline default; the model-select override answers
+    // through matches() (contextual dispatch, like Pi).
+    assert(registry.matches('ctrl+j', keybindings.APP_MODEL_SELECT))
+    assert(registry.lookup('ctrl+j') == keybindings.INPUT_NEWLINE)
+    os.rmdir(dir, true)
+}
+
+test 'key_text formats alt as option and joins aliases with slash' {
+    var registry = keybindings.default_keybindings()
+    assert(keybindings.key_text(registry, keybindings.APP_INTERRUPT) == 'escape')
+    assert(keybindings.key_text(registry, keybindings.EDITOR_CURSOR_LEFT) == 'left/ctrl+b')
+    assert(keybindings.key_text(registry, keybindings.APP_MESSAGE_FOLLOW_UP) == 'option+enter')
+    assert(keybindings.format_key_text('shift+ctrl+p') == 'shift+ctrl+p')
+}
+
+fn fmt_s(): string {
+    return fmt.sprintf('%d', time.now().ms_timestamp())
 }

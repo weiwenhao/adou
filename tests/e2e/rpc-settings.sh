@@ -99,7 +99,8 @@ if state2.get("autoCompactionEnabled") is not False or state2.get("steeringMode"
     raise SystemExit(f"RPC settings did not persist across restart: {state2!r}")
 
 settings = json.load(open(settings_path, encoding="utf-8"))
-if settings.get("retryEnabled") is not False:
+# Batch 3 moved retry to Pi's nested shape (retry.enabled).
+if settings.get("retry", {}).get("enabled") is not False:
     raise SystemExit(f"RPC retry setting was not persisted: {settings!r}")
 if settings.get("defaultProvider") != "deepseek" or settings.get("defaultModel") != "deepseek-v4-flash":
     raise SystemExit(f"RPC setting update replaced unrelated model preferences: {settings!r}")

@@ -274,11 +274,17 @@ def esc_residue_rows(screen: list[str]) -> list[str] | None:
 
 
 def chat_rows(screen: list[str]) -> list[str] | None:
-    """Rows above the editor top border (transcript/status area)."""
+    """Rows above the editor top border (transcript/status area).
+
+    The registry-derived keybinding header line ('... interrupt · ...
+    clear/exit · / commands · ! bash · ... more') is static UI chrome, not
+    transcript content; the chat-area assertions compare transcript state.
+    """
     bounds = editor_borders(screen)
     if bounds is None:
         return None
-    return screen[: bounds[0]]
+    rows = screen[: bounds[0]]
+    return [row for row in rows if "interrupt \u00b7" not in row]
 
 
 def editor_empty(screen: list[str]) -> bool:

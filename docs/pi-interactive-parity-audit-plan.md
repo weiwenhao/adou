@@ -1236,3 +1236,146 @@ Adou 现状源：
   无关），Herdr 版为正式对照证据。
 
 残余 FAIL：无。按协议不提交/推送半成品，等主代理裁决。
+
+## 14. Batch 4 记录（Editor、Cursor 与 App Keybindings，2026-08-16 开工）
+
+### 14.1 源码映射与失败 baseline（实施前）
+
+Pi 0.82.1 权威源：
+
+- `packages/tui/src/keybindings.ts`：KeybindingsManager（definitions/defaultKeys/
+  description、userBindings 覆盖、normalizeKeys 去重、冲突检测 = 多个 action
+  认领同一 key、matches/getKeys/getConflicts/setUserBindings/getResolvedBindings、
+  global setKeybindings/getKeybindings）；TUI_KEYBINDINGS 30 个
+  tui.editor.*/tui.input.*/tui.select.* 定义。
+- `packages/coding-agent/src/core/keybindings.ts`：KEYBINDINGS = TUI_KEYBINDINGS
+  + 40 个 app.* action（defaultKeys + description）；KEYBINDING_NAME_MIGRATIONS
+  （旧名→新名）、toKeybindingsConfig（string/数组）、migrateKeybindingsConfig、
+  orderKeybindingsConfig；KeybindingsManager.create(agentDir) 从
+  `keybindings.json` 加载；reload() 重读文件。
+- `packages/coding-agent/src/modes/interactive/components/keybinding-hints.ts`：
+  keyText/keyDisplayText/keyHint/rawKeyHint——hint 一律从 registry 的 resolved
+  keys 格式化（darwin 下 alt 显示为 option）。
+- `interactive-mode.ts`：`keybindings.matches(key, "app.*")` 驱动全部 app 分发；
+  /reload → `keybindings.reload()`（冲突经 getConflicts 暴露）。
+
+Adou 现状：
+
+- `src/tui/keybindings.n`：仅 editor 级扁平 registry（key→action→description
+  三元组，default_keybindings() 一次性缓存，无用户覆盖、无冲突检测、无
+  resolved-keys 查询）。
+- `src/tui/session_view.n`：app/overlay 分发 92 处硬编码 `key == '...'`：
+  handle_idle_input（escape 双击 tree/fork、ctrl+c、ctrl+d、ctrl+z、ctrl+g、
+  shift+tab、ctrl+p/shift+ctrl+p、ctrl+l、ctrl+o、ctrl+t、ctrl+x、alt+enter）、
+  handle_stream_input（escape/ctrl+c abort、ctrl+z、ctrl+o、ctrl+t、alt+up
+  dequeue、alt+enter follow-up）、handle_overlay_input（tree：f/[ ]/shift+l；
+  session：tab/ctrl+p/ctrl+s/ctrl+n/ctrl+r/ctrl+d/ctrl+backspace/pgup/pgdn；
+  scoped models：ctrl+a/ctrl+x/ctrl+p/alt+↑↓/ctrl+s；settings/theme 子菜单
+  up/down/enter/escape；通用 overlay up/down/enter/escape/backspace）。
+- `/hotkeys`（show_hotkeys_overlay）为 20 行硬编码列表；footer
+  （chat.render_footer）只有 cwd/tokens/model，无任何 key hints；overlay
+  help 行（render_overlay 尾部）为硬编码字符串。
+- `/reload`（run_command）：只刷 resource snapshot/context/system prompt，
+  不重载 keybindings、不报告冲突。
+- `keybindings.json`：不存在任何加载路径。
+
+app action ↔ Adou 映射（Pi 40 个 action）：
+
+| Pi action（默认键） | Adou 现状 |
+|---|---|
+| app.interrupt（escape） | handle_idle_input 双击树逻辑 + handle_stream_input abort 硬编码 |
+| app.clear（ctrl+c） | handle_idle_input 双击退出硬编码 |
+| app.exit（ctrl+d） | 硬编码 |
+| app.suspend（ctrl+z） | 硬编码（两处） |
+| app.thinking.cycle（shift+tab） | 硬编码 |
+| app.model.cycleForward/Backward（ctrl+p / shift+ctrl+p） | 硬编码 |
+| app.model.select（ctrl+l） | 硬编码 |
+| app.tools.expand（ctrl+o） | 硬编码（两处） |
+| app.thinking.toggle（ctrl+t） | 硬编码（两处） |
+| app.session.toggleNamedFilter（ctrl+n） | session overlay 硬编码 |
+| app.editor.external（ctrl+g） | 硬编码 |
+| app.message.copy（ctrl+x） | 硬编码 |
+| app.message.followUp（alt+enter） | 硬编码（idle+stream 两处语义不同：idle 直接发、stream 入队） |
+| app.message.dequeue（alt+up） | 硬编码 |
+| app.clipboard.pasteImage（ctrl+v darwin） | 无（图片排除范围，UI 无此项） |
+| app.session.new/tree/fork/resume | 无键（slash commands 已覆盖） |
+| app.tree.foldOrUp（alt+left）、unfoldOrDown（alt+right）、editLabel（shift+l）、toggleLabelTimestamp（shift+t） | tree overlay 硬编码 f/[/]/L，shift+t 缺失 |
+| app.session.togglePath（ctrl+p）、toggleSort（ctrl+s）、rename（ctrl+r）、delete（ctrl+d）、deleteNoninvasive（ctrl+backspace） | session overlay 硬编码 |
+| app.models.save（ctrl+s）、enableAll（ctrl+a）、clearAll（ctrl+x）、toggleProvider（ctrl+p）、reorderUp/Down（alt+↑/↓） | scoped-models overlay 硬编码 |
+| app.tree.filter.{default,noTools,userOnly,labeledOnly,all,cycleForward,cycleBackward} | tree overlay `f` 单键循环 5 档，无单项直接键 |
+| tui.editor.*（30 个） | editor.n registry 已有（键名与 Pi 基本一致，但无用户覆盖/冲突） |
+| tui.select.up/down/pageUp/pageDown/confirm/cancel | 各 overlay 硬编码 |
+
+失败 baseline（Batch 4 开工时事实）：
+
+1. keybindings.json 用户映射不存在（写一个 app 键不生效）；
+2. 无冲突检测；/reload 不重载 keybindings、不报告冲突；
+3. /hotkeys、overlay help 行、实际 dispatch 三处各写各的（改 dispatch 不改
+   hint 的漂移风险真实存在）；
+4. tree filter 只有单键循环，Pi 有 5 个单项键 + 前后循环共 7 个 action；
+5. footer 没有任何 key hints；
+6. tree shift+t（label timestamp）、scoped-models ctrl+backspace 等个别键
+   缺失或键名不同；
+7. showHardwareCursor 已由 Batch 3 落地，但 IP-003 的焦点态逐帧对照证据
+   尚未产出。
+
+### 14.2 实施记录
+
+- `src/tui/keybindings.n` 全量重写为 Pi 契约：70 个 action 的
+  definitions（defaultKeys + description，TUI 30 + app 40）、用户覆盖、
+  去重、冲突检测（仅用户认领计为冲突，共享默认键如 ctrl+p/c 为上下文
+  语义）、matches/get_keys/describe/get_conflicts/set_user_bindings/reload、
+  `keybindings.json` 加载 + 旧名迁移表、format_key_text（alt→option）、
+  进程级 current registry（Pi setKeybindings/getKeybindings）。
+- `src/tui/editor.n`：ACTION_* 常量改为 Pi action id；handle_key/jump
+  经 keybindings.current() 解析（删除本地静态缓存）。
+- `src/tui/session_view.n`：view 持有 registry（init 时 create(agent_dir)
+  + set_current）；handle_idle_input/handle_stream_input 全部 app 键改经
+  matches() 分发；session/tree/scoped-models overlay 键改经 registry
+  （tree filter 7 个 action、fold/unfold、shift+t label timestamp 键已
+  注册待 UI 行为补齐、session 五个 action、scoped-models 六个 action）；
+  /hotkeys 由 registry 生成（Navigation/Editing/Other 三组）；
+  render_overlay 的 help 行按 overlay 类型从 registry 派生；启动 header
+  hint 行 = Pi compact instructions（registry 派生、quietStartup 静默、
+  按终端宽度折行——修复了窄终端 79>60 的宽度守卫崩溃）；/reload
+  重载 keybindings.json 并以 'Keybinding conflicts: key -> actions'
+  报告冲突。
+- 修复：header 行未按宽度折行导致 24×60 终端首帧 'rendered line
+  exceeds terminal width: 79 > 60' 崩溃（tui-bash-output.sh 暴露）。
+- 测试：keybindings_test 7 例全量重写（默认解析/共享键上下文语义/
+  覆盖/冲突/迁移/重载/格式化）；editor_test 2 处常量断言更新；
+  tui-keybindings.sh 新增验收 e2e（重映射后 ctrl+p 失效 + shift+ctrl+m
+  生效 + /hotkeys 显示新键 + /reload 冲突报告，三个断言同时成立）；
+  slash-menu.sh 的 chat 区断言过滤 registry header 行、fixture
+  settings.json 增 terminal.clearOnShrink=true（严格跑者的精确屏幕
+  断言需要无残留行）；rpc-settings.sh 的 retry 断言更新为嵌套形状
+  （Batch 3 落下的既有脚本）；新增
+  tests/e2e/lib/pi-oracle/herdr-keybindings-parity.py（Herdr 同键驱动）。
+
+### 14.3 验收记录
+
+- 单测：keybindings 7/7、editor 25/25、settings 12/12、resolve 7/7、
+  trust 8/8、chat 13/13、renderer 14/14、agent_session 33/33、slash 7/7、
+  config_context 25/25、skills 22/22、models 8/8、model_selector 4/4、
+  scoped_models 4/4、term 9/9、path_completion 11/11、autocomplete 20/20。
+- e2e：tui-keybindings（新增验收契约）、tui-settings、tui-config、
+  tui-tree-fork、tui-session-selector、tui-model-selector、
+  tui-scoped-models、tui-bash-output、tui-unicode-input、slash-menu（3 轮
+  PASS）、rpc-settings 全部通过。
+- Herdr 同键对照（`herdr-keybindings-parity.py`，3 轮 × 2 侧）：验收
+  契约 = ① 双方启动 header hint（interrupt/clear/exit//commands/!bash）
+  存在；② 输入矩阵 'hello 你好 😀' 双方编辑器渲染；③ 共享
+  keybindings.json（Pi 格式 app.model.cycleForward→shift+ctrl+m）后
+  双方 /hotkeys 的 cycle 行显示新键且不再含裸 ctrl+p；④ 光标证据
+  （IP-003）：双方编辑帧恰一个反显光标格（Pi/Adou 均 7m...0m 归一），
+  无常驻白块；⑤ /quit 干净退出。（结果见
+  docs/pi-batch3-evidence/herdr-keybindings-parity-summary.json。）
+- shift+t（APP_TREE_TOGGLE_LABEL_TIMESTAMP）已补齐 UI 行为：tree 行
+  以相对时间（'2m ago'）后缀渲染，开关保持选中/折叠/过滤状态，help
+  行含该键。
+- 残留：IP-003 的真·焦点切换（focus in/out）逐帧对照依赖 Herdr 焦点
+  控制，本轮证据为同终端同主题聚焦帧的单光标格对照（双方均恰一个
+  反显光标格，无常驻白块），真实焦点切换留待用户交互验收。
+
+残余 FAIL：无。HerDr 3 轮同键对照 PASS（0 failures），见
+docs/pi-batch3-evidence/herdr-keybindings-parity-summary.json。
