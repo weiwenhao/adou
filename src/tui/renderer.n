@@ -26,10 +26,18 @@ pub type renderer_t = struct {
     int previous_viewport_top
     int hardware_cursor_row
     bool force_full
+    // Pi settings.terminal.clearOnShrink: clear empty rows when the rendered
+    // content shrinks.  Default off: shrunk rows keep their previous content
+    // until overwritten (Pi's default; may look like stale rows).
+    bool clear_on_shrink
 }
 
 pub fn new(): ref<renderer_t> {
     return new renderer_t(previous_lines = vec<string>.cap_of(16))
+}
+
+pub fn renderer_t.set_clear_on_shrink(&self, bool enabled) {
+    self.clear_on_shrink = enabled
 }
 
 pub fn renderer_t.render(&self, [string] input_lines, int width, int height): result_t! {
@@ -127,7 +135,7 @@ pub fn renderer_t.render(&self, [string] input_lines, int width, int height): re
     if target_row > previous_bottom {
         next_viewport_top += target_row - previous_bottom
     }
-    string output = differential_output(self.previous_lines, lines, self.hardware_cursor_row, self.previous_viewport_top, height, first_changed, last_changed)
+    string output = differential_output(self.previous_lines, lines, self.hardware_cursor_row, self.previous_viewport_top, height, first_changed, last_changed, self.clear_on_shrink)
     string frame_debug = fmt.sprintf('firstChanged: %d\nviewportTop: %d\ncursorRow: %d\nheight: %d\nlineDiff: %d\nhardwareCursorRow: %d\nnewLines.length: %d\npreviousLines.length: %d\n\n=== newLines ===\n%s\n\n=== previousLines ===\n%s\n\n=== buffer ===\n%s\n', first_changed, self.previous_viewport_top, self.hardware_cursor_row, height, last_changed - first_changed + 1, self.hardware_cursor_row, lines.len(), self.previous_lines.len(), strings.join(lines, '\n'), strings.join(self.previous_lines, '\n'), output)
     debug.log_tui_frame(frame_debug)
     int final_cursor = lines.len() > 0 ? (last_changed < lines.len() ? last_changed : lines.len() - 1) : 0
@@ -178,7 +186,7 @@ fn full_output([string] lines, bool clear): string {
 }
 
 #local
-fn differential_output([string] previous, [string] lines, int hardware_cursor_row, int previous_viewport_top, int height, int first_changed, int last_changed): string {
+fn differential_output([string] previous, [string] lines, int hardware_cursor_row, int previous_viewport_top, int height, int first_changed, int last_changed, bool clear_on_shrink): string {
     string output = SYNC_START
     // When every changed line was deleted, there is no replacement line to
     // render.  Pi clears the rows after the new content separately, starting
@@ -188,20 +196,23 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
         int difference = target - hardware_cursor_row
         if difference > 0 {output += csi_move(difference, 'B')} else if difference < 0 {output += csi_move(-difference, 'A')}
         output += '\r'
-        int extra = previous.len() - lines.len()
-        int clear_start = lines.len() == 0 ? 0 : 1
-        if extra > 0 && clear_start > 0 {
-            output += csi_move(clear_start, 'B')
-        }
-        for int index = 0; index < extra; index += 1 {
-            output += '\r\x1b[2K'
-            if index < extra - 1 {
-                output += csi_move(1, 'B')
+        // clearOnShrink off: Pi leaves the shrunk rows untouched.
+        if clear_on_shrink {
+            int extra = previous.len() - lines.len()
+            int clear_start = lines.len() == 0 ? 0 : 1
+            if extra > 0 && clear_start > 0 {
+                output += csi_move(clear_start, 'B')
             }
-        }
-        int move_back = extra - 1 + clear_start
-        if move_back > 0 {
-            output += csi_move(move_back, 'A')
+            for int index = 0; index < extra; index += 1 {
+                output += '\r\x1b[2K'
+                if index < extra - 1 {
+                    output += csi_move(1, 'B')
+                }
+            }
+            int move_back = extra - 1 + clear_start
+            if move_back > 0 {
+                output += csi_move(move_back, 'A')
+            }
         }
         return output + SYNC_END
     }
@@ -232,7 +243,7 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
         }
         output += '\x1b[2K' + lines[index]
     }
-    if previous.len() > lines.len() {
+    if previous.len() > lines.len() && clear_on_shrink {
         if render_end < lines.len() - 1 {
             output += csi_move(lines.len() - 1 - render_end, 'B')
         }

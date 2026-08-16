@@ -47,8 +47,10 @@ pub fn save(string cwd, bool trusted): void! {
 // runtime to a different project; this is the one shared entry point all of
 // those paths call.  An explicit --approve/--no-approve always wins;
 // otherwise a stored decision applies when the directory hosts
-// trust-requiring resources, and everything else defaults to trusted.
-pub fn resolve_trust(bool explicit_override, bool override_value, string cwd): bool {
+// trust-requiring resources, and the settings.defaultProjectTrust fallback
+// ('always' trusts, 'never' refuses) decides the rest.  'ask' keeps the
+// current no-prompt behavior (interactive trust prompt is Batch 5 scope).
+pub fn resolve_trust(bool explicit_override, bool override_value, string cwd, string default_trust): bool {
     if explicit_override {
         return override_value
     }
@@ -57,6 +59,12 @@ pub fn resolve_trust(bool explicit_override, bool override_value, string cwd): b
         if decision is bool value {
             return value
         }
+    }
+    if default_trust == 'always' {
+        return true
+    }
+    if default_trust == 'never' {
+        return false
     }
     return true
 }

@@ -75,14 +75,17 @@ fn contains_name([string] names, string wanted): bool {
 // skills for the system prompt), so menu metadata (argument_hint,
 // source_info, description) can never diverge from what actually runs.
 // Order matches Pi's get_commands: prompts first, skills second.  All
-// metadata fields are carried through untouched.
-pub fn compose_resource_commands([ref<prompt_templates.prompt_template_t>] templates, [ref<skills.skill_t>] skills_list): [slash_command_info_t] {
+// metadata fields are carried through untouched.  Pi's enableSkillCommands
+// setting gates the /skill:name registration (Batch 3).
+pub fn compose_resource_commands([ref<prompt_templates.prompt_template_t>] templates, [ref<skills.skill_t>] skills_list, bool enable_skill_commands): [slash_command_info_t] {
     [slash_command_info_t] result = []
     for info in prompt_commands(templates) {
         result.push(info)
     }
-    for info in skill_commands(skills_list) {
-        result.push(info)
+    if enable_skill_commands {
+        for info in skill_commands(skills_list) {
+            result.push(info)
+        }
     }
     return result
 }

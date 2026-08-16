@@ -42,7 +42,7 @@ pub fn refresh(ref<resource_snapshot_t> snapshot, string cwd, bool trusted, stri
 }
 
 pub fn dynamic_commands(ref<resource_snapshot_t> snapshot): [slash_commands.slash_command_info_t] {
-    return slash_commands.compose_resource_commands(snapshot.prompt_templates, snapshot.skills)
+    return slash_commands.compose_resource_commands(snapshot.prompt_templates, snapshot.skills, snapshot.settings.enable_skill_commands)
 }
 
 // Expand one prompt/skill invocation from this exact snapshot.  This is the

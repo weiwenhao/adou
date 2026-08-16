@@ -136,7 +136,7 @@ fn detect_miss_inner(ref<previous_request_t> previous, ref<ai_types.assistant_me
     return miss
 }
 
-fn as_previous_request(ref<ai_types.assistant_message_t> message, bool prior_reported): ref<previous_request_t> {
+pub fn as_previous_request(ref<ai_types.assistant_message_t> message, bool prior_reported): ref<previous_request_t> {
     int prompt_tokens = message.usage.input + message.usage.cache_read + message.usage.cache_write
     var request = new previous_request_t(prompt_tokens = prompt_tokens, model_key = message.provider + '/' + message.model, timestamp = message.timestamp, reported_cache = prior_reported || message.usage.cache_read + message.usage.cache_write > 0)
     return request

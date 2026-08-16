@@ -228,7 +228,7 @@ pub fn run(): void! {
     // The launch-cwd trust decision may not apply to the session's project
     // (--session/--resume can target a different repository).  Re-resolve
     // against the session cwd; an explicit --approve/--no-approve still wins.
-    config.project_trusted = trust.resolve_trust(config.trust_override_explicit, config.trust_override, session_cwd)
+    config.project_trusted = trust.resolve_trust(config.trust_override_explicit, config.trust_override, session_cwd, config.default_project_trust)
     // Resolve cwd-bound settings after opening the session.  A --session or
     // --resume target may belong to another project, and Pi binds its runtime
     // to that target's .pi/settings.json rather than the launch directory.
@@ -236,6 +236,11 @@ pub fn run(): void! {
     var session_preferences = config.project_trusted ? settings.load_for(session_cwd) : settings.load()
     config.steering_mode = session_preferences.steering_mode
     config.follow_up_mode = session_preferences.follow_up_mode
+    config.transport = session_preferences.transport
+    config.http_idle_timeout_ms = session_preferences.http_idle_timeout_ms
+    config.default_project_trust = session_preferences.default_project_trust
+    config.enable_skill_commands = session_preferences.enable_skill_commands
+    config.quiet_startup = session_preferences.quiet_startup
     config.compaction.enabled = arguments.no_compaction ? false : session_preferences.auto_compaction
     config.retry_enabled = session_preferences.retry_enabled
     config.retry_max_attempts = session_preferences.retry_max_attempts

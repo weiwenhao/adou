@@ -108,6 +108,12 @@ pub const OVERLAY_BRANCH_CUSTOM = 14
 pub const OVERLAY_SCOPED_MODELS = 15
 pub const OVERLAY_SESSION_INFO = 16
 pub const OVERLAY_VISIBLE_OPTIONS = 12
+// Batch 3 settings UI kinds: warnings submenu and the theme
+// single/automatic/select submenus.
+pub const OVERLAY_SETTINGS_WARNINGS = 21
+pub const OVERLAY_THEME = 22
+pub const OVERLAY_THEME_AUTO = 23
+pub const OVERLAY_THEME_SELECT = 24
 
 pub type overlay_t = struct {
     int kind
@@ -130,6 +136,13 @@ pub type overlay_t = struct {
     [string] collapsed_ids = []
     ref<model_selector.state_t>? model_state = null
     ref<scoped_models.state_t>? scoped_models_state = null
+    // Batch 3 theme submenu state: the theme setting value captured when the
+    // submenu opened (cancel restores it), the automatic pair under edit,
+    // and the target ('light'|'dark') of the pair-select overlay.
+    string theme_original
+    string theme_light = 'light'
+    string theme_dark = 'dark'
+    string theme_select_target
 }
 
 pub type view_t = struct {
@@ -157,6 +170,10 @@ pub type view_t = struct {
     // from the current cwd's global+project merge (B1-R1-10) and stored on
     // the view; ordinary key presses never re-read the settings files.
     int autocomplete_max_visible = autocomplete.DEFAULT_MAX_VISIBLE
+    // Pi settings.editorPaddingX (0-3): cached like autocompleteMaxVisible;
+    // render_editor reads it on every frame without touching the settings
+    // files.
+    int editor_padding_x
     // B1-R1-09: /model argument candidates and the authenticated-provider
     // scan are recomputed only at explicit change points (init, /reload,
     // /login, /logout, scope change).  The scope patterns cached alongside
@@ -246,11 +263,28 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     // one refresh.
     view.refresh_resource_snapshot(cwd, false)
     var stored_settings = view.settings_snapshot
-    theme.set_variant(stored_settings.theme)
-    if runner.repository.get_warnings().len() > 0 {
+    theme.set_variant(active_theme_variant(stored_settings.theme))
+    // Pi quietStartup suppresses the startup status lines; Adou's startup
+    // surface is the recovery warning and the model/thinking status.
+    if !stored_settings.quiet_startup && runner.repository.get_warnings().len() > 0 {
         view.chat.status = 'Session recovered: ' + runner.repository.get_warnings()[0]
     }
+    if stored_settings.show_hardware_cursor {
+        // term.open hides the cursor on entry; showHardwareCursor keeps it
+        // visible while the renderer still positions it.
+        view.terminal.set_hardware_cursor(true) catch error {}
+    }
     return view
+}
+
+// Pi theme values: 'light', 'dark' or an automatic 'lightTheme/darkTheme'
+// pair.  Adou has no terminal appearance detection yet, so the automatic
+// pair's active variant falls back to dark (known deviation recorded in the
+// Batch 3 audit notes).
+#local
+fn active_theme_variant(string setting): string {
+    if setting == 'light' {return 'light'}
+    return 'dark'
 }
 
 // B1-R2-06/07/08: one trust-aware resource snapshot refresh shared by init,
@@ -272,8 +306,16 @@ pub fn view_t.refresh_resource_snapshot(&self, string cwd, bool reload_auth) {
     // the app/RPC assembly paths.
     self.prompt_templates = slash_commands.filter_prompt_templates(templates, self.settings_snapshot.enabled_prompt_names)
     self.cached_skills = slash_commands.filter_skills(skills_result.skills, self.settings_snapshot.enabled_skill_names)
-    self.dynamic_commands = slash_commands.compose_resource_commands(self.prompt_templates, self.cached_skills)
+    self.dynamic_commands = slash_commands.compose_resource_commands(self.prompt_templates, self.cached_skills, self.settings_snapshot.enable_skill_commands)
     self.autocomplete_max_visible = autocomplete.clamp_max_visible(self.settings_snapshot.autocomplete_max_visible)
+    self.editor_padding_x = self.settings_snapshot.editor_padding_x
+    // Batch 3 runtime effects: render/chat/theme mirrors follow the merged
+    // settings snapshot on every refresh boundary (init, /reload, rebind).
+    self.chat.set_output_pad(self.settings_snapshot.output_pad)
+    self.chat.set_show_cache_miss_notices(self.settings_snapshot.show_cache_miss_notices)
+    self.renderer.set_clear_on_shrink(self.settings_snapshot.terminal_clear_on_shrink)
+    theme.set_variant(active_theme_variant(self.settings_snapshot.theme))
+    self.runner.apply_preferences_snapshot(self.settings_snapshot)
     // B1-R3-05: the /scoped-models settings backing ALWAYS follows the
     // trust-aware enabledModels snapshot — an explicit CLI scope must not
     // wipe the settings-backed selector to an empty default.  The CLI scope
@@ -348,6 +390,9 @@ pub fn view_t.run_loop(&self): void! {
 
 pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! {
     debug.log('tui', 'consume stream start')
+    if self.settings_snapshot.terminal_progress {
+        self.terminal.set_progress(true) catch error {}
+    }
     bool branch_aborted = false
     string branch_error = ''
     bool stream_failed = false
@@ -419,6 +464,9 @@ pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! 
         self.pending_tree_editor_text = ''
         self.pending_tree_target_id = ''
         self.redraw()
+    }
+    if self.settings_snapshot.terminal_progress {
+        self.terminal.set_progress(false) catch error {}
     }
     return true
 }
@@ -517,7 +565,14 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
             i64 now = time.now().ms_timestamp()
             if now - self.last_escape_time < 500 {
                 self.last_escape_time = 0
-                self.show_tree_overlay()
+                // Pi settings.doubleEscapeAction: 'tree' (default), 'fork' or
+                // 'none' (double escape disabled entirely).
+                string action = self.settings_snapshot.double_escape_action
+                if action == 'tree' {
+                    self.show_tree_overlay()
+                } else if action == 'fork' {
+                    self.show_fork_overlay()
+                }
                 self.redraw()
             } else {
                 self.last_escape_time = now
@@ -865,7 +920,7 @@ fn view_t.reenter_terminal(&self): void! {
     self.renderer.invalidate()
     self.terminal.restored = false
     self.terminal.active = true
-    self.terminal.write(term.BRACKETED_PASTE_ON + term.CURSOR_HIDE + term.KEYBOARD_PROTOCOL_ON) catch error {
+    self.terminal.write(term.BRACKETED_PASTE_ON + (self.settings_snapshot.show_hardware_cursor ? '' : term.CURSOR_HIDE) + term.KEYBOARD_PROTOCOL_ON) catch error {
         self.render_lock.unlock()
         throw error
     }
@@ -1518,9 +1573,10 @@ fn view_t.rebind_project_context(&self, string cwd): void! {
 
 // The trust decision for a project cwd, re-resolved on every session rebind:
 // an explicit --approve/--no-approve wins, otherwise the stored decision
-// applies when the project hosts trust-requiring resources.
+// applies when the project hosts trust-requiring resources, and the global
+// settings.defaultProjectTrust supplies the fallback.
 fn view_t.trusted_for(&self, string cwd): bool {
-    return trust.resolve_trust(self.trust_override_explicit, self.trust_override, cwd)
+    return trust.resolve_trust(self.trust_override_explicit, self.trust_override, cwd, self.settings_snapshot.default_project_trust)
 }
 
 pub fn view_t.set_session_name(&self, string name): ref<session_stream.stream_t>? {
@@ -1683,6 +1739,16 @@ fn sort_session_paths_alpha([string] values): [string] {
     return result
 }
 
+// Pi tree filter modes in the overlay's cycle order.
+#local
+fn tree_filter_index(string mode): int {
+    if mode == 'no-tools' {return 1}
+    if mode == 'user-only' {return 2}
+    if mode == 'labeled-only' {return 3}
+    if mode == 'all' {return 4}
+    return 0
+}
+
 pub fn view_t.show_tree_overlay(&self) {
     [string] options = []
     for entry in self.runner.repository.get_entries() {
@@ -1698,6 +1764,8 @@ pub fn view_t.show_tree_overlay(&self) {
     }
     self.overlay = new overlay_t(kind = OVERLAY_TREE, title = 'Session tree:', options = options)
     var active = self.overlay as ref<overlay_t>
+    // Pi settings.treeFilterMode seeds the default filter when opening /tree.
+    active.tree_filter = tree_filter_index(self.settings_snapshot.tree_filter_mode)
     string leaf = self.runner.repository.get_leaf_id()
     var active_entries = self.runner.repository.active_entries()
     for int index = active_entries.len() - 1; index >= 0; index -= 1 {
@@ -1961,7 +2029,7 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     if self.overlay is ref<overlay_t> active_overlay {
         editor_lines = render_overlay(active_overlay, width, self.runner.repository.session_dir, self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id, self.runner)
     } else {
-        editor_lines = render_editor(self.editor, width, self.autocomplete, self.chat.thinking, height)
+        editor_lines = render_editor(self.editor, width, self.autocomplete, self.chat.thinking, height, self.editor_padding_x)
     }
     [string] footer_lines = self.chat.render_footer(width)
     return layout.compose_interactive(transcript_lines, editor_lines, footer_lines)
@@ -2370,11 +2438,13 @@ fn codepoint_boundary(string value, int offset): (int, int) {
 }
 
 #local
-fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autocomplete_state_t> autocomplete_state, string thinking, int terminal_rows): [string]! {
+fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autocomplete_state_t> autocomplete_state, string thinking, int terminal_rows, int padding_x): [string]! {
     [string] result = vec<string>.cap_of(16)
     bool bash_mode = editor.get_text().starts_with('!')
     result.push(theme.editor_border_line(thinking, bash_mode, width))
     editor.width = width
+    // Pi editorPaddingX: extra horizontal padding for the input editor rows.
+    string padding = repeat_spaces(1 + padding_x)
     var visual_lines = editor.visual_lines()
     var cursor = editor.visual_cursor() catch error {
         editor.visual_cursor_t {}
@@ -2392,7 +2462,7 @@ fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autoco
         last_line = visual_lines.len()
     }
     if first_line > 0 {
-        result.push(' ' + theme.fg(theme.dim_color(), fmt.sprintf('↑ %d more', first_line)))
+        result.push(padding + theme.fg(theme.dim_color(), fmt.sprintf('↑ %d more', first_line)))
     }
     for int index = first_line; index < last_line; index += 1 {
         var visual = visual_lines[index]
@@ -2434,7 +2504,7 @@ fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autoco
                 display += theme.cursor(' ')
             }
         }
-        string line = ' ' + display
+        string line = padding + display
         if text_utils.visible_width(line) > width {
             line = text_utils.truncate_to_width(line, width, '...', false)
         }
@@ -2442,7 +2512,7 @@ fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autoco
     }
     int remaining = visual_lines.len() - last_line
     if remaining > 0 {
-        result.push(' ' + theme.fg(theme.dim_color(), fmt.sprintf('↓ %d more', remaining)))
+        result.push(padding + theme.fg(theme.dim_color(), fmt.sprintf('↓ %d more', remaining)))
     }
     result.push(theme.editor_border_line(thinking, bash_mode, width))
     if autocomplete_state.active {
@@ -2732,21 +2802,198 @@ pub fn view_t.show_logout_overlay(&self) {
     self.overlay = new overlay_t(kind = OVERLAY_LOGOUT, title = 'Select provider to logout:', options = options)
 }
 
+// Batch 3: Pi's settings list order (settings-selector.ts).  Value items
+// cycle on Enter (Pi SettingsList behavior); submenu items open their
+// submenu.  Image settings stay EXCLUDED rows without fake behavior.
 pub fn view_t.show_settings_overlay(&self) {
+    var s = self.settings_snapshot
+    int selected = 0
+    if self.overlay is ref<overlay_t> previous {
+        if previous.kind == OVERLAY_SETTINGS {
+            selected = previous.selected
+        }
+    }
     [string] options = [
-        'Thinking: ' + self.chat.thinking + '                (enter: level submenu)',
-        'Auto-compaction: ' + (self.runner.compaction_settings.enabled ? 'on' : 'off'),
-        'Steering mode: ' + self.runner.agent_config.queues.steering_mode,
-        'Follow-up mode: ' + self.runner.agent_config.queues.follow_up_mode,
-        'Hide thinking: ' + (self.chat.thinking_visible ? 'off' : 'on'),
-        'Auto-retry: ' + (self.runner.retry_enabled ? 'on' : 'off'),
-        'Theme: ' + theme.variant(),
+        'Auto-compact: ' + onoff(s.auto_compaction),
+        'Show images: EXCLUDED',
+        'Image width: EXCLUDED',
+        'Auto-resize images: EXCLUDED',
+        'Block images: EXCLUDED',
+        'Skill commands: ' + onoff(s.enable_skill_commands),
+        'Show hardware cursor: ' + onoff(s.show_hardware_cursor),
+        'Editor padding: ' + int_string(s.editor_padding_x),
+        'Output padding: ' + int_string(s.output_pad),
+        'Autocomplete max items: ' + int_string(s.autocomplete_max_visible),
+        'Clear on shrink: ' + onoff(s.terminal_clear_on_shrink),
+        'Terminal progress: ' + onoff(s.terminal_progress),
+        'Steering mode: ' + s.steering_mode,
+        'Follow-up mode: ' + s.follow_up_mode,
+        'Transport: ' + s.transport,
+        'HTTP idle timeout: ' + timeout_label(s.http_idle_timeout_ms),
+        'Hide thinking: ' + onoff(s.hide_thinking),
+        'Cache miss notices: ' + onoff(s.show_cache_miss_notices),
+        'Collapse changelog: ' + onoff(s.collapse_changelog),
+        'Quiet startup: ' + onoff(s.quiet_startup),
+        'Install telemetry: ' + onoff(s.enable_install_telemetry),
+        'Default project trust: ' + trust_label(s.default_project_trust),
+        'Double-escape action: ' + s.double_escape_action,
+        'Tree filter mode: ' + s.tree_filter_mode,
+        'Warnings: configure                  (enter: warnings submenu)',
+        'Thinking level: ' + self.chat.thinking + '           (enter: level submenu)',
+        'Theme: ' + theme_label(s.theme) + '                 (enter: theme submenu)',
     ]
     self.overlay = new overlay_t(kind = OVERLAY_SETTINGS, title = 'Settings', options = options)
+    var active = self.overlay as ref<overlay_t>
+    if selected < options.len() {
+        active.selected = selected
+    }
 }
 
-pub // Pi's Thinking Level submenu: seven levels with the current one marked.
-fn view_t.show_thinking_submenu(&self, ref<overlay_t> overlay) {
+// Enter on a value row cycles to the next value and applies the runtime
+// effect immediately (Pi SettingsList Enter/Space behavior); submenu rows
+// open their submenu; EXCLUDED rows are inert.
+fn view_t.handle_settings_option(&self, ref<overlay_t> overlay, string option) {
+    var s = self.settings_snapshot
+    if option.starts_with('Show images:') || option.starts_with('Image width:') || option.starts_with('Auto-resize images:') || option.starts_with('Block images:') {
+        self.chat.status = 'Image settings are not supported in Adou'
+        self.redraw()
+        return
+    }
+    if option.starts_with('Warnings:') {
+        self.show_warnings_overlay(overlay)
+        return
+    }
+    if option.starts_with('Thinking level:') {
+        self.show_thinking_submenu(overlay)
+        return
+    }
+    if option.starts_with('Theme:') {
+        self.show_theme_overlay(overlay)
+        return
+    }
+    if option.starts_with('Auto-compact:') {
+        s.auto_compaction = !s.auto_compaction
+        self.runner.set_auto_compaction(s.auto_compaction) catch error {}
+        self.chat.set_auto_compaction(s.auto_compaction)
+        self.chat.status = 'Auto-compaction ' + (s.auto_compaction ? 'enabled' : 'disabled')
+    } else if option.starts_with('Skill commands:') {
+        s.enable_skill_commands = !s.enable_skill_commands
+        self.settings_snapshot = s
+        self.dynamic_commands = slash_commands.compose_resource_commands(self.prompt_templates, self.cached_skills, s.enable_skill_commands)
+        self.chat.status = 'Skill commands ' + (s.enable_skill_commands ? 'enabled' : 'disabled')
+    } else if option.starts_with('Show hardware cursor:') {
+        s.show_hardware_cursor = !s.show_hardware_cursor
+        self.terminal.set_hardware_cursor(s.show_hardware_cursor) catch error {}
+        self.chat.status = 'Hardware cursor ' + (s.show_hardware_cursor ? 'shown' : 'hidden')
+    } else if option.starts_with('Editor padding:') {
+        s.editor_padding_x = cycle_int(s.editor_padding_x, [0, 1, 2, 3])
+        self.editor_padding_x = s.editor_padding_x
+    } else if option.starts_with('Output padding:') {
+        s.output_pad = cycle_int(s.output_pad, [0, 1])
+        self.chat.set_output_pad(s.output_pad)
+    } else if option.starts_with('Autocomplete max items:') {
+        s.autocomplete_max_visible = cycle_int(s.autocomplete_max_visible, [3, 5, 7, 10, 15, 20])
+        self.autocomplete_max_visible = s.autocomplete_max_visible
+    } else if option.starts_with('Clear on shrink:') {
+        s.terminal_clear_on_shrink = !s.terminal_clear_on_shrink
+        self.renderer.set_clear_on_shrink(s.terminal_clear_on_shrink)
+    } else if option.starts_with('Terminal progress:') {
+        s.terminal_progress = !s.terminal_progress
+    } else if option.starts_with('Steering mode:') {
+        s.steering_mode = cycle_value(s.steering_mode, ['one-at-a-time', 'all'])
+        self.runner.set_steering_mode(s.steering_mode) catch error {}
+        self.chat.status = 'Steering mode: ' + s.steering_mode
+    } else if option.starts_with('Follow-up mode:') {
+        s.follow_up_mode = cycle_value(s.follow_up_mode, ['one-at-a-time', 'all'])
+        self.runner.set_follow_up_mode(s.follow_up_mode) catch error {}
+        self.chat.status = 'Follow-up mode: ' + s.follow_up_mode
+    } else if option.starts_with('Transport:') {
+        s.transport = cycle_value(s.transport, ['auto', 'sse', 'websocket', 'websocket-cached'])
+        self.runner.set_runtime_transport(s.transport)
+        self.chat.status = 'Transport: ' + s.transport
+    } else if option.starts_with('HTTP idle timeout:') {
+        int next_ms = cycle_timeout(s.http_idle_timeout_ms)
+        s.http_idle_timeout_ms = next_ms
+        self.runner.set_runtime_http_idle_timeout_ms(next_ms)
+        self.chat.status = 'HTTP idle timeout: ' + timeout_label(next_ms)
+    } else if option.starts_with('Hide thinking:') {
+        bool visible = self.chat.toggle_thinking_visibility()
+        s.hide_thinking = !visible
+        self.chat.status = 'Thinking blocks: ' + (visible ? 'visible' : 'hidden')
+    } else if option.starts_with('Cache miss notices:') {
+        s.show_cache_miss_notices = !s.show_cache_miss_notices
+        self.chat.set_show_cache_miss_notices(s.show_cache_miss_notices)
+    } else if option.starts_with('Collapse changelog:') {
+        s.collapse_changelog = !s.collapse_changelog
+    } else if option.starts_with('Quiet startup:') {
+        s.quiet_startup = !s.quiet_startup
+    } else if option.starts_with('Install telemetry:') {
+        s.enable_install_telemetry = !s.enable_install_telemetry
+    } else if option.starts_with('Default project trust:') {
+        s.default_project_trust = cycle_value(s.default_project_trust, ['ask', 'always', 'never'])
+    } else if option.starts_with('Double-escape action:') {
+        s.double_escape_action = cycle_value(s.double_escape_action, ['tree', 'fork', 'none'])
+    } else if option.starts_with('Tree filter mode:') {
+        s.tree_filter_mode = cycle_value(s.tree_filter_mode, ['default', 'no-tools', 'user-only', 'labeled-only', 'all'])
+    }
+    self.settings_snapshot = s
+    self.save_preferences()
+    self.show_settings_overlay()
+    self.redraw()
+}
+
+// Pi's Warnings submenu: one warning toggle.
+fn view_t.show_warnings_overlay(&self, ref<overlay_t> overlay) {
+    overlay.kind = OVERLAY_SETTINGS_WARNINGS
+    overlay.title = 'Warnings'
+    overlay.options = ['Anthropic extra usage: ' + onoff(self.settings_snapshot.warnings_anthropic_extra_usage)]
+    overlay.selected = 0
+    self.redraw()
+}
+
+fn view_t.handle_warnings_toggle(&self, ref<overlay_t> overlay) {
+    var s = self.settings_snapshot
+    s.warnings_anthropic_extra_usage = !s.warnings_anthropic_extra_usage
+    self.settings_snapshot = s
+    self.save_preferences()
+    overlay.options[0] = 'Anthropic extra usage: ' + onoff(s.warnings_anthropic_extra_usage)
+    self.redraw()
+}
+
+// Pi's Theme submenu: single mode ([Automatic, dark, light], live preview,
+// Enter applies, Esc restores) and automatic mode (light/dark pair editing).
+fn view_t.show_theme_overlay(&self, ref<overlay_t> overlay) {
+    string stored = self.settings_snapshot.theme
+    overlay.kind = OVERLAY_THEME
+    overlay.title = 'Theme'
+    overlay.theme_original = stored
+    if stored.contains('/') {
+        var (light_value, dark_value) = split_theme_pair(stored)
+        overlay.theme_light = light_value
+        overlay.theme_dark = dark_value
+        overlay.options = ['Automatic: ' + stored + '   (enter: edit pair)']
+        overlay.selected = 0
+    } else {
+        // Pi defaultAutomaticThemes: a fixed current theme seeds both slots.
+        string single = stored == 'light' ? 'light' : 'dark'
+        overlay.theme_light = single
+        overlay.theme_dark = single
+        overlay.options = ['Automatic   (follow terminal appearance)', 'dark', 'light']
+        // Pi's SelectSubmenu pre-selects the current value; Enter on the
+        // submenu starts on the active theme instead of always Automatic.
+        overlay.selected = 0
+        for index, name in overlay.options {
+            if name == single {
+                overlay.selected = index
+                break
+            }
+        }
+    }
+    self.redraw()
+}
+
+// Pi's Thinking Level submenu: seven levels with the current one marked.
+pub fn view_t.show_thinking_submenu(&self, ref<overlay_t> overlay) {
     overlay.kind = OVERLAY_SETTINGS_SUBMENU
     overlay.title = 'Thinking Level'
     overlay.options = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']
@@ -2770,10 +3017,239 @@ fn view_t.handle_settings_submenu(&self, ref<overlay_t> overlay) {
     }
     self.chat.thinking = level
     self.chat.status = 'Thinking: ' + level
+    // Keep the trust-aware snapshot aligned with the persisted preference.
+    self.settings_snapshot.default_thinking_level = level
     // Rebuild the full settings list; the submenu replaced the option set.
     self.save_preferences()
     self.show_settings_overlay()
     self.redraw()
+}
+
+fn view_t.handle_theme_input(&self, ref<overlay_t> overlay, string key) {
+    if key == 'up' {
+        overlay.selected = overlay.selected == 0 ? overlay.options.len() - 1 : overlay.selected - 1
+        self.preview_theme_option(overlay)
+        self.redraw()
+        return
+    }
+    if key == 'down' {
+        overlay.selected = overlay.selected == overlay.options.len() - 1 ? 0 : overlay.selected + 1
+        self.preview_theme_option(overlay)
+        self.redraw()
+        return
+    }
+    if key == 'enter' {
+        self.apply_theme_option(overlay)
+        return
+    }
+    if key == 'escape' || key == 'ctrl+c' {
+        self.cancel_theme_overlay(overlay)
+        return
+    }
+}
+
+fn view_t.preview_theme_option(&self, ref<overlay_t> overlay) {
+    if overlay.options.len() <= 1 {
+        // Automatic pair row: preview the active variant (dark fallback).
+        theme.set_variant(active_theme_variant(overlay.theme_light + '/' + overlay.theme_dark))
+        return
+    }
+    if overlay.selected == 0 {
+        theme.set_variant(active_theme_variant(overlay.theme_light + '/' + overlay.theme_dark))
+        return
+    }
+    string name = overlay.options[overlay.selected]
+    theme.set_variant(active_theme_variant(name))
+}
+
+fn view_t.apply_theme_option(&self, ref<overlay_t> overlay) {
+    var s = self.settings_snapshot
+    if overlay.options.len() <= 1 {
+        // Automatic pair row: edit the pair.
+        self.show_theme_auto_overlay(overlay)
+        return
+    }
+    if overlay.selected == 0 {
+        // Automatic: keep the edited pair (default light/dark).
+        s.theme = overlay.theme_light + '/' + overlay.theme_dark
+    } else {
+        s.theme = overlay.options[overlay.selected]
+    }
+    self.settings_snapshot = s
+    self.save_preferences()
+    theme.set_variant(active_theme_variant(s.theme))
+    self.show_settings_overlay()
+    self.redraw()
+}
+
+fn view_t.cancel_theme_overlay(&self, ref<overlay_t> overlay) {
+    var s = self.settings_snapshot
+    s.theme = overlay.theme_original
+    self.settings_snapshot = s
+    theme.set_variant(active_theme_variant(overlay.theme_original))
+    self.show_settings_overlay()
+    self.redraw()
+}
+
+fn view_t.show_theme_auto_overlay(&self, ref<overlay_t> overlay) {
+    overlay.kind = OVERLAY_THEME_AUTO
+    overlay.title = 'Automatic Theme'
+    overlay.options = ['Light theme: ' + overlay.theme_light, 'Dark theme: ' + overlay.theme_dark, 'Apply (save and go back)', 'Change mode (switch to single theme)']
+    overlay.selected = 0
+    self.redraw()
+}
+
+fn view_t.handle_theme_auto_input(&self, ref<overlay_t> overlay, string key) {
+    if key == 'up' {
+        overlay.selected = overlay.selected == 0 ? overlay.options.len() - 1 : overlay.selected - 1
+        self.redraw()
+        return
+    }
+    if key == 'down' {
+        overlay.selected = overlay.selected == overlay.options.len() - 1 ? 0 : overlay.selected + 1
+        self.redraw()
+        return
+    }
+    if key == 'enter' {
+        if overlay.selected == 0 || overlay.selected == 1 {
+            self.show_theme_select_overlay(overlay, overlay.selected == 0 ? 'light' : 'dark')
+        } else if overlay.selected == 2 {
+            var s = self.settings_snapshot
+            s.theme = overlay.theme_light + '/' + overlay.theme_dark
+            self.settings_snapshot = s
+            self.save_preferences()
+            theme.set_variant(active_theme_variant(s.theme))
+            self.show_settings_overlay()
+            self.redraw()
+        } else {
+            self.show_theme_overlay(overlay)
+        }
+        return
+    }
+    if key == 'escape' || key == 'ctrl+c' {
+        self.cancel_theme_overlay(overlay)
+        return
+    }
+}
+
+fn view_t.show_theme_select_overlay(&self, ref<overlay_t> overlay, string target) {
+    overlay.kind = OVERLAY_THEME_SELECT
+    overlay.theme_select_target = target
+    overlay.title = target == 'light' ? 'Light Theme' : 'Dark Theme'
+    overlay.options = ['dark', 'light']
+    string current = target == 'light' ? overlay.theme_light : overlay.theme_dark
+    overlay.selected = 0
+    for index, name in overlay.options {
+        if name == current {
+            overlay.selected = index
+            break
+        }
+    }
+    self.preview_theme_pair(overlay, current)
+    self.redraw()
+}
+
+fn view_t.handle_theme_select_input(&self, ref<overlay_t> overlay, string key) {
+    if key == 'up' {
+        overlay.selected = overlay.selected == 0 ? overlay.options.len() - 1 : overlay.selected - 1
+        self.preview_theme_pair(overlay, overlay.options[overlay.selected])
+        self.redraw()
+        return
+    }
+    if key == 'down' {
+        overlay.selected = overlay.selected == overlay.options.len() - 1 ? 0 : overlay.selected + 1
+        self.preview_theme_pair(overlay, overlay.options[overlay.selected])
+        self.redraw()
+        return
+    }
+    if key == 'enter' {
+        string name = overlay.options[overlay.selected]
+        if overlay.theme_select_target == 'light' {
+            overlay.theme_light = name
+        } else {
+            overlay.theme_dark = name
+        }
+        self.show_theme_auto_overlay(overlay)
+        return
+    }
+    if key == 'escape' || key == 'ctrl+c' {
+        self.show_theme_auto_overlay(overlay)
+        return
+    }
+}
+
+fn view_t.preview_theme_pair(&self, ref<overlay_t> overlay, string picked) {
+    string light_value = overlay.theme_select_target == 'light' ? picked : overlay.theme_light
+    string dark_value = overlay.theme_select_target == 'dark' ? picked : overlay.theme_dark
+    theme.set_variant(active_theme_variant(light_value + '/' + dark_value))
+}
+
+fn split_theme_pair(string value): (string, string) {
+    int separator = value.find('/')
+    if separator < 0 {
+        return ('light', 'dark')
+    }
+    return (value.slice(0, separator), value.slice(separator + 1, value.len()))
+}
+
+fn onoff(bool value): string {
+    return value ? 'on' : 'off'
+}
+
+fn int_string(int value): string {
+    return fmt.sprintf('%d', value)
+}
+
+fn cycle_value(string current, [string] values): string {
+    for index, value in values {
+        if value == current {
+            return values[(index + 1) % values.len()]
+        }
+    }
+    return values[0]
+}
+
+fn cycle_int(int current, [int] values): int {
+    for index, value in values {
+        if value == current {
+            return values[(index + 1) % values.len()]
+        }
+    }
+    return values[0]
+}
+
+// Pi HTTP_IDLE_TIMEOUT_CHOICES: 30 sec / 1 min / 2 min / 5 min / disabled.
+fn timeout_label(int ms): string {
+    if ms == 0 {return 'disabled'}
+    if ms == 30000 {return '30 sec'}
+    if ms == 60000 {return '1 min'}
+    if ms == 120000 {return '2 min'}
+    if ms == 300000 {return '5 min'}
+    return fmt.sprintf('%d sec', ms / 1000)
+}
+
+fn cycle_timeout(int current): int {
+    [int] values = [30000, 60000, 120000, 300000, 0]
+    for index, value in values {
+        if value == current {
+            return values[(index + 1) % values.len()]
+        }
+    }
+    return values[0]
+}
+
+// Pi DEFAULT_PROJECT_TRUST_LABELS.
+fn trust_label(string mode): string {
+    if mode == 'always' {return 'Always trust'}
+    if mode == 'never' {return 'Never trust'}
+    return 'Ask'
+}
+
+fn theme_label(string setting): string {
+    if setting.contains('/') {
+        return setting + ' (automatic)'
+    }
+    return setting
 }
 
 // Pi's first-time setup: a two-choice welcome (theme + telemetry opt-in)
@@ -3062,8 +3538,7 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             return
         }
         if key == 'escape' || key == 'ctrl+c' {
-            overlay.kind = OVERLAY_SETTINGS
-            overlay.title = 'Settings'
+            self.show_settings_overlay()
             self.redraw()
             return
         }
@@ -3081,6 +3556,30 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
     }
     if overlay.kind == OVERLAY_MODEL {
         self.handle_model_selector_input(overlay, input)
+        return
+    }
+    if overlay.kind == OVERLAY_SETTINGS_WARNINGS && !input.paste {
+        string key = keys.parse_key(input.data)
+        if key == 'enter' {
+            self.handle_warnings_toggle(overlay)
+            return
+        }
+        if key == 'escape' || key == 'ctrl+c' {
+            self.show_settings_overlay()
+            self.redraw()
+        }
+        return
+    }
+    if overlay.kind == OVERLAY_THEME && !input.paste {
+        self.handle_theme_input(overlay, keys.parse_key(input.data))
+        return
+    }
+    if overlay.kind == OVERLAY_THEME_AUTO && !input.paste {
+        self.handle_theme_auto_input(overlay, keys.parse_key(input.data))
+        return
+    }
+    if overlay.kind == OVERLAY_THEME_SELECT && !input.paste {
+        self.handle_theme_select_input(overlay, keys.parse_key(input.data))
         return
     }
     if overlay.kind == OVERLAY_SCOPED_MODELS {
@@ -3734,52 +4233,44 @@ pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
     }
     if overlay.kind == OVERLAY_SETTINGS {
         string selected_option = options.len() > 0 && overlay.selected < options.len() ? options[overlay.selected] : ''
-        if selected_option.starts_with('Thinking:') {
-            self.show_thinking_submenu(overlay)
-            return
-        } else if selected_option.starts_with('Theme:') {
-            // Theme preview: switching the variant re-renders immediately.
-            theme.set_variant(theme.variant() == 'light' ? 'dark' : 'light')
-            overlay.options[6] = 'Theme: ' + theme.variant()
+        self.handle_settings_option(overlay, selected_option)
+        return
+    }
+    if overlay.kind == OVERLAY_SETTINGS_WARNINGS {
+        self.handle_warnings_toggle(overlay)
+        return
+    }
+    if overlay.kind == OVERLAY_THEME {
+        self.apply_theme_option(overlay)
+        return
+    }
+    if overlay.kind == OVERLAY_THEME_AUTO {
+        // Enter on the pair rows opens a select; Apply and Change mode are
+        // handled here for the enter path while handle_overlay_input owns
+        // the up/down navigation.
+        if overlay.selected == 0 || overlay.selected == 1 {
+            self.show_theme_select_overlay(overlay, overlay.selected == 0 ? 'light' : 'dark')
+        } else if overlay.selected == 2 {
+            var s = self.settings_snapshot
+            s.theme = overlay.theme_light + '/' + overlay.theme_dark
+            self.settings_snapshot = s
             self.save_preferences()
+            theme.set_variant(active_theme_variant(s.theme))
+            self.show_settings_overlay()
             self.redraw()
-            return
-        } else if selected_option.starts_with('Auto-compaction:') {
-            self.runner.set_auto_compaction(!self.runner.compaction_settings.enabled) catch error {
-                self.chat.error_message = error.msg()
-                self.redraw()
-                return
-            }
-            self.chat.set_auto_compaction(self.runner.compaction_settings.enabled)
-            self.chat.status = 'Auto-compaction ' + (self.runner.compaction_settings.enabled ? 'enabled' : 'disabled')
-        } else if selected_option.starts_with('Steering mode:') {
-            self.runner.set_steering_mode(next_queue_mode(self.runner.agent_config.queues.steering_mode)) catch error {
-                self.chat.error_message = error.msg()
-                self.redraw()
-                return
-            }
-            self.chat.status = 'Steering mode: ' + self.runner.agent_config.queues.steering_mode
-        } else if selected_option.starts_with('Follow-up mode:') {
-            self.runner.set_follow_up_mode(next_queue_mode(self.runner.agent_config.queues.follow_up_mode)) catch error {
-                self.chat.error_message = error.msg()
-                self.redraw()
-                return
-            }
-            self.chat.status = 'Follow-up mode: ' + self.runner.agent_config.queues.follow_up_mode
-        } else if selected_option.starts_with('Hide thinking:') {
-            bool visible = self.chat.toggle_thinking_visibility()
-            self.chat.status = 'Thinking blocks: ' + (visible ? 'visible' : 'hidden')
-        } else if selected_option.starts_with('Auto-retry:') {
-            self.runner.set_auto_retry(!self.runner.retry_enabled) catch error {
-                self.chat.error_message = error.msg()
-                self.redraw()
-                return
-            }
-            self.chat.status = 'Auto-retry ' + (self.runner.retry_enabled ? 'enabled' : 'disabled')
+        } else {
+            self.show_theme_overlay(overlay)
         }
-        self.save_preferences()
-        self.show_settings_overlay()
-        self.redraw()
+        return
+    }
+    if overlay.kind == OVERLAY_THEME_SELECT {
+        string name = overlay.options[overlay.selected]
+        if overlay.theme_select_target == 'light' {
+            overlay.theme_light = name
+        } else {
+            overlay.theme_dark = name
+        }
+        self.show_theme_auto_overlay(overlay)
         return
     }
     if overlay.kind == OVERLAY_HELP {
@@ -3933,8 +4424,18 @@ pub fn view_t.restore_queued_messages(&self) {
 }
 
 pub fn view_t.save_preferences(&self) {
-    var existing = config_settings.load()
-    var preferences = config_settings.settings_t {default_provider: existing.default_provider, default_model: existing.default_model, default_thinking_level: self.chat.thinking, auto_compaction: self.runner.compaction_settings.enabled, steering_mode: self.runner.agent_config.queues.steering_mode, follow_up_mode: self.runner.agent_config.queues.follow_up_mode, hide_thinking: !self.chat.thinking_visible, retry_enabled: self.runner.retry_enabled, retry_max_attempts: existing.retry_max_attempts, retry_base_delay_ms: existing.retry_base_delay_ms, enabled_model_ids: self.scoped_model_ids, enabled_models_configured: self.scoped_models_active, theme: theme.variant(), enabled_skill_names: existing.enabled_skill_names, enabled_prompt_names: existing.enabled_prompt_names,}
+    // Persist from the trust-aware snapshot so every Batch 3 settings key
+    // survives; only the session-mutable fields are overlaid from runtime
+    // state.
+    var preferences = self.settings_snapshot
+    preferences.default_thinking_level = self.chat.thinking
+    preferences.auto_compaction = self.runner.compaction_settings.enabled
+    preferences.steering_mode = self.runner.agent_config.queues.steering_mode
+    preferences.follow_up_mode = self.runner.agent_config.queues.follow_up_mode
+    preferences.hide_thinking = !self.chat.thinking_visible
+    preferences.retry_enabled = self.runner.retry_enabled
+    preferences.enabled_model_ids = self.scoped_model_ids
+    preferences.enabled_models_configured = self.scoped_models_active
     config_settings.save(preferences) catch error {
         self.chat.error_message = 'Could not save settings: ' + error.msg()
     }

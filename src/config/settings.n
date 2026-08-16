@@ -21,6 +21,8 @@ pub type settings_t = struct {
     string steering_mode = 'one-at-a-time'
     string follow_up_mode = 'one-at-a-time'
     bool hide_thinking
+    // In-memory retry policy stays flat for the session runner; the on-disk
+    // shape is Pi's nested retry.{enabled,maxRetries,baseDelayMs}.
     bool retry_enabled = true
     int retry_max_attempts = 3
     int retry_base_delay_ms = 2000
@@ -31,14 +33,42 @@ pub type settings_t = struct {
     // Preserve the distinction between an absent enabledModels key (all
     // enabled) and an explicitly configured ordered list, including [].
     bool enabled_models_configured
-    // Theme variant and per-resource enable lists for the config selector.
+    // Theme value: 'light', 'dark', or Pi's automatic pair 'light/dark'
+    // (lightTheme/darkTheme separated by '/').  The active variant is
+    // resolved by the TUI from the terminal appearance.
     string theme = 'dark'
     [string] enabled_skill_names = []
     [string] enabled_prompt_names = []
     // Pi settings.autocompleteMaxVisible: max visible rows of the editor
-    // autocomplete SelectList (3-20, default 5). Batch 1 only plumbs
-    // load/default; the settings UI matrix is Batch 3.
+    // autocomplete SelectList (3-20, default 5).
     int autocomplete_max_visible = 5
+    // Pi settings.transport: preferred transport for providers that support
+    // multiple transports. 'websocket-cached' is carried as-is.
+    string transport = 'auto'
+    // Pi settings.httpIdleTimeoutMs: default request idle timeout in ms;
+    // 0 disables it.  300000 matches Pi's DEFAULT_HTTP_IDLE_TIMEOUT_MS.
+    int http_idle_timeout_ms = 300000
+    bool show_cache_miss_notices
+    bool collapse_changelog
+    bool quiet_startup
+    bool enable_install_telemetry = true
+    // Pi settings.defaultProjectTrust: global-only fallback for projects
+    // with no stored decision ('ask' | 'always' | 'never').
+    string default_project_trust = 'ask'
+    bool enable_skill_commands = true
+    // Pi settings.doubleEscapeAction: 'tree' | 'fork' | 'none'.
+    string double_escape_action = 'tree'
+    // Pi settings.treeFilterMode: default filter when opening /tree.
+    string tree_filter_mode = 'default'
+    // Pi settings.showHardwareCursor with PI_HARDWARE_CURSOR env fallback.
+    bool show_hardware_cursor
+    int editor_padding_x
+    int output_pad = 1
+    // Pi settings.terminal.clearOnShrink / showTerminalProgress.
+    bool terminal_clear_on_shrink
+    bool terminal_progress
+    // Pi settings.warnings.anthropicExtraUsage.
+    bool warnings_anthropic_extra_usage = true
 }
 
 pub fn load(): settings_t {
@@ -60,10 +90,14 @@ pub fn load_trusted_for(string cwd, bool trusted): settings_t {
 // Pi keeps a global settings file and a project-local .pi/settings.json. The
 // project object is a partial override: fields absent from the project file
 // retain their global values, while arrays such as enabledModels replace the
-// corresponding global array when explicitly present.
+// corresponding global array when explicitly present.  defaultProjectTrust
+// is Pi's one global-only key: a project file can never override it.
 pub fn load_for(string cwd): settings_t {
     var result = load_file(settings_path(), settings_t{})
-    return load_file(paths.project_settings_path(cwd), result)
+    string global_trust = result.default_project_trust
+    result = load_file(paths.project_settings_path(cwd), result)
+    result.default_project_trust = global_trust
+    return result
 }
 
 #local
@@ -82,15 +116,29 @@ fn load_file(string file_path, settings_t initial): settings_t {
     result.default_provider = string_value(object, 'defaultProvider', result.default_provider)
     result.default_model = string_value(object, 'defaultModel', result.default_model)
     result.default_thinking_level = thinking_level(string_value(object, 'defaultThinkingLevel', result.default_thinking_level))
-    result.auto_compaction = bool_value(object, 'autoCompaction', result.auto_compaction)
     result.steering_mode = queue_mode(string_value(object, 'steeringMode', result.steering_mode))
     result.follow_up_mode = queue_mode(string_value(object, 'followUpMode', result.follow_up_mode))
     result.hide_thinking = bool_value(object, 'hideThinkingBlock', result.hide_thinking)
-    result.retry_enabled = bool_value(object, 'retryEnabled', result.retry_enabled)
-    result.retry_max_attempts = positive_int(object, 'retryMaxAttempts', result.retry_max_attempts)
-    result.retry_base_delay_ms = positive_int(object, 'retryBaseDelayMs', result.retry_base_delay_ms)
+    result.show_cache_miss_notices = bool_value(object, 'showCacheMissNotices', result.show_cache_miss_notices)
+    result.collapse_changelog = bool_value(object, 'collapseChangelog', result.collapse_changelog)
+    result.quiet_startup = bool_value(object, 'quietStartup', result.quiet_startup)
+    result.enable_install_telemetry = bool_value(object, 'enableInstallTelemetry', result.enable_install_telemetry)
+    result.default_project_trust = trust_mode(string_value(object, 'defaultProjectTrust', result.default_project_trust))
+    result.enable_skill_commands = bool_value(object, 'enableSkillCommands', result.enable_skill_commands)
+    result.double_escape_action = double_escape(string_value(object, 'doubleEscapeAction', result.double_escape_action))
+    result.tree_filter_mode = tree_filter(string_value(object, 'treeFilterMode', result.tree_filter_mode))
+    result.transport = transport_value(string_value(object, 'transport', result.transport))
+    result.editor_padding_x = padding_clamp(int_value(object, 'editorPaddingX', result.editor_padding_x))
+    result.output_pad = int_value(object, 'outputPad', result.output_pad) == 0 ? 0 : 1
+    if object.contains('showHardwareCursor') {
+        result.show_hardware_cursor = bool_value(object, 'showHardwareCursor', result.show_hardware_cursor)
+    } else {
+        // Pi getShowHardwareCursor: file value wins, then PI_HARDWARE_CURSOR.
+        result.show_hardware_cursor = syscall.get_env('PI_HARDWARE_CURSOR') == '1'
+    }
+    result.http_idle_timeout_ms = http_idle_timeout(object, result.http_idle_timeout_ms)
     string theme_value = string_value(object, 'theme', result.theme)
-    if theme_value == 'light' || theme_value == 'dark' {
+    if theme_value == 'light' || theme_value == 'dark' || theme_value.contains('/') {
         result.theme = theme_value
     }
     int max_visible = autocomplete_value(object, 'autocompleteMaxVisible', result.autocomplete_max_visible)
@@ -111,21 +159,10 @@ fn load_file(string file_path, settings_t initial): settings_t {
             }
         }
     }
-    any compaction_value = null
-    if object.contains('compaction') {
-        compaction_value = object['compaction']
-    }
-    if json_util.is_obj(compaction_value) {
-        var compaction = compaction_value as {string:any}
-        int reserve = positive_int(compaction, 'reserveTokens', result.reserve_tokens)
-        if reserve > 0 {
-            result.reserve_tokens = reserve
-        }
-        int keep_recent = positive_int(compaction, 'keepRecentTokens', result.keep_recent_tokens)
-        if keep_recent > 0 {
-            result.keep_recent_tokens = keep_recent
-        }
-    }
+    result = load_compaction(object, result)
+    result = load_retry(object, result)
+    result = load_terminal(object, result)
+    result = load_warnings(object, result)
     if object.contains('enabledModels') && object['enabledModels'] is [any] {
         // An explicitly configured project array replaces the global scope;
         // it is not appended to it.
@@ -142,6 +179,98 @@ fn load_file(string file_path, settings_t initial): settings_t {
     return result
 }
 
+// Pi migration behavior kept at load: a legacy flat autoCompaction key is
+// only consulted when the Pi-shaped compaction.enabled key is absent.
+#local
+fn load_compaction({string:any} object, settings_t initial): settings_t {
+    var result = initial
+    any compaction_value = null
+    if object.contains('compaction') {
+        compaction_value = object['compaction']
+    }
+    if json_util.is_obj(compaction_value) {
+        var compaction = compaction_value as {string:any}
+        if compaction.contains('enabled') {
+            result.auto_compaction = bool_value(compaction, 'enabled', result.auto_compaction)
+        } else if object.contains('autoCompaction') {
+            result.auto_compaction = bool_value(object, 'autoCompaction', result.auto_compaction)
+        }
+        int reserve = positive_int(compaction, 'reserveTokens', result.reserve_tokens)
+        if reserve > 0 {
+            result.reserve_tokens = reserve
+        }
+        int keep_recent = positive_int(compaction, 'keepRecentTokens', result.keep_recent_tokens)
+        if keep_recent > 0 {
+            result.keep_recent_tokens = keep_recent
+        }
+    } else if object.contains('autoCompaction') {
+        result.auto_compaction = bool_value(object, 'autoCompaction', result.auto_compaction)
+    }
+    return result
+}
+
+// Legacy flat retryEnabled/retryMaxAttempts/retryBaseDelayMs keys migrate
+// into Pi's nested retry object shape; the nested shape wins when present.
+#local
+fn load_retry({string:any} object, settings_t initial): settings_t {
+    var result = initial
+    any retry_value = null
+    if object.contains('retry') {
+        retry_value = object['retry']
+    }
+    if json_util.is_obj(retry_value) {
+        var retry = retry_value as {string:any}
+        result.retry_enabled = bool_value(retry, 'enabled', result.retry_enabled)
+        result.retry_max_attempts = positive_int(retry, 'maxRetries', result.retry_max_attempts)
+        result.retry_base_delay_ms = positive_int(retry, 'baseDelayMs', result.retry_base_delay_ms)
+        return result
+    }
+    if object.contains('retryEnabled') {
+        result.retry_enabled = bool_value(object, 'retryEnabled', result.retry_enabled)
+    }
+    if object.contains('retryMaxAttempts') {
+        result.retry_max_attempts = positive_int(object, 'retryMaxAttempts', result.retry_max_attempts)
+    }
+    if object.contains('retryBaseDelayMs') {
+        result.retry_base_delay_ms = positive_int(object, 'retryBaseDelayMs', result.retry_base_delay_ms)
+    }
+    return result
+}
+
+#local
+fn load_terminal({string:any} object, settings_t initial): settings_t {
+    var result = initial
+    any terminal_value = null
+    if object.contains('terminal') {
+        terminal_value = object['terminal']
+    }
+    if json_util.is_obj(terminal_value) {
+        var terminal = terminal_value as {string:any}
+        if terminal.contains('clearOnShrink') {
+            result.terminal_clear_on_shrink = bool_value(terminal, 'clearOnShrink', result.terminal_clear_on_shrink)
+        } else {
+            result.terminal_clear_on_shrink = syscall.get_env('PI_CLEAR_ON_SHRINK') == '1'
+        }
+        result.terminal_progress = bool_value(terminal, 'showTerminalProgress', result.terminal_progress)
+        return result
+    }
+    // Pi: setting wins, then env, then default false.
+    result.terminal_clear_on_shrink = syscall.get_env('PI_CLEAR_ON_SHRINK') == '1'
+    return result
+}
+
+#local
+fn load_warnings({string:any} object, settings_t initial): settings_t {
+    var result = initial
+    any warnings_value = null
+    if object.contains('warnings') {
+        warnings_value = object['warnings']
+    }
+    if !json_util.is_obj(warnings_value) {return result}
+    var warnings = warnings_value as {string:any}
+    result.warnings_anthropic_extra_usage = bool_value(warnings, 'anthropicExtraUsage', result.warnings_anthropic_extra_usage)
+    return result
+}
 
 #local
 fn read_raw(): {string:any} {
@@ -166,17 +295,54 @@ pub fn save(settings_t settings): void! {
     object['defaultModel'] = settings.default_model
     object['defaultThinkingLevel'] = settings.default_thinking_level
     object['theme'] = settings.theme
-    object['autoCompaction'] = settings.auto_compaction
     object['steeringMode'] = queue_mode(settings.steering_mode)
     object['followUpMode'] = queue_mode(settings.follow_up_mode)
     object['hideThinkingBlock'] = settings.hide_thinking
-    object['retryEnabled'] = settings.retry_enabled
-    object['retryMaxAttempts'] = settings.retry_max_attempts
-    object['retryBaseDelayMs'] = settings.retry_base_delay_ms
+    object['showCacheMissNotices'] = settings.show_cache_miss_notices
+    object['collapseChangelog'] = settings.collapse_changelog
+    object['quietStartup'] = settings.quiet_startup
+    object['enableInstallTelemetry'] = settings.enable_install_telemetry
+    object['defaultProjectTrust'] = trust_mode(settings.default_project_trust)
+    object['enableSkillCommands'] = settings.enable_skill_commands
+    object['doubleEscapeAction'] = double_escape(settings.double_escape_action)
+    object['treeFilterMode'] = tree_filter(settings.tree_filter_mode)
+    object['transport'] = transport_value(settings.transport)
+    object['httpIdleTimeoutMs'] = settings.http_idle_timeout_ms
+    object['editorPaddingX'] = padding_clamp(settings.editor_padding_x)
+    object['outputPad'] = settings.output_pad == 0 ? 0 : 1
+    object['showHardwareCursor'] = settings.show_hardware_cursor
+    object['autocompleteMaxVisible'] = autocomplete_clamp(settings.autocomplete_max_visible)
+    // Pi-shaped nested compaction object replaces the legacy flat key.
     {string:any} compaction_object = json_util.opt_obj(object, 'compaction')
+    compaction_object['enabled'] = settings.auto_compaction
     compaction_object['reserveTokens'] = settings.reserve_tokens
     compaction_object['keepRecentTokens'] = settings.keep_recent_tokens
     object['compaction'] = compaction_object
+    if object.contains('autoCompaction') {
+        object.del('autoCompaction')
+    }
+    // Pi-shaped nested retry object replaces the legacy flat keys.
+    {string:any} retry_object = json_util.opt_obj(object, 'retry')
+    retry_object['enabled'] = settings.retry_enabled
+    retry_object['maxRetries'] = settings.retry_max_attempts
+    retry_object['baseDelayMs'] = settings.retry_base_delay_ms
+    object['retry'] = retry_object
+    if object.contains('retryEnabled') {
+        object.del('retryEnabled')
+    }
+    if object.contains('retryMaxAttempts') {
+        object.del('retryMaxAttempts')
+    }
+    if object.contains('retryBaseDelayMs') {
+        object.del('retryBaseDelayMs')
+    }
+    {string:any} terminal_object = json_util.opt_obj(object, 'terminal')
+    terminal_object['clearOnShrink'] = settings.terminal_clear_on_shrink
+    terminal_object['showTerminalProgress'] = settings.terminal_progress
+    object['terminal'] = terminal_object
+    {string:any} warnings_object = json_util.opt_obj(object, 'warnings')
+    warnings_object['anthropicExtraUsage'] = settings.warnings_anthropic_extra_usage
+    object['warnings'] = warnings_object
     if settings.enabled_models_configured {
         [any] enabled = []
         for model_id in settings.enabled_model_ids {
@@ -266,6 +432,108 @@ pub fn set_retry_enabled(bool enabled): void! {
     save(settings)
 }
 
+pub fn set_theme(string value): void! {
+    var settings = load()
+    settings.theme = value
+    save(settings)
+}
+
+pub fn set_transport(string value): void! {
+    var settings = load()
+    settings.transport = transport_value(value)
+    save(settings)
+}
+
+pub fn set_http_idle_timeout_ms(int timeout_ms): void! {
+    var settings = load()
+    settings.http_idle_timeout_ms = timeout_ms < 0 ? 0 : timeout_ms
+    save(settings)
+}
+
+pub fn set_show_cache_miss_notices(bool enabled): void! {
+    var settings = load()
+    settings.show_cache_miss_notices = enabled
+    save(settings)
+}
+
+pub fn set_collapse_changelog(bool enabled): void! {
+    var settings = load()
+    settings.collapse_changelog = enabled
+    save(settings)
+}
+
+pub fn set_quiet_startup(bool enabled): void! {
+    var settings = load()
+    settings.quiet_startup = enabled
+    save(settings)
+}
+
+pub fn set_enable_install_telemetry(bool enabled): void! {
+    var settings = load()
+    settings.enable_install_telemetry = enabled
+    save(settings)
+}
+
+pub fn set_default_project_trust(string mode): void! {
+    var settings = load()
+    settings.default_project_trust = trust_mode(mode)
+    save(settings)
+}
+
+pub fn set_enable_skill_commands(bool enabled): void! {
+    var settings = load()
+    settings.enable_skill_commands = enabled
+    save(settings)
+}
+
+pub fn set_double_escape_action(string action): void! {
+    var settings = load()
+    settings.double_escape_action = double_escape(action)
+    save(settings)
+}
+
+pub fn set_tree_filter_mode(string mode): void! {
+    var settings = load()
+    settings.tree_filter_mode = tree_filter(mode)
+    save(settings)
+}
+
+pub fn set_show_hardware_cursor(bool enabled): void! {
+    var settings = load()
+    settings.show_hardware_cursor = enabled
+    save(settings)
+}
+
+pub fn set_editor_padding_x(int padding): void! {
+    var settings = load()
+    settings.editor_padding_x = padding_clamp(padding)
+    save(settings)
+}
+
+pub fn set_output_pad(int padding): void! {
+    var settings = load()
+    settings.output_pad = padding == 0 ? 0 : 1
+    save(settings)
+}
+
+pub fn set_terminal_clear_on_shrink(bool enabled): void! {
+    var settings = load()
+    settings.terminal_clear_on_shrink = enabled
+    save(settings)
+}
+
+pub fn set_terminal_progress(bool enabled): void! {
+    var settings = load()
+    settings.terminal_progress = enabled
+    save(settings)
+}
+
+pub fn set_warnings_anthropic_extra_usage(bool enabled): void! {
+    var settings = load()
+    settings.warnings_anthropic_extra_usage = enabled
+    save(settings)
+}
+
 pub fn settings_path(): string {
     return paths.settings_path()
 }
@@ -281,6 +549,45 @@ pub fn thinking_level(string value): string {
 }
 
 #local
+fn trust_mode(string value): string {
+    return value == 'always' || value == 'never' ? value : 'ask'
+}
+
+#local
+fn double_escape(string value): string {
+    return value == 'tree' || value == 'fork' || value == 'none' ? value : 'tree'
+}
+
+#local
+fn tree_filter(string value): string {
+    if value == 'no-tools' || value == 'user-only' || value == 'labeled-only' || value == 'all' {return value}
+    return 'default'
+}
+
+#local
+fn transport_value(string value): string {
+    if value == 'sse' || value == 'websocket' || value == 'websocket-cached' {return value}
+    return 'auto'
+}
+
+// Pi parseHttpIdleTimeoutMs: numeric >= 0, or the string "disabled" (0);
+// anything else keeps the inherited value (Adou load stays quiet where Pi
+// records a load error).
+#local
+fn http_idle_timeout({string:any} object, int fallback): int {
+    if !object.contains('httpIdleTimeoutMs') {return fallback}
+    any value = object['httpIdleTimeoutMs']
+    if value is f64 {
+        int parsed = value as f64 as int
+        return parsed >= 0 ? parsed : fallback
+    }
+    if value is string && (value as string).trim([' ', '\t']) == 'disabled' {
+        return 0
+    }
+    return fallback
+}
+
+#local
 fn string_value({string:any} object, string key, string fallback): string {
     if object.contains(key) && object[key] is string {return object[key] as string}
     return fallback
@@ -290,6 +597,12 @@ fn string_value({string:any} object, string key, string fallback): string {
 fn bool_value({string:any} object, string key, bool fallback): bool {
     if object.contains(key) && object[key] is bool {return object[key] as bool}
     return fallback
+}
+
+#local
+fn int_value({string:any} object, string key, int fallback): int {
+    if !object.contains(key) || !(object[key] is f64) {return fallback}
+    return object[key] as f64 as int
 }
 
 #local
@@ -316,4 +629,16 @@ fn autocomplete_clamp(int value): int {
 fn autocomplete_value({string:any} object, string key, int fallback): int {
     if !object.contains(key) || !(object[key] is f64) {return fallback}
     return object[key] as f64 as int
+}
+
+// Pi setEditorPaddingX clamps to [0, 3].
+#local
+fn padding_clamp(int value): int {
+    if value < 0 {
+        return 0
+    }
+    if value > 3 {
+        return 3
+    }
+    return value
 }

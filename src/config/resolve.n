@@ -19,12 +19,15 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
     if arguments.errors.len() > 0 {
         throw errorf('%s', join_errors(arguments.errors))
     }
-    bool project_trusted = trust.resolve_trust(arguments.trust_override_explicit, arguments.trust_override, cwd)
+    // defaultProjectTrust is Pi's one global-only settings key, so the trust
+    // decision needs the global file before the project merge exists.
+    var global_preferences = settings.load()
+    bool project_trusted = trust.resolve_trust(arguments.trust_override_explicit, arguments.trust_override, cwd, global_preferences.default_project_trust)
     [string] skill_paths = []
     for raw_path in arguments.skill_paths {
         skill_paths.push(path_utils.resolve_to_cwd(raw_path, cwd))
     }
-    var preferences = project_trusted ? settings.load_for(cwd) : settings.load()
+    var preferences = project_trusted ? settings.load_for(cwd) : global_preferences
     string requested_model = first(arguments.model, syscall.get_env('ADOU_MODEL'))
     string provider = first(arguments.provider, syscall.get_env('ADOU_PROVIDER'))
     bool model_explicit = arguments.model != '' || syscall.get_env('ADOU_MODEL') != ''
@@ -212,11 +215,15 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
         model.cost.output = 0.28
         model.cost.cache_read = 0.0028
     }
-    int timeout_ms = positive(arguments.timeout_ms, 120000)
+    // Pi httpIdleTimeoutMs supplies the default request timeout; an explicit
+    // --timeout wins, and a configured 0 ("disabled") flows through as the
+    // std client's no-timeout value.
+    int timeout_ms = positive(arguments.timeout_ms, preferences.http_idle_timeout_ms)
     int max_retries = arguments.max_retries >= 0 ? arguments.max_retries : 2
     string thinking = arguments.thinking_explicit ? arguments.thinking : model_suffix_thinking != '' ? model_suffix_thinking : scoped_thinking != '' ? scoped_thinking : preferences.default_thinking_level
     thinking = models.clamp_thinking_level(model, thinking)
     var options = new ai_types.stream_options_t(api_key = api_key, timeout_ms = timeout_ms, max_tokens = max_tokens, max_retries = max_retries, reasoning_effort = thinking, thinking_enabled = thinking != 'off')
+    options.transport = preferences.transport
     int reserve_tokens = positive(arguments.reserve_tokens, 16384)
     int keep_recent_tokens = positive(arguments.keep_recent_tokens, 20000)
     var compaction = compaction_types.settings_t {enabled: arguments.no_compaction ? false : preferences.auto_compaction, reserve_tokens: reserve_tokens, keep_recent_tokens: keep_recent_tokens,}
@@ -226,7 +233,7 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
     }
     string mode = arguments.mode
     bool print_mode = arguments.print_mode || mode == 'json'
-    return types.config_t {serve_port: arguments.serve_port, cwd: cwd, provider: provider, model: model, stream_options: options, compaction: compaction, thinking: thinking, session_path: arguments.session_path, session_id: arguments.session_id, session_dir: session_dir, fork_path: arguments.fork_path, session_name: arguments.session_name, system_prompt: arguments.system_prompt, append_system_prompts: arguments.append_system_prompts, continue_recent: arguments.continue_recent, resume: arguments.resume, print_mode: print_mode, mode: mode, export_path: arguments.export_path, list_models: arguments.list_models, list_models_pattern: arguments.list_models_pattern, verbose: arguments.verbose, debug: arguments.debug, offline: arguments.offline, trust_override: arguments.trust_override, trust_override_explicit: arguments.trust_override_explicit, project_trusted: project_trusted, retry_enabled: preferences.retry_enabled, retry_max_attempts: preferences.retry_max_attempts, retry_base_delay_ms: preferences.retry_base_delay_ms, no_context_files: arguments.no_context_files, no_tools: arguments.no_tools, no_builtin_tools: arguments.no_builtin_tools, scoped_models: arguments.scoped_models, scoped_models_explicit: arguments.scoped_models_explicit, tool_names: arguments.tool_names, exclude_tool_names: arguments.exclude_tool_names, no_session: arguments.no_session, provider_explicit: arguments.provider != '' || syscall.get_env('ADOU_PROVIDER') != '', model_explicit: arguments.model != '' || syscall.get_env('ADOU_MODEL') != '', thinking_explicit: arguments.thinking_explicit, api_key_explicit: arguments.api_key != '', steering_mode: preferences.steering_mode, follow_up_mode: preferences.follow_up_mode, hide_thinking: preferences.hide_thinking, skill_paths: skill_paths, no_skills: arguments.no_skills, initial_messages: arguments.messages,}
+    return types.config_t {serve_port: arguments.serve_port, cwd: cwd, provider: provider, model: model, stream_options: options, compaction: compaction, thinking: thinking, session_path: arguments.session_path, session_id: arguments.session_id, session_dir: session_dir, fork_path: arguments.fork_path, session_name: arguments.session_name, system_prompt: arguments.system_prompt, append_system_prompts: arguments.append_system_prompts, continue_recent: arguments.continue_recent, resume: arguments.resume, print_mode: print_mode, mode: mode, export_path: arguments.export_path, list_models: arguments.list_models, list_models_pattern: arguments.list_models_pattern, verbose: arguments.verbose, debug: arguments.debug, offline: arguments.offline, trust_override: arguments.trust_override, trust_override_explicit: arguments.trust_override_explicit, project_trusted: project_trusted, retry_enabled: preferences.retry_enabled, retry_max_attempts: preferences.retry_max_attempts, retry_base_delay_ms: preferences.retry_base_delay_ms, no_context_files: arguments.no_context_files, no_tools: arguments.no_tools, no_builtin_tools: arguments.no_builtin_tools, scoped_models: arguments.scoped_models, scoped_models_explicit: arguments.scoped_models_explicit, tool_names: arguments.tool_names, exclude_tool_names: arguments.exclude_tool_names, no_session: arguments.no_session, provider_explicit: arguments.provider != '' || syscall.get_env('ADOU_PROVIDER') != '', model_explicit: arguments.model != '' || syscall.get_env('ADOU_MODEL') != '', thinking_explicit: arguments.thinking_explicit, api_key_explicit: arguments.api_key != '', steering_mode: preferences.steering_mode, follow_up_mode: preferences.follow_up_mode, hide_thinking: preferences.hide_thinking, skill_paths: skill_paths, no_skills: arguments.no_skills, initial_messages: arguments.messages, default_project_trust: preferences.default_project_trust, enable_skill_commands: preferences.enable_skill_commands, quiet_startup: preferences.quiet_startup, transport: preferences.transport, http_idle_timeout_ms: preferences.http_idle_timeout_ms,}
 }
 
 // Shared skills options for a project cwd: explicit --skill paths always
@@ -235,14 +242,14 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
 // use the project's own stored decision (explicit --approve/--no-approve
 // still wins).
 pub fn skills_options_for(types.config_t config, string cwd): types.skills_options_t {
-    return types.skills_options_t {skill_paths: config.skill_paths, no_skills: config.no_skills, project_trusted: trust.resolve_trust(config.trust_override_explicit, config.trust_override, cwd), trust_override: config.trust_override, trust_override_explicit: config.trust_override_explicit,}
+    return types.skills_options_t {skill_paths: config.skill_paths, no_skills: config.no_skills, project_trusted: trust.resolve_trust(config.trust_override_explicit, config.trust_override, cwd, config.default_project_trust), trust_override: config.trust_override, trust_override_explicit: config.trust_override_explicit, default_project_trust: config.default_project_trust,}
 }
 
 // Trust gate for a skills_options_t against a concrete project cwd; the
 // captured options may outlive the launch directory (serve instances spawn
 // per-cwd runners, RPC get_commands follows each instance's session cwd).
 pub fn skills_trusted(types.skills_options_t options, string cwd): bool {
-    return trust.resolve_trust(options.trust_override_explicit, options.trust_override, cwd)
+    return trust.resolve_trust(options.trust_override_explicit, options.trust_override, cwd, options.default_project_trust)
 }
 
 #local

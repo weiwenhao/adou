@@ -2,6 +2,7 @@ import adou.src.agent.session_stream
 import adou.src.agent.types as agent_types
 import adou.src.ai.types as ai_types
 import adou.src.compaction.token_estimate
+import adou.src.session.cache_stats
 import adou.src.tools.types as tool_types
 import adou.src.tui.markdown
 import adou.src.tui.text_utils
@@ -52,6 +53,14 @@ pub type chat_t = struct {
     float total_cost
     float latest_cache_hit_rate = -1.0
     bool context_known = true
+    // Pi settings.outputPad: horizontal padding for user messages, assistant
+    // messages and thinking (0 or 1, default 1).
+    int output_pad = 1
+    // Pi settings.showCacheMissNotices: emit a transcript notice for
+    // significant prompt-cache misses after a response.
+    bool show_cache_miss_notices
+    ref<cache_stats.previous_request_t>? cache_previous = null
+    string cache_miss_notice
 }
 
 pub fn new(string model, string cwd): ref<chat_t> {
@@ -99,6 +108,14 @@ pub fn chat_t.set_context_known(&self, bool known) {
 
 pub fn chat_t.set_provider_visibility(&self, bool visible) {
     self.show_provider = visible
+}
+
+pub fn chat_t.set_output_pad(&self, int pad) {
+    self.output_pad = pad == 0 ? 0 : 1
+}
+
+pub fn chat_t.set_show_cache_miss_notices(&self, bool enabled) {
+    self.show_cache_miss_notices = enabled
 }
 
 pub fn chat_t.apply(&self, session_stream.event_t event): void! {
@@ -219,6 +236,7 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
         self.running = true
         self.status = 'Thinking...'
         self.error_message = ''
+        self.cache_miss_notice = ''
         return
     }
     if agent_event.kind == agent_types.EVENT_AGENT_END {
@@ -245,6 +263,7 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
             self.messages.push(message)
             self.streaming_assistant = null
             self.status = assistant.stop_reason == ai_types.STOP_ERROR ? 'Model error' : 'Thinking...'
+            self.update_cache_miss_notice(assistant)
         } else if agent_event.tool_message is ref<ai_types.tool_result_message_t> tool {
             ai_types.message_t message = tool
             self.messages.push(message)
@@ -278,16 +297,44 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
     }
 }
 
+// Pi maybeShowCacheMissNotice: after a completed assistant message, state
+// only observable facts (the miss, a model switch, or an idle gap past the
+// cache TTL).  The threshold mirrors Pi's addCacheMissNotice.
+pub fn chat_t.update_cache_miss_notice(&self, ref<ai_types.assistant_message_t> assistant) {
+    if !self.show_cache_miss_notices {
+        self.cache_miss_notice = ''
+        return
+    }
+    var miss = cache_stats.detect_miss(self.cache_previous, assistant)
+    if miss is ref<cache_stats.cache_miss_t> miss_value {
+        if miss_value.missed_tokens >= 20000 || miss_value.missed_cost >= 0.1 {
+            string label = 'Cache miss'
+            if miss_value.model_changed {
+                label = 'Cache miss after model switch'
+            } else if miss_value.idle_ms >= cache_stats.CACHE_TTL_MS {
+                label = fmt.sprintf('Cache miss after %dm idle', miss_value.idle_ms / 60000)
+            }
+            string cost = miss_value.missed_cost >= 0.01 ? fmt.sprintf(' (~$%.2f)', miss_value.missed_cost) : ''
+            self.cache_miss_notice = fmt.sprintf('%s: %d tokens re-billed%s', label, miss_value.missed_tokens, cost)
+        } else {
+            self.cache_miss_notice = ''
+        }
+    } else {
+        self.cache_miss_notice = ''
+    }
+    self.cache_previous = cache_stats.as_previous_request(assistant, miss is ref<cache_stats.cache_miss_t>)
+}
+
 pub fn chat_t.render(&self, int width): [string]! {
     if width <= 0 {
         throw errorf('chat width must be positive')
     }
     [string] result = vec<string>.cap_of(64)
     for message in self.messages {
-        result.append(render_message_lines(message, width, self.tool_output_expanded, self.thinking_visible))
+        result.append(render_message_lines(message, width, self.tool_output_expanded, self.thinking_visible, self.output_pad))
     }
     if self.streaming_assistant is ref<ai_types.assistant_message_t> assistant {
-        result.append(render_assistant_lines(assistant, width, true, self.thinking_visible))
+        result.append(render_assistant_lines(assistant, width, true, self.thinking_visible, self.output_pad))
     }
     if self.active_bash is ref<ai_types.bash_execution_message_t> bash {
         result.append(render_active_bash_lines(bash, width, self.spinner_index))
@@ -314,6 +361,9 @@ pub fn chat_t.render(&self, int width): [string]! {
     }
     if self.error_message != '' {
         result.append(wrapped_lines(theme.fg(theme.ERROR, 'Error: ' + self.error_message), width))
+    }
+    if self.cache_miss_notice != '' {
+        result.append(wrapped_lines(theme.fg(theme.WARNING, self.cache_miss_notice), width))
     }
     if self.status != '' {
         // Pi's countdown timer: the retry status re-renders the remaining
@@ -427,17 +477,17 @@ pub fn chat_t.clear(&self) {
 }
 
 #local
-fn render_message_lines(ai_types.message_t message, int width, bool tool_output_expanded, bool thinking_visible): [string]! {
+fn render_message_lines(ai_types.message_t message, int width, bool tool_output_expanded, bool thinking_visible, int output_pad): [string]! {
     [string] result = vec<string>.cap_of(8)
     if message is ref<ai_types.user_message_t> user {
         // Pi renders user messages through Markdown inside a Box with one
         // column of horizontal and one row of vertical padding. Keep the
         // complete row on the user background (including blank lines).
         result.push(colored_row(theme.user_bg(), '', width))
-        result.append(render_markdown_rows(user.content, width, theme.user_bg()))
+        result.append(render_markdown_rows(user.content, width, theme.user_bg(), output_pad))
         result.push(colored_row(theme.user_bg(), '', width))
     } else if message is ref<ai_types.assistant_message_t> assistant {
-        result.append(render_assistant_lines(assistant, width, false, thinking_visible))
+        result.append(render_assistant_lines(assistant, width, false, thinking_visible, output_pad))
     } else if message is ref<ai_types.tool_result_message_t> tool {
         string color = tool.is_error ? theme.ERROR : theme.SUCCESS
         string prefix = color + (tool.is_error ? '✗ ' : '✓ ') + theme.fg(theme.text(), tool.tool_name)
@@ -530,7 +580,7 @@ fn render_active_bash_lines(ref<ai_types.bash_execution_message_t> bash, int wid
 }
 
 #local
-fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width, bool streaming, bool thinking_visible): [string]! {
+fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width, bool streaming, bool thinking_visible, int output_pad): [string]! {
     [string] result = vec<string>.cap_of(16)
     bool had_content = false
     bool had_tool_calls = false
@@ -560,7 +610,7 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
         if block is ref<ai_types.text_content_t> text {
             string value = text.text.trim([' ', '\t', '\n', '\r'])
             if value != '' {
-                result.append(render_markdown_rows(value, width, ''))
+                result.append(render_markdown_rows(value, width, '', output_pad))
                 had_content = true
             }
             index += 1
@@ -582,7 +632,7 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
             }
             if thinking_blocks.len() > 0 {
                 string value = thinking_visible ? strings.join(thinking_blocks, '\n\n') : 'Thinking...'
-                result.append(render_padded_text(theme.italic(theme.fg(theme.THINKING, value)), width))
+                result.append(render_padded_text(theme.italic(theme.fg(theme.THINKING, value)), width, output_pad))
                 had_content = true
                 bool has_visible_after = false
                 for int after = index; after < assistant.content.len(); after += 1 {
@@ -616,20 +666,20 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
     if !streaming {
         if assistant.stop_reason == ai_types.STOP_LENGTH {
             result.push('')
-            result.append(render_padded_text(theme.fg(theme.ERROR, 'Error: Model stopped because it reached the maximum output token limit. The response may be incomplete.'), width))
+            result.append(render_padded_text(theme.fg(theme.ERROR, 'Error: Model stopped because it reached the maximum output token limit. The response may be incomplete.'), width, output_pad))
         } else if !had_tool_calls && assistant.stop_reason == ai_types.STOP_ABORTED {
             string message = assistant.error_message
             if message == '' || message == 'Request was aborted' {
                 message = 'Operation aborted'
             }
             result.push('')
-            result.append(render_padded_text(theme.fg(theme.ERROR, message), width))
+            result.append(render_padded_text(theme.fg(theme.ERROR, message), width, output_pad))
         } else if !had_tool_calls && assistant.stop_reason == ai_types.STOP_ERROR {
             string message = assistant.error_message == '' ? 'Unknown error' : 'Error: ' + assistant.error_message
             result.push('')
-            result.append(render_padded_text(theme.fg(theme.ERROR, message), width))
+            result.append(render_padded_text(theme.fg(theme.ERROR, message), width, output_pad))
         } else if !had_content && assistant.error_message != '' {
-            result.append(render_padded_text(theme.fg(theme.ERROR, assistant.error_message), width))
+            result.append(render_padded_text(theme.fg(theme.ERROR, assistant.error_message), width, output_pad))
         }
     }
     if streaming && had_content {
@@ -639,8 +689,8 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
 }
 
 #local
-fn render_markdown_rows(string value, int width, string background): [string]! {
-    int content_width = width - 2
+fn render_markdown_rows(string value, int width, string background, int output_pad): [string]! {
+    int content_width = width - 2 * output_pad
     if content_width < 1 {
         content_width = 1
     }
@@ -648,24 +698,30 @@ fn render_markdown_rows(string value, int width, string background): [string]! {
     [string] result = vec<string>.cap_of(markdown_lines.len())
     for line in markdown_lines {
         string styled = theme.fg(theme.text(), line)
-        string padded = pad_terminal_line(' ' + styled + ' ', width)
+        string padded = pad_terminal_line(pad_sides(styled, output_pad), width)
         result.push(background == '' ? padded : theme.background_line(background, padded, width))
     }
     return result
 }
 
 #local
-fn render_padded_text(string value, int width): [string]! {
-    int content_width = width - 2
+fn render_padded_text(string value, int width, int output_pad): [string]! {
+    int content_width = width - 2 * output_pad
     if content_width < 1 {
         content_width = 1
     }
     var wrapped = text_utils.wrap_text_with_ansi(value, content_width)
     [string] result = vec<string>.cap_of(wrapped.len())
     for line in wrapped {
-        result.push(pad_terminal_line(' ' + line + ' ', width))
+        result.push(pad_terminal_line(pad_sides(line, output_pad), width))
     }
     return result
+}
+
+// Pi outputPad: one column of horizontal padding (1, default) or none (0).
+#local
+fn pad_sides(string value, int output_pad): string {
+    return output_pad == 0 ? value : ' ' + value + ' '
 }
 
 #local

@@ -38,6 +38,9 @@ pub const CURSOR_HIDE = '\x1b[?25l'
 pub const CURSOR_SHOW = '\x1b[?25h'
 pub const SYNC_OUTPUT_ON = '\x1b[?2026h'
 pub const SYNC_OUTPUT_OFF = '\x1b[?2026l'
+// Pi terminal.ts OSC 9;4 progress: 3 = indeterminate progress, 0 = clear.
+pub const PROGRESS_ACTIVE = '\x1b]9;4;3\x07'
+pub const PROGRESS_CLEAR = '\x1b]9;4;0;\x07'
 
 pub type size_t = struct {
     int rows
@@ -217,6 +220,18 @@ pub fn terminal_t.begin_sync(&self):void! {
 
 pub fn terminal_t.end_sync(&self):void! {
     self.write(SYNC_OUTPUT_OFF)
+}
+
+// Pi settings.terminal.showTerminalProgress: OSC 9;4 state transitions
+// emitted on stream start/finish by the view.
+pub fn terminal_t.set_progress(&self, bool active):void! {
+    self.write(active ? PROGRESS_ACTIVE : PROGRESS_CLEAR)
+}
+
+// Pi settings.showHardwareCursor: show/hide the hardware cursor while the
+// renderer keeps positioning it.  Entry still starts hidden by default.
+pub fn terminal_t.set_hardware_cursor(&self, bool visible):void! {
+    self.write(visible ? CURSOR_SHOW : CURSOR_HIDE)
 }
 
 pub fn terminal_t.restore(&self):void! {

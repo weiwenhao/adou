@@ -259,9 +259,10 @@ pub fn runner_t.replace_repository(&self, ref<repository.manager_t> next): void!
 }
 
 // Apply an already-resolved (trust-aware) settings snapshot to the core
-// session preferences: queue modes, compaction and retry policy.  The
-// caller — not core — decides whether the snapshot merged project settings
-// (trusted cwd) or is global-only (untrusted cwd).
+// session preferences: queue modes, compaction and retry policy, plus the
+// Batch 3 transport and HTTP idle timeout settings.  The caller — not core —
+// decides whether the snapshot merged project settings (trusted cwd) or is
+// global-only (untrusted cwd).
 pub fn runner_t.apply_preferences_snapshot(&self, settings.settings_t preferences) {
     self.lock.lock()
     self.agent_config.queues.steering_mode = preferences.steering_mode
@@ -270,6 +271,8 @@ pub fn runner_t.apply_preferences_snapshot(&self, settings.settings_t preference
     self.retry_enabled = preferences.retry_enabled
     self.retry_max_attempts = preferences.retry_max_attempts
     self.retry_base_delay_ms = preferences.retry_base_delay_ms
+    self.agent_config.stream_options.transport = preferences.transport
+    self.agent_config.stream_options.timeout_ms = preferences.http_idle_timeout_ms
     self.lock.unlock()
 }
 
@@ -295,6 +298,8 @@ pub fn runner_t.publish_rpc_resources(&self, ref<resource_snapshot.resource_snap
         self.retry_enabled = snapshot.settings.retry_enabled
         self.retry_max_attempts = snapshot.settings.retry_max_attempts
         self.retry_base_delay_ms = snapshot.settings.retry_base_delay_ms
+        self.agent_config.stream_options.transport = snapshot.settings.transport
+        self.agent_config.stream_options.timeout_ms = snapshot.settings.http_idle_timeout_ms
     }
     self.lock.unlock()
 }
@@ -565,6 +570,20 @@ pub fn runner_t.set_auto_retry(&self, bool enabled): void! {
     self.retry_enabled = enabled
     self.lock.unlock()
     settings.set_retry_enabled(enabled)
+}
+
+// Batch 3: runtime-only mirrors for the transport and HTTP idle timeout
+// settings; persistence goes through the view's trust-aware snapshot save.
+pub fn runner_t.set_runtime_transport(&self, string transport) {
+    self.lock.lock()
+    self.agent_config.stream_options.transport = transport
+    self.lock.unlock()
+}
+
+pub fn runner_t.set_runtime_http_idle_timeout_ms(&self, int timeout_ms) {
+    self.lock.lock()
+    self.agent_config.stream_options.timeout_ms = timeout_ms
+    self.lock.unlock()
 }
 
 pub fn runner_t.refresh_auth(&self): void! {
