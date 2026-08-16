@@ -81,3 +81,53 @@ test 'unknown provider is a recoverable configuration error' {
     }
     assert(failed)
 }
+
+test 'B3 transport and httpIdleTimeoutMs flow into the runtime config' {
+    string agent_dir = isolate_env()
+    os.mkdirs(agent_dir, 0o755) catch error {}
+    var file = fs.open(path.join(agent_dir, 'settings.json'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    file.write('{"transport":"websocket","httpIdleTimeoutMs":60000}' as [u8])
+    file.close()
+    var config = resolve.resolve(args.parse(['adou']), '/tmp')
+    assert(config.stream_options.transport == 'websocket')
+    assert(config.transport == 'websocket')
+    assert(config.stream_options.timeout_ms == 60000)
+    assert(config.http_idle_timeout_ms == 60000)
+    // "disabled" flows through as the std client's no-timeout value.
+    var disabled_file = fs.open(path.join(agent_dir, 'settings.json'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    disabled_file.write('{"httpIdleTimeoutMs":"disabled"}' as [u8])
+    disabled_file.close()
+    var disabled_config = resolve.resolve(args.parse(['adou']), '/tmp')
+    assert(disabled_config.stream_options.timeout_ms == 0)
+    // An explicit --timeout-ms wins over the setting.
+    var explicit_config = resolve.resolve(args.parse(['adou', '--timeout-ms', '90000']), '/tmp')
+    assert(explicit_config.stream_options.timeout_ms == 90000)
+}
+
+test 'B3 defaultProjectTrust decides projects without stored decisions' {
+    string agent_dir = isolate_env()
+    os.mkdirs(agent_dir, 0o755) catch error {}
+    var file = fs.open(path.join(agent_dir, 'settings.json'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    file.write('{"defaultProjectTrust":"never"}' as [u8])
+    file.close()
+    string project = path.join('/tmp', 'adou-resolve-trust-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    os.mkdirs(path.join(project, '.pi', 'skills'), 0o700)
+    var skill = fs.open(path.join(project, '.pi', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    skill.write('x' as [u8])
+    skill.close()
+    var never_config = resolve.resolve(args.parse(['adou']), project)
+    assert(!never_config.project_trusted)
+    // Global-only: a project settings file cannot override the trust mode.
+    os.mkdirs(path.join(project, '.pi'), 0o700) catch error {}
+    var project_settings = fs.open(path.join(project, '.pi', 'settings.json'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    project_settings.write('{"defaultProjectTrust":"always"}' as [u8])
+    project_settings.close()
+    var still_never = resolve.resolve(args.parse(['adou']), project)
+    assert(!still_never.project_trusted)
+    // 'always' trusts without a stored decision.
+    var agent_file = fs.open(path.join(agent_dir, 'settings.json'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    agent_file.write('{"defaultProjectTrust":"always"}' as [u8])
+    agent_file.close()
+    var always_config = resolve.resolve(args.parse(['adou']), project)
+    assert(always_config.project_trusted)
+}

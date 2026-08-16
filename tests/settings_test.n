@@ -134,3 +134,132 @@ test 'compaction sub-settings round trip like Pi' {
     local_settings.keep_recent_tokens = original_keep
     config_settings.save(local_settings) catch error {}
 }
+
+test 'B3 new settings defaults match Pi 0.82.1' {
+    var defaults = config_settings.settings_t{}
+    assert(defaults.transport == 'auto')
+    assert(defaults.http_idle_timeout_ms == 300000)
+    assert(!defaults.show_cache_miss_notices)
+    assert(!defaults.collapse_changelog)
+    assert(!defaults.quiet_startup)
+    assert(defaults.enable_install_telemetry)
+    assert(defaults.default_project_trust == 'ask')
+    assert(defaults.enable_skill_commands)
+    assert(defaults.double_escape_action == 'tree')
+    assert(defaults.tree_filter_mode == 'default')
+    assert(!defaults.show_hardware_cursor)
+    assert(defaults.editor_padding_x == 0)
+    assert(defaults.output_pad == 1)
+    assert(!defaults.terminal_clear_on_shrink)
+    assert(!defaults.terminal_progress)
+    assert(defaults.warnings_anthropic_extra_usage)
+    assert(defaults.autocomplete_max_visible == 5)
+    assert(defaults.retry_enabled && defaults.retry_max_attempts == 3 && defaults.retry_base_delay_ms == 2000)
+}
+
+test 'B3 load reads the Pi nested shapes and migrates legacy flat keys' {
+    string home = '/tmp/adou-settings-b3-load-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    write_settings_file(config_settings.settings_path(), '{"transport":"websocket","httpIdleTimeoutMs":"disabled","showCacheMissNotices":true,"collapseChangelog":true,"quietStartup":true,"enableInstallTelemetry":false,"defaultProjectTrust":"never","enableSkillCommands":false,"doubleEscapeAction":"none","treeFilterMode":"user-only","showHardwareCursor":true,"editorPaddingX":9,"outputPad":0,"autocompleteMaxVisible":17,"terminal":{"clearOnShrink":true,"showTerminalProgress":true},"warnings":{"anthropicExtraUsage":false},"compaction":{"enabled":false,"reserveTokens":22222,"keepRecentTokens":33333},"retry":{"enabled":false,"maxRetries":7,"baseDelayMs":4444},"theme":"light/dark"}')
+    var loaded = config_settings.load()
+    assert(loaded.transport == 'websocket')
+    assert(loaded.http_idle_timeout_ms == 0)
+    assert(loaded.show_cache_miss_notices && loaded.collapse_changelog && loaded.quiet_startup)
+    assert(!loaded.enable_install_telemetry)
+    assert(loaded.default_project_trust == 'never')
+    assert(!loaded.enable_skill_commands)
+    assert(loaded.double_escape_action == 'none')
+    assert(loaded.tree_filter_mode == 'user-only')
+    assert(loaded.show_hardware_cursor)
+    assert(loaded.editor_padding_x == 3)
+    assert(loaded.output_pad == 0)
+    assert(loaded.autocomplete_max_visible == 17)
+    assert(loaded.terminal_clear_on_shrink && loaded.terminal_progress)
+    assert(!loaded.warnings_anthropic_extra_usage)
+    assert(!loaded.auto_compaction && loaded.reserve_tokens == 22222 && loaded.keep_recent_tokens == 33333)
+    assert(!loaded.retry_enabled && loaded.retry_max_attempts == 7 && loaded.retry_base_delay_ms == 4444)
+    assert(loaded.theme == 'light/dark')
+    // Legacy flat keys migrate to the nested shapes.
+    write_settings_file(config_settings.settings_path(), '{"autoCompaction":false,"retryEnabled":false,"retryMaxAttempts":9,"retryBaseDelayMs":5555}')
+    var migrated = config_settings.load()
+    assert(!migrated.auto_compaction)
+    assert(!migrated.retry_enabled && migrated.retry_max_attempts == 9 && migrated.retry_base_delay_ms == 5555)
+    // Pi's nested shape wins over a conflicting legacy flat key.
+    write_settings_file(config_settings.settings_path(), '{"autoCompaction":false,"compaction":{"enabled":true},"retryEnabled":false,"retry":{"enabled":true}}')
+    var nested_wins = config_settings.load()
+    assert(nested_wins.auto_compaction)
+    assert(nested_wins.retry_enabled)
+    os.rmdir(home, true)
+}
+
+test 'B3 save writes the Pi nested shapes and drops legacy flat keys' {
+    string home = '/tmp/adou-settings-b3-save-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    var value = config_settings.settings_t {transport: 'sse', http_idle_timeout_ms: 120000, quiet_startup: true, enable_install_telemetry: false, default_project_trust: 'always', double_escape_action: 'fork', tree_filter_mode: 'labeled-only', show_hardware_cursor: true, editor_padding_x: 2, output_pad: 0, terminal_clear_on_shrink: true, terminal_progress: true, warnings_anthropic_extra_usage: false, auto_compaction: false, retry_enabled: false, retry_max_attempts: 6, retry_base_delay_ms: 7000,}
+    config_settings.save(value) catch error {}
+    var input = fs.open(config_settings.settings_path(), syscall.O_RDONLY, 0)
+    string content = input.content() catch error {''}
+    input.close()
+    assert(content.contains('"transport":"sse"') || content.contains('"transport": "sse"'))
+    assert(content.contains('"httpIdleTimeoutMs":120000') || content.contains('"httpIdleTimeoutMs": 120000'))
+    assert(content.contains('"defaultProjectTrust":"always"') || content.contains('"defaultProjectTrust": "always"'))
+    assert(content.contains('"doubleEscapeAction":"fork"') || content.contains('"doubleEscapeAction": "fork"'))
+    assert(content.contains('"treeFilterMode":"labeled-only"') || content.contains('"treeFilterMode": "labeled-only"'))
+    assert(content.contains('"enabled":false'))
+    assert(content.contains('"maxRetries":6') || content.contains('"maxRetries": 6'))
+    assert(content.contains('"baseDelayMs":7000') || content.contains('"baseDelayMs": 7000'))
+    assert(content.contains('"clearOnShrink":true') || content.contains('"clearOnShrink": true'))
+    assert(content.contains('"showTerminalProgress":true') || content.contains('"showTerminalProgress": true'))
+    assert(content.contains('"anthropicExtraUsage":false') || content.contains('"anthropicExtraUsage": false'))
+    assert(!content.contains('retryEnabled'))
+    assert(!content.contains('autoCompaction'))
+    os.rmdir(home, true)
+}
+
+test 'B3 project overrides merge per field and trust stays global-only' {
+    string home = '/tmp/adou-settings-b3-project-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    var global = config_settings.settings_t {transport: 'auto', quiet_startup: false, editor_padding_x: 0, default_project_trust: 'never', terminal_clear_on_shrink: false, terminal_progress: true, autocomplete_max_visible: 5,}
+    config_settings.save(global)
+    string cwd = path.join(home, 'project')
+    write_settings_file(path.join(cwd, '.pi/settings.json'), '{"transport":"websocket","quietStartup":true,"editorPaddingX":3,"defaultProjectTrust":"always","terminal":{"clearOnShrink":true},"autocompleteMaxVisible":12}')
+    var merged = config_settings.load_for(cwd)
+    assert(merged.transport == 'websocket')
+    assert(merged.quiet_startup)
+    assert(merged.editor_padding_x == 3)
+    // defaultProjectTrust is Pi's global-only key: project files cannot
+    // override it.
+    assert(merged.default_project_trust == 'never')
+    // Nested terminal objects merge field by field.
+    assert(merged.terminal_clear_on_shrink && merged.terminal_progress)
+    assert(merged.autocomplete_max_visible == 12)
+    // The untrusted path stays strictly global.
+    var untrusted = config_settings.load_trusted_for(cwd, false)
+    assert(untrusted.transport == 'auto' && !untrusted.quiet_startup && untrusted.default_project_trust == 'never')
+    os.rmdir(home, true)
+}
+
+test 'B3 reopen round trip preserves every new field' {
+    string home = '/tmp/adou-settings-b3-reopen-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    var value = config_settings.settings_t {transport: 'websocket-cached', http_idle_timeout_ms: 30000, show_cache_miss_notices: true, collapse_changelog: true, quiet_startup: true, enable_install_telemetry: false, default_project_trust: 'never', enable_skill_commands: false, double_escape_action: 'none', tree_filter_mode: 'all', show_hardware_cursor: true, editor_padding_x: 1, output_pad: 0, terminal_clear_on_shrink: true, terminal_progress: true, warnings_anthropic_extra_usage: false, theme: 'dark/light',}
+    config_settings.save(value) catch error {}
+    var reopened = config_settings.load()
+    assert(reopened.transport == 'websocket-cached')
+    assert(reopened.http_idle_timeout_ms == 30000)
+    assert(reopened.show_cache_miss_notices && reopened.collapse_changelog && reopened.quiet_startup)
+    assert(!reopened.enable_install_telemetry)
+    assert(reopened.default_project_trust == 'never')
+    assert(!reopened.enable_skill_commands)
+    assert(reopened.double_escape_action == 'none' && reopened.tree_filter_mode == 'all')
+    assert(reopened.show_hardware_cursor)
+    assert(reopened.editor_padding_x == 1 && reopened.output_pad == 0)
+    assert(reopened.terminal_clear_on_shrink && reopened.terminal_progress)
+    assert(!reopened.warnings_anthropic_extra_usage)
+    assert(reopened.theme == 'dark/light')
+    os.rmdir(home, true)
+}

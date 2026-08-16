@@ -185,3 +185,51 @@ test 'tool output diff bodies render with per-line colors like Pi' {
     var plain_lines = strings.join(value.render(60), '\n')
     assert(!plain_lines.contains('-just') && !plain_lines.contains('+just'))
 }
+
+test 'B3 outputPad 0 widens the user message content area' {
+    var value = chat.new('mock-model', '/tmp/project')
+    // 19 characters at width 20: pad 1 leaves 18 content columns (wraps to
+    // two rows), pad 0 leaves 20 (one row).
+    string wide = ''
+    for int index = 0; index < 19; index += 1 {
+        wide += 'x'
+    }
+    types.message_t history = new types.user_message_t(content = wide)
+    value.load_messages([history])
+    var padded = value.render(20)
+    assert(padded.len() == 4)
+    value.set_output_pad(0)
+    var unpadded = value.render(20)
+    assert(unpadded.len() == 3)
+}
+
+test 'B3 cache miss notices appear only for significant misses when enabled' {
+    var value = chat.new('mock-model', '/tmp/project')
+    value.set_show_cache_miss_notices(true)
+    var first = new types.assistant_message_t(provider = 'openai', model = 'gpt', timestamp = 1000, stop_reason = types.STOP_STOP)
+    first.usage.input = 30000
+    var first_event = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, assistant_message: first,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: first_event,})
+    assert(value.cache_miss_notice == '')
+    // Second response: 30k prompt with 5k cache read -> 25k re-billed tokens.
+    var second = new types.assistant_message_t(provider = 'openai', model = 'gpt', timestamp = 2000, stop_reason = types.STOP_STOP)
+    second.usage.input = 25000
+    second.usage.cache_read = 5000
+    var second_event = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, assistant_message: second,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: second_event,})
+    assert(value.cache_miss_notice.contains('Cache miss'))
+    assert(value.cache_miss_notice.contains('tokens re-billed'))
+    assert(strings.join(value.render(120), '\n').contains('Cache miss'))
+    // Disabled notices never compute or render a notice line.
+    var off = chat.new('mock-model', '/tmp/project')
+    var off_first = new types.assistant_message_t(provider = 'openai', model = 'gpt', timestamp = 1000, stop_reason = types.STOP_STOP)
+    off_first.usage.input = 30000
+    var off_first_event = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, assistant_message: off_first,}
+    off.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: off_first_event,})
+    var off_second = new types.assistant_message_t(provider = 'openai', model = 'gpt', timestamp = 2000, stop_reason = types.STOP_STOP)
+    off_second.usage.input = 25000
+    off_second.usage.cache_read = 5000
+    var off_second_event = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, assistant_message: off_second,}
+    off.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: off_second_event,})
+    assert(off.cache_miss_notice == '')
+}

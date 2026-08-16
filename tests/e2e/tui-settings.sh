@@ -1,10 +1,10 @@
 #!/bin/sh
 set -eu
 
-# PTY e2e for the settings selector: the thinking submenu opens from the
-# settings list, a level applies and closes back to settings, the Theme
-# entry toggles the light variant with an immediate preview, and the TUI
-# restores the terminal on exit.
+# PTY e2e for the Batch 3 settings selector: the Pi-ordered list shows the
+# EXCLUDED image rows, value rows cycle on Enter (transport), the thinking
+# submenu still opens from the list, and the transport change persists to
+# settings.json.
 binary=${ADOU_BIN:-$(CDPATH= cd -- "$(dirname -- "$0")/../../build/bin" && pwd)/adou}
 if [ ! -x "$binary" ]; then
     echo "e2e: Adou binary not found: $binary" >&2
@@ -14,6 +14,7 @@ fi
 ADOU_BIN="$binary" python3 - <<'PY'
 import errno
 import fcntl
+import json
 import os
 import pty
 import select
@@ -26,16 +27,17 @@ import time
 
 binary = os.environ["ADOU_BIN"]
 root = tempfile.mkdtemp(prefix="adou-tui-settings-")
+agent = os.path.join(root, "agent")
 env = os.environ.copy()
 env.update(
     {
-        "PI_CODING_AGENT_DIR": os.path.join(root, "agent"),
+        "PI_CODING_AGENT_DIR": agent,
         "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
     }
 )
 
-os.makedirs(os.path.join(root, "agent"), exist_ok=True)
-open(os.path.join(root, "agent", ".adou-setup"), "w").close()
+os.makedirs(agent, exist_ok=True)
+open(os.path.join(agent, ".adou-setup"), "w").close()
 
 pid, fd = pty.fork()
 if pid == 0:
@@ -85,6 +87,13 @@ def key(key_bytes, until, timeout=4.0):
     return collect(until, timeout=timeout)
 
 
+def downs(count):
+    for _ in range(count):
+        os.write(fd, b"\x1b[B")
+        time.sleep(0.12)
+    collect(timeout=0.4)
+
+
 try:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
     if not collect(b"\x1b[>1u", timeout=10.0):
@@ -93,20 +102,39 @@ try:
     if not key(b"/settings\r", b"Settings", timeout=5.0):
         raise SystemExit("/settings did not open the settings selector")
     collect(timeout=0.3)
-    if b"Auto-retry" not in bytes(output) or b"Theme:" not in bytes(output):
-        raise SystemExit("settings list is missing entries")
+    # Pi-order list: the top of the list (visible viewport) shows the
+    # EXCLUDED image rows and the leading entries.
+    for marker in (
+        b"Auto-compact:",
+        b"Show images: EXCLUDED",
+        b"Image width: EXCLUDED",
+        b"Auto-resize images: EXCLUDED",
+        b"Block images: EXCLUDED",
+        b"Skill commands:",
+        b"Show hardware cursor:",
+        b"Editor padding:",
+        b"Output padding:",
+        b"Autocomplete max items:",
+        b"Clear on shrink:",
+        b"Terminal progress:",
+    ):
+        if marker not in bytes(output):
+            raise SystemExit(f"settings list is missing entry: {marker!r}")
 
-    # Enter opens the thinking level submenu; selecting a level applies it.
+    # Transport row (14 downs from Auto-compact): Enter cycles auto -> sse.
+    downs(14)
+    if b"Transport:" not in bytes(output):
+        raise SystemExit("transport row did not scroll into view")
+    if not key(b"\r", b"Transport: sse", timeout=4.0):
+        raise SystemExit("transport did not cycle to sse")
+
+    # Thinking row (11 more downs from Transport): the submenu still opens
+    # from the list and applying a level returns to the settings list.
+    downs(11)
     if not key(b"\r", b"Thinking Level", timeout=4.0):
-        out = bytes(output)
         raise SystemExit("enter did not open the thinking submenu")
-    if not key(b"\r", b"Thinking:", timeout=4.0):
+    if not key(b"\r", b"Thinking level:", timeout=4.0):
         raise SystemExit("selecting a level did not return to settings")
-
-    # The settings list still shows every entry after the submenu round
-    # trip, including the Theme row (switching is covered by theme_test).
-    if b"Theme:" not in bytes(output):
-        raise SystemExit("theme entry missing from the settings list")
 
     # Escape cancels and the TUI stays alive for a clean quit.
     os.write(fd, b"\x1b")
@@ -119,6 +147,12 @@ try:
     exit_code = os.waitstatus_to_exitcode(status)
     if exit_code != 0:
         raise SystemExit(f"TUI exited with status {exit_code}")
+
+    # The transport change was persisted with the Pi key name.
+    with open(os.path.join(agent, "settings.json")) as raw:
+        settings = json.load(raw)
+        if settings.get("transport") != "sse":
+            raise SystemExit("saved settings do not carry transport sse")
 finally:
     try:
         os.close(fd)
@@ -136,4 +170,4 @@ finally:
     shutil.rmtree(root, ignore_errors=True)
 PY
 
-echo "e2e: settings thinking submenu and theme preview work in a PTY"
+echo "e2e: settings list order, value cycling, submenu and persistence work in a PTY"

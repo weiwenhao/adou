@@ -201,6 +201,20 @@ test 'session forwards lifecycle and persists each completed message' {
     assert(count_kind(result[0], session_stream.EVENT_SESSION_END) == 1)
 }
 
+test 'B3 apply_preferences_snapshot applies transport and http idle timeout' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    var preferences = settings.settings_t {transport: 'websocket', http_idle_timeout_ms: 60000}
+    runner.apply_preferences_snapshot(preferences)
+    assert(runner.agent_config.stream_options.transport == 'websocket')
+    assert(runner.agent_config.stream_options.timeout_ms == 60000)
+    runner.set_runtime_transport('sse')
+    runner.set_runtime_http_idle_timeout_ms(0)
+    assert(runner.agent_config.stream_options.transport == 'sse')
+    assert(runner.agent_config.stream_options.timeout_ms == 0)
+}
+
 test 'tool prompt forwards complete agent and session lifecycle in Pi order' {
     var manager = repository.in_memory('/tmp')
     var fixture = new provider_fixture_t(agent_responses = [assistant_tool('session-call'), assistant('final answer', ai_types.STOP_STOP, '', 2, 3)])

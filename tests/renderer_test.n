@@ -90,6 +90,9 @@ test 'deleting more than one viewport clears with a full redraw' {
 
 test 'shrink clears deleted rows through differential output' {
     var value = renderer.new()
+    // Pi settings.terminal.clearOnShrink (default off): the clearing
+    // behavior is opt-in; the existing shrink contract runs with it on.
+    value.set_clear_on_shrink(true)
     var terminal = virtual_terminal.new(20, 5)
     terminal.write(value.render(['one', 'two', 'three'], 20, 5).output)
     var shrink = value.render(['one'], 20, 5)
@@ -99,8 +102,21 @@ test 'shrink clears deleted rows through differential output' {
     assert(screen[0] == 'one' && screen[1] == '' && screen[2] == '')
 }
 
+test 'clearOnShrink off leaves shrunk rows untouched like Pi default' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    terminal.write(value.render(['one', 'two', 'three'], 20, 5).output)
+    var shrink = value.render(['one'], 20, 5)
+    assert(shrink.strategy == renderer.STRATEGY_DIFF)
+    terminal.write(shrink.output)
+    var screen = terminal.snapshot()
+    // Pi default: the previous rows stay visible below the shrunk content.
+    assert(screen[0] == 'one' && screen[1] == 'two' && screen[2] == 'three')
+}
+
 test 'shrink after a changed first line preserves the replacement line' {
     var value = renderer.new()
+    value.set_clear_on_shrink(true)
     var terminal = virtual_terminal.new(20, 5)
     terminal.write(value.render(['old', 'two', 'three'], 20, 5).output)
     terminal.write(value.render(['NEW'], 20, 5).output)
@@ -110,6 +126,7 @@ test 'shrink after a changed first line preserves the replacement line' {
 
 test 'shrink after a changed prefix clears only the deleted tail' {
     var value = renderer.new()
+    value.set_clear_on_shrink(true)
     var terminal = virtual_terminal.new(20, 5)
     terminal.write(value.render(['old', 'two', 'three', 'four'], 20, 5).output)
     terminal.write(value.render(['NEW', 'tail'], 20, 5).output)

@@ -123,14 +123,27 @@ try:
     if not key(b"/settings\r", b"Settings", timeout=5.0):
         raise SystemExit("/settings did not open")
     collect(timeout=0.3)
-    # Move down to the Theme entry (last row) and toggle it; the light
-    # variant renders and the choice is saved to settings.json.
-    for _ in range(6):
+    # Move down to the Theme row (26 downs from Auto-compact) and open the
+    # theme submenu.  Like Pi, the submenu pre-selects the current theme
+    # (dark), so one down reaches light; Enter applies it and the choice is
+    # saved to settings.json.
+    for _ in range(26):
         os.write(fd, b"\x1b[B")
-        time.sleep(0.4)
+        time.sleep(0.12)
     collect(timeout=0.5)
-    if not key(b"\r", b"Theme: light", timeout=4.0):
-        raise SystemExit("theme toggle did not save the light variant")
+    if not key(b"\r", b"Automatic", timeout=4.0):
+        raise SystemExit("theme submenu did not open")
+    os.write(fd, b"\x1b[B")
+    time.sleep(0.12)
+    # Enter on light applies and returns to the settings list (top viewport).
+    if not key(b"\r", b"Auto-compact:", timeout=4.0):
+        raise SystemExit("theme selection did not return to the settings list")
+    for _ in range(26):
+        os.write(fd, b"\x1b[B")
+        time.sleep(0.12)
+    collect(timeout=0.5)
+    if b"Theme: light" not in bytes(output):
+        raise SystemExit("theme row does not show the light variant")
     quit_tui(fd, pid, status)
 
     # Restart: the theme must be restored from settings.
