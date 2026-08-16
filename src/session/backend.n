@@ -179,10 +179,14 @@ pub fn delete_session_file(string file_path, string cwd): (bool, string) {
         // deletion, so a missing target is already deleted.
         return (true, 'Session file does not exist')
     }
+    // B3-EXT-01: only a completed trash run that actually removed the file
+    // counts as a trash success.  A spawn failure (or a trash tool that
+    // exits 0 without moving the file) falls through to the unlink fallback
+    // instead of reporting a deletion that never happened.
     var trashed = command.argv(cwd, '/bin/sh', ['trash', file_path]) catch error {
-        command.result_t {}
+        command.result_t {exit_code: -1}
     }
-    if trashed.exit_code == 0 || !path_utils.exists(file_path) {
+    if trashed.exit_code == 0 && !path_utils.exists(file_path) {
         return (true, 'Session moved to trash')
     }
     os.remove(file_path) catch error {
