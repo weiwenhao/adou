@@ -175,6 +175,13 @@ pub type model_t = struct {
 // A registered provider. The openai-completions / anthropic-messages /
 // openai-responses families share one stream implementation per api, so a
 // provider definition only needs identity, endpoint and auth env vars.
+//
+// supports_api_key_login is an explicit auth capability (B1-R2-04): it
+// decides whether the provider may appear in the /login API-key completion
+// and login surface.  It must never be inferred from env_vars length --
+// Bedrock/Vertex carry no env var yet are API-key login providers, while
+// openai-codex is OAuth-only (false).  Runtime-registered providers default
+// to true and are governed by the same field.
 pub type provider_def_t = struct {
     string id
     string name
@@ -182,6 +189,7 @@ pub type provider_def_t = struct {
     string base_url
     [string] env_vars = []
     {string:string} headers = {}
+    bool supports_api_key_login = true
 }
 pub type stream_options_t = struct {
     string api_key

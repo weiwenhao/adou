@@ -41,6 +41,13 @@ test 'runtime providers do not shadow built-ins unless registered' {
 }
 
 test 'provider auth status surface mirrors the credential sources' {
+    // Isolate from the real agent dir: without PI_CODING_AGENT_DIR the
+    // credential path falls back to $HOME/.adou/agent/auth.json, and a
+    // developer's real auth.json (e.g. a stored deepseek key) would make
+    // has_configured_auth('deepseek') true no matter what the env says.
+    string saved_home = syscall.get_env('HOME')
+    string scratch_home = syscall.get_env('PWD') + '/.scratch-registry-auth'
+    syscall.set_env('HOME', scratch_home)
     syscall.set_env('DEEPSEEK_API_KEY', '')
     assert(registry.has_configured_auth('deepseek') == false)
     var unconfigured = registry.get_provider_auth_status('deepseek')
@@ -56,4 +63,157 @@ test 'provider auth status surface mirrors the credential sources' {
     assert(registry.get_api_key_for_provider('deepseek') == 'runtime-key')
     auth.remove_runtime_api_key('deepseek')
     syscall.set_env('DEEPSEEK_API_KEY', '')
+    syscall.set_env('HOME', saved_home)
+}
+
+test 'B1-R2-04 openai-codex is OAuth-only and bedrock/vertex are API-key' {
+    var codex = registry.find_def('openai-codex')
+    assert(!(codex is null))
+    if !(codex is null) {
+        var def = codex as types.provider_def_t
+        assert(!def.supports_api_key_login)
+    }
+    var bedrock = registry.find_def('amazon-bedrock')
+    if !(bedrock is null) {
+        var def = bedrock as types.provider_def_t
+        // Explicit capability, not inferred from the empty env_vars list.
+        assert(def.env_vars.len() == 0)
+        assert(def.supports_api_key_login)
+    }
+    var vertex = registry.find_def('google-vertex')
+    if !(vertex is null) {
+        var def = vertex as types.provider_def_t
+        assert(def.env_vars.len() == 0)
+        assert(def.supports_api_key_login)
+    }
+    // OAuth-only providers never surface as API-key login candidates.
+    for option in registry.login_completion_options() {
+        assert(option.id != 'openai-codex')
+        assert(option.description != 'OpenAI Codex · API key')
+    }
+    // Bedrock/Vertex are present with their real names and API-key text.
+    bool saw_bedrock = false
+    bool saw_vertex = false
+    for option in registry.login_completion_options() {
+        if option.id == 'amazon-bedrock' {
+            saw_bedrock = true
+            assert(option.description == 'Amazon Bedrock · API key')
+        }
+        if option.id == 'google-vertex' {
+            saw_vertex = true
+            assert(option.description == 'Google Vertex AI · API key')
+        }
+    }
+    assert(saw_bedrock && saw_vertex)
+    assert(registry.supports_api_key_login('amazon-bedrock'))
+    assert(registry.supports_api_key_login('google-vertex'))
+    assert(!registry.supports_api_key_login('openai-codex'))
+    assert(!registry.supports_api_key_login('missing-provider'))
+}
+
+test 'B1-R2-03 runtime provider overrides same-id builtin then restores it' {
+    registry.unregister_provider('deepseek') catch error {}
+    var original = registry.find_def('deepseek')
+    assert(!(original is null))
+    if !(original is null) {
+        assert((original as types.provider_def_t).name == 'DeepSeek')
+    }
+    registry.register_provider(types.provider_def_t {id: 'deepseek', name: 'Runtime DeepSeek', api: 'openai-completions', base_url: 'https://runtime.example.com', supports_api_key_login: false,})
+    // find_def and the merged login list both see the runtime definition.
+    var overridden = registry.find_def('deepseek')
+    if !(overridden is null) {
+        var def = overridden as types.provider_def_t
+        assert(def.name == 'Runtime DeepSeek')
+        assert(!def.supports_api_key_login)
+    }
+    bool saw_runtime = false
+    bool saw_builtin = false
+    for def in registry.login_defs() {
+        if def.id == 'deepseek' {
+            saw_runtime = saw_runtime || def.name == 'Runtime DeepSeek'
+            saw_builtin = saw_builtin || def.name == 'DeepSeek'
+        }
+    }
+    assert(saw_runtime)
+    assert(!saw_builtin)
+    // Capability=false runtime override disappears from the API-key login
+    // candidates (it replaced the builtin deepseek, so no deepseek at all).
+    bool login_has_deepseek = false
+    for option in registry.login_completion_options() {
+        if option.id == 'deepseek' {
+            login_has_deepseek = true
+        }
+    }
+    assert(!login_has_deepseek)
+    // Unregister restores the builtin definition.
+    registry.unregister_provider('deepseek')
+    var restored = registry.find_def('deepseek')
+    assert(!(restored is null))
+    if !(restored is null) {
+        var def = restored as types.provider_def_t
+        assert(def.name == 'DeepSeek')
+        assert(def.supports_api_key_login)
+    }
+    bool login_restored = false
+    for option in registry.login_completion_options() {
+        if option.id == 'deepseek' {
+            login_restored = true
+        }
+    }
+    assert(login_restored)
+}
+
+test 'B1-R2-03 runtime-only provider joins login candidates and unregister removes it' {
+    registry.unregister_provider('test-login-runtime') catch error {}
+    registry.register_provider(types.provider_def_t {id: 'test-login-runtime', name: 'Zeta Runtime', api: 'openai-completions', base_url: 'https://zeta.example.com',})
+    bool saw_runtime = false
+    for option in registry.login_completion_options() {
+        if option.id == 'test-login-runtime' {
+            saw_runtime = true
+            assert(option.name == 'Zeta Runtime')
+            assert(option.description == 'Zeta Runtime · API key')
+        }
+    }
+    assert(saw_runtime)
+    registry.unregister_provider('test-login-runtime')
+    bool gone = true
+    for option in registry.login_completion_options() {
+        if option.id == 'test-login-runtime' {
+            gone = false
+        }
+    }
+    assert(gone)
+}
+
+test 'login completion options are name-sorted and merge deterministically' {
+    registry.unregister_provider('aaa-runtime') catch error {}
+    registry.unregister_provider('zzz-runtime') catch error {}
+    registry.register_provider(types.provider_def_t {id: 'zzz-runtime', name: 'Aaa First', api: 'openai-completions', base_url: 'https://z.example.com',})
+    registry.register_provider(types.provider_def_t {id: 'aaa-runtime', name: 'Zzz Last', api: 'openai-completions', base_url: 'https://a.example.com',})
+    var options = registry.login_completion_options()
+    assert(options.len() > 0)
+    // Stable ascending name order (Pi localeCompare equivalent for ASCII).
+    for int index = 1; index < options.len(); index += 1 {
+        assert(options[index - 1].name <= options[index].name)
+    }
+    bool saw_aaa = false
+    bool saw_zzz = false
+    for option in options {
+        if option.id == 'aaa-runtime' {saw_aaa = true}
+        if option.id == 'zzz-runtime' {saw_zzz = true}
+    }
+    assert(saw_aaa && saw_zzz)
+    // The merged login_defs order is deterministic: registry order with
+    // runtime-only ids appended in lexical id order (aaa before zzz).
+    var defs = registry.login_defs()
+    int aaa_index = -1
+    int zzz_index = -1
+    for index, def in defs {
+        if def.id == 'aaa-runtime' {aaa_index = index}
+        if def.id == 'zzz-runtime' {zzz_index = index}
+    }
+    assert(aaa_index >= 0 && zzz_index >= 0)
+    assert(aaa_index < zzz_index)
+    registry.unregister_provider('aaa-runtime')
+    registry.unregister_provider('zzz-runtime')
 }

@@ -387,18 +387,32 @@ pub fn load_remote_overlays() {
 // the ADOU_CATALOG_NETWORK=1 opt-in; failures are silent and keep the
 // stored overlay.
 pub fn refresh_remote_catalogs() {
+    refresh_remote_catalogs_with_status()
+}
+
+// Returns the number of provider catalogs that failed. The TUI uses this to
+// report that it kept the cached snapshot without moving network work back
+// onto the input loop. ADOU_CATALOG_BASE_URL supports self-hosted catalogs
+// and deterministic local fixtures; the default remains pi.dev.
+pub fn refresh_remote_catalogs_with_status(): int {
     if syscall.get_env('PI_OFFLINE') != '' || syscall.get_env('ADOU_CATALOG_NETWORK') == '' {
-        return
+        return 0
     }
+    int failures = 0
     var store = models_store.new_store()
     string file = models_store_path()
+    string catalog_base_url = syscall.get_env('ADOU_CATALOG_BASE_URL')
+    if catalog_base_url == '' {
+        catalog_base_url = remote_catalog.DEFAULT_CATALOG_BASE_URL
+    }
     store.load(file) catch error {}
     for def in registry.defs() {
         if def.api == '' && def.base_url == '' {
             continue
         }
         int now_ms = time.now().ms_timestamp() as int
-        var models = remote_catalog.refresh_remote_catalog(def.id, store, remote_catalog.DEFAULT_CATALOG_BASE_URL, 0, now_ms, true) catch error {
+        var models = remote_catalog.refresh_remote_catalog(def.id, store, catalog_base_url, 0, now_ms, true) catch error {
+            failures += 1
             continue
         }
         var stored = store.read(def.id)
@@ -407,6 +421,7 @@ pub fn refresh_remote_catalogs() {
         }
     }
     store.save(file) catch error {}
+    return failures
 }
 
 // <agentDir>/models-store.json, Pi's FileModelsStore default path.

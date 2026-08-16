@@ -8,6 +8,8 @@ import adou.src.ai.types as ai_types
 import adou.src.json_util
 import adou.src.compaction.serialize
 import adou.src.compaction.types as compaction_types
+import adou.src.context.prompt_templates
+import adou.src.context.resource_snapshot
 import adou.src.context.skills
 import adou.src.session.repository
 import adou.src.config.settings
@@ -258,7 +260,7 @@ test 'busy prompt reports the Pi queue guidance' {
     runner.end_operation()
 }
 
-test 'switching sessions reloads project Pi preferences over user settings' {
+test 'B1-R3-04 replace_repository leaves preferences untouched; the boundary applies trust-aware snapshots' {
     string root = '/tmp/adou-session-project-settings-test'
     os.rmdir(root, true) catch error {}
     string previous_agent_dir = syscall.get_env('PI_CODING_AGENT_DIR')
@@ -269,11 +271,37 @@ test 'switching sessions reloads project Pi preferences over user settings' {
     var manager = repository.in_memory('/tmp/adou-session-old-project')
     var fixture = new provider_fixture_t()
     var runner = make_runner(manager, fixture, 1000, 100, 20)
+    string steering_before = runner.agent_config.queues.steering_mode
+    string follow_before = runner.agent_config.queues.follow_up_mode
+    bool compaction_before = runner.compaction_settings.enabled
+    bool retry_before = runner.retry_enabled
+    int retry_max_before = runner.retry_max_attempts
+    int retry_delay_before = runner.retry_base_delay_ms
+    // Core must NOT read project settings: replacing the repository never
+    // mutates queue/compaction/retry preferences (R3-04) — the caller
+    // decides trust at the rebind boundary.
     var next = repository.in_memory(project)
     runner.replace_repository(next)
+    assert(runner.agent_config.queues.steering_mode == steering_before)
+    assert(runner.agent_config.queues.follow_up_mode == follow_before)
+    assert(runner.compaction_settings.enabled == compaction_before)
+    assert(runner.retry_enabled == retry_before)
+    assert(runner.retry_max_attempts == retry_max_before)
+    assert(runner.retry_base_delay_ms == retry_delay_before)
+    // Trusted boundary: global + project merged snapshot applies the
+    // project's queue/compaction/retry policy.
+    var trusted = settings.load_trusted_for(project, true)
+    runner.apply_preferences_snapshot(trusted)
     assert(runner.agent_config.queues.steering_mode == 'all' && runner.agent_config.queues.follow_up_mode == 'all')
     assert(runner.compaction_settings.enabled && !runner.retry_enabled)
     assert(runner.retry_max_attempts == 2 && runner.retry_base_delay_ms == 17)
+    // Untrusted boundary: the global-only snapshot must never leak the
+    // project's values.
+    var untrusted = settings.load_trusted_for(project, false)
+    runner.apply_preferences_snapshot(untrusted)
+    assert(runner.agent_config.queues.steering_mode == 'one-at-a-time' && runner.agent_config.queues.follow_up_mode == 'one-at-a-time')
+    assert(!runner.compaction_settings.enabled && runner.retry_enabled)
+    assert(runner.retry_max_attempts == 8 && runner.retry_base_delay_ms == 4000)
     syscall.set_env('PI_CODING_AGENT_DIR', previous_agent_dir)
     os.rmdir(root, true)
 }
@@ -665,6 +693,42 @@ test 'rpc prompt keeps terminal delivery alive until the worker acknowledges it'
     assert(!runner.busy)
 }
 
+test 'B1-R4-10 rpc prompt expands and publishes one resource snapshot' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant('rpc expanded', ai_types.STOP_STOP, '', 2, 3)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    var snapshot = new resource_snapshot.resource_snapshot_t()
+    var template = new prompt_templates.prompt_template_t(name = 'rpc-template', content = 'Expanded $@')
+    snapshot.prompt_templates.push(template)
+    snapshot.settings.steering_mode = 'all'
+    snapshot.settings.follow_up_mode = 'all'
+    snapshot.settings.auto_compaction = false
+    snapshot.settings.retry_enabled = false
+    snapshot.settings.retry_max_attempts = 2
+    snapshot.settings.retry_base_delay_ms = 17
+    [ref<agent_types.agent_tool_t>] no_tools = []
+    runner.publish_rpc_resources(snapshot, 'snapshot system', no_tools, true)
+
+    var stream = runner.prompt_rpc('/rpc-template one two')
+    for true {
+        var event = stream.recv()
+        if event.kind == session_stream.EVENT_SESSION_END {break}
+    }
+    var result = stream.result()
+    stream.mark_delivery_done()
+    assert(result.len() == 2)
+    assert(fixture.agent_contexts.len() == 1)
+    assert(fixture.agent_contexts[0].len() == 1)
+    assert(fixture.agent_contexts[0][0] is ref<ai_types.user_message_t>)
+    var submitted = fixture.agent_contexts[0][0] as ref<ai_types.user_message_t>
+    assert(submitted.content == 'Expanded one two')
+    assert(runner.context_from_repository().system_prompt == 'snapshot system')
+    assert(runner.agent_config.queues.steering_mode == 'all')
+    assert(runner.agent_config.queues.follow_up_mode == 'all')
+    assert(!runner.compaction_settings.enabled && !runner.retry_enabled)
+    assert(runner.retry_max_attempts == 2 && runner.retry_base_delay_ms == 17)
+}
+
 test 'rpc stream result wakes at terminal before delivery acknowledgement' {
     var stream = session_stream.new()
     stream.require_delivery()
@@ -696,5 +760,4 @@ test 'abort_bash only cancels the active bash stream' {
     assert(bash_stream.cancellation.is_aborted())
     runner.end_operation()
 }
-
 

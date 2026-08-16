@@ -3,3 +3,6 @@
 /main
 /adou
 /native/*.o
+# Python bytecode caches (test harness)
+__pycache__/
+*.py[cod]

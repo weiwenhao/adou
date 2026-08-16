@@ -8,6 +8,7 @@ import adou.src.context.skills
 pub type slash_command_info_t = struct {
     string name
     string description
+    string argument_hint
     string source
     skills.source_info_t source_info
 }
@@ -15,7 +16,7 @@ pub type slash_command_info_t = struct {
 pub fn prompt_commands([ref<prompt_templates.prompt_template_t>] templates): [slash_command_info_t] {
     [slash_command_info_t] result = []
     for template in templates {
-        result.push(slash_command_info_t {name: template.name, description: template.description, source: 'prompt', source_info: template.source_info})
+        result.push(slash_command_info_t {name: template.name, description: template.description, argument_hint: template.argument_hint, source: 'prompt', source_info: template.source_info})
     }
     return result
 }
@@ -26,4 +27,82 @@ pub fn skill_commands([ref<skills.skill_t>] skills_list): [slash_command_info_t]
         result.push(slash_command_info_t {name: 'skill:' + skill.name, description: skill.description, source: 'skill', source_info: skill.source_info})
     }
     return result
+}
+
+// Shared enable-list filter (B1-R2-07): an empty enabled list keeps
+// everything; a non-empty list keeps exactly the named resources.  This is
+// the production filter used by the TUI snapshot and the app/RPC assembly
+// paths, so menu, execution and display always apply the same rule.
+pub fn filter_prompt_templates([ref<prompt_templates.prompt_template_t>] templates, [string] enabled_prompt_names): [ref<prompt_templates.prompt_template_t>] {
+    if enabled_prompt_names.len() == 0 {
+        return templates
+    }
+    [ref<prompt_templates.prompt_template_t>] result = []
+    for template in templates {
+        if contains_name(enabled_prompt_names, template.name) {
+            result.push(template)
+        }
+    }
+    return result
+}
+
+pub fn filter_skills([ref<skills.skill_t>] skills_list, [string] enabled_skill_names): [ref<skills.skill_t>] {
+    if enabled_skill_names.len() == 0 {
+        return skills_list
+    }
+    [ref<skills.skill_t>] result = []
+    for skill in skills_list {
+        if contains_name(enabled_skill_names, skill.name) {
+            result.push(skill)
+        }
+    }
+    return result
+}
+
+#local
+fn contains_name([string] names, string wanted): bool {
+    for name in names {
+        if name == wanted {
+            return true
+        }
+    }
+    return false
+}
+
+// Production assembly shared by the TUI and the tests (B1-R2-07/08): the
+// completion-menu commands are built from the SAME already-filtered
+// resources that drive execution (prompt_templates for /prompt expansion,
+// skills for the system prompt), so menu metadata (argument_hint,
+// source_info, description) can never diverge from what actually runs.
+// Order matches Pi's get_commands: prompts first, skills second.  All
+// metadata fields are carried through untouched.
+pub fn compose_resource_commands([ref<prompt_templates.prompt_template_t>] templates, [ref<skills.skill_t>] skills_list): [slash_command_info_t] {
+    [slash_command_info_t] result = []
+    for info in prompt_commands(templates) {
+        result.push(info)
+    }
+    for info in skill_commands(skills_list) {
+        result.push(info)
+    }
+    return result
+}
+
+// Pi RPC RpcSlashCommand wire mapping (B1-R3-08): name/description/source
+// plus the full SourceInfo object {path, source, scope, origin, baseDir}.
+// argument_hint is NOT part of the Pi RPC contract and is never emitted.
+pub fn rpc_command_json(slash_command_info_t info): {string:any} {
+    {string:any} object = {}
+    object['name'] = info.name
+    if info.description != '' {
+        object['description'] = info.description
+    }
+    object['source'] = info.source
+    {string:any} source_info = {}
+    source_info['path'] = info.source_info.path
+    source_info['source'] = info.source_info.source
+    source_info['scope'] = info.source_info.scope
+    source_info['origin'] = info.source_info.origin
+    source_info['baseDir'] = info.source_info.base_dir
+    object['sourceInfo'] = source_info
+    return object
 }

@@ -9,6 +9,9 @@ fi
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/adou-auth-print.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
+export HOME="$tmp_dir/home"
+export PI_CODING_AGENT_DIR="$tmp_dir/agent"
+mkdir -p "$HOME" "$PI_CODING_AGENT_DIR"
 
 # shellcheck source=lib/deepseek-test-config.sh
 . "$(dirname -- "$0")/lib/deepseek-test-config.sh"

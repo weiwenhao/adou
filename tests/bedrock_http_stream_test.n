@@ -67,7 +67,7 @@ test 'bedrock sigv4 authorization format and event stream decode' {
     syscall.set_env('AWS_SECRET_ACCESS_KEY', 'wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY')
     syscall.set_env('AWS_REGION', 'us-east-1')
     var model = new types.model_t(id = 'anthropic.claude-sonnet-4-5-v1:0', api = 'bedrock-converse-stream', provider = 'amazon-bedrock', base_url = 'https://bedrock-runtime.us-east-1.amazonaws.com', max_tokens = 16)
-    var auth = bedrock_messages.authorization(model, '{}', '20150830T123600Z')
+    var auth = bedrock_messages.authorization(model, '{}', '20150830T123600Z', '')
     assert(auth.starts_with('AWS4-HMAC-SHA256 Credential=AKIDEXAMPLE/20150830/us-east-1/bedrock/aws4_request, SignedHeaders=content-type;host;x-amz-date, Signature='))
     // The Signature is a 64-char lowercase hex digest.
     string signature = auth.slice(auth.rfind('Signature=') + 10, auth.len())
@@ -189,18 +189,20 @@ test 'bedrock bearer token and skip-auth behave like Pi' {
     syscall.set_env('AWS_ACCESS_KEY_ID', '')
     syscall.set_env('AWS_SECRET_ACCESS_KEY', '')
     var model = new types.model_t(id = 'anthropic.claude-sonnet-4-5-v1:0', api = 'bedrock-converse-stream', provider = 'amazon-bedrock', base_url = 'https://bedrock-runtime.us-east-1.amazonaws.com', max_tokens = 16)
-    var bearer = bedrock_messages.authorization(model, '{}', '20150830T123600Z')
+    var bearer = bedrock_messages.authorization(model, '{}', '20150830T123600Z', '')
     assert(bearer == 'Bearer bt-123')
     syscall.set_env('AWS_BEARER_TOKEN_BEDROCK', '')
     syscall.set_env('AWS_BEDROCK_SKIP_AUTH', '1')
-    var dummy = bedrock_messages.authorization(model, '{}', '20150830T123600Z')
+    var dummy = bedrock_messages.authorization(model, '{}', '20150830T123600Z', '')
     assert(dummy.contains('Credential=dummy-access-key/'))
     syscall.set_env('AWS_BEDROCK_SKIP_AUTH', '')
     bool failed = false
     try {
-        var missing = bedrock_messages.authorization(model, '{}', '20150830T123600Z')
+        var missing = bedrock_messages.authorization(model, '{}', '20150830T123600Z', '')
     } catch e {
         failed = true
     }
     assert(failed)
+    var stored = bedrock_messages.authorization(model, '{}', '20150830T123600Z', 'stored-bearer')
+    assert(stored == 'Bearer stored-bearer')
 }

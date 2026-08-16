@@ -1,0 +1,83 @@
+import adou.src.context.git_source
+import adou.src.context.skills
+
+// B1-R3-07: the production source-tag parser extracted from the TUI and
+// exercised by command_items() through source_tag().  The contract mirrors
+// Pi 0.82.1 getAutocompleteSourceTag + parseGitUrl: scope mapping, npm:
+// verbatim, git sources as scope:git:host/path[@ref], and the Pi
+// splitRef/buildGitSource validations (first '@' in the path is the ref,
+// .git normalization, >= 2 path segments, host checks, raw + URL-decoded
+// traversal rejection).
+
+test 'scope mapping follows Pi user/project/temporary' {
+    assert(git_source.source_tag(skills.source_info_t {source: 'local', scope: 'user', origin: 'top-level', base_dir: '/u'}) == 'u')
+    assert(git_source.source_tag(skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/p'}) == 'p')
+    assert(git_source.source_tag(skills.source_info_t {source: 'local', scope: 'temporary', origin: 'top-level', base_dir: '/t'}) == 't')
+    // auto/local/cli sources keep only the scope prefix.
+    assert(git_source.source_tag(skills.source_info_t {source: 'auto', scope: 'user', origin: 'top-level', base_dir: '/u'}) == 'u')
+    assert(git_source.source_tag(skills.source_info_t {source: 'cli', scope: 'project', origin: 'top-level', base_dir: '/p'}) == 'p')
+}
+
+test 'npm sources keep the scope prefix plus the source verbatim' {
+    assert(git_source.source_tag(skills.source_info_t {source: 'npm:@scope/pkg', scope: 'user', origin: 'top-level', base_dir: '/u'}) == 'u:npm:@scope/pkg')
+    assert(git_source.source_tag(skills.source_info_t {source: 'npm:pi', scope: 'temporary', origin: 'top-level', base_dir: '/t'}) == 't:npm:pi')
+}
+
+test 'https/ssh protocol URLs parse with path @ref like Pi splitRef' {
+    assert(git_source.parse_git_source('https://github.com/user/repo@v1') == 'git:github.com/user/repo@v1')
+    assert(git_source.parse_git_source('https://github.com/user/repo.git') == 'git:github.com/user/repo')
+    assert(git_source.parse_git_source('ssh://git@github.com/user/repo@main') == 'git:github.com/user/repo@main')
+    assert(git_source.source_tag(skills.source_info_t {source: 'https://github.com/user/repo@v1', scope: 'project', origin: 'top-level', base_dir: '/p'}) == 'p:git:github.com/user/repo@v1')
+}
+
+test 'git: prefix accepts scp and host shorthand forms' {
+    assert(git_source.parse_git_source('git:git@github.com:user/repo') == 'git:github.com/user/repo')
+    assert(git_source.parse_git_source('git:git@github.com:user/repo@v2') == 'git:github.com/user/repo@v2')
+    assert(git_source.parse_git_source('git:github.com/user/repo') == 'git:github.com/user/repo')
+    assert(git_source.parse_git_source('git:github.com/user/repo.git') == 'git:github.com/user/repo')
+    // Pi quirk: 'git://...' starts with 'git:' so the prefix branch consumes
+    // it and the remainder '//host/path' fails host validation -> rejected.
+    assert(git_source.parse_git_source('git://github.com/user/repo') == '')
+}
+
+test 'rejects single-segment paths, missing hosts and dottess shorthand hosts' {
+    assert(git_source.parse_git_source('git:github.com/user') == '')
+    assert(git_source.parse_git_source('https://github.com/user') == '')
+    assert(git_source.parse_git_source('git:/user/repo') == '')
+    assert(git_source.parse_git_source('https:///user/repo') == '')
+    assert(git_source.parse_git_source('git:user/repo') == '')
+    // Bare host/path without a git: prefix or explicit protocol never parses.
+    assert(git_source.parse_git_source('github.com/user/repo') == '')
+}
+
+test 'rejects absolute, backslash, NUL and traversal paths raw or encoded' {
+    assert(git_source.parse_git_source('git:github.com//user/repo') == '')
+    assert(git_source.parse_git_source('git:github.com/\\evil/repo') == '')
+    assert(git_source.parse_git_source('git:github.com/a\x00b/repo') == '')
+    assert(git_source.parse_git_source('git:github.com/a/../b') == '')
+    assert(git_source.parse_git_source('git:github.com/a/%2e%2e/b') == '')
+    assert(git_source.parse_git_source('https://github.com/a/%2e%2e/repo') == '')
+}
+
+test 'B1-R4-11 malformed percent and invalid UTF-8 are rejected, valid encoded UTF-8 parses' {
+    // Malformed %XX (no hex digits) -> decodeURIComponent failure -> reject.
+    assert(git_source.parse_git_source('git:github.com/a/%zz/b') == '')
+    assert(git_source.parse_git_source('git:github.com/a/%2/b') == '')
+    // Truncated UTF-8 sequence decodes to invalid UTF-8 -> reject.
+    assert(git_source.parse_git_source('https://github.com/%E4%B8/repo') == '')
+    // Valid encoded UTF-8 decodes cleanly (no traversal) -> accepted with
+    // the RAW (still percent-encoded) path in the tag, like Pi.
+    assert(git_source.parse_git_source('https://github.com/%E7%94%A8%E6%88%B7/repo') == 'git:github.com/%E7%94%A8%E6%88%B7/repo')
+}
+
+test 'B1-R4-11 userinfo port query fragment and case-insensitive protocols match URL semantics' {
+    // userinfo and :port never leak into the host tag; host is lowercased.
+    assert(git_source.parse_git_source('ssh://git@github.com:2222/user/repo') == 'git:github.com/user/repo')
+    // Query and fragment are not part of the URL pathname.
+    assert(git_source.parse_git_source('https://github.com/user/repo?x=1#frag') == 'git:github.com/user/repo')
+    assert(git_source.parse_git_source('https://github.com/user/repo@v1?x=1') == 'git:github.com/user/repo@v1')
+    // Case-insensitive protocol regex (/^(https?|ssh|git):\/\//i); the
+    // URL-parsed host is lowercased.
+    assert(git_source.parse_git_source('HTTPS://GitHub.COM/user/repo') == 'git:github.com/user/repo')
+    assert(git_source.parse_git_source('SSH://GITHUB.com/user/repo') == 'git:github.com/user/repo')
+}

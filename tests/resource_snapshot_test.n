@@ -1,0 +1,116 @@
+import adou.src.context.resource_snapshot
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+// B1-R4-10: the RPC runtime's trust-aware resource snapshot is refreshed
+// ONLY at explicit boundaries (init/switch).  get_commands and the
+// system-prompt injection read the same snapshot, so disk changes without a
+// refresh can never make the wire commands diverge from the running
+// resources.
+
+pub fn write_file(string file_path, string content): void! {
+    var parent = path.dir(file_path)
+    os.mkdirs(parent, 0o700)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644) catch error {
+        throw error
+    }
+    file.write(content as [u8])
+    file.close()
+}
+
+pub fn suffix(): string {
+    return fmt.sprintf('%d', time.now().ms_timestamp())
+}
+
+fn names_of([any] commands): [string] {
+    [string] result = []
+    for command in commands {
+        var object = command as {string:any}
+        result.push(object['name'] as string)
+    }
+    return result
+}
+
+test 'B1-R4-10 snapshot is trust-aware and no-reload disk changes never alter commands' {
+    string saved_home = syscall.get_env('HOME')
+    string scratch_home = path.join('/tmp', 'adou-rpc-snapshot-home-' + suffix())
+    os.mkdirs(scratch_home, 0o700) catch error {}
+    syscall.set_env('HOME', scratch_home)
+    string agent_dir = path.join('/tmp', 'adou-rpc-snapshot-agent-' + suffix())
+    string cwd = path.join('/tmp', 'adou-rpc-snapshot-cwd-' + suffix())
+    write_file(path.join(agent_dir, 'prompts', 'user-prompt.md'), '---\ndescription: User prompt\n---\n\nUser body $@')
+    write_file(path.join(agent_dir, 'skills', 'user-skill', 'SKILL.md'), '---\nname: user-skill\ndescription: User skill\n---\n\nbody')
+    write_file(path.join(cwd, '.pi', 'prompts', 'project-prompt.md'), '---\ndescription: Project prompt\n---\n\nProject body $@')
+    write_file(path.join(cwd, '.pi', 'skills', 'project-skill', 'SKILL.md'), '---\nname: project-skill\ndescription: Project skill\n---\n\nbody')
+    [string] no_paths = []
+
+    var snapshot = new resource_snapshot.resource_snapshot_t()
+    resource_snapshot.refresh(snapshot, cwd, true, agent_dir, no_paths, false)
+    var trusted = resource_snapshot.commands_json(snapshot)
+    assert(trusted.len() == 4)
+    var trusted_names = names_of(trusted)
+    assert(trusted_names[0] == 'user-prompt')
+    assert(trusted_names[1] == 'project-prompt')
+    // Skills follow the loader order (project layer before user layer).
+    assert(trusted_names[2] == 'skill:project-skill')
+    assert(trusted_names[3] == 'skill:user-skill')
+    assert(resource_snapshot.expand_command(snapshot, '/user-prompt one two') == 'User body one two')
+    assert(resource_snapshot.expand_command(snapshot, '/project-prompt three') == 'Project body three')
+    string expanded_skill = resource_snapshot.expand_command(snapshot, '/skill:user-skill details')
+    assert(expanded_skill.contains('<skill name="user-skill"'))
+    assert(expanded_skill.contains('\n\nbody\n</skill>\n\ndetails'))
+
+    // No-reload drift: add a project prompt + skill on disk AFTER the
+    // refresh; the wire commands must stay exactly as refreshed.
+    write_file(path.join(cwd, '.pi', 'prompts', 'late-prompt.md'), '---\ndescription: Late\n---\n\nLate body')
+    write_file(path.join(cwd, '.pi', 'skills', 'late-skill', 'SKILL.md'), '---\nname: late-skill\ndescription: Late\n---\n\nbody')
+    write_file(path.join(agent_dir, 'prompts', 'user-prompt.md'), '---\ndescription: Changed\n---\n\nChanged body $@')
+    var unchanged = resource_snapshot.commands_json(snapshot)
+    assert(unchanged.len() == 4)
+    assert(names_of(unchanged)[1] == 'project-prompt')
+    assert(resource_snapshot.expand_command(snapshot, '/user-prompt stable') == 'User body stable')
+    assert(resource_snapshot.expand_command(snapshot, '/late-prompt value') == '/late-prompt value')
+
+    // An explicit refresh picks the new resources up (init/switch boundary).
+    resource_snapshot.refresh(snapshot, cwd, true, agent_dir, no_paths, false)
+    assert(resource_snapshot.commands_json(snapshot).len() == 6)
+    assert(resource_snapshot.expand_command(snapshot, '/user-prompt refreshed') == 'Changed body refreshed')
+    assert(resource_snapshot.expand_command(snapshot, '/late-prompt value') == 'Late body')
+
+    // Untrusted refresh: only user resources; project ones disappear from
+    // the same single snapshot.
+    resource_snapshot.refresh(snapshot, cwd, false, agent_dir, no_paths, false)
+    var untrusted = resource_snapshot.commands_json(snapshot)
+    assert(untrusted.len() == 2)
+    var untrusted_names = names_of(untrusted)
+    assert(untrusted_names[0] == 'user-prompt')
+    assert(untrusted_names[1] == 'skill:user-skill')
+    assert(resource_snapshot.expand_command(snapshot, '/project-prompt denied') == '/project-prompt denied')
+
+    os.rmdir(agent_dir, true)
+    os.rmdir(cwd, true)
+    os.rmdir(scratch_home, true)
+    syscall.set_env('HOME', saved_home)
+}
+
+test 'load creates a replacement without mutating the previous snapshot' {
+    string saved_home = syscall.get_env('HOME')
+    string scratch_home = path.join('/tmp', 'adou-rpc-snapshot-load-home-' + suffix())
+    os.mkdirs(scratch_home, 0o700) catch error {}
+    syscall.set_env('HOME', scratch_home)
+    string agent_dir = path.join('/tmp', 'adou-rpc-snapshot-load-agent-' + suffix())
+    os.mkdirs(agent_dir, 0o700) catch error {}
+    var previous = resource_snapshot.load(scratch_home, true, agent_dir, [], true)
+    var replacement = resource_snapshot.load('/tmp', false, agent_dir, [], true)
+    assert(previous.cwd == scratch_home)
+    assert(previous.trusted)
+    assert(replacement.cwd == '/tmp')
+    assert(!replacement.trusted)
+    os.rmdir(agent_dir, true)
+    os.rmdir(scratch_home, true)
+    syscall.set_env('HOME', saved_home)
+}

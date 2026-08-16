@@ -93,6 +93,40 @@ test 'format_prompt_template_invocation substitutes positionally' {
     os.rmdir(dir, true)
 }
 
+test 'B1-R2-06 load_prompt_templates trust gate: untrusted loads only user templates' {
+    string agent_dir = path.join('/tmp', 'adou-prompts-trust-agent-' + fmt_suffix())
+    string cwd = path.join('/tmp', 'adou-prompts-trust-cwd-' + fmt_suffix())
+    write_file(path.join(agent_dir, 'prompts', 'user-prompt.md'), '---\ndescription: User prompt\n---\n\nUser body $@')
+    write_file(path.join(cwd, '.pi', 'prompts', 'project-prompt.md'), '---\ndescription: Project prompt\nargument-hint: <project-arg>\n---\n\nProject body $@')
+    [string] no_extra = []
+    // Untrusted: only the user prompt; the project one is never loaded,
+    // advertised or executable.
+    var untrusted = prompt_templates.load_prompt_templates(cwd, agent_dir, no_extra, true, false)
+    assert(untrusted.len() == 1)
+    assert(untrusted[0].name == 'user-prompt')
+    assert(untrusted[0].source_info.scope == 'user')
+    assert(prompt_templates.expand_prompt_template('/project-prompt x', untrusted) == '/project-prompt x')
+    // Trusted: user + project, with the project argument hint and scope.
+    var trusted = prompt_templates.load_prompt_templates(cwd, agent_dir, no_extra, true, true)
+    assert(trusted.len() == 2)
+    bool saw_project = false
+    for template in trusted {
+        if template.name == 'project-prompt' {
+            saw_project = true
+            assert(template.argument_hint == '<project-arg>')
+            assert(template.source_info.scope == 'project')
+        }
+    }
+    assert(saw_project)
+    assert(prompt_templates.expand_prompt_template('/project-prompt x', trusted) == 'Project body x')
+    // Explicit prompt_paths always load, even for an untrusted cwd.
+    var explicit = prompt_templates.load_prompt_templates(cwd, agent_dir, [path.join(cwd, '.pi', 'prompts', 'project-prompt.md')], false, false)
+    assert(explicit.len() == 1)
+    assert(explicit[0].name == 'project-prompt')
+    os.rmdir(agent_dir, true)
+    os.rmdir(cwd, true)
+}
+
 fn fmt_suffix(): string {
     return fmt.sprintf('%d', time.now().ms_timestamp())
 }

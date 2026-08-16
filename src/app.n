@@ -19,8 +19,7 @@ import adou.src.config.trust
 import adou.src.config.types as config_types
 import adou.src.config.paths as config_paths
 import adou.src.context.project
-import adou.src.context.prompt_templates
-import adou.src.context.slash_commands
+import adou.src.context.resource_snapshot
 import adou.src.context.skills
 import adou.src.context.system_prompt
 import adou.src.json_util
@@ -58,14 +57,6 @@ pub const VERSION = '0.1.0-dev'
 pub type rpc_bash_update_state_t = struct {
     string id
     ref<rpc_sink_t> sink
-}
-
-// Instance-exit hook: RPC prompt workers report provider failures through
-// this so the supervisor can transition the instance to exited when the
-// error is not retryable (the in-process equivalent of the upstream RPC
-// child process exiting).  --mode rpc has no instance and passes null.
-type rpc_exit_hook_t = struct {
-    fn(string reason) report
 }
 
 // RPC output abstraction shared by --mode rpc (stdout) and the Phase 7.1
@@ -109,7 +100,6 @@ pub fn run(): void! {
     }
     var arguments = args.parse(argv)
     debug.configure(arguments.debug)
-    debug.log('startup', 'adou start pid=' + fmt.sprintf('%d', syscall.getpid()))
     timings.time('resolveConfig')
     if arguments.version {
         println('adou ', VERSION)
@@ -147,6 +137,18 @@ pub fn run(): void! {
     if !report_startup_config_error(arguments) {
         return
     }
+    // Pi server is a coordinator, not an agent session.  Enter serve mode
+    // before model catalog access, stdin prompt probing, repository creation,
+    // resource loading, or runner construction; every RPC child owns a fresh
+    // setup in its requested cwd.
+    if arguments.serve_port > 0 {
+        debug.set_terminal_output(false)
+        debug.log('startup', 'adou start pid=' + fmt.sprintf('%d', syscall.getpid()))
+        debug.log('mode', 'starting ipc server on port ' + fmt.sprintf('%d', arguments.serve_port))
+        run_serve(arguments.serve_port, arguments.offline)
+        timings.print_timings()
+        return
+    }
     var config = resolve.resolve(arguments, cwd)
     // Pi's ModelRuntime.create loads the persisted remote catalog overlay
     // before the model resolver runs; an opt-in network refresh follows.
@@ -167,10 +169,14 @@ pub fn run(): void! {
     }
     bool stdin_tty = term.is_tty(term.STDIN)
     bool stdout_tty = term.is_tty(term.STDOUT)
-    bool interactive = stdin_tty
-    if !stdout_tty {
-        interactive = false
-    }
+    bool interactive = stdin_tty && stdout_tty && config.mode == 'text' && !config.print_mode && config.serve_port == 0
+    // Pi keeps the interactive terminal clean: lifecycle debug never streams
+    // to the same tty the TUI redraws on (ADOU_DEBUG_FILE only).  Headless,
+    // RPC, JSON and serve modes keep the stderr stream.  The startup line is
+    // logged after this switch so the TUI byte stream stays free of debug
+    // interleaving from the very first line.
+    debug.set_terminal_output(interactive)
+    debug.log('startup', 'adou start pid=' + fmt.sprintf('%d', syscall.getpid()))
     // RPC owns stdin as its command stream.  Reading piped stdin here would
     // consume the JSONL commands before run_rpc() gets a chance to decode
     // them, making `--mode rpc` appear to hang with no responses.
@@ -325,14 +331,14 @@ pub fn run(): void! {
         context_files = loaded.files
     }
     string resolved_system_prompt = config.system_prompt
-    if resolved_system_prompt == '' {
+    if resolved_system_prompt == '' && config.project_trusted {
         var discovered_system = project.system_prompt_file(session_cwd, '')
         if discovered_system is ref<project.file_t> system_file {
             resolved_system_prompt = system_file.content
         }
     }
     [string] resolved_append_prompts = config.append_system_prompts
-    if resolved_append_prompts.len() == 0 {
+    if resolved_append_prompts.len() == 0 && config.project_trusted {
         var discovered_append = project.append_system_prompt_file(session_cwd, '')
         if discovered_append is ref<project.file_t> append_file {
             resolved_append_prompts.push(append_file.content)
@@ -350,22 +356,14 @@ pub fn run(): void! {
     // Skills only advertise into the system prompt when the read tool can
     // actually load their files; --no-tools/--no-builtin-tools/--exclude-tools
     // without read must not leave a dangling <available_skills> block.
-    // Explicit --skill paths still load (they pierce --no-skills), and the
-    // config selector's enabledSkills list keeps filtering the model-visible
-    // skills (an empty list keeps everything).
-    var skills_result = skills.load_skills(session_cwd, config_paths.agent_dir(), config.skill_paths, !config.no_skills, config.project_trusted)
-    var skill_settings = config_settings.load()
-    if skill_settings.enabled_skill_names.len() > 0 {
-        [ref<skills.skill_t>] filtered_skills = []
-        for skill in skills_result.skills {
-            if list_contains_skill(skill_settings.enabled_skill_names, skill.name) {
-                filtered_skills.push(skill)
-            }
-        }
-        skills_result.skills = filtered_skills
-    }
+    // B1-R4-10: ONE trust-aware resource snapshot is built at init and
+    // attached to the runner — the system prompt uses its filtered skills
+    // and RPC get_commands later reads the very same snapshot, so the wire
+    // commands can never drift from the running resources without an
+    // explicit refresh.
+    var rpc_snapshot = resource_snapshot.load(session_cwd, config.project_trusted, config_paths.agent_dir(), config.skill_paths, config.no_skills)
     if list_contains(tool_names, 'read') {
-        string skills_prompt = skills.format_skills_for_prompt(skills_result.skills)
+        string skills_prompt = skills.format_skills_for_prompt(rpc_snapshot.skills)
         if skills_prompt != '' {
             if append_prompt != '' {
                 append_prompt += '\n\n'
@@ -382,16 +380,11 @@ pub fn run(): void! {
     runner.retry_enabled = config.retry_enabled
     runner.retry_max_attempts = config.retry_max_attempts
     runner.retry_base_delay_ms = config.retry_base_delay_ms
+    // Initial config has already applied CLI overrides such as
+    // --no-compaction; publish the resource/context pair without replacing
+    // those effective runtime preferences.
+    runner.publish_rpc_resources(rpc_snapshot, system, tools, false)
 
-    if config.serve_port > 0 {
-        // Phase 7.1 RPC-over-IPC: serve the upstream packages/server ipc
-        // protocol on a localhost TCP port.  Instances are spawned on demand
-        // (in-process isolated runners, see docs/phase7-storage-design.md).
-        debug.log('mode', 'starting ipc server on port ' + fmt.sprintf('%d', config.serve_port))
-        run_serve(config, config.serve_port, config.offline, config.no_context_files, config.system_prompt, config.append_system_prompts, config.scoped_models)
-        timings.print_timings()
-        return
-    }
     if config.mode == 'rpc' {
         // Keep the original CLI overrides for later RPC session switches;
         // an empty value means the new session should rediscover its own
@@ -427,11 +420,7 @@ pub fn run(): void! {
     }
 
     var terminal = term.open()
-    var view = session_view.new(terminal, runner, config.model.id, session_cwd, config.skill_paths, config.no_skills, config.trust_override, config.trust_override_explicit)
-    view.model_scope_patterns = config.scoped_models
-    view.system_prompt_override = config.system_prompt
-    view.append_system_prompts = config.append_system_prompts
-    view.no_context_files = config.no_context_files
+    var view = session_view.new(terminal, runner, config.model.id, session_cwd, config.skill_paths, config.no_skills, config.trust_override, config.trust_override_explicit, config.scoped_models, config.scoped_models_explicit, config.system_prompt, config.append_system_prompts, config.no_context_files)
     view.chat.thinking_visible = !config.hide_thinking
     if config.resume && config.initial_messages.len() == 0 {
         // Pi's --resume opens the session picker.  Keep the headless path
@@ -451,10 +440,12 @@ pub fn run(): void! {
         view.active_stream = view.start_next_initial_prompt()
     }
     view.run() catch error {
-        terminal.restore() catch restore_error {}
+        // Error-exit path keeps the original catch-ignore semantics for the
+        // restore; the run-loop failure is the error that matters.
+        view.restore_terminal_sync() catch restore_error {}
         throw error
     }
-    terminal.restore()
+    view.restore_terminal_sync()
     // The terminal reader coroutine stays parked in a blocking PTY read after
     // the run loop exits, so the process would never terminate on its own.
     // Exit explicitly after restoring the terminal.
@@ -468,16 +459,6 @@ fn stream_provider(): agent_types.stream_fn {
         return provider.stream(model, context, options)
     }
     return result
-}
-
-#local
-fn list_contains_skill([string] values, string target): bool {
-    for value in values {
-        if value == target {
-            return true
-        }
-    }
-    return false
 }
 
 #local
@@ -841,16 +822,23 @@ pub fn html_escape(string value): string {
 // rpc_stream keeps the connection open for the bidirectional command/event
 // loop.
 #local
-fn run_serve(config_types.config_t config, int port, bool offline, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns): void! {
-    ipc_supervisor.spawn_runner_fn spawner = fn(string cwd): ref<session.runner_t>! {
-        return build_spawned_runner(config, cwd)
+fn server_executable(): string! {
+    [string] argv = os.args()
+    if argv.len() == 0 || argv[0] == '' {
+        throw errorf('Could not resolve the Adou executable')
     }
-    var sup = ipc_supervisor.new(spawner, offline)
-    // Options carry the trust override fields so every spawned instance and
-    // get_commands re-resolves the decision against its own project cwd.
-    var skills_options = resolve.skills_options_for(config, config.cwd)
+    string executable = argv[0]
+    if executable.starts_with('/') || !executable.contains('/') {
+        return executable
+    }
+    return path.join(platform_cwd.current(), executable)
+}
+
+#local
+fn run_serve(int port, bool offline): void! {
+    var sup = ipc_supervisor.new(server_executable(), offline)
     ipc_server.connection_handler_t handler = fn(ref<tcp.conn_t> conn): void {
-        serve_connection(sup, conn, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, skills_options) catch error {
+        serve_connection(sup, conn) catch error {
             conn.close()
         }
     }
@@ -858,7 +846,7 @@ fn run_serve(config_types.config_t config, int port, bool offline, bool no_conte
 }
 
 #local
-fn serve_connection(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns, config_types.skills_options_t skills_options): void! {
+fn serve_connection(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn): void! {
     for true {
         string line = ipc_server.read_line(conn) catch error {
             break
@@ -876,10 +864,10 @@ fn serve_connection(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, 
         }
         var object = parsed as {string:any}
         if rpc_string(object, 'type') == 'rpc_stream' {
-            serve_rpc_stream(sup, conn, object, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, skills_options)
+            serve_rpc_stream(sup, conn, object)
             return
         }
-        string response = serve_request(sup, object, rpc_string(object, 'type'), no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, skills_options) catch error {
+        string response = serve_request(sup, object, rpc_string(object, 'type')) catch error {
             ipc_protocol.error_response(error.msg())
         }
         ipc_server.write_line(conn, response)
@@ -892,7 +880,7 @@ fn serve_connection(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, 
 // with the upstream response shapes: spawn_result/list_result/status_result/
 // stop_result/rpc_result/error).
 #local
-fn serve_request(ref<ipc_supervisor.supervisor_t> sup, {string:any} object, string kind, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns, config_types.skills_options_t skills_options): string! {
+fn serve_request(ref<ipc_supervisor.supervisor_t> sup, {string:any} object, string kind): string! {
     if kind == 'spawn' {
         string cwd = rpc_string(object, 'cwd')
         if cwd == '' {
@@ -937,98 +925,18 @@ fn serve_request(ref<ipc_supervisor.supervisor_t> sup, {string:any} object, stri
         if !object.contains('command') || !(object['command'] is {string:any}) {
             return ipc_protocol.error_response('rpc requires a command object')
         }
-        return rpc_bridge_response(sup, live, object['command'] as {string:any}, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, skills_options)
+        var command = object['command'] as {string:any}
+        string command_kind = rpc_string(command, 'type')
+        if sup.offline && command_kind == 'prompt' {
+            var rejected = json_util.parse(rpc_error(rpc_string(command, 'id'), 'prompt', 'Offline mode cannot send prompts to a provider')) as {string:any}
+            return ipc_protocol.rpc_result(rejected)
+        }
+        var response = sup.rpc(live, command) catch error {
+            return ipc_protocol.error_response(error.msg())
+        }
+        return ipc_protocol.rpc_result(response)
     }
     return ipc_protocol.error_response('Unsupported request type: ' + kind)
-}
-
-// Bridge capture: the dispatch writes response/event lines asynchronously
-// (prompt workers stream events after the initial response line).  The
-// bridge keeps the first RpcResponse-shaped line and waits until the command
-// has actually completed on the instance instead of a fixed 30s budget:
-// prompt is terminal at session_end (or a failure response), while
-// compact/bash and synchronous commands are terminal at their first (and
-// final) response line.  The provider/network timeout of the running
-// operation bounds the wait; only an instance stop aborts it early.
-type rpc_capture_state_t = struct {
-    ref<mutex.mutex_t> lock
-    string command_kind
-    string response_line
-    bool terminal
-}
-
-#local
-fn rpc_bridge_response(ref<ipc_supervisor.supervisor_t> sup, ref<ipc_supervisor.instance_t> instance, {string:any} command_obj, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns, config_types.skills_options_t skills_options): string! {
-    string command_kind = rpc_string(command_obj, 'type')
-    string id = rpc_string(command_obj, 'id')
-    var state = new rpc_capture_state_t(lock = mutex.mutex_t.new(), command_kind = command_kind)
-    ref<rpc_exit_hook_t>? exit_hook = null
-    if command_kind == 'prompt' {
-        exit_hook = new rpc_exit_hook_t(report = fn(string reason) {
-            instance.observe_prompt_failure(reason)
-        })
-    }
-    var sink = new rpc_sink_t(lock = state.lock, write = fn(string line) {
-        // Invoked under state.lock by rpc_write.
-        if state.terminal {
-            return
-        }
-        var parsed = json_util.parse(line) catch error {
-            return
-        }
-        if !(parsed is {string:any}) {
-            return
-        }
-        var response_obj = parsed as {string:any}
-        bool is_response = response_obj.contains('type') && response_obj['type'] is string && (response_obj['type'] as string) == 'response'
-        bool is_session_end = response_obj.contains('type') && response_obj['type'] is string && (response_obj['type'] as string) == session_stream.EVENT_SESSION_END
-        if is_response && state.response_line == '' {
-            state.response_line = line
-        }
-        bool failure_response = is_response && response_obj.contains('success') && response_obj['success'] is bool && (response_obj['success'] as bool) == false
-        if command_kind == 'prompt' {
-            // Prompt answers with an immediate ack; the command completes at
-            // session_end or when the turn fails outright.
-            if is_session_end || failure_response {
-                state.terminal = true
-            }
-        } else if is_response {
-            state.terminal = true
-        }
-    })
-    if sup.offline && command_kind == 'prompt' {
-        rpc_write(sink, rpc_error(id, 'prompt', 'Offline mode cannot send prompts to a provider'))
-    } else {
-        rpc_dispatch(instance.runner as ref<session.runner_t>, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, skills_options, exit_hook)
-    }
-    for true {
-        state.lock.lock()
-        bool terminal = state.terminal
-        string response_line = state.response_line
-        state.lock.unlock()
-        if terminal {
-            if response_line != '' {
-                var parsed = json_util.parse(response_line) catch error {
-                    break
-                }
-                if parsed is {string:any} response_obj {
-                    return ipc_protocol.rpc_result(response_obj)
-                }
-            }
-            break
-        }
-        // The wait is bounded by the provider/network timeout of the running
-        // command, not by the bridge.  A terminal instance aborts it early.
-        string instance_status = instance.state_status()
-        if instance_status == ipc_supervisor.INSTANCE_STOPPED {
-            return ipc_protocol.error_response('instance stopped during command')
-        }
-        if instance_status == ipc_supervisor.INSTANCE_EXITED {
-            return ipc_protocol.error_response('instance exited during command')
-        }
-        co.sleep(10)
-    }
-    return ipc_protocol.error_response('No response from instance')
 }
 
 // rpc_stream connection protocol (upstream ipc/server.ts): rpc_ready first,
@@ -1036,7 +944,7 @@ fn rpc_bridge_response(ref<ipc_supervisor.supervisor_t> sup, ref<ipc_supervisor.
 // RpcResponse/AgentSessionEvent lines the instance emits.  Closing the
 // connection unsubscribes the subscriber.
 #local
-fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, {string:any} object, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns, config_types.skills_options_t skills_options): void! {
+fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, {string:any} object): void! {
     string instance_id = rpc_string(object, 'instanceId')
     var instance = sup.get(instance_id)
     if !(instance is ref<ipc_supervisor.instance_t>) {
@@ -1055,10 +963,6 @@ fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, 
     int subscriber_id = sup.subscribe(live, sink.lock, fn(string line) {
         var bytes = (line + '\n') as [u8]
         conn.write(bytes) catch error {}
-    })
-    ref<rpc_exit_hook_t>? exit_hook = null
-    exit_hook = new rpc_exit_hook_t(report = fn(string reason) {
-        live.observe_prompt_failure(reason)
     })
     for true {
         string line = ipc_server.read_line(conn) catch error {
@@ -1094,119 +998,26 @@ fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, 
             rpc_write(sink, rpc_error(id, 'prompt', 'Offline mode cannot send prompts to a provider'))
             continue
         }
-        // A dispatch failure must not kill the connection loop; answer with
-        // the error shape and keep the stream open.
-        rpc_dispatch(live.runner as ref<session.runner_t>, command_obj, command_kind, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, skills_options, exit_hook) catch error {
+        // A child transport failure must not kill the connection loop; answer
+        // with the server error shape and keep the stream open.
+        var response = sup.rpc(live, command_obj) catch error {
             rpc_write(sink, ipc_protocol.error_response(error.msg()))
+            continue
         }
+        rpc_write(sink, json.serialize(response))
     }
     sup.unsubscribe(live, subscriber_id)
     conn.close()
 }
 
-// Build the isolated in-memory runner for one spawned instance.  The
-// instance inherits the server's resolved model/stream/compaction/retry
-// configuration; project-bound context (AGENTS.md/CLAUDE.md, skills, tools,
-// system prompt) is rebuilt for the instance cwd like a fresh session there.
-// The stream options are copied per instance so set_model/set_thinking_level
-// mutations never leak between instances.
-#local
-fn build_spawned_runner(config_types.config_t config, string cwd): ref<session.runner_t>! {
-    var session_repo = repository.in_memory(cwd)
-    var instance_config = config
-    // A spawn can target a project different from the launch cwd; re-resolve
-    // the trust decision against the instance cwd (explicit --approve/
-    // --no-approve still wins) before settings and project resources load.
-    instance_config.project_trusted = trust.resolve_trust(instance_config.trust_override_explicit, instance_config.trust_override, cwd)
-    var session_preferences = instance_config.project_trusted ? settings.load_for(cwd) : settings.load()
-    if !instance_config.provider_explicit && !instance_config.model_explicit && session_preferences.default_model != '' {
-        string preferred = session_preferences.default_provider != '' ? session_preferences.default_provider + '/' + session_preferences.default_model : session_preferences.default_model
-        ref<ai_types.model_t>? preferred_model = models.find(preferred)
-        if preferred_model is ref<ai_types.model_t> selected_model {
-            instance_config.model = selected_model
-            instance_config.provider = selected_model.provider
-            instance_config.stream_options.api_key = auth.effective(selected_model.provider)
-            instance_config.stream_options.max_tokens = selected_model.max_tokens
-        }
-    }
-    string thinking = instance_config.thinking
-    if !instance_config.thinking_explicit && instance_config.scoped_models.len() == 0 {
-        thinking = models.clamp_thinking_level(instance_config.model, session_preferences.default_thinking_level)
-    }
-    var stream_options = new ai_types.stream_options_t(api_key = instance_config.stream_options.api_key, timeout_ms = instance_config.stream_options.timeout_ms, max_tokens = instance_config.stream_options.max_tokens, max_retries = instance_config.stream_options.max_retries, max_retry_delay_ms = instance_config.stream_options.max_retry_delay_ms, session_id = session_repo.get_session_id(), reasoning_effort = thinking, thinking_enabled = thinking != 'off', cache_retention = instance_config.stream_options.cache_retention, temperature = instance_config.stream_options.temperature, tool_choice = instance_config.stream_options.tool_choice, transport = instance_config.stream_options.transport)
-    command.configure_agent_environment(session_repo.get_session_id(), session_repo.get_session_file(), instance_config.model.provider, instance_config.model.id, thinking)
-    [ref<project.file_t>] context_files = []
-    if !instance_config.no_context_files && instance_config.project_trusted {
-        var loaded = project.load(cwd, '')
-        context_files = loaded.files
-    }
-    string resolved_system_prompt = instance_config.system_prompt
-    if resolved_system_prompt == '' {
-        var discovered_system = project.system_prompt_file(cwd, '')
-        if discovered_system is ref<project.file_t> system_file {
-            resolved_system_prompt = system_file.content
-        }
-    }
-    [string] resolved_append_prompts = instance_config.append_system_prompts
-    if resolved_append_prompts.len() == 0 {
-        var discovered_append = project.append_system_prompt_file(cwd, '')
-        if discovered_append is ref<project.file_t> append_file {
-            resolved_append_prompts.push(append_file.content)
-        }
-    }
-    string append_prompt = strings.join(resolved_append_prompts, '\n\n')
-    var tools = builtins.select_tools(cwd, instance_config.tool_names, instance_config.exclude_tool_names, instance_config.no_tools || instance_config.no_builtin_tools)
-    [string] tool_names = []
-    for tool in tools {
-        tool_names.push(tool.name)
-    }
-    // Same skills prompt contract as a fresh session: only inject when the
-    // read tool is available, and keep the config selector's filter.  The
-    // trust decision is re-resolved against the spawn cwd (explicit
-    // --approve/--no-approve still wins) because an instance can be spawned
-    // for a project different from the launch directory.
-    var spawn_skills = resolve.skills_options_for(instance_config, cwd)
-    var skills_result = skills.load_skills(cwd, config_paths.agent_dir(), spawn_skills.skill_paths, !spawn_skills.no_skills, spawn_skills.project_trusted)
-    var skill_settings = config_settings.load()
-    if skill_settings.enabled_skill_names.len() > 0 {
-        [ref<skills.skill_t>] filtered_skills = []
-        for skill in skills_result.skills {
-            if list_contains_skill(skill_settings.enabled_skill_names, skill.name) {
-                filtered_skills.push(skill)
-            }
-        }
-        skills_result.skills = filtered_skills
-    }
-    if list_contains(tool_names, 'read') {
-        string skills_prompt = skills.format_skills_for_prompt(skills_result.skills)
-        if skills_prompt != '' {
-            if append_prompt != '' {
-                append_prompt += '\n\n'
-            }
-            append_prompt += skills_prompt
-        }
-    }
-    string system = system_prompt.build_with_tools(cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
-    var context = new agent_types.context_t(system_prompt = system, tools = tools)
-    var agent_config = new agent_types.config_t(model = instance_config.model, stream_options = stream_options)
-    agent_config.queues.steering_mode = instance_config.steering_mode
-    agent_config.queues.follow_up_mode = instance_config.follow_up_mode
-    var spawned = session.new(session_repo, context, agent_config, stream_provider(), instance_config.compaction)
-    spawned.retry_enabled = instance_config.retry_enabled
-    spawned.retry_max_attempts = instance_config.retry_max_attempts
-    spawned.retry_base_delay_ms = instance_config.retry_base_delay_ms
-    return spawned
-}
-
 // Shared command dispatch for one RpcCommand.  Used both by --mode rpc
-// (stdout sink, run_rpc loop) and the Phase 7.1 IPC server (per-connection
-// sinks).  Responses and events are written through the sink asynchronously
-// where the operation is a background worker (prompt/compact/bash).
+// (stdout sink and run_rpc loop).  The server reaches this command surface
+// through one child process per instance.
 #local
-fn rpc_dispatch(ref<session.runner_t> runner, {string:any} object, string command, string id, ref<rpc_sink_t> sink, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns, config_types.skills_options_t skills_options, ref<rpc_exit_hook_t>? exit_hook): void! {
+fn rpc_dispatch(ref<session.runner_t> runner, {string:any} object, string command, string id, ref<rpc_sink_t> sink, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns, config_types.skills_options_t skills_options): void! {
     if command == 'prompt' {
         string prompt_behavior = rpc_string(object, 'streamingBehavior')
-        rpc_run_prompt(runner, id, rpc_string(object, 'message'), prompt_behavior, sink, exit_hook)
+        rpc_run_prompt(runner, id, rpc_string(object, 'message'), prompt_behavior, sink)
     } else if command == 'steer' {
         rpc_queue_message(runner, id, rpc_string(object, 'message'), true, sink)
     } else if command == 'follow_up' {
@@ -1273,7 +1084,7 @@ fn rpc_dispatch(ref<session.runner_t> runner, {string:any} object, string comman
     } else if command == 'get_last_assistant_text' {
         rpc_write(sink, rpc_ok_data(id, command, rpc_text_data('text', last_assistant_text(runner.copy_active_messages()))))
     } else if command == 'get_commands' {
-        rpc_write(sink, rpc_ok_data(id, command, rpc_commands(runner, runner.repository.cwd, runner.repository.cwd, skills_options)))
+        rpc_write(sink, rpc_ok_data(id, command, rpc_commands(runner)))
     } else if command == 'set_session_name' {
         string name = rpc_string(object, 'name').trim([' ', '\t', '\n', '\r'])
         if name == '' {
@@ -1292,7 +1103,7 @@ fn rpc_dispatch(ref<session.runner_t> runner, {string:any} object, string comman
         }
         rpc_write(sink, rpc_ok_data(id, command, rpc_cancelled_data(false)))
     } else if command == 'switch_session' {
-        rpc_switch_session(runner, id, rpc_string(object, 'sessionPath'), no_context_files, system_prompt_override, append_system_prompts, sink)
+        rpc_switch_session(runner, id, rpc_string(object, 'sessionPath'), no_context_files, system_prompt_override, append_system_prompts, skills_options, sink)
     } else if command == 'fork' {
         string fork_text = rpc_fork_message_text(runner.repository, rpc_string(object, 'entryId'))
         runner.fork_session(rpc_string(object, 'entryId')) catch error {
@@ -1355,7 +1166,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
         var object = parsed as {string:any}
         string command = rpc_string(object, 'type')
         string id = rpc_string(object, 'id')
-        rpc_dispatch(runner, object, command, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, skills_options, null)
+        rpc_dispatch(runner, object, command, id, sink, no_context_files, system_prompt_override, append_system_prompts, model_scope_patterns, skills_options)
     }
     // A piped RPC client may close stdin immediately after sending a prompt.
     // Keep the process alive until the background operation has emitted its
@@ -1368,7 +1179,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
 }
 
 #local
-fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string streaming_behavior, ref<rpc_sink_t> sink, ref<rpc_exit_hook_t>? exit_hook): void! {
+fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string streaming_behavior, ref<rpc_sink_t> sink): void! {
     // Pi lets clients use `prompt` as a convenience queue operation while an
     // assistant turn is already running.  Keep explicit steer/follow_up
     // commands equivalent, but accept the streamingBehavior spelling too.
@@ -1386,11 +1197,11 @@ fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string
         return
     }
     runner.require_rpc_delivery(stream)
-    go rpc_prompt_worker(runner, stream, id, sink, exit_hook)
+    go rpc_prompt_worker(runner, stream, id, sink)
 }
 
 #local
-fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<rpc_sink_t> sink, ref<rpc_exit_hook_t>? exit_hook): void! {
+fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<rpc_sink_t> sink): void! {
     rpc_write(sink, rpc_ok(id, 'prompt'))
     for true {
         var (event, received) = stream.try_recv() catch error {break}
@@ -1411,9 +1222,6 @@ fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> 
     }
     stream.result() catch error {
         rpc_write(sink, rpc_error(id, 'prompt', error.msg()))
-        if exit_hook is ref<rpc_exit_hook_t> hook {
-            hook.report(error.msg())
-        }
         runner.finish_rpc_delivery(stream)
         return
     }
@@ -1422,7 +1230,11 @@ fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> 
 
 #local
 fn rpc_queue_message(ref<session.runner_t> runner, string id, string text, bool steering, ref<rpc_sink_t> sink): void! {
-    var message = new ai_types.user_message_t(content = text, timestamp = time.now().ms_timestamp())
+    // Pi expands prompt templates and skill commands for prompt, steer and
+    // follow-up alike.  Use the runner's already-published snapshot so queue
+    // execution cannot drift from get_commands.
+    string expanded = runner.expand_rpc_command(text)
+    var message = new ai_types.user_message_t(content = expanded, timestamp = time.now().ms_timestamp())
     if steering {
         runner.queue_steering(message)
     } else {
@@ -1602,7 +1414,7 @@ fn rpc_export_html(ref<session.runner_t> runner, string id, string requested_pat
 }
 
 #local
-fn rpc_switch_session(ref<session.runner_t> runner, string id, string session_path, bool no_context_files, string system_prompt_override, [string] append_system_prompts, ref<rpc_sink_t> sink): void! {
+fn rpc_switch_session(ref<session.runner_t> runner, string id, string session_path, bool no_context_files, string system_prompt_override, [string] append_system_prompts, config_types.skills_options_t skills_options, ref<rpc_sink_t> sink): void! {
     if session_path == '' {
         rpc_write(sink, rpc_error(id, 'switch_session', 'sessionPath is required'))
         return
@@ -1615,7 +1427,7 @@ fn rpc_switch_session(ref<session.runner_t> runner, string id, string session_pa
         rpc_write(sink, rpc_error(id, 'switch_session', error.msg()))
         return
     }
-    rebind_rpc_context(runner, next.cwd, no_context_files, system_prompt_override, append_system_prompts) catch error {
+    rebind_rpc_context(runner, next.cwd, no_context_files, system_prompt_override, append_system_prompts, skills_options) catch error {
         rpc_write(sink, rpc_error(id, 'switch_session', error.msg()))
         return
     }
@@ -1625,14 +1437,32 @@ fn rpc_switch_session(ref<session.runner_t> runner, string id, string session_pa
 // Session switching changes the runtime cwd.  Pi rebuilds project-bound
 // tools and the system prompt at that boundary; RPC must do the same as the
 // interactive TUI instead of continuing to execute tools in the old project.
+// B1-R2-08/R3-03/R3-04: the trust decision is re-resolved against the NEW
+// session cwd (never the launch cwd); project instructions/system/append
+// discovery only run when trusted; skills are reloaded with the same
+// trust-aware merged settings and shared filter and injected into the
+// rebuilt system prompt when the read tool exists (identical rule to
+// fresh/spawned/TUI paths); and the trust-aware settings snapshot is applied
+// to the runner's queue/compaction/retry preferences instead of core reading
+// project settings directly.
 #local
-fn rebind_rpc_context(ref<session.runner_t> runner, string cwd, bool no_context_files, string system_prompt_override, [string] append_system_prompts): void! {
+fn rebind_rpc_context(ref<session.runner_t> runner, string cwd, bool no_context_files, string system_prompt_override, [string] append_system_prompts, config_types.skills_options_t skills_options): void! {
+    bool trusted = resolve.skills_trusted(skills_options, cwd)
+    // B1-R4-10: refresh the ONE trust-aware snapshot (trust-aware settings,
+    // filtered prompts/skills) and derive BOTH the core preferences and the
+    // system-prompt skills from it; get_commands reads the same snapshot
+    // afterwards, so init/switch share one source of truth.
+    ref<resource_snapshot.resource_snapshot_t>? next_snapshot = null
+    if runner.get_rpc_snapshot() is ref<resource_snapshot.resource_snapshot_t> {
+        var replacement = resource_snapshot.load(cwd, trusted, config_paths.agent_dir(), skills_options.skill_paths, skills_options.no_skills)
+        next_snapshot = replacement
+    }
     [string] tool_names = []
     for tool in runner.base_context.tools {
         tool_names.push(tool.name)
     }
     [ref<project.file_t>] context_files = []
-    if !no_context_files {
+    if !no_context_files && trusted {
         var loaded = project.load(cwd, '')
         context_files = loaded.files
     }
@@ -1640,23 +1470,38 @@ fn rebind_rpc_context(ref<session.runner_t> runner, string cwd, bool no_context_
     if tool_names.len() > 0 {
         tools = builtins.select_tools(cwd, tool_names, [], false)
     }
-    runner.base_context.tools = tools
     string resolved_system_prompt = system_prompt_override
-    if resolved_system_prompt == '' {
+    if resolved_system_prompt == '' && trusted {
         var discovered_system = project.system_prompt_file(cwd, '')
         if discovered_system is ref<project.file_t> system_file {
             resolved_system_prompt = system_file.content
         }
     }
     [string] resolved_append_prompts = append_system_prompts
-    if resolved_append_prompts.len() == 0 {
+    if resolved_append_prompts.len() == 0 && trusted {
         var discovered_append = project.append_system_prompt_file(cwd, '')
         if discovered_append is ref<project.file_t> append_file {
             resolved_append_prompts.push(append_file.content)
         }
     }
     string append_prompt = strings.join(resolved_append_prompts, '\n\n')
-    runner.base_context.system_prompt = system_prompt.build_with_tools(cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
+    if next_snapshot is ref<resource_snapshot.resource_snapshot_t> loaded {
+        if list_contains(tool_names, 'read') {
+            string skills_prompt = skills.format_skills_for_prompt(loaded.skills)
+            if skills_prompt != '' {
+                if append_prompt != '' {
+                    append_prompt += '\n\n'
+                }
+                append_prompt += skills_prompt
+            }
+        }
+    }
+    string rebuilt_system_prompt = system_prompt.build_with_tools(cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
+    if next_snapshot is ref<resource_snapshot.resource_snapshot_t> loaded {
+        // Build every replacement value first, then publish context,
+        // preferences and snapshot together under the runner lock.
+        runner.publish_rpc_resources(loaded, rebuilt_system_prompt, tools, true)
+    }
 }
 
 #local
@@ -1927,45 +1772,14 @@ fn rpc_cancelled_data(bool cancelled): {string:any} {
 }
 
 #local
-fn rpc_commands(ref<session.runner_t> runner, string cwd, string session_cwd, config_types.skills_options_t skills_options): {string:any} {
-    // Pi's get_commands composes prompt templates and skills as dynamic
-    // slash commands with source metadata.
+fn rpc_commands(ref<session.runner_t> runner): {string:any} {
+    // B1-R4-10: get_commands reads the runner's trust-aware resource
+    // snapshot refreshed at init/switch — NO disk access, so files changing
+    // without a refresh can never silently alter the wire commands.
     [any] values = []
-    [string] no_extra = []
-    var templates = prompt_templates.load_prompt_templates(session_cwd, config_paths.agent_dir(), no_extra, true)
-    for info in slash_commands.prompt_commands(templates) {
-        {string:any} object = {}
-        object['name'] = info.name
-        if info.description != '' {
-            object['description'] = info.description
-        }
-        object['source'] = info.source
-        values.push(object)
-    }
-    // Skills follow the instance's own session cwd: the trust gate is
-    // re-resolved per project (explicit --approve/--no-approve still wins),
-    // while the CLI skill paths and --no-skills flag are preserved.
-    var skills_result = skills.load_skills(session_cwd, config_paths.agent_dir(), skills_options.skill_paths, !skills_options.no_skills, resolve.skills_trusted(skills_options, session_cwd))
-    // The config selector's enabledSkills list filters advertised skill
-    // commands; an empty list keeps everything, matching the TUI menu.
-    var skill_settings = config_settings.load()
-    if skill_settings.enabled_skill_names.len() > 0 {
-        [ref<skills.skill_t>] filtered_skills = []
-        for skill in skills_result.skills {
-            if list_contains_skill(skill_settings.enabled_skill_names, skill.name) {
-                filtered_skills.push(skill)
-            }
-        }
-        skills_result.skills = filtered_skills
-    }
-    for info in slash_commands.skill_commands(skills_result.skills) {
-        {string:any} object = {}
-        object['name'] = info.name
-        if info.description != '' {
-            object['description'] = info.description
-        }
-        object['source'] = info.source
-        values.push(object)
+    var snapshot = runner.get_rpc_snapshot()
+    if snapshot is ref<resource_snapshot.resource_snapshot_t> loaded {
+        values = resource_snapshot.commands_json(loaded)
     }
     {string:any} result = {}
     result['commands'] = values

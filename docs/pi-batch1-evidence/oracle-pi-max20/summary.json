@@ -1,0 +1,102 @@
+{
+  "case": "max-visible-oracle",
+  "oracle": "pi-0.82.1",
+  "oracle_commit": "cced6a21da273b26ee4a23a803680614bbe8dd1e",
+  "fixture": "pi-max20",
+  "autocompleteMaxVisible": 20,
+  "terminal": {
+    "rows": 24,
+    "cols": 80
+  },
+  "runs": 3,
+  "verdict": "FAIL",
+  "per_run": [
+    {
+      "run": 1,
+      "exit_code": 0,
+      "assertions": {
+        "verdict": "FAIL",
+        "failures": [
+          "slash-open: editor scrolled off-screen (editor_visible=false)",
+          "slash-open: candidate_count None, want 20"
+        ]
+      }
+    },
+    {
+      "run": 2,
+      "exit_code": 0,
+      "assertions": {
+        "verdict": "FAIL",
+        "failures": [
+          "slash-open: editor scrolled off-screen (editor_visible=false)",
+          "slash-open: candidate_count None, want 20"
+        ]
+      }
+    },
+    {
+      "run": 3,
+      "exit_code": 0,
+      "assertions": {
+        "verdict": "FAIL",
+        "failures": [
+          "slash-open: editor scrolled off-screen (editor_visible=false)",
+          "slash-open: candidate_count None, want 20"
+        ]
+      }
+    }
+  ],
+  "consistency": {
+    "startup": {
+      "identical": true,
+      "runs": [
+        {
+          "run": 1,
+          "sha256": "3ba5c32f77dfeb32961e50444310829a8ab502e5506670dc24bde0a76c7f8171"
+        },
+        {
+          "run": 2,
+          "sha256": "3ba5c32f77dfeb32961e50444310829a8ab502e5506670dc24bde0a76c7f8171"
+        },
+        {
+          "run": 3,
+          "sha256": "3ba5c32f77dfeb32961e50444310829a8ab502e5506670dc24bde0a76c7f8171"
+        }
+      ]
+    },
+    "slash-open": {
+      "identical": true,
+      "runs": [
+        {
+          "run": 1,
+          "sha256": "13f297fd03673fb77bb415abaf37081cbc6553c033a68e41e18c40cd7ad06ae0"
+        },
+        {
+          "run": 2,
+          "sha256": "13f297fd03673fb77bb415abaf37081cbc6553c033a68e41e18c40cd7ad06ae0"
+        },
+        {
+          "run": 3,
+          "sha256": "13f297fd03673fb77bb415abaf37081cbc6553c033a68e41e18c40cd7ad06ae0"
+        }
+      ]
+    },
+    "slash-esc-closed": {
+      "identical": true,
+      "runs": [
+        {
+          "run": 1,
+          "sha256": "ef5c4a8754e23d2b57e7b151bd8800029ce0fffce38117b168c3d1b5c610e588"
+        },
+        {
+          "run": 2,
+          "sha256": "ef5c4a8754e23d2b57e7b151bd8800029ce0fffce38117b168c3d1b5c610e588"
+        },
+        {
+          "run": 3,
+          "sha256": "ef5c4a8754e23d2b57e7b151bd8800029ce0fffce38117b168c3d1b5c610e588"
+        }
+      ]
+    }
+  },
+  "failures": []
+}

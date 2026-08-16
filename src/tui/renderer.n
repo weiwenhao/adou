@@ -25,6 +25,7 @@ pub type renderer_t = struct {
     int previous_height
     int previous_viewport_top
     int hardware_cursor_row
+    bool force_full
 }
 
 pub fn new(): ref<renderer_t> {
@@ -60,6 +61,18 @@ pub fn renderer_t.render(&self, [string] input_lines, int width, int height): re
     }
     bool width_changed = self.previous_width != 0 && self.previous_width != width
     bool height_changed = self.previous_height != 0 && self.previous_height != height
+    if self.force_full {
+        // The terminal was taken over by the shell/editor (Ctrl+Z, external
+        // editor) while frames were being computed; the diff state is stale
+        // and the screen may hold foreign content.  Repaint everything with
+        // a clear so the first frame after reenter resets the whole screen
+        // instead of relying on a first-render join.
+        self.force_full = false
+        debug.log_redraw('forced full after terminal suspension', self.previous_lines.len(), lines.len(), height)
+        string output = full_output(lines, true)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height))
+        return result_t {output: output, strategy: STRATEGY_FULL,}
+    }
     if self.previous_lines.len() == 0 && !width_changed && !height_changed {
         debug.log_redraw('first render', self.previous_lines.len(), lines.len(), height)
         string output = full_output(lines, false)
@@ -131,6 +144,21 @@ pub fn renderer_t.commit(&self, [string] lines, int width, int height, int hardw
     self.previous_height = height
     self.previous_viewport_top = viewport_top
     self.hardware_cursor_row = hardware_cursor_row
+}
+
+// Forget the committed diff state and demand a cleared full repaint on the
+// next render.  Frames computed while the terminal is suspended (Ctrl+Z,
+// external editor) never reach the screen, so the diff must not believe the
+// screen matches previous_lines after reenter; merely clearing the lines
+// would degrade to a first-render join that does not erase foreign content
+// left by the shell or editor.
+pub fn renderer_t.invalidate(&self) {
+    self.previous_lines = []
+    self.previous_width = 0
+    self.previous_height = 0
+    self.previous_viewport_top = 0
+    self.hardware_cursor_row = 0
+    self.force_full = true
 }
 
 #local

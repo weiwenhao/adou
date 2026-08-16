@@ -16,7 +16,7 @@ test 'settings round trip preserves core Pi preferences' {
     string home = '/tmp/adou-settings-test'
     os.rmdir(home, true) catch error {}
     syscall.set_env('HOME', home)
-    var original = config_settings.settings_t {default_provider: 'deepseek', default_model: 'deepseek-v4-flash', default_thinking_level: 'high', auto_compaction: false, steering_mode: 'one-at-a-time', follow_up_mode: 'all', hide_thinking: true, retry_enabled: false, retry_max_attempts: 5, retry_base_delay_ms: 2500, enabled_model_ids: ['deepseek/deepseek-v4-flash', 'openai/gpt-5.1-codex'],}
+    var original = config_settings.settings_t {default_provider: 'deepseek', default_model: 'deepseek-v4-flash', default_thinking_level: 'high', auto_compaction: false, steering_mode: 'one-at-a-time', follow_up_mode: 'all', hide_thinking: true, retry_enabled: false, retry_max_attempts: 5, retry_base_delay_ms: 2500, enabled_model_ids: ['deepseek/deepseek-v4-flash', 'openai/gpt-5.1-codex'], enabled_models_configured: true,}
     config_settings.save(original)
     var loaded = config_settings.load()
     assert(loaded.default_provider == 'deepseek' && loaded.default_model == 'deepseek-v4-flash')
@@ -26,6 +26,7 @@ test 'settings round trip preserves core Pi preferences' {
     assert(loaded.hide_thinking)
     assert(!loaded.retry_enabled && loaded.retry_max_attempts == 5 && loaded.retry_base_delay_ms == 2500)
     assert(loaded.enabled_model_ids.len() == 2)
+    assert(loaded.enabled_models_configured)
     assert(loaded.enabled_model_ids[0] == 'deepseek/deepseek-v4-flash')
     assert(loaded.enabled_model_ids[1] == 'openai/gpt-5.1-codex')
     os.rmdir(home, true)
@@ -38,7 +39,7 @@ test 'Pi preference setters persist one setting without replacing the others' {
     string home = '/tmp/adou-settings-setters-test'
     os.rmdir(home, true) catch error {}
     syscall.set_env('HOME', home)
-    var original = config_settings.settings_t {default_provider: 'openai', default_model: 'gpt-5.1-codex', default_thinking_level: 'high', auto_compaction: true, steering_mode: 'one-at-a-time', follow_up_mode: 'one-at-a-time', hide_thinking: true, retry_enabled: true, retry_max_attempts: 7, retry_base_delay_ms: 3000, enabled_model_ids: ['openai/gpt-5.1-codex'],}
+    var original = config_settings.settings_t {default_provider: 'openai', default_model: 'gpt-5.1-codex', default_thinking_level: 'high', auto_compaction: true, steering_mode: 'one-at-a-time', follow_up_mode: 'one-at-a-time', hide_thinking: true, retry_enabled: true, retry_max_attempts: 7, retry_base_delay_ms: 3000, enabled_model_ids: ['openai/gpt-5.1-codex'], enabled_models_configured: true,}
     config_settings.save(original)
     config_settings.set_auto_compaction(false)
     config_settings.set_steering_mode('all')
@@ -57,7 +58,7 @@ test 'project .pi settings override global settings field by field' {
     string home = '/tmp/adou-settings-project-test'
     os.rmdir(home, true) catch error {}
     syscall.set_env('HOME', home)
-    var global = config_settings.settings_t {default_provider: 'openai', default_model: 'gpt-5.1-codex', default_thinking_level: 'high', auto_compaction: false, steering_mode: 'all', follow_up_mode: 'one-at-a-time', hide_thinking: true, retry_enabled: false, retry_max_attempts: 7, retry_base_delay_ms: 3000, enabled_model_ids: ['openai/gpt-5.1-codex'],}
+    var global = config_settings.settings_t {default_provider: 'openai', default_model: 'gpt-5.1-codex', default_thinking_level: 'high', auto_compaction: false, steering_mode: 'all', follow_up_mode: 'one-at-a-time', hide_thinking: true, retry_enabled: false, retry_max_attempts: 7, retry_base_delay_ms: 3000, enabled_model_ids: ['openai/gpt-5.1-codex'], enabled_models_configured: true,}
     config_settings.save(global)
     string cwd = path.join(home, 'project')
     write_settings_file(path.join(cwd, '.pi/settings.json'), '{"defaultProvider":"deepseek","defaultThinkingLevel":"low","autoCompaction":true,"enabledModels":["deepseek/deepseek-v4-flash"]}')
@@ -68,6 +69,54 @@ test 'project .pi settings override global settings field by field' {
     assert(loaded.hide_thinking && !loaded.retry_enabled)
     assert(loaded.retry_max_attempts == 7 && loaded.retry_base_delay_ms == 3000)
     assert(loaded.enabled_model_ids.len() == 1 && loaded.enabled_model_ids[0] == 'deepseek/deepseek-v4-flash')
+    os.rmdir(home, true)
+}
+
+test 'enabledModels keeps absent all and explicit empty as distinct states' {
+    string home = '/tmp/adou-settings-enabled-models-state-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    config_settings.set_enabled_models([], true)
+    var empty = config_settings.load()
+    assert(empty.enabled_models_configured)
+    assert(empty.enabled_model_ids.len() == 0)
+    config_settings.set_enabled_models([], false)
+    var all = config_settings.load()
+    assert(!all.enabled_models_configured)
+    assert(all.enabled_model_ids.len() == 0)
+    os.rmdir(home, true)
+}
+
+test 'B1-R2-06 load_trusted_for: untrusted is strictly global, trusted merges project' {
+    string home = '/tmp/adou-settings-trusted-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    var global = config_settings.settings_t {default_provider: 'openai', autocomplete_max_visible: 5,}
+    global.enabled_skill_names.push('global-skill')
+    config_settings.save(global)
+    string cwd = path.join(home, 'project')
+    write_settings_file(path.join(cwd, '.pi/settings.json'), '{"autocompleteMaxVisible":17,"enabledSkills":["project-skill"],"enabledPrompts":["project-prompt"]}')
+    // Untrusted: strictly global — the project override must not leak.
+    var untrusted = config_settings.load_trusted_for(cwd, false)
+    assert(untrusted.autocomplete_max_visible == 5)
+    assert(untrusted.enabled_skill_names.len() == 1 && untrusted.enabled_skill_names[0] == 'global-skill')
+    assert(untrusted.enabled_prompt_names.len() == 0)
+    // Trusted: global + project merged, project wins per field.
+    var trusted = config_settings.load_trusted_for(cwd, true)
+    assert(trusted.autocomplete_max_visible == 17)
+    assert(trusted.enabled_skill_names.len() == 1 && trusted.enabled_skill_names[0] == 'project-skill')
+    assert(trusted.enabled_prompt_names.len() == 1 && trusted.enabled_prompt_names[0] == 'project-prompt')
+    os.rmdir(home, true)
+}
+
+test 'autocompleteMaxVisible clamps negative configured values to the minimum' {
+    string home = '/tmp/adou-settings-autocomplete-clamp-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    string cwd = path.join(home, 'project')
+    write_settings_file(path.join(cwd, '.pi/settings.json'), '{"autocompleteMaxVisible":-1}')
+    var loaded = config_settings.load_for(cwd)
+    assert(loaded.autocomplete_max_visible == 3)
     os.rmdir(home, true)
 }
 

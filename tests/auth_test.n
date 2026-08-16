@@ -1,12 +1,22 @@
 import adou.src.config.auth
+import fmt
+import fs
 import os
 import path
 import syscall
+import time
+
+// Every test saves/restores HOME and calls auth.reload() on BOTH sides of a
+// HOME switch: the process-level snapshot must never leak between the
+// isolated scratch dirs (and must never keep pointing at a removed dir).
 
 test 'stores Pi-compatible API key credentials with restrictive file mode' {
+    string saved_home = syscall.get_env('HOME')
     string home = '/tmp/adou-auth-test'
     os.rmdir(home, true) catch error {}
+    auth.reload()
     syscall.set_env('HOME', home)
+    auth.reload()
     string file_path = auth.auth_path()
     auth.save('deepseek', 'test-key')
     assert(auth.read('deepseek') == 'test-key')
@@ -14,4 +24,87 @@ test 'stores Pi-compatible API key credentials with restrictive file mode' {
     auth.remove('deepseek')
     assert(auth.read('deepseek') == '')
     os.rmdir(home, true)
+    syscall.set_env('HOME', saved_home)
+    auth.reload()
+}
+
+test 'B1-R2-05 auth snapshot reload keeps last valid and picks up external changes' {
+    string saved_home = syscall.get_env('HOME')
+    string home = '/tmp/adou-auth-reload-test'
+    os.rmdir(home, true) catch error {}
+    auth.reload()
+    syscall.set_env('HOME', home)
+    auth.reload()
+    string file_path = auth.auth_path()
+
+    // First valid snapshot A, then an external change to B.
+    auth.save('deepseek', 'A')
+    assert(auth.read('deepseek') == 'A')
+    auth.write_file(file_path, '{"deepseek": {"type": "api_key", "key": "B"}}')
+    assert(auth.read('deepseek') == 'A')
+    auth.reload()
+    assert(auth.read('deepseek') == 'B')
+
+    // Corrupt JSON keeps the last valid snapshot.
+    auth.write_file(file_path, 'not-json{{{')
+    auth.reload()
+    assert(auth.read('deepseek') == 'B')
+
+    // Top-level non-object also keeps the last valid snapshot.
+    auth.write_file(file_path, '[]')
+    auth.reload()
+    assert(auth.read('deepseek') == 'B')
+
+    // Deleting the auth file yields an empty valid snapshot.
+    os.remove(file_path) catch error {}
+    auth.reload()
+    assert(auth.read('deepseek') == '')
+
+    // Self writes are immediately visible without reload.
+    auth.save('deepseek', 'C')
+    assert(auth.read('deepseek') == 'C')
+    auth.remove('deepseek')
+    assert(auth.read('deepseek') == '')
+
+    os.rmdir(home, true)
+    syscall.set_env('HOME', saved_home)
+    auth.reload()
+}
+
+test 'B1-R4-06 remove clears stale snapshot state after external delete or corrupt' {
+    string saved_home = syscall.get_env('HOME')
+    string home = '/tmp/adou-auth-remove-test'
+    os.rmdir(home, true) catch error {}
+    auth.reload()
+    syscall.set_env('HOME', home)
+    auth.reload()
+    string file_path = auth.auth_path()
+
+    // External delete, then logout WITHOUT any prior reload: the in-memory
+    // snapshot must drop the provider so read/list stop reporting it.
+    auth.save('deepseek', 'A')
+    assert(auth.read('deepseek') == 'A')
+    os.remove(file_path) catch error {}
+    auth.remove('deepseek')
+    assert(auth.read('deepseek') == '')
+    assert(auth.read_credential('deepseek') is null)
+    assert(auth.list_credentials().len() == 0)
+
+    // External corrupt, then logout: same deterministic outcome.
+    auth.save('deepseek', 'B')
+    assert(auth.read('deepseek') == 'B')
+    auth.write_file(file_path, 'corrupt{{{')
+    auth.remove('deepseek')
+    assert(auth.read('deepseek') == '')
+    assert(auth.read_credential('deepseek') is null)
+    assert(auth.list_credentials().len() == 0)
+
+    // reload() on the still-corrupt file keeps the last-valid (empty)
+    // snapshot — the parse-failure last-valid contract is preserved.
+    auth.reload()
+    assert(auth.read('deepseek') == '')
+
+    os.rmdir(home, true)
+    syscall.set_env('HOME', saved_home)
+    auth.reload()
 }

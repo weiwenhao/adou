@@ -1,0 +1,264 @@
+import adou.src.agent.session_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.types
+import adou.src.tools.types as tool_types
+import adou.src.tui.chat
+import adou.src.tui.renderer
+import co
+import co.mutex
+import fmt
+import strings
+import time
+
+// RM-TUI-001/002 regression: the streaming partial tool result -> tool
+// complete -> final assistant -> idle transition must never emit a frame
+// that is invalid UTF-8 or carries raw binary bytes, and the renderer must
+// never throw ("Render failed") or produce a frame that could surface as
+// "bad address in system call argument" on the terminal write.
+// chat.apply mutates shared chat state (bash output concat, tool detail
+// replacement, message/tool vector growth); the view serializes those
+// mutations with rendering under the render lock, and these tests validate
+// the frame invariants across exactly that transition.
+
+fn stream_chat(): ref<chat.chat_t> {
+    return chat.new('mock-model', '/tmp/project')
+}
+
+fn bash_start_event(): session_stream.event_t {
+    return session_stream.event_t {kind: session_stream.EVENT_BASH_START, bash_command: 'printf \'REDRAW_TOOL_OK\\n\'',}
+}
+
+fn bash_update_event(string chunk): session_stream.event_t {
+    return session_stream.event_t {kind: session_stream.EVENT_BASH_UPDATE, bash_output: chunk,}
+}
+
+fn bash_end_event(): session_stream.event_t {
+    return session_stream.event_t {kind: session_stream.EVENT_BASH_END, bash_command: 'printf \'REDRAW_TOOL_OK\\n\'', bash_output: 'REDRAW_TOOL_OK\n', bash_exit_code: 0,}
+}
+
+fn tool_result_event(string tool_id): agent_types.agent_event_t {
+    return agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, tool_message: new types.tool_result_message_t(tool_call_id = tool_id, tool_name = 'bash', content = [new types.text_content_t(text = 'REDRAW_TOOL_OK\n'),]),}
+}
+
+fn final_assistant_event(): agent_types.agent_event_t {
+    [types.content_t] content = [new types.text_content_t(text = 'MASTER_TLS_TOOL_OK')]
+    var assistant = new types.assistant_message_t(content = content, stop_reason = types.STOP_STOP)
+    return agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, assistant_message: assistant,}
+}
+
+// Strict UTF-8: rejects overlongs, surrogates, truncated sequences and
+// out-of-range code points.  Boundary decisions are made from the FIRST
+// byte (E0/ED/F0/F4) together with the SECOND continuation byte: E0's
+// second byte must be >= A0 (no overlong 3-byte), ED's must be <= 9F (no
+// surrogates), F0's must be >= 90 (no overlong 4-byte), F4's must be <= 8F
+// (no code points above U+10FFFF).  Control bytes (ESC etc.) are valid
+// below 0x80.
+fn valid_utf8([u8] bytes): bool {
+    int index = 0
+    for index < bytes.len() {
+        u8 first = bytes[index]
+        if first < 0x80 {
+            index += 1
+            continue
+        }
+        int extra = 0
+        if first >= 0xC2 && first <= 0xDF {
+            extra = 1
+        } else if first >= 0xE0 && first <= 0xEF {
+            extra = 2
+        } else if first >= 0xF0 && first <= 0xF4 {
+            extra = 3
+        } else {
+            return false
+        }
+        if index + extra >= bytes.len() {
+            return false
+        }
+        for int step = 1; step <= extra; step += 1 {
+            u8 next = bytes[index + step]
+            if (next & 0xC0) != 0x80 {
+                return false
+            }
+        }
+        if extra == 2 {
+            u8 second = bytes[index + 1]
+            if first == 0xE0 && second < 0xA0 {return false}
+            if first == 0xED && second > 0x9F {return false}
+        }
+        if extra == 3 {
+            u8 second = bytes[index + 1]
+            if first == 0xF0 && second < 0x90 {return false}
+            if first == 0xF4 && second > 0x8F {return false}
+        }
+        index += extra + 1
+    }
+    return true
+}
+
+test 'strict utf8 validator boundaries follow first-byte and second-byte rules' {
+    // Valid edge code points: U+0800, U+D7FF, U+10000, U+10FFFF.
+    [u8] low_boundary = [0xE0, 0xA0, 0x80]
+    assert(valid_utf8(low_boundary))
+    [u8] pre_surrogate = [0xED, 0x9F, 0xBF]
+    assert(valid_utf8(pre_surrogate))
+    [u8] above_bmp = [0xF0, 0x90, 0x80, 0x80]
+    assert(valid_utf8(above_bmp))
+    [u8] max_codepoint = [0xF4, 0x8F, 0xBF, 0xBF]
+    assert(valid_utf8(max_codepoint))
+    // Overlong 2-byte: C0/C1 may never start a sequence.
+    [u8] overlong2 = [0xC0, 0x80]
+    assert(!valid_utf8(overlong2))
+    // Overlong 3-byte: E0 requires a second byte >= A0.
+    [u8] overlong3 = [0xE0, 0x80, 0x80]
+    assert(!valid_utf8(overlong3))
+    // Surrogate: ED with a second byte in the D800..DFFF range.
+    [u8] surrogate = [0xED, 0xA0, 0x80]
+    assert(!valid_utf8(surrogate))
+    // Overlong 4-byte: F0 requires a second byte >= 90.
+    [u8] overlong4 = [0xF0, 0x80, 0x80, 0x80]
+    assert(!valid_utf8(overlong4))
+    // Out of range: F4 with a second byte above 8F (past U+10FFFF).
+    [u8] out_of_range = [0xF4, 0x90, 0x80, 0x80]
+    assert(!valid_utf8(out_of_range))
+    // Truncated and bad-continuation sequences.
+    [u8] truncated = [0xE4, 0xBD]
+    assert(!valid_utf8(truncated))
+    [u8] bad_continuation = [0xE4, 0x41, 0xBD]
+    assert(!valid_utf8(bad_continuation))
+    // Lone continuation byte and invalid lead byte.
+    [u8] lone_continuation = [0x80]
+    assert(!valid_utf8(lone_continuation))
+    [u8] invalid_lead = [0xFF]
+    assert(!valid_utf8(invalid_lead))
+}
+
+// Render the current chat state through the differential renderer and check
+// the produced frame.  Returns the frame output for accumulation.
+fn render_frame(ref<chat.chat_t> value, ref<renderer.renderer_t> renderer): string! {
+    var lines = value.render(100)
+    var result = renderer.render(lines, 100, 30)
+    if result.output == '' {
+        return ''
+    }
+    [u8] bytes = result.output as [u8]
+    if !valid_utf8(bytes) {
+        throw errorf('frame is not valid UTF-8')
+    }
+    if result.output.contains('\x00') {
+        throw errorf('frame carries a NUL byte')
+    }
+    if result.output.contains('bad address') || result.output.contains('Render failed') {
+        throw errorf('frame carries a failure marker')
+    }
+    return result.output
+}
+
+test 'tool complete to final assistant to idle emits only valid UTF-8 frames' {
+    var value = stream_chat()
+    var renderer = renderer.new()
+    [string] accumulated = []
+    value.apply(bash_start_event())
+    accumulated.push(render_frame(value, renderer))
+    // Streaming partial tool result: grow the bash output in chunks exactly
+    // like the SSE path (chat-owned string concat reallocation per update).
+    for int index = 0; index < 12; index += 1 {
+        value.apply(bash_update_event('REDRAW_TOOL_OK\n'))
+        accumulated.push(render_frame(value, renderer))
+    }
+    var tool_start = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_START, tool_call_id: 'call-1', tool_name: 'bash',}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_TOOL_START, has_agent_event: true, agent_event: tool_start,})
+    accumulated.push(render_frame(value, renderer))
+    var tool_update = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_UPDATE, tool_call_id: 'call-1', tool_name: 'bash', tool_result: tool_types.tool_result_t {content: [new types.text_content_t(text = 'REDRAW_TOOL_OK\n'),],}}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_TOOL_UPDATE, has_agent_event: true, agent_event: tool_update,})
+    accumulated.push(render_frame(value, renderer))
+    // Tool complete: the bash message lands in the transcript, the active
+    // tool row is finalized, and the streaming assistant begins.
+    value.apply(bash_end_event())
+    accumulated.push(render_frame(value, renderer))
+    var tool_end = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_END, tool_call_id: 'call-1', tool_name: 'bash', tool_result: tool_types.tool_result_t {content: [new types.text_content_t(text = 'REDRAW_TOOL_OK\n'),],}, is_error: false,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_TOOL_END, has_agent_event: true, agent_event: tool_end,})
+    accumulated.push(render_frame(value, renderer))
+    // Final assistant message replaces the streaming state.
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: final_assistant_event(),})
+    accumulated.push(render_frame(value, renderer))
+    // Idle: the session ends and the status row clears.
+    value.apply(session_stream.event_t {kind: session_stream.EVENT_SESSION_END,})
+    accumulated.push(render_frame(value, renderer))
+    string final_frame = strings.join(accumulated, '\n')
+    assert(final_frame.contains('MASTER_TLS_TOOL_OK'))
+    assert(final_frame.contains('REDRAW_TOOL_OK'))
+}
+
+// The view serializes stream-event application and rendering with the render
+// lock; two coroutines applying and rendering under the same lock must never
+// produce an invalid frame no matter how fast the event burst is.
+test 'rapid locked apply and render stays valid UTF-8 across the transition' {
+    var value = stream_chat()
+    var renderer = renderer.new()
+    var lock = mutex.mutex_t.new()
+    var done = chan<int>.new(2)
+    go fn(ref<chat.chat_t> chat_value, ref<mutex.mutex_t> lock, chan<int> done) {
+        for int index = 0; index < 60; index += 1 {
+            lock.lock()
+            chat_value.apply(bash_update_event('REDRAW_TOOL_OK\n')) catch error {
+                lock.unlock()
+                done.send(0) catch error {}
+                return
+            }
+            lock.unlock()
+            co.sleep(1)
+        }
+        done.send(1) catch error {}
+    }(value, lock, done)
+    go fn(ref<chat.chat_t> chat_value, ref<renderer.renderer_t> renderer, ref<mutex.mutex_t> lock, chan<int> done) {
+        for int index = 0; index < 60; index += 1 {
+            lock.lock()
+            var lines = chat_value.render(100) catch error {
+                lock.unlock()
+                done.send(0) catch error {}
+                return
+            }
+            var result = renderer.render(lines, 100, 30) catch error {
+                lock.unlock()
+                done.send(0) catch error {}
+                return
+            }
+            if result.output != '' {
+                [u8] bytes = result.output as [u8]
+                if !valid_utf8(bytes) {
+                    lock.unlock()
+                    done.send(0) catch error {}
+                    return
+                }
+                if result.output.contains('\x00') {
+                    lock.unlock()
+                    done.send(0) catch error {}
+                    return
+                }
+                if result.output.contains('bad address') || result.output.contains('Render failed') {
+                    lock.unlock()
+                    done.send(0) catch error {}
+                    return
+                }
+            }
+            lock.unlock()
+            co.sleep(1)
+        }
+        done.send(1) catch error {}
+    }(value, renderer, lock, done)
+    int producer_ok = done.recv()
+    int renderer_ok = done.recv()
+    assert(producer_ok == 1)
+    assert(renderer_ok == 1)
+    lock.lock()
+    value.apply(bash_end_event()) catch error {}
+    value.apply(session_stream.event_t {kind: session_stream.EVENT_SESSION_END,}) catch error {}
+    var lines = value.render(100)
+    var result = renderer.render(lines, 100, 30)
+    lock.unlock()
+    [u8] bytes = result.output as [u8]
+    assert(valid_utf8(bytes))
+    if result.output.contains('bad address') || result.output.contains('Render failed') {
+        assert(false)
+    }
+}

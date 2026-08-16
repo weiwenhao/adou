@@ -129,6 +129,18 @@ pub fn build_completion_value(string completion_path, bool is_directory, bool is
     return prefix + '"' + completion_path + '"'
 }
 
+// Keep an attachment completion quoted exactly once. Fuzzy attachment
+// candidates already include quotes when their path contains spaces.
+pub fn quoted_at_completion_value(string value): string {
+    if value.starts_with('@"') {
+        return value
+    }
+    if value.starts_with('@') {
+        return '@"' + value.slice(1, value.len()) + '"'
+    }
+    return '@"' + value + '"'
+}
+
 fn expand_home_path(string input_path, string home): string {
     if input_path.starts_with('~/') {
         string expanded = home + input_path.slice(1, input_path.len())
@@ -258,40 +270,16 @@ fn is_directory_path(string full_path): bool {
     return syscall.stat_is_dir(stat.mode)
 }
 
-// Pi's applyCompletion for the file-path branch: replace the prefix with the
-// item value, dropping a closing quote when the item already carries one.
-pub fn apply_completion(string line, int cursor_col, completion_item_t item, string prefix): (string, int) {
-    int prefix_length = prefix.len()
-    int before = cursor_col - prefix_length
-    if before < 0 {
-        before = 0
-    }
-    string before_prefix = line.slice(0, before)
-    string after_cursor = line.slice(cursor_col, line.len())
-    bool is_quoted = prefix.starts_with('"') || prefix.starts_with('@"')
-    bool leading_quote = after_cursor.starts_with('"')
-    bool trailing_quote_in_item = item.value.ends_with('"')
-    string adjusted_after = after_cursor
-    if is_quoted && trailing_quote_in_item && leading_quote {
-        adjusted_after = after_cursor.slice(1, after_cursor.len())
-    }
-    string new_line = before_prefix + item.value + adjusted_after
-    bool is_directory = item.label.ends_with('/')
-    bool has_trailing_quote = item.value.ends_with('"')
-    int cursor_offset = item.value.len()
-    if is_directory && has_trailing_quote {
-        cursor_offset = item.value.len() - 1
-    }
-    return (new_line, before + cursor_offset)
-}
-
 // Pi's fd-backed fuzzy attachment search (autocomplete.ts
 // getFuzzyFileSuggestions): walk the working tree without a git submodule
 // or hidden-noise filter, score candidates against the query and return the
 // top matches as @-prefixed completions.  Adou replaces the fd subprocess
 // with a bounded recursive walk.
+// B1-R4-05: like `fd --base-directory`, every entry carries a path RELATIVE
+// to the base directory — the absolute cwd never leaks into value, label or
+// description.
 pub fn get_fuzzy_file_suggestions(string query, string base_path, string home): [completion_item_t] {
-    var entries = walk_fuzzy(base_path, query, 0)
+    var entries = walk_fuzzy(base_path, base_path, query, 0)
     [completion_item_t] result = []
     for entry in entries {
         string display_path = entry.path
@@ -304,6 +292,41 @@ pub fn get_fuzzy_file_suggestions(string query, string base_path, string home): 
     return result
 }
 
+// B1-R4-12: the unified attachment/file completion replacement (Pi
+// applyCompletion) expressed as an editor range: (start_col, end_col,
+// replacement, cursor_col).  The @ attachment branch appends one space
+// after a FILE value and none after a directory (label ends with '/'); a
+// quoted completion drops the closing quote from the cursor suffix; a
+// quoted directory keeps the cursor one cell before the closing quote.
+pub fn completion_range(int cursor_col, string line, string prefix, completion_item_t item, bool is_at): (int, int, string, int) {
+    if cursor_col > line.len() {
+        cursor_col = line.len()
+    }
+    int start = cursor_col - prefix.len()
+    if start < 0 {
+        start = 0
+    }
+    string value = item.value
+    bool is_quoted = prefix.starts_with('"') || prefix.starts_with('@"')
+    bool trailing_quote = value.ends_with('"')
+    bool leading_quote_after = line.slice(cursor_col, line.len()).starts_with('"')
+    int end = cursor_col
+    if is_quoted && trailing_quote && leading_quote_after {
+        end += 1
+    }
+    bool is_directory = item.label.ends_with('/')
+    string replacement = value
+    if is_at && !is_directory {
+        replacement = value + ' '
+    }
+    int offset = value.len()
+    if is_directory && trailing_quote {
+        offset = value.len() - 1
+    }
+    int cursor = start + offset + (is_at && !is_directory ? 1 : 0)
+    return (start, end, replacement, cursor)
+}
+
 type fuzzy_entry_t = struct {
     string path
     string name
@@ -314,7 +337,7 @@ type fuzzy_entry_t = struct {
 const FUZZY_WALK_LIMIT = 100
 const FUZZY_WALK_MAX_DEPTH = 8
 
-fn walk_fuzzy(string directory, string query, int depth): [fuzzy_entry_t] {
+fn walk_fuzzy(string directory, string base_path, string query, int depth): [fuzzy_entry_t] {
     [fuzzy_entry_t] entries = []
     if depth > FUZZY_WALK_MAX_DEPTH {
         return entries
@@ -338,16 +361,33 @@ fn walk_fuzzy(string directory, string query, int depth): [fuzzy_entry_t] {
         is_directory = syscall.stat_is_dir(stat.mode)
         int score = fuzzy_score(name, lower_query, is_directory, full_path)
         if score > 0 {
-            entries = insert_fuzzy_sorted(entries, fuzzy_entry_t {path: full_path, name: name, is_directory: is_directory, score: score})
+            string relative = relative_to(directory, base_path, name)
+            entries = insert_fuzzy_sorted(entries, fuzzy_entry_t {path: relative, name: name, is_directory: is_directory, score: score})
         }
         if is_directory {
-            var children = walk_fuzzy(full_path, query, depth + 1)
+            var children = walk_fuzzy(full_path, base_path, query, depth + 1)
             for child in children {
                 entries = insert_fuzzy_sorted(entries, child)
             }
         }
     }
     return entries
+}
+
+// The display path of `name` inside `directory`, relative to `base_path`.
+#local
+fn relative_to(string directory, string base_path, string name): string {
+    if directory == base_path {
+        return name
+    }
+    string rest = directory.slice(base_path.len(), directory.len())
+    if rest.starts_with('/') {
+        rest = rest.slice(1, rest.len())
+    }
+    if rest == '' {
+        return name
+    }
+    return rest + '/' + name
 }
 
 fn fuzzy_score(string file_name, string lower_query, bool is_directory, string full_path): int {

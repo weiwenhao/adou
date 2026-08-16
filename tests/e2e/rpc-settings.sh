@@ -11,12 +11,15 @@ tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/adou-rpc-settings.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 agent_dir="$tmp_dir/agent"
 session_dir="$tmp_dir/sessions"
+home_dir="$tmp_dir/home"
 first_output="$tmp_dir/first.jsonl"
 second_output="$tmp_dir/second.jsonl"
+mkdir -p "$home_dir"
 
 run_rpc() {
     output=$1
     shift
+    HOME="$home_dir" \
     PI_CODING_AGENT_DIR="$agent_dir" \
     PI_CODING_AGENT_SESSION_DIR="$session_dir" \
     "$binary" --mode rpc --no-session --no-context-files \

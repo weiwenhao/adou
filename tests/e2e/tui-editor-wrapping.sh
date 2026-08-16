@@ -24,9 +24,12 @@ import time
 
 binary = os.environ["ADOU_BIN"]
 root = tempfile.mkdtemp(prefix="adou-tui-editor-")
+home = os.path.join(root, "home")
+os.makedirs(home)
 env = os.environ.copy()
 env.update(
     {
+        "HOME": home,
         "PI_CODING_AGENT_DIR": os.path.join(root, "agent"),
         "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
     }
@@ -126,8 +129,9 @@ try:
         raise SystemExit("multiline input did not render after newline")
 
     # Quit through the slash command path so terminal restoration runs.
-    before_quit = len(output)
-    os.write(fd, b"\x01\x0b")
+    os.write(fd, b"\x03")
+    collect(timeout=2.0)
+    os.write(fd, b"\x03")
     time.sleep(0.3)
     os.write(fd, b"/quit\r")
     collect(timeout=6.0)

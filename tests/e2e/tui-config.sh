@@ -26,6 +26,8 @@ import time
 
 binary = os.environ["ADOU_BIN"]
 root = tempfile.mkdtemp(prefix="adou-tui-config-")
+home = os.path.join(root, "home")
+os.makedirs(home)
 agent = os.path.join(root, "agent")
 os.makedirs(agent)
 open(os.path.join(agent, ".adou-setup"), "w").close()
@@ -39,6 +41,7 @@ with open(os.path.join(agent, "prompts", "review.md"), "w") as out:
 env = os.environ.copy()
 env.update(
     {
+        "HOME": home,
         "PI_CODING_AGENT_DIR": agent,
         "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
     }

@@ -113,11 +113,11 @@ parent_session 血缘、重复 id 错误、list/delete（持久化后端）与�
 ## 下一批边界（2026-08-12 复核：均已收口）
 
 - radius（OAuth/遥测）：已按排除项评估并排除，不移植。
-- IPC 多实例 supervisor：已由下方 Phase 7.1 落地（进程内隔离 runner 方案；
-  上游 `rpc-process.ts` 子进程方案因 Nature 运行时硬阻塞被否决，证据见下）。
+- IPC 多实例 supervisor：已由下方 Phase 7.1 落地；2026-08-16 在 Nature stdin
+  pipe 修复后进一步替换为与上游一致的每实例 RPC 子进程。
 - 系统 SQLite 动态链接：维持静态 .o 链接不变，本批不引入系统库依赖。
 
-## Phase 7.1：server 协议 parity closeout（2026-08-11 落地，2026-08-12 已完成验收）
+## Phase 7.1：server 协议与多进程 parity（2026-08-12 首验，2026-08-16 多进程复验）
 
 ### 上游 → Nature 实现映射
 
@@ -127,7 +127,7 @@ parent_session 血缘、重复 id 错误、list/delete（持久化后端）与�
 | `packages/server/src/ipc/server.ts`（TCP 逐行帧、rpc_stream 连接态） | `src/server/ipc_server.n`（连接级 `go handler(conn)` + `read_line`）+ `src/app.n` 连接处理器 |
 | `packages/server/src/supervisor.ts`（实例表 + 生命周期） | `src/server/supervisor.n`（实例表、spawn/list/stop/status 路由、subscriber 扇出） |
 | `packages/server/src/handler.ts`（命令面与错误形状） | `src/app.n` `serve_command` 重写（按响应类型分发 + `Unknown instance: <id>`） |
-| `packages/server/src/rpc-process.ts`（子进程 + 行分帧） | 按隔离方案排除（见下）；命令面复用 `src/app.n` 的进程内 `rpc_dispatch`（原 run_rpc 循环体提取，--mode rpc 行为不变） |
+| `packages/server/src/rpc-process.ts`（子进程 + 行分帧） | `src/server/rpc_process.n`（真实 stdin/stdout/stderr pipe、JSONL 分帧、pending id 关联、事件转发、退出/终止） |
 | `packages/server/src/{serve,config,storage,radius,cli}.ts` | 不移植：radius 排除；实例表保持内存态（不持久化 instances 记录） |
 
 ### 协议响应形状（每行一个 JSON，逐行帧与上游 encodeMessage 一致）
@@ -144,23 +144,24 @@ parent_session 血缘、重复 id 错误、list/delete（持久化后端）与�
 
 sessionId/sessionFile/label 仅在非空时出现（与上游 InstanceSummary 可选字段一致）。
 
-### 实例生命周期（进程内隔离 runner）
+### 实例生命周期（每实例一个 RPC 子进程）
 
 每 `spawn{cwd,label?}` 创建：
 
-1. `id = identity.uuid_v7()`；`status = "online"`（runner 创建成功后入表，上游
-   starting→online 的中间态在表内不可观测，等价于创建成功前的失败直接回 error）。
-2. 独立 runner：`repository.in_memory(cwd)`（--no-session 语义，无文件）；
-   sessionId/sessionFile 取自该 repository；label/cwd 原样保留。
-3. 实例继承 server 进程已解析的模型/流选项/compaction/重试配置；工具集与
-   system prompt（AGENTS.md/CLAUDE.md/skills）按实例 cwd 重新构建。
+1. `id = identity.uuid_v7()`，先记录 `starting`；后台启动同一 Adou executable 的
+   `--mode rpc` 子进程，并通过 `get_state` 握手取得 sessionId/sessionFile 后切到
+   `online`。启动或进程异常退出切到 `exited`，stderr 会进入可观察的 error。
+2. 子进程继承 server 环境，并像 Pi 一样在目标 cwd 重新解析 settings、trust、
+   model、tools、skills 和持久化 session；不再复制父进程内的 runner/config。
+3. 父进程为每个 child 保留独立 stdin reader、stdout JSONL framer、stderr 上限缓冲
+   和 pending request 表；缺失 command id 时生成 `server_<uuid>`，并发响应按 id
+   回到正确客户端，其他 stdout 行作为 AgentSessionEvent 扇出。
 
-`stop{instanceId}`：从表移除后 `runner.abort_and_wait()`（放弃该 runner）。
-`status/list`：按表路由。未知 instanceId（spawn 未成功/已 stop/从未存在）一律
-返回 `error{ok:false,error:"Unknown instance: <id>"}`（与上游 handler.ts
-unknownInstanceError 一致）。stop A 不影响 B：每实例独立 runner 与锁。
-server 关闭：无子进程（隔离方案），进程退出即释放全部 runner；`supervisor.shutdown()`
-逐实例 abort，供未来优雅退出接线。
+`stop{instanceId}`：实例切到 `stopped`，关闭 stdin 并发送 SIGTERM；3 秒未退出则
+SIGKILL。Adou 当前仍保留 stopped 记录供 status/list 查询，这是相对 Pi
+“停止后删除 live record”的明确协议差异。stop A 不影响 B，因为 runner、session、
+管道和 PID 都在不同进程。server 被信号直接终止时，父端 pipe 关闭使剩余 child
+stdin EOF 并自然退出；`supervisor.shutdown()` 也可逐实例执行有界清理。
 
 ### rpc_stream 交互序列（同一连接，上游 server.ts 连接态）
 
@@ -182,37 +183,32 @@ S   : 解除订阅（不再向该连接扇出事件）
 顺序与 `--mode rpc` 一致（先 response 行，后事件流）。非 rpc_stream 请求
 上游 `socket.end()` 语义：响应一行后关闭连接。
 
-### 为什么子进程方案被否决（硬阻塞证据，2026-08-12 复核）
+### 旧 stdin blocker 已解除（2026-08-16）
 
-- 审计对象：`/Users/liulianfuren/Code/nature/std/process/process.n`，与安装版
-  `/usr/local/nature/std/process/process.n` diff 完全一致（同一版本，v0.7.4）。
-- `command_t` 声明了 `stdin io.reader` 字段，但唯一两个构造入口
-  `process.run()` 与 `process.command()` 都把 stdin 硬编码为
-  `fs.discard()`（即 `open(/dev/null)`）；模块没有任何写子进程 stdin 的 API，
-  只有 `read_stdout`/`read_stderr`/`wait`，也没有 kill/terminate
-  （仅 `syscall.kill(pid, sig)`）。
-- 运行时 `runtime/nutils/process.c` `uv_async_process_spawn`：
-  `stdio[0].flags = UV_IGNORE`（stdin 恒 /dev/null），stdout/stderr 才是
-  `UV_CREATE_PIPE | UV_WRITABLE_PIPE`（子→父单向管道）。即 `command_t.stdin`
-  字段从未被运行时使用。
-- 结论：`adou --mode rpc` 子进程的 stdin 读端立即 EOF，run_rpc 循环直接退出，
-  spawn 出的实例无法接收任何命令——子进程管道方案存在硬阻塞。
+2026-08-12 的旧 Nature runtime 确实把 child stdin 配成 `UV_IGNORE`，因此当时的
+进程内 runner 是有证据的临时方案。nature-lang/nature issue #308 / PR #309 已把
+runtime 改成真实的 `UV_CREATE_PIPE | UV_READABLE_PIPE`，`process.command_t.spawn()`
+现在会消费调用方赋给 `cmd.stdin` 的 `io.reader` 并持续写入 child stdin。安装版
+Nature 已更新为该 master 构建，Adou 因而在 2026-08-16 移除了临时 runner。
 
-因此采用任务决策点的备选方案：进程内等价隔离 runner。差异文档化：实例与
-server 同进程（崩溃互相影响）、无进程级强制终止（abort 为协作取消）、无
-`RPC process exited` 异常路径（error 状态由 spawn 失败承担）。
+Nature PR #310 已让 runtime 把 `command_t.cwd` 传给 `uv_process_options_t.cwd`。
+Adou 现在在 spawn 前直接设置 `command.cwd = cwd`，e2e 会读取每个 session header
+验证 child 的工作目录。另一个实现细节是必须让
+`ref<process.command_t>` 与 child 同寿命：Nature process context 是未类型化 GC
+分配，若只保留 process_t，快速多实例下 command 内的 io interface 可能被回收。
+`rpc_process_t.command` 是该生命周期锚点，压力 e2e 覆盖了这一回归。
 
-### e2e 与单测（2026-08-12 实跑全绿）
+### e2e 与单测（2026-08-16 多进程复验）
 
 - `tests/ipc_protocol_test.n` 7/7：协议响应形状序列化断言（spawn/list/status/
   stop/rpc_result/rpc_ready/error + InstanceSummary 可选字段省略）。
 - `tests/backend_list_session_paths_test.n` 2/2：resume picker 扫描失败的
   TUI 回归守卫（目录不存在 → throw；空目录 → 空列表）。
-- `tests/e2e/rpc-over-ipc.sh`（重写，python 客户端）：两次 spawn 不同 id/cwd/
-  label、list 两项、分别 status、rpc get_state 按 instanceId 路由（data.sessionId
-  不同）、stop A 后 B 仍在线、未知 id error、同一 rpc_stream 连接连续两条非联网
-  命令 + extension_ui_response 确定性 error、连接关闭、server 退出后无遗留
-  adou 子进程、offline prompt 拒绝——全通过。
+- `tests/rpc_process_test.n` 2/2：stdout split/combined JSONL 恢复与无换行尾帧 flush。
+- `tests/e2e/rpc-over-ipc.sh`：两个不同 RPC child PID、目标 cwd/session header、
+  并发 24 请求的 id/instance 关联、缺失 id 自动生成、rpc_stream、offline prompt、
+  stop A 只回收 PID A、server 退出回收剩余 PID B——全通过。
+- 同一多进程 e2e 连续 5 轮通过；完整 `make e2e` 54 个脚本串行执行 exit 0。
 - 回归：`rpc-shape-parity.sh`、`rpc-empty-messages.sh`（进程内 --mode rpc 形状
   与空消息语义）、`rpc-new-session.sh`、`rpc-tree-corrupt.sh`、
   `repository_contract_test.n` 5/5、`setup_test.n` 2/2 全绿，证明 run_rpc →

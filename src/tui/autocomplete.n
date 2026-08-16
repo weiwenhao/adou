@@ -1,0 +1,365 @@
+import adou.src.tui.fuzzy
+import adou.src.tui.text_utils
+import fmt
+
+// Unified autocomplete/SelectList contract (pi-interactive-parity-audit-plan.md
+// Batch 1, IP-001/002/004/006).
+//
+// Pi source of truth (vendors/pi 0.82.1):
+// - packages/tui/src/autocomplete.ts      CombinedAutocompleteProvider
+// - packages/tui/src/components/editor.ts autocomplete state + key dispatch
+// - packages/tui/src/components/select-list.ts  window/render/wrap
+// - packages/tui/src/fuzzy.ts             fuzzyFilter ranking
+// - packages/coding-agent/src/modes/interactive/interactive-mode.ts
+//   command registry + /model + /login argument completions
+//
+// Contract implemented here (item model, query/selection binding, ranking,
+// window, movement and completion application) is pure and unit-testable;
+// the TUI owns key dispatch and item assembly.
+
+pub type item_kind_t = enum {
+    BUILTIN,
+    SKILL,
+    PROMPT,
+    MODEL_ARGUMENT,
+    LOGIN_ARGUMENT,
+    // B1-R4-02: file-path / @ attachment candidates in the shared SelectList.
+    PATH,
+}
+
+pub type autocomplete_item_t = struct {
+    string value          // completed text without the leading '/' (e.g. "model")
+    string label          // displayed label
+    string description    // raw description, composed into the display at render time
+    string argument_hint
+    string source_tag     // Pi source tag, e.g. "p" for project resources
+    string search_text    // ranking text; empty falls back to value (Pi getText)
+    item_kind_t kind = item_kind_t.BUILTIN
+}
+
+pub type autocomplete_mode_t = enum {
+    COMMAND,
+    MODEL_ARGUMENT,
+    LOGIN_ARGUMENT,
+    // B1-R4-02: file-path (Tab) and @ attachment completion share the same
+    // SelectList dispatch as slash/argument modes.  AT differs only in the
+    // applied suffix (@file appends a space, @dir/ does not).
+    PATH,
+    AT,
+}
+
+pub const DEFAULT_MAX_VISIBLE = 5
+pub const MIN_MAX_VISIBLE = 3
+pub const MAX_MAX_VISIBLE = 20
+// Slash command SelectList layout (editor.ts SLASH_COMMAND_SELECT_LIST_LAYOUT).
+pub const SLASH_PRIMARY_MIN = 12
+pub const SLASH_PRIMARY_MAX = 32
+// Default SelectList layout (select-list.ts DEFAULT_PRIMARY_COLUMN_WIDTH).
+pub const ARG_PRIMARY_WIDTH = 32
+pub const PRIMARY_COLUMN_GAP = 2
+pub const MIN_DESCRIPTION_WIDTH = 10
+
+pub type autocomplete_state_t = struct {
+    bool active = false
+    autocomplete_mode_t mode = autocomplete_mode_t.COMMAND
+    int generation = 0
+    string prefix = ''        // text before the cursor that this state completes
+    string filter_query = ''  // substring used for fuzzy ranking
+    [autocomplete_item_t] items = []
+    [autocomplete_item_t] filtered = []
+    int selected_index = 0
+    int max_visible = DEFAULT_MAX_VISIBLE
+    int anchor_line = -1
+    int anchor_column = -1
+}
+
+pub fn clamp_max_visible(int value): int {
+    if value < MIN_MAX_VISIBLE {
+        return MIN_MAX_VISIBLE
+    }
+    if value > MAX_MAX_VISIBLE {
+        return MAX_MAX_VISIBLE
+    }
+    return value
+}
+
+// -- lifecycle --------------------------------------------------------------
+
+pub fn autocomplete_state_t.cancel(&self) {
+    self.active = false
+    self.items = []
+    self.filtered = []
+    self.selected_index = 0
+    self.prefix = ''
+    self.filter_query = ''
+    self.anchor_line = -1
+    self.anchor_column = -1
+}
+
+pub fn autocomplete_state_t.begin(&self, autocomplete_mode_t mode, int generation, string prefix, string query, [autocomplete_item_t] items, int max_visible) {
+    self.mode = mode
+    self.generation = generation
+    self.prefix = prefix
+    self.filter_query = query
+    self.items = items
+    self.max_visible = clamp_max_visible(max_visible)
+    self.filtered = rank_items(items, query)
+    if self.filtered.len() == 0 {
+        self.cancel()
+        return
+    }
+    self.selected_index = best_index(self.filtered, prefix)
+    if self.selected_index < 0 {
+        self.selected_index = 0
+    }
+    self.active = true
+}
+
+// Re-derive candidates and selection for a changed query/prefix. The
+// selection is recomputed from the query that generated this candidate set;
+// a stale index can never survive a query change.
+pub fn autocomplete_state_t.refresh(&self, int generation, string prefix, string query) {
+    if !self.active {
+        return
+    }
+    self.generation = generation
+    self.prefix = prefix
+    self.filter_query = query
+    self.filtered = rank_items(self.items, query)
+    if self.filtered.len() == 0 {
+        self.cancel()
+        return
+    }
+    self.selected_index = best_index(self.filtered, prefix)
+    if self.selected_index < 0 {
+        self.selected_index = 0
+    }
+}
+
+pub fn autocomplete_state_t.visible_count(&self): int {
+    return self.filtered.len()
+}
+
+// -- ranking (Pi fuzzy.ts fuzzyFilter) --------------------------------------
+
+fn tokenize(string query): [string] {
+    [string] tokens = []
+    string current = ''
+    string trimmed = query.trim([' ', '\t'])
+    for int cursor = 0; cursor < trimmed.len(); cursor += 1 {
+        if trimmed[cursor] == ' '.char() || trimmed[cursor] == '/'.char() {
+            if current != '' {
+                tokens.push(current)
+                current = ''
+            }
+        } else {
+            current += trimmed.slice(cursor, cursor + 1)
+        }
+    }
+    if current != '' {
+        tokens.push(current)
+    }
+    return tokens
+}
+
+pub fn rank_items([autocomplete_item_t] items, string query): [autocomplete_item_t] {
+    var tokens = tokenize(query)
+    if tokens.len() == 0 {
+        return items
+    }
+    // B1-R1-12: the sort carries the item identity (original index), so two
+    // items with identical search text can never collapse into one; equal
+    // scores keep their registry order.
+    [scored_item_t] scored = []
+    for index, item in items {
+        float total_score = 0.0
+        bool all_match = true
+        string search_text = item.search_text != '' ? item.search_text : item.value
+        for token in tokens {
+            var token_match = fuzzy.fuzzy_match(token, search_text)
+            if token_match.matches {
+                total_score += token_match.score
+            } else {
+                all_match = false
+                break
+            }
+        }
+        if all_match {
+            scored.push(scored_item_t {text: search_text, score: total_score, index: index})
+        }
+    }
+    // Stable sort by score ascending: equal scores keep registry order.
+    for int sort_index = 1; sort_index < scored.len(); sort_index += 1 {
+        var current = scored[sort_index]
+        int cursor = sort_index - 1
+        for cursor >= 0 && scored[cursor].score > current.score {
+            scored[cursor + 1] = scored[cursor]
+            cursor -= 1
+        }
+        scored[cursor + 1] = current
+    }
+    [autocomplete_item_t] result = []
+    for scored_item in scored {
+        result.push(items[scored_item.index])
+    }
+    return result
+}
+
+type scored_item_t = struct {
+    string text
+    float score
+    int index
+}
+
+// Pi editor.ts getBestAutocompleteMatchIndex: exact value match wins; else
+// the first item whose value starts with the prefix; else -1 (keep 0).
+pub fn best_index([autocomplete_item_t] items, string prefix): int {
+    if prefix == '' {
+        return -1
+    }
+    int first_prefix = -1
+    for index, item in items {
+        if item.value == prefix {
+            return index
+        }
+        if first_prefix < 0 && item.value.starts_with(prefix) {
+            first_prefix = index
+        }
+    }
+    return first_prefix
+}
+
+// -- movement (Pi select-list.ts handleInput: wrap at both edges) -----------
+
+pub fn autocomplete_state_t.move_up(&self) {
+    if self.filtered.len() == 0 {
+        return
+    }
+    self.selected_index = self.selected_index == 0 ? self.filtered.len() - 1 : self.selected_index - 1
+}
+
+pub fn autocomplete_state_t.move_down(&self) {
+    if self.filtered.len() == 0 {
+        return
+    }
+    self.selected_index = self.selected_index == self.filtered.len() - 1 ? 0 : self.selected_index + 1
+}
+
+// -- window (Pi select-list.ts render: centered, clamped) -------------------
+
+pub fn window_start(int selected_index, int count, int max_visible): int {
+    if count <= 0 || max_visible <= 0 {
+        return 0
+    }
+    int centered = selected_index - max_visible / 2
+    int clamped = centered
+    int tail = count - max_visible
+    if clamped > tail {
+        clamped = tail
+    }
+    if clamped < 0 {
+        clamped = 0
+    }
+    return clamped
+}
+
+pub fn window_end(int start, int count, int max_visible): int {
+    int end = start + max_visible
+    if end > count {
+        end = count
+    }
+    return end
+}
+
+pub fn should_show_pager(int start, int end, int count): bool {
+    return start > 0 || end < count
+}
+
+// -- completion application (Pi autocomplete.ts applyCompletion) -------------
+
+// Command completion (B1-R1-01/02): the replacement starts at
+// cursorCol - prefix.length, where prefix is the full command text before
+// the cursor (e.g. "/mo").  The completed line is
+// beforePrefix + '/' + value + ' ' + after, cursor after the trailing space
+// (Pi: beforePrefix.length + value.length + 2).  The typed "/model" text is
+// never spliced in again.
+pub fn apply_command_completion(string text, int cursor_col, string prefix, string value): (string, int) {
+    int replace_start = cursor_col - prefix.len()
+    if replace_start < 0 {
+        replace_start = 0
+    }
+    if cursor_col > text.len() {
+        cursor_col = text.len()
+    }
+    string before_prefix = text.slice(0, replace_start)
+    string after = text.slice(cursor_col, text.len())
+    string completed = before_prefix + '/' + value + ' ' + after
+    return (completed, before_prefix.len() + value.len() + 2)
+}
+
+// Argument completion (B1-R1-02): prefix is only the argument text after the
+// command space (Pi suggestions.prefix = argumentText); the replacement
+// starts at cursorCol - prefix.length and only the argument prefix is
+// replaced; no trailing space; cursor after the value.
+pub fn apply_argument_completion(string text, int cursor_col, string prefix, string value): (string, int) {
+    int replace_start = cursor_col - prefix.len()
+    if replace_start < 0 {
+        replace_start = 0
+    }
+    if cursor_col > text.len() {
+        cursor_col = text.len()
+    }
+    string before = text.slice(0, replace_start)
+    string after = text.slice(cursor_col, text.len())
+    string completed = before + value + after
+    return (completed, before.len() + value.len())
+}
+
+// -- metadata (Pi prefixAutocompleteDescription + getSuggestions fullDesc) --
+
+// The display description is composed only at render time (B1-R1-07):
+// source tag `[tag] description`, then `hint — [tag] description` when an
+// argument hint exists.  An empty description never produces a tag with a
+// trailing space (Pi returns `[tag]` on its own).
+pub fn display_description(autocomplete_item_t item): string {
+    string tagged = item.description
+    if item.source_tag != '' {
+        tagged = item.description == '' ? '[' + item.source_tag + ']' : '[' + item.source_tag + '] ' + item.description
+    }
+    if item.argument_hint == '' {
+        return tagged
+    }
+    return tagged == '' ? item.argument_hint : item.argument_hint + ' — ' + tagged
+}
+
+// -- rendering helpers (Pi select-list.ts renderItem) ------------------------
+
+pub fn primary_column_width([autocomplete_item_t] items, autocomplete_mode_t mode): int {
+    if mode != autocomplete_mode_t.COMMAND {
+        return ARG_PRIMARY_WIDTH
+    }
+    int widest = 0
+    for item in items {
+        string display = item.label != '' ? item.label : item.value
+        int width = text_utils.visible_width(display) catch error {display.len()} + PRIMARY_COLUMN_GAP
+        if width > widest {
+            widest = width
+        }
+    }
+    int clamped = widest
+    if clamped < SLASH_PRIMARY_MIN {
+        clamped = SLASH_PRIMARY_MIN
+    }
+    if clamped > SLASH_PRIMARY_MAX {
+        clamped = SLASH_PRIMARY_MAX
+    }
+    return clamped
+}
+
+pub fn normalize_single_line(string text): string {
+    return text.replace('\r', ' ').replace('\n', ' ').trim([' ', '\t'])
+}
+
+pub fn pager_text(int selected_index, int count): string {
+    return '  (' + fmt.sprintf('%d', selected_index + 1) + '/' + fmt.sprintf('%d', count) + ')'
+}

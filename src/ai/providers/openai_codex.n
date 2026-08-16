@@ -1,10 +1,13 @@
 // Provider definition for OpenAI Codex.
 // Metadata follows vendors/pi/packages/ai/src/providers/openai-codex.ts.
+// openai-codex is OAuth-only in Pi (B1-R2-04): it must never surface as an
+// API-key login candidate, so the capability is explicitly false (not
+// inferred from the empty env_vars list).
 import adou.src.ai.providers.openai_codex_models
 import adou.src.ai.types
 
 pub fn def(): types.provider_def_t {
-    return types.provider_def_t {id: 'openai-codex', name: 'OpenAI Codex', api: 'openai-codex-responses', base_url: 'https://chatgpt.com/backend-api', env_vars: [], headers: {},}
+    return types.provider_def_t {id: 'openai-codex', name: 'OpenAI Codex', api: 'openai-codex-responses', base_url: 'https://chatgpt.com/backend-api', env_vars: [], headers: {}, supports_api_key_login: false,}
 }
 
 pub fn models(): [ref<types.model_t>] {

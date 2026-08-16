@@ -1,0 +1,140 @@
+import adou.src.context.prompt_templates
+import adou.src.context.skills
+import adou.src.context.slash_commands
+
+// B1-R2-07/08: compose_resource_commands is the production assembly shared
+// by the TUI snapshot (refresh_resource_snapshot) and these tests.  It must
+// preserve the exact order (prompts first, skills second) and every
+// metadata field (argument_hint, source_info) of the filtered resources
+// that drive execution — the menu can never diverge from what runs.
+
+test 'compose_resource_commands keeps prompt metadata and order' {
+    [ref<prompt_templates.prompt_template_t>] templates = []
+    var template = new prompt_templates.prompt_template_t(name = 'code-review', description = 'Review changes', argument_hint = '<files>', content = 'Review $@', file_path = '/x/prompts/code-review.md')
+    template.source_info = skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/x/prompts'}
+    templates.push(template)
+
+    [ref<skills.skill_t>] skill_list = []
+    var skill = new skills.skill_t(name = 'alpha-toolkit', description = 'Alpha toolkit skill', file_path = '/x/skills/alpha-toolkit/SKILL.md', base_dir = '/x/skills/alpha-toolkit')
+    skill.source_info = skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/x/skills/alpha-toolkit'}
+    skill_list.push(skill)
+
+    var commands = slash_commands.compose_resource_commands(templates, skill_list)
+    assert(commands.len() == 2)
+    // Prompts first, skills second (Pi get_commands order).
+    assert(commands[0].name == 'code-review')
+    assert(commands[0].source == 'prompt')
+    assert(commands[0].description == 'Review changes')
+    assert(commands[0].argument_hint == '<files>')
+    assert(commands[0].source_info.scope == 'project')
+    assert(commands[1].name == 'skill:alpha-toolkit')
+    assert(commands[1].source == 'skill')
+    assert(commands[1].description == 'Alpha toolkit skill')
+    assert(commands[1].source_info.scope == 'project')
+}
+
+test 'compose_resource_commands with empty inputs yields no dynamic commands' {
+    [ref<prompt_templates.prompt_template_t>] no_templates = []
+    [ref<skills.skill_t>] no_skills = []
+    var commands = slash_commands.compose_resource_commands(no_templates, no_skills)
+    assert(commands.len() == 0)
+}
+
+test 'compose_resource_commands keeps user-scope metadata as-is' {
+    [ref<prompt_templates.prompt_template_t>] templates = []
+    var template = new prompt_templates.prompt_template_t(name = 'user-prompt', description = 'User prompt', content = 'Body', file_path = '/u/prompts/user-prompt.md')
+    template.source_info = skills.source_info_t {source: 'local', scope: 'user', origin: 'top-level', base_dir: '/u/prompts'}
+    templates.push(template)
+    [ref<skills.skill_t>] skill_list = []
+    var skill = new skills.skill_t(name = 'beta-ops', description = 'Beta ops', file_path = '/u/skills/beta-ops/SKILL.md', base_dir = '/u/skills/beta-ops')
+    skill.source_info = skills.source_info_t {source: 'local', scope: 'user', origin: 'top-level', base_dir: '/u/skills/beta-ops'}
+    skill_list.push(skill)
+    var commands = slash_commands.compose_resource_commands(templates, skill_list)
+    assert(commands.len() == 2)
+    assert(commands[0].name == 'user-prompt' && commands[0].source_info.scope == 'user')
+    assert(commands[1].name == 'skill:beta-ops' && commands[1].source_info.scope == 'user')
+}
+
+test 'B1-R2-07 filter_* with empty enabled lists keeps everything' {
+    [ref<prompt_templates.prompt_template_t>] templates = []
+    var template = new prompt_templates.prompt_template_t(name = 'code-review', description = 'Review', content = 'Body', file_path = '/x/prompts/code-review.md')
+    template.source_info = skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/x/prompts'}
+    templates.push(template)
+    [ref<skills.skill_t>] skill_list = []
+    var skill = new skills.skill_t(name = 'alpha-toolkit', description = 'Alpha', file_path = '/x/skills/alpha-toolkit/SKILL.md', base_dir = '/x/skills/alpha-toolkit')
+    skill.source_info = skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/x/skills/alpha-toolkit'}
+    skill_list.push(skill)
+    [string] no_prompts = []
+    [string] no_skills = []
+    var kept_templates = slash_commands.filter_prompt_templates(templates, no_prompts)
+    var kept_skills = slash_commands.filter_skills(skill_list, no_skills)
+    assert(kept_templates.len() == 1 && kept_templates[0].name == 'code-review')
+    assert(kept_skills.len() == 1 && kept_skills[0].name == 'alpha-toolkit')
+}
+
+test 'B1-R3-08 rpc_command_json emits the Pi sourceInfo wire contract' {
+    [ref<prompt_templates.prompt_template_t>] templates = []
+    var template = new prompt_templates.prompt_template_t(name = 'code-review', description = 'Review', argument_hint = '<files>', content = 'Body', file_path = '/x/prompts/code-review.md')
+    template.source_info = skills.source_info_t {path: '/x/prompts/code-review.md', source: 'local', scope: 'project', origin: 'top-level', base_dir: '/x/prompts'}
+    templates.push(template)
+    var commands = slash_commands.compose_resource_commands(templates, [])
+    assert(commands.len() == 1)
+    var object = slash_commands.rpc_command_json(commands[0])
+    assert(object['name'] as string == 'code-review')
+    assert(object['description'] as string == 'Review')
+    assert(object['source'] as string == 'prompt')
+    // argument_hint is NOT part of the Pi RPC contract and must never leak.
+    assert(!object.contains('argument_hint'))
+    var source_info = object['sourceInfo'] as {string:any}
+    assert(source_info['path'] as string == '/x/prompts/code-review.md')
+    assert(source_info['source'] as string == 'local')
+    assert(source_info['scope'] as string == 'project')
+    assert(source_info['origin'] as string == 'top-level')
+    assert(source_info['baseDir'] as string == '/x/prompts')
+}
+
+test 'B1-R3-08 rpc_command_json keeps the skill sourceInfo path too' {
+    [ref<skills.skill_t>] skill_list = []
+    var skill = new skills.skill_t(name = 'alpha-toolkit', description = 'Alpha', file_path = '/x/skills/alpha-toolkit/SKILL.md', base_dir = '/x/skills/alpha-toolkit')
+    skill.source_info = skills.source_info_t {path: '/x/skills/alpha-toolkit/SKILL.md', source: 'local', scope: 'user', origin: 'top-level', base_dir: '/x/skills/alpha-toolkit'}
+    skill_list.push(skill)
+    var commands = slash_commands.compose_resource_commands([], skill_list)
+    assert(commands.len() == 1)
+    var object = slash_commands.rpc_command_json(commands[0])
+    assert(object['name'] as string == 'skill:alpha-toolkit')
+    assert(object['source'] as string == 'skill')
+    var source_info = object['sourceInfo'] as {string:any}
+    assert(source_info['path'] as string == '/x/skills/alpha-toolkit/SKILL.md')
+    assert(source_info['scope'] as string == 'user')
+}
+
+test 'B1-R2-07 filter_* keeps exactly the named resources and compose preserves order/metadata' {
+    [ref<prompt_templates.prompt_template_t>] templates = []
+    var keep = new prompt_templates.prompt_template_t(name = 'code-review', description = 'Review', argument_hint = '<files>', content = 'Body', file_path = '/x/prompts/code-review.md')
+    keep.source_info = skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/x/prompts'}
+    templates.push(keep)
+    var drop = new prompt_templates.prompt_template_t(name = 'commit-msg', description = 'Commit', content = 'Body', file_path = '/x/prompts/commit-msg.md')
+    drop.source_info = skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/x/prompts'}
+    templates.push(drop)
+    [ref<skills.skill_t>] skill_list = []
+    var keep_skill = new skills.skill_t(name = 'alpha-toolkit', description = 'Alpha', file_path = '/x/skills/alpha-toolkit/SKILL.md', base_dir = '/x/skills/alpha-toolkit')
+    keep_skill.source_info = skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/x/skills/alpha-toolkit'}
+    skill_list.push(keep_skill)
+    var drop_skill = new skills.skill_t(name = 'beta-ops', description = 'Beta', file_path = '/x/skills/beta-ops/SKILL.md', base_dir = '/x/skills/beta-ops')
+    drop_skill.source_info = skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/x/skills/beta-ops'}
+    skill_list.push(drop_skill)
+    [string] enabled_prompts = ['code-review']
+    [string] enabled_skills = ['beta-ops']
+    var filtered_templates = slash_commands.filter_prompt_templates(templates, enabled_prompts)
+    var filtered_skills = slash_commands.filter_skills(skill_list, enabled_skills)
+    assert(filtered_templates.len() == 1 && filtered_templates[0].name == 'code-review')
+    assert(filtered_skills.len() == 1 && filtered_skills[0].name == 'beta-ops')
+    var commands = slash_commands.compose_resource_commands(filtered_templates, filtered_skills)
+    assert(commands.len() == 2)
+    // Prompts first, skills second; hint and source metadata survive.
+    assert(commands[0].name == 'code-review' && commands[0].source == 'prompt')
+    assert(commands[0].argument_hint == '<files>')
+    assert(commands[0].source_info.scope == 'project')
+    assert(commands[1].name == 'skill:beta-ops' && commands[1].source == 'skill')
+    assert(commands[1].source_info.scope == 'project')
+}

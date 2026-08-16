@@ -138,3 +138,22 @@ test 'embedded line breaks are expanded before differential rendering' {
     var screen = terminal.snapshot()
     assert(screen[0] == 'alpha' && screen[1] == 'beta')
 }
+
+test 'invalidate forces a cleared full repaint exactly once' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    terminal.write(value.render(['one', 'two'], 20, 5).output)
+    // A frame skipped during terminal suspension must not leave the diff in
+    // sync: invalidate demands a full repaint WITH the clear sequence (a
+    // first-render join would not erase foreign shell/editor content).
+    value.invalidate()
+    var repaint = value.render(['one', 'two'], 20, 5)
+    assert(repaint.strategy == renderer.STRATEGY_FULL)
+    assert(repaint.output.contains('\x1b[2J\x1b[H\x1b[3J'))
+    terminal.write(repaint.output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'one' && screen[1] == 'two')
+    // The force flag is consumed by the repaint: the next identical frame
+    // stays a no-op instead of repainting forever.
+    assert(value.render(['one', 'two'], 20, 5).strategy == renderer.STRATEGY_NONE)
+}

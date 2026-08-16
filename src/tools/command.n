@@ -9,8 +9,6 @@ import path
 import process
 import syscall
 
-// Nature's process runtime currently does not pass command_t.cwd through to
-// libuv. Keep all tool subprocesses in the requested directory explicitly.
 pub type result_t = struct {
     string stdout
     string stderr
@@ -172,22 +170,21 @@ pub fn streaming_writer_t.write(&self, [u8] value):int! {
 }
 
 pub fn shell(string cwd, string command): result_t! {
-    string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
-    var state = process.run('/bin/bash', ['-lc', script])
-    return result_t {stdout: sanitize_output(state.stdout), stderr: sanitize_output(state.stderr), exit_code: state.exit_code, term_sig: state.term_sig,}
+    string script = environment_prefix() + command
+    return run_captured(cwd, '/bin/bash', ['-lc', script])
 }
 
 pub fn shell_timeout(string cwd, string command, int timeout_ms): result_t! {
     if timeout_ms <= 0 {
         return shell(cwd, command)
     }
-    string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
+    string script = environment_prefix() + command
     var stdout_buffer = io.buffer.new()
     var stderr_buffer = io.buffer.new()
     string helper = process_group_helper()
     string executable = helper == '' ? '/bin/bash' : helper
     [string] process_args = helper == '' ? ['-lc', script] : ['/bin/bash', '-lc', script]
-    var process_command = new process.command_t(name = executable, args = process_args, cwd = '', env = [], stdin = fs.discard(), stdout = stdout_buffer, stderr = stderr_buffer)
+    var process_command = new process.command_t(name = executable, args = process_args, cwd = cwd, env = [], stdin = fs.discard(), stdout = stdout_buffer, stderr = stderr_buffer)
     var child = process_command.spawn()
     bool grouped = helper != '' ? true : isolate_process_group(child)
     var finished = chan<u8>.new(1)
@@ -225,7 +222,7 @@ pub fn shell_abortable_env(string cwd, string command, int timeout_ms, ref<abort
     for name, value in env {
         prefix += 'export ' + quote(name) + '=' + quote(value) + ' && '
     }
-    string inner = 'cd ' + quote(cwd) + ' && ' + prefix + command
+    string inner = prefix + command
     // inherit_env=false runs the command in an empty environment (Pi's exec
     // spawn without inherited env); the outer bash stays intact while the
     // inner bash -lc gets the explicit exports only.
@@ -235,7 +232,7 @@ pub fn shell_abortable_env(string cwd, string command, int timeout_ms, ref<abort
     string helper = process_group_helper()
     string executable = helper == '' ? '/bin/bash' : helper
     [string] process_args = helper == '' ? ['-lc', script] : ['/bin/bash', '-lc', script]
-    var process_command = new process.command_t(name = executable, args = process_args, cwd = '', env = [], stdin = fs.discard(), stdout = stdout_buffer, stderr = stderr_buffer)
+    var process_command = new process.command_t(name = executable, args = process_args, cwd = cwd, env = [], stdin = fs.discard(), stdout = stdout_buffer, stderr = stderr_buffer)
     var child = process_command.spawn()
     bool grouped = helper != '' ? true : isolate_process_group(child)
     abort.abort_callback_t cancel_child = fn () {
@@ -275,7 +272,7 @@ pub fn shell_abortable_env(string cwd, string command, int timeout_ms, ref<abort
 }
 
 pub fn shell_abortable_stream(string cwd, string command, int timeout_ms, ref<abort.abort_t> cancellation, output_chunk_fn on_chunk): result_t! {
-    string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + command
+    string script = environment_prefix() + command
     var stdout_buffer = io.buffer.new()
     var stderr_buffer = io.buffer.new()
     var stdout_writer = new streaming_writer_t(buffer = stdout_buffer, on_chunk = on_chunk, sanitizer = new sanitizer_t())
@@ -283,7 +280,7 @@ pub fn shell_abortable_stream(string cwd, string command, int timeout_ms, ref<ab
     string helper = process_group_helper()
     string executable = helper == '' ? '/bin/bash' : helper
     [string] process_args = helper == '' ? ['-lc', script] : ['/bin/bash', '-lc', script]
-    var process_command = new process.command_t(name = executable, args = process_args, cwd = '', env = [], stdin = fs.discard(), stdout = stdout_writer, stderr = stderr_writer)
+    var process_command = new process.command_t(name = executable, args = process_args, cwd = cwd, env = [], stdin = fs.discard(), stdout = stdout_writer, stderr = stderr_writer)
     var child = process_command.spawn()
     bool grouped = helper != '' ? true : isolate_process_group(child)
     abort.abort_callback_t cancel_child = fn() {
@@ -323,13 +320,25 @@ pub fn shell_abortable_stream(string cwd, string command, int timeout_ms, ref<ab
 }
 
 pub fn argv(string cwd, string name, [string] args): result_t! {
-    string script = 'cd ' + quote(cwd) + ' && ' + environment_prefix() + 'exec ' + quote(name) + ' "$@"'
+    string script = environment_prefix() + 'exec ' + quote(name) + ' "$@"'
     [string] process_args = ['-lc', script, 'adou-tool']
     for arg in args {
         process_args.push(arg)
     }
-    var state = process.run('/bin/bash', process_args)
-    return result_t {stdout: sanitize_output(state.stdout), stderr: sanitize_output(state.stderr), exit_code: state.exit_code, term_sig: state.term_sig,}
+    return run_captured(cwd, '/bin/bash', process_args)
+}
+
+#local
+fn run_captured(string cwd, string executable, [string] args): result_t! {
+    var stdout_buffer = io.buffer.new()
+    var stderr_buffer = io.buffer.new()
+    var process_command = process.command(executable, args)
+    process_command.cwd = cwd
+    process_command.stdout = stdout_buffer
+    process_command.stderr = stderr_buffer
+    var child = process_command.spawn()
+    child.wait()
+    return result_t {stdout: sanitize_output(stdout_buffer.read_all() as string), stderr: sanitize_output(stderr_buffer.read_all() as string), exit_code: child.exit_code, term_sig: child.term_sig,}
 }
 
 pub fn quote(string value): string {

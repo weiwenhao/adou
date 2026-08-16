@@ -1,0 +1,194 @@
+import adou.src.ai.types as ai_types
+import adou.src.tui.fuzzy
+
+pub const SCOPE_ALL = 0
+pub const SCOPE_SCOPED = 1
+pub const MAX_VISIBLE = 10
+
+pub type item_t = struct {
+    ref<ai_types.model_t> model
+    string reference
+    string provider
+    string id
+    string name
+    string search_text
+}
+
+pub type scored_item_t = struct {
+    item_t item
+    float score
+}
+
+pub type state_t = struct {
+    [item_t] all_models = []
+    [item_t] scoped_models = []
+    [item_t] filtered = []
+    int scope = SCOPE_ALL
+    int selected
+    string query
+    string current_reference
+    string refresh_status
+    string error_message
+    int refresh_generation
+}
+
+pub fn new([ref<ai_types.model_t>] available, [ref<ai_types.model_t>] scoped, string current_reference, string query): ref<state_t> {
+    var state = new state_t(current_reference = current_reference, query = query)
+    if scoped.len() > 0 {
+        state.scope = SCOPE_SCOPED
+    }
+    state.replace_models(available, scoped)
+    return state
+}
+
+pub fn state_t.replace_models(&self, [ref<ai_types.model_t>] available, [ref<ai_types.model_t>] scoped) {
+    self.all_models = []
+    for model in available {
+        self.all_models.push(to_item(model))
+    }
+    sort_all(self.all_models, self.current_reference)
+    self.scoped_models = []
+    for model in scoped {
+        self.scoped_models.push(to_item(model))
+    }
+    if self.scoped_models.len() == 0 {
+        self.scope = SCOPE_ALL
+    } else if self.scope != SCOPE_ALL && self.scope != SCOPE_SCOPED {
+        self.scope = SCOPE_SCOPED
+    }
+    self.refilter(self.query != '')
+    if self.query == '' {
+        int current = current_index(self.filtered, self.current_reference)
+        if current >= 0 {
+            self.selected = current
+        }
+    }
+}
+
+pub fn state_t.has_scoped(&self): bool {
+    return self.scoped_models.len() > 0
+}
+
+pub fn state_t.toggle_scope(&self) {
+    if !self.has_scoped() {
+        return
+    }
+    self.scope = self.scope == SCOPE_ALL ? SCOPE_SCOPED : SCOPE_ALL
+    self.refilter(false)
+    int current = current_index(self.filtered, self.current_reference)
+    self.selected = current >= 0 ? current : 0
+}
+
+pub fn state_t.set_query(&self, string query) {
+    self.query = query
+    self.refilter(query != '')
+}
+
+pub fn state_t.append_query(&self, string text) {
+    self.set_query(self.query + text)
+}
+
+pub fn state_t.backspace(&self) {
+    if self.query.len() == 0 {
+        return
+    }
+    self.set_query(self.query.slice(0, self.query.len() - 1))
+}
+
+pub fn state_t.move(&self, int delta) {
+    if self.filtered.len() == 0 {
+        return
+    }
+    self.selected = (self.selected + delta + self.filtered.len()) % self.filtered.len()
+}
+
+pub fn state_t.selected_reference(&self): string {
+    if self.selected < 0 || self.selected >= self.filtered.len() {
+        return ''
+    }
+    return self.filtered[self.selected].reference
+}
+
+pub fn state_t.selected_item(&self): item_t! {
+    if self.selected < 0 || self.selected >= self.filtered.len() {
+        throw errorf('No model selected')
+    }
+    return self.filtered[self.selected]
+}
+
+fn state_t.refilter(&self, bool reset_selection) {
+    [item_t] active = self.scope == SCOPE_SCOPED ? self.scoped_models : self.all_models
+    if self.query.trim([' ', '\t']) == '' {
+        self.filtered = active
+        if reset_selection {self.selected = 0}
+        if self.selected >= self.filtered.len() {self.selected = self.filtered.len() - 1}
+        if self.selected < 0 {self.selected = 0}
+        return
+    }
+    [scored_item_t] scored = []
+    for item in active {
+        var result = fuzzy.fuzzy_match(self.query, item.search_text)
+        if result.matches {
+            scored.push(scored_item_t {item: item, score: result.score})
+        }
+    }
+    for int index = 1; index < scored.len(); index += 1 {
+        var current = scored[index]
+        int cursor = index - 1
+        for cursor >= 0 && scored[cursor].score > current.score {
+            scored[cursor + 1] = scored[cursor]
+            cursor -= 1
+        }
+        scored[cursor + 1] = current
+    }
+    self.filtered = []
+    for value in scored {
+        self.filtered.push(value.item)
+    }
+    self.selected = reset_selection ? 0 : self.selected
+    if self.selected >= self.filtered.len() {self.selected = self.filtered.len() - 1}
+    if self.selected < 0 {self.selected = 0}
+}
+
+fn to_item(ref<ai_types.model_t> model): item_t {
+    string reference = model.provider + '/' + model.id
+    string name = model.name
+    return item_t {
+        model: model,
+        reference: reference,
+        provider: model.provider,
+        id: model.id,
+        name: name,
+        search_text: model.provider + ' ' + reference + ' ' + model.provider + ' ' + model.id + (name == '' ? '' : ' ' + name),
+    }
+}
+
+fn current_index([item_t] items, string current_reference): int {
+    for index, item in items {
+        if item.reference == current_reference {
+            return index
+        }
+    }
+    return -1
+}
+
+fn sort_all([item_t] items, string current_reference) {
+    for int index = 1; index < items.len(); index += 1 {
+        var current = items[index]
+        int cursor = index - 1
+        for cursor >= 0 && before(current, items[cursor], current_reference) {
+            items[cursor + 1] = items[cursor]
+            cursor -= 1
+        }
+        items[cursor + 1] = current
+    }
+}
+
+fn before(item_t left, item_t right, string current_reference): bool {
+    bool left_current = left.reference == current_reference
+    bool right_current = right.reference == current_reference
+    if left_current != right_current {
+        return left_current
+    }
+    return left.provider < right.provider
+}

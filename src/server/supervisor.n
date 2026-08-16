@@ -1,32 +1,17 @@
 import adou.src.agent.event_json
-import adou.src.agent.session
 import adou.src.agent.session_stream
-import adou.src.ai.errors
 import adou.src.server.protocol
+import adou.src.server.rpc_process
 import adou.src.session.identity
 import co.mutex
 
-// Phase 7.1: multi-instance supervisor (upstream packages/server
-// supervisor.ts + handler.ts).  Instances are isolated in-process runners:
-// Nature's process runtime pins child stdin to UV_IGNORE (see
-// docs/phase7-storage-design.md Phase 7.1), so a real `--mode rpc` child
-// process cannot receive commands; each spawn therefore gets its own
-// session.runner_t with an independent in-memory repository.
-
-// Instance lifecycle states (upstream InstanceStatus).  The in-process
-// equivalent of the RPC child process lifecycle: an instance starts, comes
-// online, and reaches a terminal state when its runner hits an
-// unrecoverable error (prompt provider failure, spawn initialization
-// failure) or when stop completes.
+// Multi-instance supervisor backed by one real `adou --mode rpc` child per
+// instance, matching Pi server's RpcProcessInstance isolation boundary.
 pub const INSTANCE_STARTING = 'starting'
 pub const INSTANCE_ONLINE = 'online'
 pub const INSTANCE_EXITED = 'exited'
 pub const INSTANCE_STOPPED = 'stopped'
 
-// A line writer that must always be invoked under its own lock.  An
-// rpc_stream connection uses one of these as both its command-response sink
-// and its session-event subscriber, which serializes every write to the
-// underlying TCP connection through a single mutex.
 pub type subscriber_t = struct {
     int id
     ref<mutex.mutex_t> lock
@@ -35,52 +20,35 @@ pub type subscriber_t = struct {
 
 pub type instance_t = struct {
     protocol.instance_summary_t summary
-    // Null while the spawn initialization coroutine is still building the
-    // runner (status 'starting').
-    ref<session.runner_t>? runner = null
-    ref<mutex.mutex_t> subscriber_lock
+    ref<rpc_process.rpc_process_t>? process = null
+    ref<mutex.mutex_t> subscriber_lock = mutex.mutex_t.new()
     [subscriber_t] subscribers
     int next_subscriber_id = 1
-    // Lifecycle state and its guard.  The state is what status_result reports
-    // (via snapshot) and what gatekeepers use to refuse commands on terminal
-    // instances, so every transition and read must hold state_lock.
     ref<mutex.mutex_t> state_lock = mutex.mutex_t.new()
-    string status = INSTANCE_ONLINE
+    string status = INSTANCE_STARTING
     string exit_reason
 }
 
-pub type spawn_runner_fn = fn(string cwd): ref<session.runner_t>!
-
 pub type supervisor_t = struct {
-    ref<mutex.mutex_t> lock
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
     [ref<instance_t>] instances
-    spawn_runner_fn spawner
+    string executable
     bool offline
 }
 
-pub fn new(spawn_runner_fn spawner, bool offline): ref<supervisor_t> {
-    return new supervisor_t(lock = mutex.mutex_t.new(), instances = [], spawner = spawner, offline = offline)
+pub fn new(string executable, bool offline): ref<supervisor_t> {
+    return new supervisor_t(instances = [], executable = executable, offline = offline)
 }
 
-// Create the instance record synchronously and finish the runner
-// initialization on a background coroutine (upstream spawn has a
-// starting->online transition).  The spawn response therefore reports
-// 'starting'; status polls observe the transition to 'online' (with the
-// session metadata filled in), or to 'exited' when the runner cannot be
-// built.  Commands are refused until the instance is online.
+// Preserve Adou's observable starting->online transition while changing the
+// isolation mechanism underneath it.  Initialization performs the same
+// get_state handshake Pi uses before declaring an instance online.
 pub fn supervisor_t.spawn(&self, string cwd, string label): protocol.instance_summary_t! {
     string instance_id = identity.uuid_v7() catch error {
         throw error
     }
-    var summary = protocol.instance_summary_t {
-        id: instance_id,
-        status: INSTANCE_STARTING,
-        cwd: cwd,
-        label: label,
-        session_id: '',
-        session_file: '',
-    }
-    var instance = new instance_t(summary = summary, runner = null, subscriber_lock = mutex.mutex_t.new(), subscribers = [], status = INSTANCE_STARTING)
+    var summary = protocol.instance_summary_t {id: instance_id, status: INSTANCE_STARTING, cwd: cwd, label: label, session_id: '', session_file: ''}
+    var instance = new instance_t(summary = summary, subscribers = [], status = INSTANCE_STARTING)
     self.lock.lock()
     self.instances.push(instance)
     self.lock.unlock()
@@ -88,27 +56,33 @@ pub fn supervisor_t.spawn(&self, string cwd, string label): protocol.instance_su
     return summary
 }
 
-// Complete the asynchronous spawn: build the isolated runner, wire its event
-// sink to the instance fan-out, publish the session metadata, and transition
-// the instance to online (or exited on failure).
 #local
-fn finish_spawn(ref<supervisor_t> sup, ref<instance_t> instance, string cwd) {
-    var runner = sup.spawner(cwd) catch error {
-        instance.set_state(INSTANCE_EXITED, 'Failed to initialize instance: ' + error.msg())
+fn finish_spawn(ref<supervisor_t> supervisor, ref<instance_t> instance, string cwd) {
+    var child = rpc_process.start(supervisor.executable, cwd, fn(string line) {
+        instance.emit_line(line)
+    }, fn(string reason) {
+        if instance.state_status() != INSTANCE_STOPPED {
+            instance.set_state(INSTANCE_EXITED, reason)
+        }
+    }) catch error {
+        instance.set_state(INSTANCE_EXITED, 'Failed to initialize RPC process: ' + error.msg())
         return
     }
+    instance.set_process(child)
     if instance.state_status() == INSTANCE_STOPPED {
-        // stop() won the race against the slow initialization; abandon the
-        // freshly built runner without changing the stopped state.
-        runner.abort_and_wait()
+        child.dispose()
         return
     }
-    instance.runner = runner
-    runner.set_event_sink(fn(session_stream.event_t event) {
-        instance.emit(event)
-    })
-    instance.update_summary(runner.repository.get_session_id(), runner.repository.get_session_file())
-    instance.set_state(INSTANCE_ONLINE, '')
+    sync_summary(instance, child) catch error {
+        child.dispose()
+        if instance.state_status() != INSTANCE_STOPPED {
+            instance.set_state(INSTANCE_EXITED, 'Failed to initialize RPC process: ' + error.msg())
+        }
+        return
+    }
+    if instance.state_status() == INSTANCE_STARTING {
+        instance.set_state(INSTANCE_ONLINE, '')
+    }
 }
 
 pub fn supervisor_t.get(&self, string instance_id): ref<instance_t>? {
@@ -135,8 +109,6 @@ pub fn supervisor_t.list(&self): [protocol.instance_summary_t] {
     return result
 }
 
-// Snapshot the summary with the live lifecycle state merged in, so
-// status/list always reflect starting/online/exited/stopped.
 pub fn instance_t.snapshot(&self): protocol.instance_summary_t {
     self.state_lock.lock()
     var result = self.summary
@@ -153,10 +125,20 @@ pub fn instance_t.state_status(&self): string {
     return result
 }
 
-// Transition the lifecycle state and broadcast the change to every open
-// rpc_stream subscriber.  A no-op when the state is unchanged, so stop() is
-// idempotent on an already stopped instance.
-pub fn instance_t.set_state(&self, string next_status, string exit_reason) {
+pub fn instance_t.set_process(&self, ref<rpc_process.rpc_process_t> child) {
+    self.state_lock.lock()
+    self.process = child
+    self.state_lock.unlock()
+}
+
+pub fn instance_t.get_process(&self): ref<rpc_process.rpc_process_t>? {
+    self.state_lock.lock()
+    var result = self.process
+    self.state_lock.unlock()
+    return result
+}
+
+pub fn instance_t.set_state(&self, string next_status, string reason) {
     self.state_lock.lock()
     string current = self.status
     if current == next_status {
@@ -164,15 +146,17 @@ pub fn instance_t.set_state(&self, string next_status, string exit_reason) {
         return
     }
     self.status = next_status
-    if exit_reason != '' {
-        self.exit_reason = exit_reason
+    if reason != '' {
+        self.exit_reason = reason
     }
     self.state_lock.unlock()
-    self.emit(session_stream.event_t {kind: session_stream.EVENT_INSTANCE_STATUS, instance_id: self.summary.id, instance_status: next_status, instance_exit_reason: exit_reason,})
+    var event = session_stream.event_t {kind: session_stream.EVENT_INSTANCE_STATUS, instance_id: self.summary.id, instance_status: next_status, instance_exit_reason: reason}
+    string line = event_json.encode(event) catch error {
+        return
+    }
+    self.emit_line(line)
 }
 
-// Publish the session metadata discovered by the spawn initialization
-// coroutine (the runner owns the repository that produces it).
 pub fn instance_t.update_summary(&self, string session_id, string session_file) {
     self.state_lock.lock()
     self.summary.session_id = session_id
@@ -180,47 +164,35 @@ pub fn instance_t.update_summary(&self, string session_id, string session_file) 
     self.state_lock.unlock()
 }
 
-// RPC prompt workers report provider failures here.  Transient errors stay
-// online (they can be retried); an unrecoverable provider error is the
-// in-process equivalent of the upstream RPC child process exiting, so the
-// instance transitions to exited with the reason observable via status.
-pub fn instance_t.observe_prompt_failure(&self, string reason) {
-    if errors.is_retryable_error_message(reason) {
-        return
+// Send one command to the child and refresh persisted session identity after
+// the same metadata-changing command set used by Pi's ServerSupervisor.
+pub fn supervisor_t.rpc(&self, ref<instance_t> instance, {string:any} command): {string:any}! {
+    var process_value = instance.get_process()
+    if !(process_value is ref<rpc_process.rpc_process_t>) {
+        throw errorf('Instance %s is not running', instance.summary.id)
     }
-    self.set_state(INSTANCE_EXITED, reason)
+    var child = process_value as ref<rpc_process.rpc_process_t>
+    var response = child.send(command)
+    if refreshes_session(field_string(command, 'type')) {
+        sync_summary(instance, child) catch error {}
+    }
+    return response
 }
 
-// Stop one instance without touching the others.  The instance stays
-// observable in status/list as 'stopped' (unlike upstream, which drops the
-// live record), so stop() is idempotent and the exit reason remains
-// inspectable.  The runner is aborted outside the table lock.  Returns
-// false when the id is unknown.
 pub fn supervisor_t.stop(&self, string instance_id): bool {
-    self.lock.lock()
-    ref<instance_t>? found = null
-    for instance in self.instances {
-        if instance.summary.id == instance_id {
-            found = instance
-            break
-        }
-    }
-    self.lock.unlock()
+    var found = self.get(instance_id)
     if !(found is ref<instance_t>) {
         return false
     }
     var live = found as ref<instance_t>
     live.set_state(INSTANCE_STOPPED, '')
-    ref<session.runner_t>? runner = live.runner
-    if runner is ref<session.runner_t> r {
-        r.abort_and_wait()
+    var child = live.get_process()
+    if child is ref<rpc_process.rpc_process_t> process_value {
+        process_value.dispose()
     }
     return true
 }
 
-// Subscribe a connection to every session event line the instance emits.
-// The subscriber's lock must be the same mutex that guards the connection's
-// command responses so all writes to the connection are serialized.
 pub fn supervisor_t.subscribe(&self, ref<instance_t> instance, ref<mutex.mutex_t> lock, fn(string line) write): int {
     instance.subscriber_lock.lock()
     int id = instance.next_subscriber_id
@@ -242,13 +214,7 @@ pub fn supervisor_t.unsubscribe(&self, ref<instance_t> instance, int subscriber_
     instance.subscriber_lock.unlock()
 }
 
-// Fan out one encoded session event to every open rpc_stream connection.
-// Dropped lines from a closed connection are absorbed by the subscriber's
-// write function.
-pub fn instance_t.emit(&self, session_stream.event_t event) {
-    string line = event_json.encode(event) catch error {
-        return
-    }
+pub fn instance_t.emit_line(&self, string line) {
     self.subscriber_lock.lock()
     [subscriber_t] current = self.subscribers
     self.subscriber_lock.unlock()
@@ -259,25 +225,56 @@ pub fn instance_t.emit(&self, session_stream.event_t event) {
     }
 }
 
-// Abandon every instance; used on server shutdown so no busy runner survives
-// the process exit.
-pub fn supervisor_t.shutdown(&self): void {
-    for true {
-        self.lock.lock()
-        ref<instance_t>? first = null
-        if self.instances.len() > 0 {
-            first = self.instances[0]
-            [ref<instance_t>] rest = self.instances.slice(1, self.instances.len())
-            self.instances = rest
-        }
-        self.lock.unlock()
-        if first is ref<instance_t> instance {
-            ref<session.runner_t>? runner = instance.runner
-            if runner is ref<session.runner_t> r {
-                r.abort_and_wait()
-            }
-        } else {
-            break
+pub fn supervisor_t.shutdown(&self) {
+    self.lock.lock()
+    [ref<instance_t>] current = self.instances
+    self.instances = []
+    self.lock.unlock()
+    for instance in current {
+        instance.set_state(INSTANCE_STOPPED, '')
+        var child = instance.get_process()
+        if child is ref<rpc_process.rpc_process_t> process_value {
+            process_value.dispose()
         }
     }
+}
+
+#local
+fn sync_summary(ref<instance_t> instance, ref<rpc_process.rpc_process_t> child): void! {
+    {string:any} command = {}
+    command['type'] = 'get_state'
+    var response = child.send(command)
+    if field_string(response, 'type') != 'response' || field_string(response, 'command') != 'get_state' || !field_bool(response, 'success') {
+        throw errorf('get_state handshake failed')
+    }
+    if !response.contains('data') || !(response['data'] is {string:any}) {
+        throw errorf('get_state response missing data')
+    }
+    var data = response['data'] as {string:any}
+    string session_id = field_string(data, 'sessionId')
+    if session_id == '' {
+        throw errorf('get_state response missing sessionId')
+    }
+    instance.update_summary(session_id, field_string(data, 'sessionFile'))
+}
+
+#local
+fn refreshes_session(string command): bool {
+    return command == 'new_session' || command == 'switch_session' || command == 'fork' || command == 'clone' || command == 'set_session_name' || command == 'prompt'
+}
+
+#local
+fn field_string({string:any} object, string key): string {
+    if object.contains(key) && object[key] is string {
+        return object[key] as string
+    }
+    return ''
+}
+
+#local
+fn field_bool({string:any} object, string key): bool {
+    if object.contains(key) && object[key] is bool {
+        return object[key] as bool
+    }
+    return false
 }

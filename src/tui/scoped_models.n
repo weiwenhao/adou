@@ -1,0 +1,324 @@
+import adou.src.ai.types as ai_types
+import adou.src.tui.fuzzy
+
+pub const MAX_VISIBLE = 8
+
+pub type item_t = struct {
+    string full_id
+    string provider
+    string id
+    string name
+    string search_text
+    ref<ai_types.model_t>? model = null
+}
+
+pub type scored_item_t = struct {
+    item_t item
+    float score
+}
+
+pub type state_t = struct {
+    [item_t] catalog = []
+    [item_t] filtered = []
+    [string] enabled_ids = []
+    bool all_enabled = true
+    int selected
+    string query
+    bool dirty
+}
+
+pub fn new([ref<ai_types.model_t>] all_models, [string] enabled_ids, bool all_enabled): ref<state_t> {
+    var state = new state_t(all_enabled = all_enabled)
+    for model in all_models {
+        state.catalog.push(model_item(model))
+    }
+    for id in enabled_ids {
+        state.enabled_ids.push(id)
+    }
+    state.refresh(false)
+    return state
+}
+
+pub fn state_t.is_enabled(&self, string id): bool {
+    return self.all_enabled || contains(self.enabled_ids, id)
+}
+
+pub fn state_t.selected_item(&self): item_t! {
+    if self.selected < 0 || self.selected >= self.filtered.len() {
+        throw errorf('No scoped model selected')
+    }
+    return self.filtered[self.selected]
+}
+
+pub fn state_t.selected_id(&self): string {
+    if self.selected < 0 || self.selected >= self.filtered.len() {
+        return ''
+    }
+    return self.filtered[self.selected].full_id
+}
+
+pub fn state_t.move_selection(&self, int delta) {
+    if self.filtered.len() == 0 {
+        return
+    }
+    self.selected = (self.selected + delta + self.filtered.len()) % self.filtered.len()
+}
+
+pub fn state_t.set_query(&self, string query) {
+    self.query = query
+    self.refresh(true)
+}
+
+pub fn state_t.append_query(&self, string text) {
+    self.set_query(self.query + text)
+}
+
+pub fn state_t.backspace(&self) {
+    if self.query.len() == 0 {
+        return
+    }
+    self.set_query(self.query.slice(0, self.query.len() - 1))
+}
+
+pub fn state_t.toggle_selected(&self) {
+    string id = self.selected_id()
+    if id == '' {return}
+    if self.all_enabled {
+        self.all_enabled = false
+        self.enabled_ids = [id]
+    } else if contains(self.enabled_ids, id) {
+        self.enabled_ids = without(self.enabled_ids, id)
+    } else {
+        self.enabled_ids.push(id)
+    }
+    self.dirty = true
+    self.refresh(false)
+}
+
+pub fn state_t.enable_all(&self) {
+    [string] targets = self.query == '' ? self.all_catalog_ids() : self.filtered_ids()
+    if self.all_enabled {
+        self.dirty = true
+        return
+    }
+    for id in targets {
+        if !contains(self.enabled_ids, id) {
+            self.enabled_ids.push(id)
+        }
+    }
+    if exactly_all_catalog(self.enabled_ids, self.all_catalog_ids()) {
+        self.all_enabled = true
+        self.enabled_ids = []
+    }
+    self.dirty = true
+    self.refresh(false)
+}
+
+pub fn state_t.clear_all(&self) {
+    [string] targets = self.query == '' ? self.enabled_ids : self.filtered_ids()
+    if self.all_enabled {
+        self.all_enabled = false
+        if self.query == '' {
+            self.enabled_ids = []
+        } else {
+            self.enabled_ids = []
+            for id in self.all_catalog_ids() {
+                if !contains(targets, id) {self.enabled_ids.push(id)}
+            }
+        }
+    } else {
+        for id in targets {
+            self.enabled_ids = without(self.enabled_ids, id)
+        }
+    }
+    self.dirty = true
+    self.refresh(false)
+}
+
+pub fn state_t.toggle_selected_provider(&self) {
+    var selected = self.selected_item() catch error {return}
+    if !(selected.model is ref<ai_types.model_t>) {
+        return
+    }
+    [string] provider_ids = []
+    for item in self.catalog {
+        if item.provider == selected.provider {
+            provider_ids.push(item.full_id)
+        }
+    }
+    bool provider_enabled = true
+    for id in provider_ids {
+        if !self.is_enabled(id) {provider_enabled = false; break}
+    }
+    if provider_enabled {
+        if self.all_enabled {
+            self.all_enabled = false
+            self.enabled_ids = []
+            for id in self.all_catalog_ids() {
+                if !contains(provider_ids, id) {self.enabled_ids.push(id)}
+            }
+        } else {
+            for id in provider_ids {
+                self.enabled_ids = without(self.enabled_ids, id)
+            }
+        }
+    } else {
+        for id in provider_ids {
+            if !contains(self.enabled_ids, id) {self.enabled_ids.push(id)}
+        }
+        if exactly_all_catalog(self.enabled_ids, self.all_catalog_ids()) {
+            self.all_enabled = true
+            self.enabled_ids = []
+        }
+    }
+    self.dirty = true
+    self.refresh(false)
+}
+
+pub fn state_t.reorder_selected(&self, int delta) {
+    if self.all_enabled {return}
+    string id = self.selected_id()
+    int current = index_of(self.enabled_ids, id)
+    int next = current + delta
+    if current < 0 || next < 0 || next >= self.enabled_ids.len() {
+        return
+    }
+    string swap = self.enabled_ids[next]
+    self.enabled_ids[next] = self.enabled_ids[current]
+    self.enabled_ids[current] = swap
+    self.dirty = true
+    self.refresh(false)
+    int selected = index_of_items(self.filtered, id)
+    if selected >= 0 {self.selected = selected}
+}
+
+pub fn state_t.enabled_available_count(&self): int {
+    if self.all_enabled {return self.catalog.len()}
+    int count = 0
+    for item in self.catalog {
+        if contains(self.enabled_ids, item.full_id) {count += 1}
+    }
+    return count
+}
+
+pub fn state_t.unavailable_count(&self): int {
+    if self.all_enabled {return 0}
+    int count = 0
+    for id in self.enabled_ids {
+        if find_catalog(self.catalog, id) < 0 {count += 1}
+    }
+    return count
+}
+
+pub fn state_t.all_catalog_ids(&self): [string] {
+    [string] result = []
+    for item in self.catalog {
+        result.push(item.full_id)
+    }
+    return result
+}
+
+fn state_t.filtered_ids(&self): [string] {
+    [string] result = []
+    for item in self.filtered {
+        result.push(item.full_id)
+    }
+    return result
+}
+
+fn state_t.refresh(&self, bool reset_selection) {
+    [item_t] ordered = []
+    if !self.all_enabled {
+        for id in self.enabled_ids {
+            int found = find_catalog(self.catalog, id)
+            if found >= 0 {
+                ordered.push(self.catalog[found])
+            } else {
+                ordered.push(item_t {full_id: id, id: id, search_text: id})
+            }
+        }
+    }
+    for item in self.catalog {
+        if self.all_enabled || !contains(self.enabled_ids, item.full_id) {
+            ordered.push(item)
+        }
+    }
+    if self.query.trim([' ', '\t']) == '' {
+        self.filtered = ordered
+    } else {
+        [scored_item_t] scored = []
+        for item in ordered {
+            var result = fuzzy.fuzzy_match(self.query, item.search_text)
+            if result.matches {scored.push(scored_item_t {item: item, score: result.score})}
+        }
+        for int index = 1; index < scored.len(); index += 1 {
+            var current = scored[index]
+            int cursor = index - 1
+            for cursor >= 0 && scored[cursor].score > current.score {
+                scored[cursor + 1] = scored[cursor]
+                cursor -= 1
+            }
+            scored[cursor + 1] = current
+        }
+        self.filtered = []
+        for value in scored {
+            self.filtered.push(value.item)
+        }
+    }
+    if reset_selection {self.selected = 0}
+    if self.selected >= self.filtered.len() {self.selected = self.filtered.len() - 1}
+    if self.selected < 0 {self.selected = 0}
+}
+
+fn model_item(ref<ai_types.model_t> model): item_t {
+    string full_id = model.provider + '/' + model.id
+    return item_t {
+        full_id: full_id,
+        provider: model.provider,
+        id: model.id,
+        name: model.name,
+        search_text: model.id + ' ' + model.provider + ' ' + full_id + ' ' + model.provider + ' ' + model.id + (model.name == '' ? '' : ' ' + model.name),
+        model: model,
+    }
+}
+
+fn find_catalog([item_t] catalog, string id): int {
+    for index, item in catalog {
+        if item.full_id == id {return index}
+    }
+    return -1
+}
+
+fn index_of_items([item_t] items, string id): int {
+    for index, item in items {
+        if item.full_id == id {return index}
+    }
+    return -1
+}
+
+fn contains([string] values, string id): bool {
+    return index_of(values, id) >= 0
+}
+
+fn index_of([string] values, string id): int {
+    for index, value in values {
+        if value == id {return index}
+    }
+    return -1
+}
+
+fn without([string] values, string id): [string] {
+    [string] result = []
+    for value in values {
+        if value != id {result.push(value)}
+    }
+    return result
+}
+
+fn exactly_all_catalog([string] enabled, [string] all): bool {
+    if enabled.len() != all.len() {return false}
+    for id in enabled {
+        if !contains(all, id) {return false}
+    }
+    return true
+}

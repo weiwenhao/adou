@@ -292,3 +292,25 @@ test 'shell env overrides and inherit_env behave like Pi exec options' {
     }
     assert(isolated_env.stdout.trim([' ', '\t', '\n']) == 'injected-value')
 }
+
+test 'command runners apply cwd through process command options' {
+    string root = '/tmp/adou-command-cwd-test'
+    os.rmdir(root, true) catch error {}
+    write_fixture(root + '/marker', 'cwd' as [u8])
+
+    var captured = command.shell(root, 'test -f marker && printf shell')
+    assert(captured.exit_code == 0 && captured.stdout == 'shell')
+
+    var timed = command.shell_timeout(root, 'test -f marker && printf timeout', 10000)
+    assert(timed.exit_code == 0 && timed.stdout == 'timeout')
+
+    var abortable = command.shell_abortable(root, 'test -f marker && printf abortable', 10000, abort.new())
+    assert(abortable.exit_code == 0 && abortable.stdout == 'abortable')
+
+    var streamed = command.shell_abortable_stream(root, 'test -f marker && printf stream', 10000, abort.new(), fn(string chunk) {})
+    assert(streamed.exit_code == 0 && streamed.stdout == 'stream')
+
+    var invoked = command.argv(root, '/bin/sh', ['-c', 'test -f marker && printf argv'])
+    assert(invoked.exit_code == 0 && invoked.stdout == 'argv')
+    os.rmdir(root, true)
+}

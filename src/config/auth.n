@@ -14,6 +14,55 @@ import syscall
 // persisted auth.json store without writing to disk.
 {string:string} runtime_api_keys = {}
 
+// The persisted auth.json is parsed at most once between writes
+// (pi-interactive-parity-audit-plan.md B1-R1-09): every mutation of the
+// credential store (save/remove/modify_credential, the only write paths)
+// invalidates the cache, so ordinary reads such as the ~1200-model
+// autocomplete scan never re-open or re-parse the file.  Environment and
+// runtime-key lookups stay uncached (process-static, no file I/O).
+//
+// B1-R2-05: the snapshot keeps the LAST VALID content.  A failed re-read
+// (corrupt JSON, top-level non-object) must never clear it, and reload()
+// gives external updates an explicit, one-shot re-read point (the /reload
+// command).  Ordinary read/effective hot paths stay in-memory only.
+//
+// NOTE: no function here returns a map-in-tuple — the Nature compiler
+// miscompiles `(map, bool)` returns into an infinite loop (observed hang in
+// the Round 2A-3 targeted test).  reload_snapshot_from() writes the map
+// directly and only returns bool.
+{string:any} cached_auth_root = {}
+bool auth_cache_valid = false
+
+#local
+fn cached_root(): {string:any} {
+    if !auth_cache_valid {
+        reload_snapshot_from(auth_path())
+        // Marked valid even on failure: the last valid snapshot stays and
+        // the hot path does not retry the file on every call.
+        auth_cache_valid = true
+    }
+    return cached_auth_root
+}
+
+// Explicit re-read of the current auth path (Pi AuthStorage.reload): a
+// missing file is a valid EMPTY snapshot; valid JSON objects replace the
+// snapshot; read/parse failures and top-level non-objects preserve the last
+// valid snapshot.  Self-writes keep the invalidate-on-write path instead,
+// so this function is only the external-change refresh point.
+pub fn reload() {
+    bool replaced = reload_snapshot_from(auth_path())
+    if replaced {
+        auth_cache_valid = true
+    }
+}
+
+#local
+fn invalidate_auth_cache() {
+    // Deliberately does NOT clear cached_auth_root: if the re-read after a
+    // self-write ever fails, the last valid snapshot must survive.
+    auth_cache_valid = false
+}
+
 pub fn set_runtime_api_key(string provider, string key) {
     runtime_api_keys[provider] = key
 }
@@ -53,25 +102,7 @@ pub fn environment(string provider): string {
 }
 
 pub fn read(string provider): string {
-    string file_path = auth_path()
-    if !path_utils.exists(file_path) {
-        return ''
-    }
-    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
-        return ''
-    }
-    string content = input.content() catch error {
-        input.close()
-        return ''
-    }
-    input.close()
-    var root = json_util.parse(content) catch error {
-        return ''
-    }
-    if !json_util.is_obj(root) {
-        return ''
-    }
-    var object = root as {string:any}
+    var object = cached_root()
     if !object.contains(provider) || !json_util.is_obj(object[provider]) {
         return ''
     }
@@ -97,28 +128,41 @@ pub fn save(string provider, string key): void! {
     }
     string file_path = auth_path()
     os.mkdirs(path.dir(file_path), 0o700)
-    var root = read_root(file_path)
-    {string:any} object = json_util.is_obj(root) ? root as {string:any} : {}
+    var object = read_root(file_path)
     {string:any} credential = {}
     credential['type'] = 'api_key'
     credential['key'] = key
     object[provider] = credential
     write_file(file_path, json.serialize(object))
+    invalidate_auth_cache()
 }
 
+// B1-R4-06: logout must be deterministic regardless of external file
+// state.  If the provider is present in the current disk object it is
+// removed and written; if the file is missing, corrupt or the provider is
+// absent, the disk is authoritative for "not configured" — the in-memory
+// snapshot drops the provider in every case, so read/list/effective never
+// keep reporting a logged-out credential.  reload()'s parse-failure
+// last-valid contract is unaffected (the snapshot was already updated).
 pub fn remove(string provider): void! {
     string file_path = auth_path()
-    if !path_utils.exists(file_path) {
-        return
+    if path_utils.exists(file_path) {
+        var object = read_root(file_path)
+        if object.contains(provider) {
+            object.del(provider)
+            write_file(file_path, json.serialize(object))
+            invalidate_auth_cache()
+            return
+        }
     }
-    var root = read_root(file_path)
-    if !json_util.is_obj(root) {
-        return
-    }
-    {string:any} object = root as {string:any}
-    if object.contains(provider) {
-        object.del(provider)
-        write_file(file_path, json.serialize(object))
+    remove_from_snapshot(provider)
+}
+
+#local
+fn remove_from_snapshot(string provider) {
+    if cached_auth_root.contains(provider) {
+        cached_auth_root.del(provider)
+        auth_cache_valid = true
     }
 }
 
@@ -142,26 +186,36 @@ pub type credential_info_t = struct {
     string credential_type
 }
 
+// B1-R3-06: read_credential/list_credentials/read all consume the SAME
+// last-valid in-memory snapshot (cached_root), so an external corrupt or
+// deleted file can never produce mutually contradictory results between
+// calls; an explicit reload() is the only refresh point.  Only
+// modify_credential reads the current disk object (serialized
+// read-modify-write) and invalidates the snapshot on success.
 pub fn read_credential(string provider): ref<credential_t>? {
-    string file_path = auth_path()
-    if !path_utils.exists(file_path) {
-        return null
+    return credential_from_object(cached_root(), provider)
+}
+
+pub fn list_credentials(): [credential_info_t] {
+    [credential_info_t] result = []
+    var object = cached_root()
+    for provider_id, value in object {
+        if !json_util.is_obj(value) {
+            continue
+        }
+        var credential = value as {string:any}
+        string credential_type = json_util.opt_string(credential, 'type')
+        if credential_type == '' {
+            credential_type = 'api_key'
+        }
+        result.push(credential_info_t {provider_id: provider_id, credential_type: credential_type})
     }
-    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
-        return null
-    }
-    string content = input.content() catch error {
-        input.close()
-        return null
-    }
-    input.close()
-    var root = json_util.parse(content) catch error {
-        return null
-    }
-    if !json_util.is_obj(root) {
-        return null
-    }
-    var object = root as {string:any}
+    return result
+}
+
+// Build a typed credential for one provider from a parsed auth object.
+#local
+fn credential_from_object({string:any} object, string provider): ref<credential_t>? {
     if !object.contains(provider) || !json_util.is_obj(object[provider]) {
         return null
     }
@@ -193,44 +247,19 @@ pub fn read_credential(string provider): ref<credential_t>? {
     return result
 }
 
-pub fn list_credentials(): [credential_info_t] {
-    [credential_info_t] result = []
-    string file_path = auth_path()
-    if !path_utils.exists(file_path) {
-        return result
-    }
-    var root = read_root(file_path)
-    if !json_util.is_obj(root) {
-        return result
-    }
-    var object = root as {string:any}
-    for provider_id, value in object {
-        if !json_util.is_obj(value) {
-            continue
-        }
-        var credential = value as {string:any}
-        string credential_type = json_util.opt_string(credential, 'type')
-        if credential_type == '' {
-            credential_type = 'api_key'
-        }
-        result.push(credential_info_t {provider_id: provider_id, credential_type: credential_type})
-    }
-    return result
-}
-
 pub type credential_modify_fn = fn(ref<credential_t>? current): ref<credential_t>?
 
 // Serialized read-modify-write: the only write path, like Pi's modify.  The
-// callback sees the current credential and returns the replacement (null
-// keeps the entry unchanged).
+// callback sees the CURRENT DISK credential (never the possibly stale
+// snapshot); a successful write invalidates the snapshot so subsequent
+// reads see the new state.
 pub fn modify_credential(string provider, credential_modify_fn modify_fn): ref<credential_t>?! {
-    var current = read_credential(provider)
+    var current = credential_from_object(read_root(auth_path()), provider)
     var next = modify_fn(current)
     if next is ref<credential_t> replacement {
         string file_path = auth_path()
         os.mkdirs(path.dir(file_path), 0o700)
-        var root = read_root(file_path)
-        {string:any} object = json_util.is_obj(root) ? root as {string:any} : {}
+        var object = read_root(file_path)
         {string:any} credential = {}
         credential['type'] = replacement.credential_type
         if replacement.key != '' {
@@ -250,13 +279,16 @@ pub fn modify_credential(string provider, credential_modify_fn modify_fn): ref<c
         }
         object[provider] = credential
         write_file(file_path, json.serialize(object))
+        invalidate_auth_cache()
         return replacement
     }
     return current
 }
 
 #local
-fn read_root(string file_path): any {
+fn read_root(string file_path): {string:any} {
+    // Plain object read for the save/remove/modify read-modify-write paths;
+    // returns the parsed object or an empty map.  Never uses map-in-tuple.
     if !path_utils.exists(file_path) {
         {string:any} empty = {}
         return empty
@@ -271,10 +303,45 @@ fn read_root(string file_path): any {
         return empty
     }
     input.close()
-    return json_util.parse(content) catch error {
+    var root = json_util.parse(content) catch error {
         {string:any} empty = {}
         return empty
     }
+    if !json_util.is_obj(root) {
+        {string:any} empty = {}
+        return empty
+    }
+    return root as {string:any}
+}
+
+// Snapshot refresh helper (B1-R2-05), bool-only by design (no map-in-tuple,
+// see the note at the top of the file).  A missing file replaces the
+// snapshot with an empty map and reports success; unreadable/corrupt JSON
+// or a top-level non-object leaves cached_auth_root untouched and reports
+// failure so the last valid snapshot survives.
+#local
+fn reload_snapshot_from(string file_path): bool {
+    if !path_utils.exists(file_path) {
+        {string:any} empty = {}
+        cached_auth_root = empty
+        return true
+    }
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        return false
+    }
+    string content = input.content() catch error {
+        input.close()
+        return false
+    }
+    input.close()
+    var root = json_util.parse(content) catch error {
+        return false
+    }
+    if !json_util.is_obj(root) {
+        return false
+    }
+    cached_auth_root = root as {string:any}
+    return true
 }
 
 pub fn write_file(string file_path, string content): void! {

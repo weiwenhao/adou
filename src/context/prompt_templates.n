@@ -250,21 +250,28 @@ pub fn load_template_from_file(string file_path, string source): ref<prompt_temp
     }
     var template = new prompt_template_t(name = name, description = description, content = body, file_path = file_path)
     template.argument_hint = json_util.opt_string(frontmatter, 'argument-hint')
-    template.source_info = skills.source_info_t {source: 'local', scope: source_scope(source), origin: 'top-level', base_dir: source == 'user' || source == 'project' ? path.dir(file_path) : '',}
+    template.source_info = skills.source_info_t {path: file_path, source: 'local', scope: source_scope(source), origin: 'top-level', base_dir: source == 'user' || source == 'project' ? path.dir(file_path) : '',}
     if template.source_info.base_dir == '' {
         template.source_info.base_dir = path.dir(file_path)
     }
     return template
 }
 
-pub fn load_prompt_templates(string cwd, string agent_dir, [string] prompt_paths, bool include_defaults): [ref<prompt_template_t>] {
+// Load prompt templates with an explicit trust gate (B1-R2-06): default
+// discovery ALWAYS includes the user agent_dir/prompts, but the project
+// cwd/.pi/prompts directory is only loaded when project_trusted is true.
+// Explicit prompt_paths always load.  An untrusted project therefore never
+// loads, advertises or executes project prompt templates.
+pub fn load_prompt_templates(string cwd, string agent_dir, [string] prompt_paths, bool include_defaults, bool project_trusted): [ref<prompt_template_t>] {
     [ref<prompt_template_t>] templates = []
     if include_defaults {
         for template in load_templates_from_dir(path.join(agent_dir, 'prompts'), 'user') {
             templates.push(template)
         }
-        for template in load_templates_from_dir(path.join(cwd, skills.CONFIG_DIR_NAME, 'prompts'), 'project') {
-            templates.push(template)
+        if project_trusted {
+            for template in load_templates_from_dir(path.join(cwd, skills.CONFIG_DIR_NAME, 'prompts'), 'project') {
+                templates.push(template)
+            }
         }
     }
     for raw_path in prompt_paths {

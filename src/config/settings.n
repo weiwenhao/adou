@@ -28,14 +28,33 @@ pub type settings_t = struct {
     int reserve_tokens = 16384
     int keep_recent_tokens = 20000
     [string] enabled_model_ids = []
+    // Preserve the distinction between an absent enabledModels key (all
+    // enabled) and an explicitly configured ordered list, including [].
+    bool enabled_models_configured
     // Theme variant and per-resource enable lists for the config selector.
     string theme = 'dark'
     [string] enabled_skill_names = []
     [string] enabled_prompt_names = []
+    // Pi settings.autocompleteMaxVisible: max visible rows of the editor
+    // autocomplete SelectList (3-20, default 5). Batch 1 only plumbs
+    // load/default; the settings UI matrix is Batch 3.
+    int autocomplete_max_visible = 5
 }
 
 pub fn load(): settings_t {
     return load_file(settings_path(), settings_t{})
+}
+
+// Trust-aware settings resolution (B1-R2-06/07): a trusted project cwd
+// merges global + project settings; an untrusted cwd sees ONLY the global
+// settings, so project overrides (autocompleteMaxVisible, enabledSkills,
+// enabledPrompts, ...) can never leak into an untrusted session.  All
+// view-level runtime reads go through this single function.
+pub fn load_trusted_for(string cwd, bool trusted): settings_t {
+    if !trusted {
+        return load()
+    }
+    return load_for(cwd)
 }
 
 // Pi keeps a global settings file and a project-local .pi/settings.json. The
@@ -74,6 +93,8 @@ fn load_file(string file_path, settings_t initial): settings_t {
     if theme_value == 'light' || theme_value == 'dark' {
         result.theme = theme_value
     }
+    int max_visible = autocomplete_value(object, 'autocompleteMaxVisible', result.autocomplete_max_visible)
+    result.autocomplete_max_visible = autocomplete_clamp(max_visible)
     if object.contains('enabledSkills') && object['enabledSkills'] is [any] {
         result.enabled_skill_names = []
         for item in object['enabledSkills'] as [any] {
@@ -109,6 +130,7 @@ fn load_file(string file_path, settings_t initial): settings_t {
         // An explicitly configured project array replaces the global scope;
         // it is not appended to it.
         result.enabled_model_ids = []
+        result.enabled_models_configured = true
         var enabled_values = object['enabledModels'] as [any]
         for item in enabled_values {
             if item is string {
@@ -155,7 +177,7 @@ pub fn save(settings_t settings): void! {
     compaction_object['reserveTokens'] = settings.reserve_tokens
     compaction_object['keepRecentTokens'] = settings.keep_recent_tokens
     object['compaction'] = compaction_object
-    if settings.enabled_model_ids.len() > 0 {
+    if settings.enabled_models_configured {
         [any] enabled = []
         for model_id in settings.enabled_model_ids {
             enabled.push(model_id)
@@ -204,6 +226,16 @@ pub fn set_default_model(string provider, string model): void! {
 pub fn set_default_thinking(string level): void! {
     var settings = load()
     settings.default_thinking_level = thinking_level(level)
+    save(settings)
+}
+
+pub fn set_enabled_models([string] enabled_model_ids, bool configured): void! {
+    var settings = load()
+    settings.enabled_model_ids = []
+    for id in enabled_model_ids {
+        settings.enabled_model_ids.push(id)
+    }
+    settings.enabled_models_configured = configured
     save(settings)
 }
 
@@ -267,3 +299,21 @@ fn positive_int({string:any} object, string key, int fallback): int {
     return value >= 0 ? value : fallback
 }
 
+// Pi editor.ts clamps present numeric autocompleteMaxVisible values to [3, 20];
+// missing or non-numeric values retain the inherited value.
+#local
+fn autocomplete_clamp(int value): int {
+    if value < 3 {
+        return 3
+    }
+    if value > 20 {
+        return 20
+    }
+    return value
+}
+
+#local
+fn autocomplete_value({string:any} object, string key, int fallback): int {
+    if !object.contains(key) || !(object[key] is f64) {return fallback}
+    return object[key] as f64 as int
+}

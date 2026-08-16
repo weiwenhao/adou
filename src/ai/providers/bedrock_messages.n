@@ -220,11 +220,15 @@ fn is_gov_cloud_target(ref<types.model_t> model): bool {
 // AWS SigV4 signing for the Bedrock Runtime. The canonical request covers the
 // URI, content-type, host and x-amz-date headers, and the hashed body; the
 // signing key is an HMAC chain over the date/region/service/aws4_request scope.
-// AWS_BEARER_TOKEN_BEDROCK switches to plain bearer auth (Pi's Bedrock API
-// key mode) and AWS_BEDROCK_SKIP_AUTH=1 signs with dummy credentials for
-// proxies that do not authenticate.
-pub fn authorization(ref<types.model_t> model, string body, string amz_date): string! {
-    string bearer = syscall.get_env('AWS_BEARER_TOKEN_BEDROCK')
+// A resolved API key uses plain bearer auth (Pi's Bedrock API-key mode).
+// AWS_BEARER_TOKEN_BEDROCK remains the environment fallback, and
+// AWS_BEDROCK_SKIP_AUTH=1 signs with dummy credentials for proxies that do not
+// authenticate.
+pub fn authorization(ref<types.model_t> model, string body, string amz_date, string api_key): string! {
+    string bearer = api_key
+    if bearer == '' {
+        bearer = syscall.get_env('AWS_BEARER_TOKEN_BEDROCK')
+    }
     if bearer != '' && syscall.get_env('AWS_BEDROCK_SKIP_AUTH') != '1' {
         return 'Bearer ' + bearer
     }

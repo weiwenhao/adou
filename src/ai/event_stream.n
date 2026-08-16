@@ -54,15 +54,17 @@ pub fn assistant_stream_t.push(&self, types.assistant_event_t event): void! {
     self.lock.unlock()
     self.events.send(snapshot)
     debug.log('ai-stream', 'event delivered kind=' + snapshot.kind)
-    if is_terminal {
-        self.done.close()
-    }
 }
 pub fn assistant_stream_t.recv(&self): types.assistant_event_t! {
     return self.events.recv()
 }
 // result may be called before or after completion and may be called more than
-// once. Closing done acts as a broadcast; every waiter then reads final_message.
+// once.  Closing done acts as a broadcast; every waiter then reads
+// final_message.  done is closed only by end() (the provider's final stream
+// touch), never at the terminal event: the consumer must not proceed while
+// the provider coroutine is still finishing its teardown, or the stream can
+// be dropped while the provider still touches it (run_inner pushes the
+// finish events after the terminal event and then calls stream.end()).
 pub fn assistant_stream_t.result(&self): ref < types.assistant_message_t > ! {
     self.lock.lock()
     bool ready = self.terminal
@@ -92,9 +94,9 @@ pub fn assistant_stream_t.end(&self): void! {
     bool has_terminal = self.terminal
     self.lock.unlock()
     self.events.close()
-    if!has_terminal {
-        self.done.close()
-    }
+    // done always closes here, terminal or not: end() is the provider's last
+    // stream touch, so result() waiters wake only after full teardown.
+    self.done.close()
     debug.log('ai-stream', 'end completed terminal=' + (has_terminal ? 'true' : 'false'))
 }
 pub fn assistant_stream_t.abort(&self) {

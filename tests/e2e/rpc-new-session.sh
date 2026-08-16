@@ -27,7 +27,7 @@ run_rpc() {
     PI_CODING_AGENT_SESSION_DIR="$session_dir" \
     "$binary" --mode rpc --no-context-files \
         --provider deepseek --model deepseek-v4-flash --api-key rpc-e2e-key \
-        --session-dir "$session_dir" "$@" > "$output"
+        --session-dir "$session_dir" --approve "$@" > "$output"
 }
 
 printf '%s\n' '{"id":"state0","type":"get_state"}' | run_rpc "$first_output"
@@ -86,6 +86,9 @@ with open(path, "w", encoding="utf-8") as stream:
     stream.write(json.dumps(message) + "\n")
 
 os.makedirs(os.path.join(project_cwd, ".pi"), exist_ok=True)
+os.makedirs(os.path.join(project_cwd, ".pi", "prompts"), exist_ok=True)
+with open(os.path.join(project_cwd, ".pi", "prompts", "project-only.md"), "w", encoding="utf-8") as stream:
+    stream.write("---\ndescription: Project-only prompt\n---\n\nPROJECT $@")
 with open(os.path.join(project_cwd, ".pi", "settings.json"), "w", encoding="utf-8") as stream:
     json.dump(
         {
@@ -137,7 +140,9 @@ python3 - "$project_session" <<'PY' | run_rpc "$fourth_output" --session "$paren
 import json
 import sys
 
+print(json.dumps({"id": "commands-before-project", "type": "get_commands"}))
 print(json.dumps({"id": "switch-project", "type": "switch_session", "sessionPath": sys.argv[1]}))
+print(json.dumps({"id": "commands-project", "type": "get_commands"}))
 print(json.dumps({"id": "state3", "type": "get_state"}))
 PY
 
@@ -163,7 +168,9 @@ new = next(item for item in second if item.get('id') == 'new')
 state1 = next(item for item in second if item.get('id') == 'state1')
 switch = next(item for item in third if item.get('id') == 'switch')
 state2 = next(item for item in third if item.get('id') == 'state2')
+commands_before_project = next(item for item in fourth if item.get('id') == 'commands-before-project')
 switch_project = next(item for item in fourth if item.get('id') == 'switch-project')
+commands_project = next(item for item in fourth if item.get('id') == 'commands-project')
 state3 = next(item for item in fourth if item.get('id') == 'state3')
 state4 = next(item for item in fifth if item.get('id') == 'state4')
 
@@ -196,8 +203,14 @@ if [entry.get('type') for entry in legacy_entries] != ['message', 'thinking_leve
 
 if switch_project.get('type') != 'response' or switch_project.get('success') is not True:
     raise SystemExit(f'RPC project switch failed: {switch_project!r}')
+before_project_names = [item.get('name') for item in commands_before_project.get('data', {}).get('commands', [])]
+if 'project-only' in before_project_names:
+    raise SystemExit(f'project resource leaked before RPC session switch: {commands_before_project!r}')
 if os.path.realpath(state3.get('data', {}).get('sessionFile', '')) != os.path.realpath(project_path):
     raise SystemExit(f'RPC project switch did not bind the target session: {state3!r}')
+project_command_names = [item.get('name') for item in commands_project.get('data', {}).get('commands', [])]
+if 'project-only' not in project_command_names:
+    raise SystemExit(f'RPC project switch did not publish the target resource snapshot: {commands_project!r}')
 project_state = state3.get('data', {})
 if project_state.get('autoCompactionEnabled') is not False or project_state.get('steeringMode') != 'all' or project_state.get('followUpMode') != 'all':
     raise SystemExit(f'project .pi settings were not reloaded during session switch: {project_state!r}')

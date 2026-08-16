@@ -1,0 +1,284 @@
+{
+  "case": "slash-open",
+  "oracle": "pi-0.82.1",
+  "oracle_commit": "cced6a21da273b26ee4a23a803680614bbe8dd1e",
+  "run": 3,
+  "terminal": {
+    "rows": 24,
+    "cols": 80
+  },
+  "precondition": {
+    "offline": true,
+    "api_keys": "none",
+    "home": "<REPO>/tests/e2e/lib/pi-oracle/fixtures/home",
+    "agent_dir": "<REPO>/tests/e2e/lib/pi-oracle/fixtures/home/.pi/agent",
+    "cwd": "<REPO>/tests/e2e/lib/pi-oracle/fixtures/cwd",
+    "skills": [
+      "alpha-toolkit",
+      "beta-ops",
+      "gamma-report"
+    ],
+    "model": "deepseek/deepseek-v4-flash",
+    "theme": "dark",
+    "settings": {
+      "theme": "dark",
+      "autocompleteMaxVisible": 5
+    }
+  },
+  "keys": {
+    "slash-open": [
+      "2f"
+    ],
+    "slash-up-wrap": [
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41",
+      "1b5b41"
+    ],
+    "slash-down": [
+      "1b5b42",
+      "1b5b42",
+      "1b5b42",
+      "1b5b42",
+      "1b5b42",
+      "1b5b42",
+      "1b5b42",
+      "1b5b42"
+    ],
+    "slash-esc-closed": [
+      "1b"
+    ]
+  },
+  "quit_keys": [
+    "03",
+    "2f",
+    "71",
+    "75",
+    "69",
+    "74",
+    "0d"
+  ],
+  "milestones": [
+    {
+      "milestone": "startup",
+      "screen": [
+        "",
+        " pi v0.82.1",
+        " escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o",
+        " more",
+        " Press ctrl+o to show full startup help and loaded resources.",
+        "",
+        " Pi can explain its own features and look up its docs. Ask it how to use or",
+        " extend Pi.",
+        "",
+        "[Skills]",
+        "  alpha-toolkit, beta-ops, gamma-report",
+        "",
+        "",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/cwd (main)",
+        "0.0%/1.0M (auto)                                deepseek-v4-flash • thinking off",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "screen_sha256": "3ba5c32f77dfeb32961e50444310829a8ab502e5506670dc24bde0a76c7f8171",
+      "cursor": [
+        14,
+        0
+      ],
+      "normalized_raw_sha256": "ab7b4d353aa92098f440fc907bf1bbaec35e2ef524da324953a09e2f5752f49d",
+      "normalized_raw_bytes": 4663
+    },
+    {
+      "milestone": "slash-open",
+      "screen": [
+        "",
+        " pi v0.82.1",
+        " escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o",
+        " more",
+        " Press ctrl+o to show full startup help and loaded resources.",
+        "",
+        " Pi can explain its own features and look up its docs. Ask it how to use or",
+        " extend Pi.",
+        "",
+        "[Skills]",
+        "  alpha-toolkit, beta-ops, gamma-report",
+        "",
+        "",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "/",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "→ settings             Open settings menu",
+        "  model                <provider/model> — Select model (opens selector UI)",
+        "  scoped-models        Enable/disable models for Ctrl+P cycling",
+        "  export               Export session (HTML default, or specify path: .html/.j",
+        "  import               Import and resume a session from a JSONL file",
+        "  (1/26)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/cwd (main)",
+        "0.0%/1.0M (auto)                                deepseek-v4-flash • thinking off"
+      ],
+      "screen_sha256": "25ea48913c598386d22d604b5aef1e80385104e5b77b59b7ca1c5856615393b5",
+      "cursor": [
+        14,
+        1
+      ],
+      "normalized_raw_sha256": "dc7f65a460fa57f689dd448b12c45ce0e755d0d7ee4e095ab625e457e9be314e",
+      "normalized_raw_bytes": 2570
+    },
+    {
+      "milestone": "slash-up-wrap",
+      "screen": [
+        "",
+        " pi v0.82.1",
+        " escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o",
+        " more",
+        " Press ctrl+o to show full startup help and loaded resources.",
+        "",
+        " Pi can explain its own features and look up its docs. Ask it how to use or",
+        " extend Pi.",
+        "",
+        "[Skills]",
+        "  alpha-toolkit, beta-ops, gamma-report",
+        "",
+        "",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "/",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "  hotkeys              Show all keyboard shortcuts",
+        "  fork                 Create a new fork from a previous user message",
+        "→ clone                Duplicate the current session at the current position",
+        "  tree                 Navigate session tree (switch branches)",
+        "  trust                Save project trust decision for future sessions",
+        "  (13/26)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/cwd (main)",
+        "0.0%/1.0M (auto)                                deepseek-v4-flash • thinking off"
+      ],
+      "screen_sha256": "ca70c1328b4dd100150a6e5aa9eef30d2115a42afd447f80a25d6736e7f1b1a2",
+      "cursor": [
+        14,
+        1
+      ],
+      "normalized_raw_sha256": "0a4c82a4214ea3add4aed32396bae68d3c89ac4877d583db59459a960dd705ef",
+      "normalized_raw_bytes": 712
+    },
+    {
+      "milestone": "slash-down",
+      "screen": [
+        "",
+        " pi v0.82.1",
+        " escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o",
+        " more",
+        " Press ctrl+o to show full startup help and loaded resources.",
+        "",
+        " Pi can explain its own features and look up its docs. Ask it how to use or",
+        " extend Pi.",
+        "",
+        "[Skills]",
+        "  alpha-toolkit, beta-ops, gamma-report",
+        "",
+        "",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "/",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "  compact              Manually compact the session context",
+        "  resume               Resume a different session",
+        "→ reload               Reload keybindings, extensions, skills, prompts, themes",
+        "  quit                 Quit pi",
+        "  llama                [t] Manage llama.cpp router models",
+        "  (21/26)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/cwd (main)",
+        "0.0%/1.0M (auto)                                deepseek-v4-flash • thinking off"
+      ],
+      "screen_sha256": "7dbed9f46ea5abf5647575a8f51857c8c9c49fb7df588bd5b37eb361ba9f54f9",
+      "cursor": [
+        14,
+        1
+      ],
+      "normalized_raw_sha256": "5e2e30dcc41b04448c7fd74589395ff81f739459ce3968667cd72912fa77dcca",
+      "normalized_raw_bytes": 716
+    },
+    {
+      "milestone": "slash-esc-closed",
+      "screen": [
+        "",
+        " pi v0.82.1",
+        " escape interrupt · ctrl+c/ctrl+d clear/exit · / commands · ! bash · ctrl+o",
+        " more",
+        " Press ctrl+o to show full startup help and loaded resources.",
+        "",
+        " Pi can explain its own features and look up its docs. Ask it how to use or",
+        " extend Pi.",
+        "",
+        "[Skills]",
+        "  alpha-toolkit, beta-ops, gamma-report",
+        "",
+        "",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "/",
+        "────────────────────────────────────────────────────────────────────────────────",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/cwd (main)",
+        "0.0%/1.0M (auto)                                deepseek-v4-flash • thinking off",
+        "",
+        "",
+        "",
+        "",
+        "",
+        ""
+      ],
+      "screen_sha256": "ef5c4a8754e23d2b57e7b151bd8800029ce0fffce38117b168c3d1b5c610e588",
+      "cursor": [
+        14,
+        1
+      ],
+      "normalized_raw_sha256": "df1db4daf5c5b0b1ab90377540971ad7c1e2a346482bf8bbbf0d959eccec6edd",
+      "normalized_raw_bytes": 292
+    }
+  ],
+  "exit_code": 0,
+  "assertions": {
+    "verdict": "PASS",
+    "failures": []
+  }
+}

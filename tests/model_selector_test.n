@@ -1,0 +1,51 @@
+import adou.src.ai.types as ai_types
+import adou.src.tui.model_selector
+
+fn fixture(string provider, string id, string name): ref<ai_types.model_t> {
+    return new ai_types.model_t(provider = provider, id = id, name = name, api = 'mock', context_window = 1000, max_tokens = 100)
+}
+
+test 'model selector starts in exact scoped order and Tab exposes all models' {
+    var one = fixture('zeta', 'one', 'One')
+    var two = fixture('alpha', 'two', 'Two')
+    var three = fixture('alpha', 'three', 'Three')
+    var state = model_selector.new([one, two, three], [three, one], 'zeta/one', '')
+    assert(state.scope == model_selector.SCOPE_SCOPED)
+    assert(state.filtered.len() == 2)
+    assert(state.filtered[0].reference == 'alpha/three')
+    assert(state.filtered[1].reference == 'zeta/one')
+    state.toggle_scope()
+    assert(state.scope == model_selector.SCOPE_ALL)
+    assert(state.filtered.len() == 3)
+    assert(state.filtered[0].reference == 'zeta/one')
+}
+
+test 'model selector query owns its filtered selection index' {
+    var one = fixture('openai', 'gpt-5', 'GPT Five')
+    var two = fixture('openrouter', 'openai/gpt-5', 'Proxy GPT')
+    var state = model_selector.new([two, one], [], 'openai/gpt-5', '')
+    state.set_query('openai/gpt-5')
+    assert(state.filtered.len() == 2)
+    assert(state.filtered[0].reference == 'openai/gpt-5')
+    assert(state.selected_reference() == 'openai/gpt-5')
+    state.set_query('no-such-model')
+    assert(state.filtered.len() == 0)
+    assert(state.selected_reference() == '')
+}
+
+test 'model selector ignores scope toggle when there is no session scope' {
+    var one = fixture('openai', 'gpt-5', 'GPT Five')
+    var state = model_selector.new([one], [], 'openai/gpt-5', '')
+    state.toggle_scope()
+    assert(state.scope == model_selector.SCOPE_ALL)
+    assert(state.filtered.len() == 1)
+}
+
+test 'initial model query filters the scoped tab before all models' {
+    var one = fixture('alpha', 'one', 'One')
+    var two = fixture('alpha', 'two', 'Two')
+    var state = model_selector.new([one, two], [two], 'alpha/one', 'two')
+    assert(state.scope == model_selector.SCOPE_SCOPED)
+    assert(state.filtered.len() == 1)
+    assert(state.filtered[0].reference == 'alpha/two')
+}

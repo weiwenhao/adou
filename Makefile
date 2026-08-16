@@ -85,7 +85,7 @@ test: $(SAFE_NATURE) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(
 e2e: build
 	@set -e; for test_file in $(E2E_SOURCES); do \
 		echo "==> $$test_file"; \
-		ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/$$test_file"; \
+		ADOU_BIN="$(abspath $(ADOU_BIN))" ADOU_PROCESS_GROUP_HELPER="$(abspath $(PROCESS_GROUP_HELPER))" "$(CURDIR)/$$test_file"; \
 	done
 
 # Serial opt-in live suite against the real model.  Individual scripts gate
@@ -95,7 +95,7 @@ e2e: build
 e2e-live: build
 	@set -e; for test_file in $(E2E_LIVE_SOURCES); do \
 		echo "==> $$test_file"; \
-		ADOU_BIN="$(ADOU_BIN)" ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(CURDIR)/$$test_file"; \
+		ADOU_BIN="$(abspath $(ADOU_BIN))" ADOU_PROCESS_GROUP_HELPER="$(abspath $(PROCESS_GROUP_HELPER))" "$(CURDIR)/$$test_file"; \
 	done
 
 # Phase 8 eval harness: one guarded build of the smoke eval entry point, then

@@ -1,0 +1,341 @@
+import adou.src.json_util
+import adou.src.session.identity
+import co
+import co.mutex
+import fmt
+import io
+import json
+import process
+import syscall
+
+// Long-lived stdin source for a child running `adou --mode rpc`.  Nature's
+// process package reads this interface on a dedicated coroutine and forwards
+// every returned chunk to the child's real stdin pipe.
+type stdin_reader_t: io.reader = struct {
+    chan<string> lines
+    [u8] current
+    int offset
+}
+
+fn stdin_reader_t.read(&self, [u8] destination): int! {
+    if destination.len() == 0 {
+        return 0
+    }
+    for self.offset >= self.current.len() {
+        string next = self.lines.recv()
+        self.current = next as [u8]
+        self.offset = 0
+    }
+    int count = destination.copy(self.current.slice(self.offset, self.current.len()))
+    self.offset += count
+    return count
+}
+
+// stdout can split or combine JSONL frames arbitrarily.  This writer restores
+// complete lines before the response/event dispatcher sees them.
+pub type line_writer_t: io.writer = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    [u8] partial
+    chan<string> lines
+    bool closed
+}
+
+pub fn line_writer_t.write(&self, [u8] chunk): int! {
+    [string] complete = []
+    self.lock.lock()
+    if self.closed {
+        self.lock.unlock()
+        return chunk.len()
+    }
+    for byte in chunk {
+        if byte == 10 {
+            string line = self.partial as string
+            if line.ends_with('\r') {
+                line = line.slice(0, line.len() - 1)
+            }
+            if line != '' {
+                complete.push(line)
+            }
+            self.partial = []
+        } else {
+            self.partial.push(byte)
+        }
+    }
+    self.lock.unlock()
+    for line in complete {
+        self.lines.send(line) catch error {}
+    }
+    return chunk.len()
+}
+
+pub fn line_writer_t.finish(&self) {
+    string trailing = ''
+    self.lock.lock()
+    if self.closed {
+        self.lock.unlock()
+        return
+    }
+    self.closed = true
+    if self.partial.len() > 0 {
+        trailing = self.partial as string
+        self.partial = []
+    }
+    self.lock.unlock()
+    if trailing != '' {
+        self.lines.send(trailing) catch error {}
+    }
+    self.lines.close() catch error {}
+}
+
+// Keep enough stderr for a useful lifecycle error without allowing a noisy
+// child to grow the server forever.
+const STDERR_LIMIT = 65536
+
+type stderr_writer_t: io.writer = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    string content
+}
+
+fn stderr_writer_t.write(&self, [u8] chunk): int! {
+    self.lock.lock()
+    self.content += chunk as string
+    if self.content.len() > STDERR_LIMIT {
+        self.content = self.content.slice(self.content.len() - STDERR_LIMIT, self.content.len())
+    }
+    self.lock.unlock()
+    return chunk.len()
+}
+
+fn stderr_writer_t.snapshot(&self): string {
+    self.lock.lock()
+    string result = self.content
+    self.lock.unlock()
+    return result
+}
+
+type request_result_t = struct {
+    bool ok
+    string line
+    string error_message
+}
+
+type pending_request_t = struct {
+    string id
+    chan<request_result_t> result
+}
+
+pub type event_fn = fn(string line)
+pub type exit_fn = fn(string reason)
+
+pub type rpc_process_t = struct {
+    // Keep the command object alive for the whole child lifetime.  The
+    // standard process handlers retain command_t interfaces through the
+    // runtime process context, which is not itself a typed GC allocation.
+    ref<process.command_t> command
+    ref<process.process_t> child
+    ref<stdin_reader_t> input
+    ref<line_writer_t> output
+    ref<stderr_writer_t> errors
+    ref<mutex.mutex_t> state_lock = mutex.mutex_t.new()
+    [pending_request_t] pending
+    bool exited
+    bool stopping
+    bool input_closed
+    chan<u8> output_done = chan<u8>.new()
+    chan<u8> done = chan<u8>.new()
+    event_fn on_event
+    exit_fn on_exit
+}
+
+pub fn start(string executable, string cwd, event_fn on_event, exit_fn on_exit): ref<rpc_process_t>! {
+    var input = new stdin_reader_t(lines = chan<string>.new(128))
+    var output = new line_writer_t(lines = chan<string>.new(256))
+    var errors = new stderr_writer_t()
+    var command = process.command(executable, ['--mode', 'rpc'])
+    command.cwd = cwd
+    command.stdin = input
+    command.stdout = output
+    command.stderr = errors
+    var child = command.spawn()
+    var rpc = new rpc_process_t(command = command, child = child, input = input, output = output, errors = errors, pending = [], on_event = on_event, on_exit = on_exit)
+    go pump_output(rpc)
+    go watch_exit(rpc)
+    return rpc
+}
+
+pub fn rpc_process_t.pid(&self): int {
+    return self.child.pid
+}
+
+// Match Pi's RpcProcessInstance.send(): allocate an id when omitted, write
+// one JSONL command, and resolve only the response carrying that id.  Events
+// continue through on_event independently while multiple requests are live.
+pub fn rpc_process_t.send(&self, {string:any} command): {string:any}! {
+    string id = field_string(command, 'id')
+    if id == '' {
+        string generated = identity.uuid_v7() catch error {
+            throw error
+        }
+        id = 'server_' + generated
+        command['id'] = id
+    }
+    string line = json.serialize(command)
+    var result_channel = chan<request_result_t>.new(1)
+    self.state_lock.lock()
+    if self.exited || self.stopping {
+        string stderr = self.errors.snapshot()
+        self.state_lock.unlock()
+        throw errorf('RPC process is not running. Stderr: %s', stderr)
+    }
+    self.pending.push(pending_request_t {id: id, result: result_channel})
+    self.state_lock.unlock()
+    self.input.lines.send(line + '\n') catch error {
+        remove_pending(self, id)
+        throw errorf('Failed to write RPC process stdin: %s', error.msg())
+    }
+    var result = result_channel.recv() catch error {
+        throw errorf('RPC process ended before responding')
+    }
+    if !result.ok {
+        throw errorf('%s', result.error_message)
+    }
+    var parsed = json_util.parse(result.line) catch error {
+        throw errorf('Invalid RPC process response: %s', error.msg())
+    }
+    if !(parsed is {string:any}) {
+        throw errorf('RPC process response must be a JSON object')
+    }
+    return parsed as {string:any}
+}
+
+pub fn rpc_process_t.dispose(&self) {
+    self.state_lock.lock()
+    if self.exited {
+        self.state_lock.unlock()
+        return
+    }
+    self.stopping = true
+    if !self.input_closed {
+        self.input_closed = true
+        self.input.lines.close() catch error {}
+    }
+    int child_pid = self.child.pid
+    self.state_lock.unlock()
+
+    // Pi disposes an RPC child with SIGTERM.  Keep a bounded SIGKILL fallback
+    // so one broken child cannot wedge a server stop request indefinitely.
+    syscall.kill(child_pid, syscall.SIGTERM) catch error {}
+    if wait_done(self.done, 3000) {
+        return
+    }
+    syscall.kill(child_pid, syscall.SIGKILL) catch error {}
+    wait_done(self.done, 3000)
+}
+
+#local
+fn pump_output(ref<rpc_process_t> rpc) {
+    for true {
+        string line = rpc.output.lines.recv() catch error {
+            break
+        }
+        dispatch_line(rpc, line)
+    }
+    rpc.output_done.close() catch error {}
+}
+
+#local
+fn dispatch_line(ref<rpc_process_t> rpc, string line) {
+    var parsed = json_util.parse(line) catch error {
+        rpc.on_event(line)
+        return
+    }
+    if parsed is {string:any} object {
+        if field_string(object, 'type') == 'response' {
+            string id = field_string(object, 'id')
+            ref<pending_request_t>? target = null
+            rpc.state_lock.lock()
+            [pending_request_t] remaining = []
+            for request in rpc.pending {
+                if !(target is ref<pending_request_t>) && request.id == id {
+                    target = new pending_request_t(id = request.id, result = request.result)
+                } else {
+                    remaining.push(request)
+                }
+            }
+            rpc.pending = remaining
+            rpc.state_lock.unlock()
+            if target is ref<pending_request_t> matched {
+                matched.result.send(request_result_t {ok: true, line: line}) catch error {}
+            }
+            return
+        }
+    }
+    rpc.on_event(line)
+}
+
+#local
+fn watch_exit(ref<rpc_process_t> rpc) {
+    string wait_error = ''
+    rpc.child.wait() catch error {
+        wait_error = error.msg()
+    }
+    rpc.output.finish()
+    rpc.output_done.recv() catch error {}
+    string stderr = rpc.errors.snapshot()
+    string reason = fmt.sprintf('RPC process exited (code=%d signal=%d)', rpc.child.exit_code, rpc.child.term_sig)
+    if wait_error != '' {
+        reason += ': ' + wait_error
+    }
+    if stderr != '' {
+        reason += '. Stderr: ' + stderr
+    }
+    rpc.state_lock.lock()
+    rpc.exited = true
+    [pending_request_t] pending = rpc.pending
+    rpc.pending = []
+    rpc.state_lock.unlock()
+    for request in pending {
+        request.result.send(request_result_t {ok: false, error_message: reason}) catch error {}
+    }
+    rpc.done.close() catch error {}
+    rpc.on_exit(reason)
+}
+
+#local
+fn remove_pending(ref<rpc_process_t> rpc, string id) {
+    rpc.state_lock.lock()
+    [pending_request_t] remaining = []
+    for request in rpc.pending {
+        if request.id != id {
+            remaining.push(request)
+        }
+    }
+    rpc.pending = remaining
+    rpc.state_lock.unlock()
+}
+
+#local
+fn wait_done(chan<u8> done, int timeout_ms): bool {
+    var timeout = chan<u8>.new(1)
+    go fn() {
+        co.sleep(timeout_ms)
+        timeout.send(1) catch error {}
+    }()
+    select {
+        done.on_recv() -> ignored {
+            return true
+        }
+        timeout.on_recv() -> ignored {
+            return false
+        }
+    }
+    return false
+}
+
+#local
+fn field_string({string:any} object, string key): string {
+    if object.contains(key) && object[key] is string {
+        return object[key] as string
+    }
+    return ''
+}

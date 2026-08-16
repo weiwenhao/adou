@@ -1,0 +1,399 @@
+import adou.src.context.skills
+
+// Pi getAutocompleteSourceTag + parseGitUrl (vendors/pi 0.82.1:
+// packages/coding-agent/src/modes/interactive/interactive-mode.ts and
+// packages/coding-agent/src/utils/git.ts).  Observable tag contract for
+// Batch 1 source tags (B1-R3-07):
+//
+//   scope prefix: user -> u, project -> p, anything else -> t
+//   auto / local / cli sources keep just the scope prefix
+//   npm:... sources become scope + ':' + source verbatim
+//   git sources become scope + ':git:host/path[@ref]'
+//   anything else keeps just the scope prefix
+//
+// parse_git_source follows Pi parseGitUrl: with a `git:` prefix all
+// historical shorthand forms parse (scp `git@host:path`, `host/path`,
+// explicit protocols); WITHOUT the prefix only explicit protocol URLs
+// (https/http/ssh/git://) parse.  The ref is the FIRST '@' in the path
+// segment (Pi splitRef; '#' is never a ref separator here).  Paths must
+// keep at least two segments after stripping a trailing .git; the host must
+// be non-empty; the shorthand form rejects dottess hosts except localhost;
+// raw and URL-decoded values must not contain NUL, backslash, a leading
+// slash, or a '..' segment.
+
+pub fn source_tag(skills.source_info_t info): string {
+    string scope = info.scope == 'user' ? 'u' : (info.scope == 'project' ? 'p' : 't')
+    string source = info.source.trim([' ', '\t'])
+    if source == 'auto' || source == 'local' || source == 'cli' {
+        return scope
+    }
+    if source.starts_with('npm:') {
+        return scope + ':' + source
+    }
+    string git_tag = parse_git_source(source)
+    if git_tag != '' {
+        return scope + ':' + git_tag
+    }
+    return scope
+}
+
+pub fn parse_git_source(string source): string {
+    string trimmed = source.trim([' ', '\t'])
+    bool has_git_prefix = trimmed.starts_with('git:')
+    string url = has_git_prefix ? trimmed.slice(4, trimmed.len()).trim([' ', '\t']) : trimmed
+    if !has_git_prefix && !starts_with_protocol(url) {
+        return ''
+    }
+    var split = split_ref(url)
+    string repo = split[0]
+    string ref = split[1]
+    string host = ''
+    string path = ''
+    if repo.starts_with('git@') {
+        int colon = repo.find(':')
+        if colon < 0 {
+            return ''
+        }
+        host = repo.slice(4, colon)
+        path = repo.slice(colon + 1, repo.len())
+    } else if starts_with_protocol(repo) {
+        int scheme_end = repo.find('://')
+        if scheme_end < 0 {
+            return ''
+        }
+        string rest = repo.slice(scheme_end + 3, repo.len())
+        int slash = rest.find('/')
+        if slash < 0 {
+            host = rest
+            path = ''
+        } else {
+            host = rest.slice(0, slash)
+            path = rest.slice(slash + 1, rest.len())
+        }
+        // Pi uses URL.hostname/pathname semantics (B1-R4-11): userinfo
+        // ("git@" in ssh://git@host/...) and an explicit :port are not part
+        // of the host tag, the host is lowercased, and query/fragment are
+        // never part of the path.
+        host = strip_userinfo(host)
+        host = strip_port(host)
+        host = host.to_lower()
+        path = strip_query_fragment(path)
+    } else {
+        int slash_index = repo.find('/')
+        if slash_index < 0 {
+            return ''
+        }
+        host = repo.slice(0, slash_index)
+        path = repo.slice(slash_index + 1, repo.len())
+        if !host.contains('.') && host != 'localhost' {
+            return ''
+        }
+    }
+    return build_git_tag(host, path, ref)
+}
+
+// Pi splitRef: the ref is the FIRST '@' in the path segment; empty ref
+// halves leave the repo unchanged (no ref).  Returns (repo, ref).  For
+// protocol URLs the path is the URL pathname: query/fragment are stripped
+// before the ref split.
+#local
+fn split_ref(string url): (string, string) {
+    if url.starts_with('git@') {
+        int colon = url.find(':')
+        if colon >= 0 {
+            string path_with_ref = url.slice(colon + 1, url.len())
+            int ref_at = path_with_ref.find('@')
+            if ref_at >= 0 {
+                string repo_path = path_with_ref.slice(0, ref_at)
+                string ref = path_with_ref.slice(ref_at + 1, path_with_ref.len())
+                if repo_path != '' && ref != '' {
+                    return ('git@' + url.slice(4, colon) + ':' + repo_path, ref)
+                }
+            }
+        }
+        return (url, '')
+    }
+    if url.contains('://') {
+        int scheme_end = url.find('://')
+        if scheme_end < 0 {
+            return (url, '')
+        }
+        string rest = url.slice(scheme_end + 3, url.len())
+        int slash = rest.find('/')
+        if slash < 0 {
+            return (url, '')
+        }
+        string path_with_ref = strip_query_fragment(rest.slice(slash + 1, rest.len()))
+        int ref_at = path_with_ref.find('@')
+        if ref_at >= 0 {
+            string repo_path = path_with_ref.slice(0, ref_at)
+            string ref = path_with_ref.slice(ref_at + 1, path_with_ref.len())
+            if repo_path != '' && ref != '' {
+                return (url.slice(0, scheme_end + 3) + rest.slice(0, slash) + '/' + repo_path, ref)
+            }
+        }
+        return (url, '')
+    }
+    int slash_index = url.find('/')
+    if slash_index < 0 {
+        return (url, '')
+    }
+    string host_part = url.slice(0, slash_index)
+    string path_with_ref = url.slice(slash_index + 1, url.len())
+    int ref_at = path_with_ref.find('@')
+    if ref_at >= 0 {
+        string repo_path = path_with_ref.slice(0, ref_at)
+        string ref = path_with_ref.slice(ref_at + 1, path_with_ref.len())
+        if repo_path != '' && ref != '' {
+            return (host_part + '/' + repo_path, ref)
+        }
+    }
+    return (url, '')
+}
+
+// Pi buildGitSource + hasUnsafeGitInstallPart.
+#local
+fn build_git_tag(string host, string path, string ref): string {
+    if path.starts_with('/') {
+        return ''
+    }
+    string normalized = path
+    if normalized.ends_with('.git') {
+        normalized = normalized.slice(0, normalized.len() - 4)
+    }
+    for normalized.starts_with('/') {
+        normalized = normalized.slice(1, normalized.len())
+    }
+    if host == '' || normalized == '' || segment_count(normalized) < 2 {
+        return ''
+    }
+    if has_unsafe_part(host, false) || has_unsafe_part(normalized, true) {
+        return ''
+    }
+    string result = 'git:' + host + '/' + normalized
+    if ref != '' {
+        result += '@' + ref
+    }
+    return result
+}
+
+#local
+fn segment_count(string value): int {
+    int count = 1
+    for int index = 0; index < value.len(); index += 1 {
+        if value[index] == '/'.char() {
+            count += 1
+        }
+    }
+    return count
+}
+
+// URL userinfo/host normalization (Pi URL.hostname semantics).
+#local
+fn strip_userinfo(string host): string {
+    int at = -1
+    for int index = 0; index < host.len(); index += 1 {
+        if host[index] == '@'.char() {
+            at = index
+        }
+    }
+    if at >= 0 {
+        return host.slice(at + 1, host.len())
+    }
+    return host
+}
+
+#local
+fn strip_port(string host): string {
+    int colon = host.find(':')
+    if colon >= 0 {
+        return host.slice(0, colon)
+    }
+    return host
+}
+
+// Cut the first query ('?') or fragment ('#') separator and everything
+// after it (URL pathname semantics).
+#local
+fn strip_query_fragment(string value): string {
+    int cut = -1
+    for int index = 0; index < value.len(); index += 1 {
+        if value[index] == '?'.char() || value[index] == '#'.char() {
+            cut = index
+            break
+        }
+    }
+    if cut >= 0 {
+        return value.slice(0, cut)
+    }
+    return value
+}
+
+// Percent-decoding mirroring decodeURIComponent: malformed %XX sequences or
+// decoded bytes that are not valid UTF-8 report failure (Pi rejects them as
+// unsafe).  Valid decoded content is returned for the traversal check.
+#local
+fn decode_percent(string value): (string, bool) {
+    string result = ''
+    int cursor = 0
+    for cursor < value.len() {
+        if value[cursor] == '%'.char() && cursor + 2 < value.len() {
+            int high = hex_digit(value[cursor + 1])
+            int low = hex_digit(value[cursor + 2])
+            if high >= 0 && low >= 0 {
+                result += [(high * 16 + low) as u8] as string
+                cursor += 3
+                continue
+            }
+            return (value, false)
+        }
+        result += value.slice(cursor, cursor + 1)
+        cursor += 1
+    }
+    if !is_valid_utf8(result) {
+        return (value, false)
+    }
+    return (result, true)
+}
+
+// Strict UTF-8 well-formedness: continuation structure, overlong forms,
+// surrogates and out-of-range code points are rejected.
+#local
+fn is_valid_utf8(string value): bool {
+    int cursor = 0
+    for cursor < value.len() {
+        u8 byte = value[cursor]
+        if byte < 0x80 {
+            cursor += 1
+            continue
+        }
+        int length = 0
+        if byte >= 0xc2 && byte <= 0xdf {
+            length = 2
+        } else if byte >= 0xe0 && byte <= 0xef {
+            length = 3
+        } else if byte >= 0xf0 && byte <= 0xf4 {
+            length = 4
+        } else {
+            return false
+        }
+        if cursor + length > value.len() {
+            return false
+        }
+        if !is_continuation(value[cursor + 1]) {
+            return false
+        }
+        if length == 3 && !is_continuation(value[cursor + 2]) {
+            return false
+        }
+        if length == 4 && !is_continuation(value[cursor + 2]) {
+            return false
+        }
+        if length == 4 && !is_continuation(value[cursor + 3]) {
+            return false
+        }
+        // Overlong / surrogate / range guards.
+        if length == 2 && byte < 0xc2 {
+            return false
+        }
+        if length == 3 && byte == 0xe0 && value[cursor + 1] < 0xa0 {
+            return false
+        }
+        if length == 3 && byte == 0xed && value[cursor + 1] >= 0xa0 {
+            return false
+        }
+        if length == 4 && byte == 0xf0 && value[cursor + 1] < 0x90 {
+            return false
+        }
+        if length == 4 && byte == 0xf4 && value[cursor + 1] >= 0x90 {
+            return false
+        }
+        cursor += length
+    }
+    return true
+}
+
+#local
+fn is_continuation(u8 byte): bool {
+    return byte >= 0x80 && byte <= 0xbf
+}
+
+#local
+fn hex_digit(u8 value): int {
+    if value >= '0'.char() && value <= '9'.char() {
+        return value as int - '0'.char() as int
+    }
+    if value >= 'a'.char() && value <= 'f'.char() {
+        return value as int - 'a'.char() as int + 10
+    }
+    if value >= 'A'.char() && value <= 'F'.char() {
+        return value as int - 'A'.char() as int + 10
+    }
+    return -1
+}
+
+// Pi's protocol regex is case-insensitive (/^(https?|ssh|git):\/\//i).
+#local
+fn starts_with_protocol(string value): bool {
+    string lower = value.to_lower()
+    return lower.starts_with('https://') || lower.starts_with('http://') || lower.starts_with('ssh://') || lower.starts_with('git://')
+}
+
+#local
+fn has_unsafe_part(string value, bool allow_slash): bool {
+    // Pi checks the raw value AND its URL-decoded form against the same
+    // predicates; decodeURIComponent failure (malformed percent or invalid
+    // UTF-8) rejects outright (B1-R4-11).
+    if unsafe_candidate(value, allow_slash) {
+        return true
+    }
+    var (decoded, ok) = decode_percent(value)
+    if !ok {
+        return true
+    }
+    if decoded != value && unsafe_candidate(decoded, allow_slash) {
+        return true
+    }
+    return false
+}
+
+#local
+fn unsafe_candidate(string value, bool allow_slash): bool {
+    if contains_byte(value, 0x00) || contains_byte(value, '\\'.char()) || value.starts_with('/') {
+        return true
+    }
+    if !allow_slash && value.contains('/') {
+        return true
+    }
+    if has_parent_segment(value) {
+        return true
+    }
+    return false
+}
+
+#local
+fn contains_byte(string value, u8 wanted): bool {
+    for byte in value as [u8] {
+        if byte == wanted {
+            return true
+        }
+    }
+    return false
+}
+
+#local
+fn has_parent_segment(string value): bool {
+    int index = 0
+    for index <= value.len() {
+        int next = value.find_after('/', index)
+        int end = next >= 0 ? next : value.len()
+        if index < end && value.slice(index, end) == '..' {
+            return true
+        }
+        if next < 0 {
+            break
+        }
+        index = next + 1
+    }
+    return false
+}

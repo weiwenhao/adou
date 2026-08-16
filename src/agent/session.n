@@ -15,6 +15,7 @@ import adou.src.config.auth
 import adou.src.config.auth_guidance
 import adou.src.config.models
 import adou.src.config.settings
+import adou.src.context.resource_snapshot
 import adou.src.debug
 import adou.src.json_util
 import adou.src.session.message_json
@@ -59,6 +60,12 @@ pub type runner_t = struct {
     // reachable until that worker has serialized its terminal event.
     ref<session_stream.stream_t>? rpc_delivery_stream = null
     session_stream.optional_event_sink_fn event_sink = null
+    // B1-R4-10: the RPC runtime's trust-aware resource snapshot, atomically
+    // refreshed at init and session switch.  get_commands and the
+    // system-prompt skills injection read from it instead of re-reading
+    // settings/prompts/skills per call, so no-reload disk changes can never
+    // make the wire commands diverge from the running resources.
+    ref<resource_snapshot.resource_snapshot_t>? rpc_snapshot = null
 }
 
 pub type tree_target_t = struct {
@@ -81,7 +88,7 @@ pub fn runner_t.prompt(&self, string text): ref<session_stream.stream_t>! {
 // finish between prompt() returning and the RPC worker being registered; the
 // early mark makes terminal-event delivery deterministic.
 pub fn runner_t.prompt_rpc(&self, string text): ref<session_stream.stream_t>! {
-    return self.start_prompt(text, true)
+    return self.start_prompt(self.expand_rpc_command(text), true)
 }
 
 pub fn runner_t.start_prompt(&self, string text, bool require_delivery): ref<session_stream.stream_t>! {
@@ -241,15 +248,21 @@ pub fn runner_t.replace_repository(&self, ref<repository.manager_t> next): void!
     } else if !loaded.has_thinking_level {
         next.append_thinking_change(thinking) catch error {throw error}
     }
-    self.apply_preferences_for(next.cwd)
+    // B1-R3-04: preference application is the CALLER's job at the
+    // trust-aware rebind boundary (TUI refresh_resource_snapshot / RPC
+    // rebind_rpc_context).  Core must never read project settings here:
+    // it cannot know the target cwd's trust decision, and an unconditional
+    // settings.load_for(next.cwd) would leak project queue/compaction/retry
+    // values into an untrusted session before the boundary can veto them.
+    // Clone/fork keep the already-active same-cwd preferences (no rebind).
     self.sync_agent_environment()
 }
 
-// A Pi session switch creates a new cwd-bound runtime.  Keep the core
-// session preferences in sync with that runtime as well: project .pi settings
-// override the user settings for queue modes, compaction, and retry policy.
-pub fn runner_t.apply_preferences_for(&self, string cwd) {
-    var preferences = settings.load_for(cwd)
+// Apply an already-resolved (trust-aware) settings snapshot to the core
+// session preferences: queue modes, compaction and retry policy.  The
+// caller — not core — decides whether the snapshot merged project settings
+// (trusted cwd) or is global-only (untrusted cwd).
+pub fn runner_t.apply_preferences_snapshot(&self, settings.settings_t preferences) {
     self.lock.lock()
     self.agent_config.queues.steering_mode = preferences.steering_mode
     self.agent_config.queues.follow_up_mode = preferences.follow_up_mode
@@ -258,6 +271,47 @@ pub fn runner_t.apply_preferences_for(&self, string cwd) {
     self.retry_max_attempts = preferences.retry_max_attempts
     self.retry_base_delay_ms = preferences.retry_base_delay_ms
     self.lock.unlock()
+}
+
+pub fn runner_t.set_rpc_snapshot(&self, ref<resource_snapshot.resource_snapshot_t> snapshot) {
+    self.lock.lock()
+    self.rpc_snapshot = snapshot
+    self.lock.unlock()
+}
+
+// Publish every RPC resource-derived runtime value under the runner lock.
+// Readers therefore observe either the complete previous binding or the
+// complete replacement: command discovery, prompt expansion, system prompt,
+// tools and trust-aware runtime preferences cannot be mixed across versions.
+pub fn runner_t.publish_rpc_resources(&self, ref<resource_snapshot.resource_snapshot_t> snapshot, string system_prompt, [ref<agent_types.agent_tool_t>] tools, bool apply_preferences) {
+    var context = new agent_types.context_t(system_prompt = system_prompt, tools = tools)
+    self.lock.lock()
+    self.base_context = context
+    self.rpc_snapshot = snapshot
+    if apply_preferences {
+        self.agent_config.queues.steering_mode = snapshot.settings.steering_mode
+        self.agent_config.queues.follow_up_mode = snapshot.settings.follow_up_mode
+        self.compaction_settings.enabled = snapshot.settings.auto_compaction
+        self.retry_enabled = snapshot.settings.retry_enabled
+        self.retry_max_attempts = snapshot.settings.retry_max_attempts
+        self.retry_base_delay_ms = snapshot.settings.retry_base_delay_ms
+    }
+    self.lock.unlock()
+}
+
+pub fn runner_t.get_rpc_snapshot(&self): ref<resource_snapshot.resource_snapshot_t>? {
+    self.lock.lock()
+    var snapshot = self.rpc_snapshot
+    self.lock.unlock()
+    return snapshot
+}
+
+pub fn runner_t.expand_rpc_command(&self, string text): string {
+    var snapshot = self.get_rpc_snapshot()
+    if snapshot is ref<resource_snapshot.resource_snapshot_t> loaded {
+        return resource_snapshot.expand_command(loaded, text)
+    }
+    return text
 }
 
 pub fn runner_t.select_leaf(&self, string entry_id): void! {
@@ -1023,7 +1077,12 @@ fn will_retry_after_agent_end(ref<runner_t> runner, agent_types.agent_event_t ag
 }
 
 pub fn runner_t.context_from_repository(&self): ref<agent_types.context_t>! {
-    return new agent_types.context_t(system_prompt = self.base_context.system_prompt, messages = self.copy_active_messages(), tools = self.base_context.tools)
+    self.lock.lock()
+    string system_prompt = self.base_context.system_prompt
+    var tools = self.base_context.tools.slice(0, self.base_context.tools.len())
+    var messages = self.active_messages.slice(0, self.active_messages.len())
+    self.lock.unlock()
+    return new agent_types.context_t(system_prompt = system_prompt, messages = messages, tools = tools)
 }
 
 pub fn runner_t.copy_active_messages(&self): [ai_types.message_t] {

@@ -1,10 +1,13 @@
 // Provider definition for Amazon Bedrock.
 // Metadata follows vendors/pi/packages/ai/src/providers/amazon-bedrock.ts.
+// Bedrock has no env var list yet still supports API-key login in the
+// product surface (B1-R2-04): the capability is explicit, never inferred
+// from env_vars length.
 import adou.src.ai.providers.amazon_bedrock_models
 import adou.src.ai.types
 
 pub fn def(): types.provider_def_t {
-    return types.provider_def_t {id: 'amazon-bedrock', name: 'Amazon Bedrock', api: 'bedrock-converse-stream', base_url: '', env_vars: [], headers: {},}
+    return types.provider_def_t {id: 'amazon-bedrock', name: 'Amazon Bedrock', api: 'bedrock-converse-stream', base_url: '', env_vars: [], headers: {}, supports_api_key_login: true,}
 }
 
 pub fn models(): [ref<types.model_t>] {

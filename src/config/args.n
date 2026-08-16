@@ -82,7 +82,12 @@ pub fn parse([string] argv): types.cli_args_t {
         } else if argument == '--models' {
             var consumed = consume_string(argv, index, argument)
             index = consumed.index
-            if consumed.ok {result.scoped_models = split_names(consumed.value)} else {errors.push(consumed.error_message)}
+            if consumed.ok {
+                result.scoped_models = split_names(consumed.value)
+                result.scoped_models_explicit = true
+            } else {
+                errors.push(consumed.error_message)
+            }
         } else if argument == '--base-url' {
             var consumed = consume_string(argv, index, argument)
             index = consumed.index

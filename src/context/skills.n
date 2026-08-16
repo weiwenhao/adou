@@ -13,6 +13,7 @@ import syscall
 // validation diagnostics and XML prompt formatting.
 
 pub type source_info_t = struct {
+    string path
     string source
     string scope
     string origin
@@ -253,19 +254,19 @@ pub fn load_skill_from_file(string file_path, string source): loaded_skill_t {
     }
     string skill_dir = path.dir(file_path)
     var skill = new skill_t(name = name, description = description, file_path = file_path, base_dir = skill_dir, disable_model_invocation = disable)
-    skill.source_info = skill_source_info(skill_dir, source)
+    skill.source_info = skill_source_info(file_path, skill_dir, source)
     result.skill = skill
     return result
 }
 
-fn skill_source_info(string base_dir, string source): source_info_t {
+fn skill_source_info(string file_path, string base_dir, string source): source_info_t {
     if source == 'user' {
-        return source_info_t {source: 'local', scope: 'user', origin: 'top-level', base_dir: base_dir,}
+        return source_info_t {path: file_path, source: 'local', scope: 'user', origin: 'top-level', base_dir: base_dir,}
     }
     if source == 'project' {
-        return source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: base_dir,}
+        return source_info_t {path: file_path, source: 'local', scope: 'project', origin: 'top-level', base_dir: base_dir,}
     }
-    return source_info_t {source: source, scope: 'temporary', origin: 'top-level', base_dir: base_dir,}
+    return source_info_t {path: file_path, source: source, scope: 'temporary', origin: 'top-level', base_dir: base_dir,}
 }
 
 pub fn load_skills(string cwd, string agent_dir, [string] skill_paths, bool include_defaults, bool project_trusted): load_skills_result_t {
@@ -480,6 +481,40 @@ pub fn escape_xml(string value): string {
     result = result.replace('"', '&quot;')
     result = result.replace("'", '&apos;')
     return result
+}
+
+// Expand a /skill:name invocation using an already-loaded skill list.  The
+// list is the resource snapshot boundary: adding or removing skills on disk
+// has no effect until that list is refreshed.  Pi reads the selected skill's
+// body when it is invoked, so an unreadable file leaves the command unchanged.
+pub fn expand_command(string text, [ref<skill_t>] loaded_skills): string {
+    if !text.starts_with('/skill:') {
+        return text
+    }
+    int space = text.find(' ')
+    string skill_name = ''
+    string args = ''
+    if space < 0 {
+        skill_name = text.slice(7, text.len())
+    } else {
+        skill_name = text.slice(7, space)
+        args = text.slice(space + 1, text.len()).trim([' ', '\t'])
+    }
+    for skill in loaded_skills {
+        if skill.name != skill_name {
+            continue
+        }
+        string content = read_utf8(skill.file_path) catch error {
+            return text
+        }
+        string body = strip_frontmatter(content).trim([' ', '\t', '\n', '\r'])
+        string block = '<skill name="' + escape_xml(skill.name) + '" location="' + escape_xml(skill.file_path) + '">\nReferences are relative to ' + skill.base_dir + '.\n\n' + body + '\n</skill>'
+        if args != '' {
+            return block + '\n\n' + args
+        }
+        return block
+    }
+    return text
 }
 
 fn canonicalize(string file_path): string {

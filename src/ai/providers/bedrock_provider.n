@@ -294,7 +294,7 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
 fn send_once(ref<run_state_t> state): ref<client.response_t>! {
     debug.log('provider', 'bedrock sending request')
     string amz_date = bedrock_messages.amz_date_now()
-    var request = client.new().post(bedrock_messages.endpoint(state.model)).timeout(state.options.timeout_ms).header('Authorization', bedrock_messages.authorization(state.model, state.body, amz_date)).header('Content-Type', 'application/json').header('Accept', 'application/vnd.amazon.eventstream').header('x-amz-date', amz_date).content(state.body)
+    var request = client.new().post(bedrock_messages.endpoint(state.model)).timeout(state.options.timeout_ms).header('Authorization', bedrock_messages.authorization(state.model, state.body, amz_date, state.options.api_key)).header('Content-Type', 'application/json').header('Accept', 'application/vnd.amazon.eventstream').header('x-amz-date', amz_date).content(state.body)
     string session_token = bedrock_messages.session_token_header()
     if session_token != '' {
         request.header('X-Amz-Security-Token', session_token)

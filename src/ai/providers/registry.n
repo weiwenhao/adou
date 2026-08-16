@@ -97,6 +97,110 @@ pub fn find_def(string id): types.provider_def_t? {
     return null
 }
 
+// All provider definitions visible to /login, merged builtin+runtime by id
+// (pi-interactive-parity-audit-plan.md B1-R2-03): a runtime definition with
+// the same id REPLACES the builtin (Pi ModelRegistry registration is an
+// override, find_def already behaves this way), and unregister restores the
+// builtin.  Order is deterministic: builtin registry order with the
+// replacement in place, then runtime-only ids appended in lexical id order
+// (never map iteration order).
+pub fn login_defs(): [types.provider_def_t] {
+    [types.provider_def_t] result = []
+    var builtins = defs()
+    [string] runtime_ids = sorted_runtime_ids()
+    for def in builtins {
+        if runtime_defs.contains(def.id) {
+            result.push(runtime_defs[def.id])
+        } else {
+            result.push(def)
+        }
+    }
+    for id in runtime_ids {
+        bool builtin_id = false
+        for def in builtins {
+            if def.id == id {
+                builtin_id = true
+                break
+            }
+        }
+        if !builtin_id {
+            result.push(runtime_defs[id])
+        }
+    }
+    return result
+}
+
+// Lexically sorted runtime ids so merged lists are reproducible.
+#local
+fn sorted_runtime_ids(): [string] {
+    [string] ids = []
+    for id, def in runtime_defs {
+        ids.push(id)
+    }
+    for int index = 1; index < ids.len(); index += 1 {
+        string current = ids[index]
+        int cursor = index - 1
+        for cursor >= 0 && ids[cursor] > current {
+            ids[cursor + 1] = ids[cursor]
+            cursor -= 1
+        }
+        ids[cursor + 1] = current
+    }
+    return ids
+}
+
+// The /login argument-completion candidate assembly (B1-R2-04), shared by
+// the TUI and the tests: merged builtin+runtime defs (runtime override),
+// filtered to providers whose supports_api_key_login capability is true
+// (OAuth-only providers such as openai-codex are EXCLUDED, never disguised
+// as API-key options), then stable-sorted by provider name like Pi's
+// getLoginProviderCompletionOptions.  Description/search text mirror Pi's
+// formatLoginProviderCompletionDescription / getLoginProviderSearchText.
+pub type login_completion_option_t = struct {
+    string id
+    string name
+    string description
+    string search_text
+}
+
+pub fn login_completion_options(): [login_completion_option_t] {
+    [types.provider_def_t] capable = []
+    for def in login_defs() {
+        if def.supports_api_key_login {
+            capable.push(def)
+        }
+    }
+    for int index = 1; index < capable.len(); index += 1 {
+        var current = capable[index]
+        int cursor = index - 1
+        for cursor >= 0 && capable[cursor].name > current.name {
+            capable[cursor + 1] = capable[cursor]
+            cursor -= 1
+        }
+        capable[cursor + 1] = current
+    }
+    [login_completion_option_t] result = []
+    for def in capable {
+        string auth_types = 'api_key API key'
+        string description = def.name == def.id ? 'API key' : def.name + ' · API key'
+        result.push(login_completion_option_t {
+            id: def.id,
+            name: def.name,
+            description: description,
+            search_text: def.id + ' ' + def.name + ' ' + auth_types,
+        })
+    }
+    return result
+}
+
+pub fn supports_api_key_login(string provider): bool {
+    var found = find_def(provider)
+    if found is types.provider_def_t def {
+        return def.supports_api_key_login
+    }
+    return false
+}
+
 // Pi ModelRegistry registration surface: extensions register providers at
 // runtime with a name/baseUrl/api/apiKey shape.
 pub fn register_provider(types.provider_def_t def) {

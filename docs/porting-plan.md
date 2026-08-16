@@ -1,6 +1,6 @@
 # Adou 全量移植计划（Pi 0.82.1，扩展机制暂缓）
 
-状态：Phase 5、Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12；Skills parity foundation 增量批次已关闭（2026-08-13 复核收口并验证）
+状态：Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12；**Phase 4（Interactive/TUI 交互子项）与 Phase 5（Interactive UI）已于 2026-08-14 重新打开（reopened）**，见 `docs/pi-interactive-parity-audit-plan.md`（Batch 0、Batch 1、Batch 2 已由主代理验收通过；下一批为 Batch 3）；Skills parity foundation 增量批次已关闭（2026-08-13 复核收口并验证）
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
 release hardening：macOS 主线进行中（Batch 1、Batch 2A、native `.pkg` installer 已完成；Batch 2B 真实签名/公证需新权限；Linux 暂缓，见 `docs/release-hardening-plan.md`、`docs/macos-signing.md` 与 `docs/macos-installer.md`）
 RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make release-check`、`make signing-check` 证据见下）；历史 runtime blocker `nature#302` 已由上游 PR #303 修复并用专用 toolchain 验证，后续 PTY 冷启动失败也已定位为测试在 raw mode 前过早发键的同步缺陷并修复
@@ -8,7 +8,7 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 ## 当前进度快照
 
 - Adou 当前有 218 个 `src/**/*.n` 文件、41,925 行 Nature 源码、138 个 Nature 单元测试文件（665 个 test case、2,724 个 `assert`）和 46 个 e2e 脚本。
-- Phase 1–6 已完成并有源码差分、单元测试和跨模块验收记录；137 个单测文件在 2026-08-11 全量串行通过（7 个 OOM abort 单独重跑全过，deepseek fixture 回归已修复）。
+- Phase 1–3、6 已完成并有源码差分、单元测试和跨模块验收记录；Phase 4/5 的 Interactive 相关结论于 2026-08-14 重新打开（见 `docs/pi-interactive-parity-audit-plan.md`）；137 个单测文件在 2026-08-11 全量串行通过（7 个 OOM abort 单独重跑全过，deepseek fixture 回归已修复）。
 - Phase 7（storage + server）已完成：storage 已完成（JSONL/memory/SQLite 三后端契约测试 + migrations + materialized 表），server supervisor/protocol/rpc_stream 已验收（Phase 7.1 于 2026-08-12 关闭）。
 - 历史失败记录（cli-startup-boundaries 挂起、auth stdout 泄漏、ESC 10ms、deepseek fixture、全量 7 文件 OOM）均已由后续修复或重跑覆盖，见各批实跑证据。
 - Phase 8（evals harness）已完成：`make eval` 3/3 绿（2026-08-12），见 `docs/evals-design.md`。
@@ -20,13 +20,13 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 | Phase 1：AI 层 | 已完成 | 39 个 provider、请求/流协议、模型兼容、图片 API、重试与认证主链已覆盖 |
 | Phase 2：Agent harness | 已完成 | agent loop、工具、memory repo、shell 捕获、取消和 tool context 已覆盖 |
 | Phase 3：coding-agent core | 已完成（排除扩展） | session、compaction、配置、skills、prompts、模型目录、诊断与导出已覆盖 |
-| Phase 4：TUI 基础 | 已完成 | renderer、editor、autocomplete、fuzzy、路径补全、markdown、terminal image 逻辑已覆盖 |
-| Phase 5：Interactive UI | 已完成 | 39 组件全部有结论；tree/fork/branch-summary PTY 闭环通过（tui-tree-fork.sh），终端恢复验证 |
+| Phase 4：TUI 基础 | **reopened（2026-08-14，Interactive/TUI 交互子项）** | editor/autocomplete/keybindings/cursor 等交互子项（IP-006/008、Batch 1/4）按 `docs/pi-interactive-parity-audit-plan.md` 重新验收；renderer 差分渲染、terminal recovery、fuzzy、路径补全、markdown 等已验证子项保留原结论 |
+| Phase 5：Interactive UI | **reopened（2026-08-14）** | 原"已完成"结论被 `docs/pi-interactive-parity-audit-plan.md` 撤销（IP-001..012）；按该计划 Batch 0→7 重新验收，Batch 0、Batch 1、Batch 2 已由主代理验收通过；下一批为 Batch 3（Settings 全量契约） |
 | Phase 6：CLI | 已完成 | 9 个上游模块逐项对照；空 stdin 挂起、credential 输出隔离、help/参数矩阵、启动边界均通过（help-matrix/cli-startup-boundaries/auth-print/rpc-shape-parity 等 45 个 e2e） |
 | Phase 7：storage + server | 已完成 | SQLite backend 已落地（nature-sqlite 绑定 + migrations/repo + 三后端契约测试 5/5）；server supervisor/协议/rpc_stream 已按上游 ipc/protocol.ts 重写，多实例生命周期与 rpc_stream e2e 通过（Phase 7.1 于 2026-08-12 关闭） |
 | Phase 8：evals | 已完成 | pi-harness/smoke.eval 已移植（本地脚本化 HTTP mock），`make eval` 3/3 绿；extensions.eval 明确排除；见 `docs/evals-design.md` |
 
-阶段完成度按行为验收判断，不用 Pi TypeScript 文件数推算百分比。当前严格确认 8/8 阶段关闭（Phase 1–8）。
+阶段完成度按行为验收判断，不用 Pi TypeScript 文件数推算百分比。Phase 6–8 保持关闭（3/8）；Phase 4 的 Interactive/TUI 交互子项与 Phase 5 重新打开等待按批实施（8/8 中的 Interactive 部分不再成立）。
 
 ## 目标与范围
 
@@ -67,6 +67,13 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 
 ### Phase 4｜TUI 基础
 
+> **2026-08-14 状态更新：Interactive/TUI 交互子项重新打开（reopened）。**
+> 下方历史记录保留为事实。按 `docs/pi-interactive-parity-audit-plan.md`，
+> IP-006（autocomplete 架构）、IP-008（app keybindings registry）与 Batch 4
+> （editor/cursor/IME/keybindings）归属本阶段的交互部分，随 Phase 5 一并
+> 重新验收；renderer 差分渲染、终端恢复、fuzzy、路径补全、markdown 等
+> 已验证子项保留原结论与证据。
+
 - differential renderer、终端恢复、输入序列、Unicode/grapheme、视觉行折行与跨行移动已覆盖。
 - keybinding registry、kill ring、undo/history 快照、word navigation、Shift+Space 与滚动指示器已覆盖。
 - Tab 路径补全、`@` 附件搜索、fd 式递归模糊匹配、命令/skill/prompt completion 已接入。
@@ -77,9 +84,20 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 
 ### Phase 5｜Interactive UI 组件全量
 
+> **2026-08-14 状态更新：本阶段已重新打开（reopened）。** 下方 2026-08-10/11 的
+> "已收口/已关闭" 记录保留为历史事实，但不再作为 Interactive UI 的验收依据。
+> 2026-08-14 真机复现与源码对照（`docs/pi-interactive-parity-audit-plan.md`，
+> IP-001..012）证明：多个组件被合并进通用 overlay 后丢失了数据模型、状态所有权、
+> 查询生命周期、可见窗口、配置驱动和取消/确认语义；现有测试以直接打开单个
+> overlay 和静态字符串断言为主。后续按审计计划 Batch 0→7 逐组件重新对照与验收；
+> Batch 0（2026-08-14）、Batch 1（Autocomplete 与 SelectList 基础，2026-08-15）
+> 和 Batch 2（Model 与 Scoped Models，2026-08-15）均已由主代理验收通过，协议与
+> 证据见 `docs/pi-batch0-evidence/`、`docs/pi-batch1-evidence/`；下一批为 Batch 3
+> （Settings 全量契约）。
+
 当前已有：assistant/user/tool/bash/summary/status/footer 渲染，model/scoped-model/settings/login/logout/session/tree/fork/name/branch-summary/help/hotkeys/path-completion overlay，resume picker，以及外部编辑器入口。
 
-逐组件 parity 审计（2026-08-11 更新）：对照 `modes/interactive` 下 39 个组件，全部非排除实现项已经收口。等价或合并实现包括 user/assistant/tool/bash、footer/status/keybinding-hints、login API-key 分支、session-selector、model/scoped-model selector、settings/config selector、visual truncate、countdown timer、theme selector、diff 行级着色、first-time setup、tree 搜索/过滤/折叠、custom editor、branch/compaction/custom message。明确排除项保持不变：OAuth 登录、extension-*、交互式图片渲染和纯装饰组件。
+逐组件 parity 审计（2026-08-11 更新，**结论已撤销，见上方 2026-08-14 状态更新**）：对照 `modes/interactive` 下 39 个组件，全部非排除实现项已经收口。等价或合并实现包括 user/assistant/tool/bash、footer/status/keybinding-hints、login API-key 分支、session-selector、model/scoped-model selector、settings/config selector、visual truncate、countdown timer、theme selector、diff 行级着色、first-time setup、tree 搜索/过滤/折叠、custom editor、branch/compaction/custom message。明确排除项保持不变：OAuth 登录、extension-*、交互式图片渲染和纯装饰组件。
 
 已实现批次（2026-08-10）：bash 完成态输出管理——render_bash_lines 接入 tool_output_expanded 折叠（视觉行末 20 行 + "N more lines, press Ctrl+O to expand"）、bash.truncated/full_output_path 渲染 "Output truncated. Full output: <path>"、退出码短格式 "(exit N)"（错误色）、活动 bash 视觉行截断 + 跳过计数、chat status 行不再重复 echo 退出码。新增 text_utils.truncate_visual_lines（Pi visual-truncate 语义）与 PTY e2e tui-bash-output.sh。
 
@@ -91,7 +109,7 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 
 已收口：model-selector / scoped-models-selector（当前模型 ✓、Tab All/Scoped、id/provider/名称搜索、详情行、空态、目录刷新反馈和默认模型保存）；settings/config selector（thinking/theme 子菜单、skills/prompts 资源启停和持久化）；theme、diff、countdown、first-time setup、tree 搜索/过滤/折叠均有对应实现和单测或 PTY 证据。
 
-Phase 5 验收结果（2026-08-11 关闭）：`tui-tree-fork.sh` PTY 闭环覆盖 `/tree` 打开/搜索过滤/取消/重开、非 leaf 导航进入 branch summary（`No summary` 完成）、`/fork` 选择与 `Forked to new session`、`/quit` 终端恢复退出码 0；39 个组件矩阵全部有结论。历史“剩余验收项”已由该闭环覆盖。
+Phase 5 验收结果（2026-08-11 关闭，**2026-08-14 撤销**）：`tui-tree-fork.sh` PTY 闭环覆盖 `/tree` 打开/搜索过滤/取消/重开、非 leaf 导航进入 branch summary（`No summary` 完成）、`/fork` 选择与 `Forked to new session`、`/quit` 终端恢复退出码 0；39 个组件矩阵全部有结论。历史“剩余验收项”已由该闭环覆盖。该关闭结论仅代表当时的 happy-path 证据，不满足 `docs/pi-interactive-parity-audit-plan.md` §9 完成定义（state/event/transition/render/effect/cancel 契约、direct+integration PTY、同版本 Pi 真机对照）。
 
 ### Phase 6｜CLI 补全
 
@@ -114,31 +132,32 @@ Phase 6 完成标准已满足：9 个上游 CLI 文件逐项有结论；帮助�
 
 Phase 7 完成标准：SQLite migration/storage 单测、JSONL/SQLite 行为一致性测试和 RPC-over-IPC e2e 通过。
 
-Phase 7.1（server 协议 parity closeout，2026-08-11 落地，2026-08-12 已完成验收）：
+Phase 7.1（server 协议 2026-08-12 首次关闭；2026-08-16 完成真实多进程隔离）：
 
 - storage 段落关闭；server 段按上游 `packages/server/src/ipc/protocol.ts` 重写：
-  `src/server/protocol.n`（响应形状）、`src/server/supervisor.n`（多实例表）、
+  `src/server/protocol.n`（响应形状）、`src/server/rpc_process.n`（子进程 JSONL
+  transport/pending/lifecycle）、`src/server/supervisor.n`（多实例表）、
   `src/server/ipc_server.n`（连接级逐行 TCP serve）、`src/app.n` run_serve/serve_command。
 - 响应形状：spawn_result/list_result/status_result/stop_result/rpc_result/rpc_ready/error
   （ok/instance/instances/response 字段），不再使用旧 response/success 包装。
-- 多实例：每 spawn 一个独立进程内 runner（独立 in-memory repository），id 为 uuid；
-  stop=abort+移除；list/status 按实例表路由；未知 instanceId 返回
+- 多实例：每 spawn 一个独立 `adou --mode rpc` 子进程和持久化 session，id 为 uuid；
+  stop=SIGTERM（有界 SIGKILL fallback）；list/status 按实例表路由；未知 instanceId 返回
   `error{ok:false,error:"Unknown instance: <id>"}`；stop A 不影响 B。
 - rpc_stream：同一连接 rpc_ready → 持续多命令 → 逐行 RpcResponse/AgentSessionEvent；
   连接断开即解除订阅；`extension_ui_response` 确定性返回
   `error{ok:false,error:"extensions disabled"}`。
-- 实例隔离采用进程内 runner 而非子进程：审计
-  `std/process/process.n`（`/Users/liulianfuren/Code/nature` 与安装版一致）——
-  `command_t.stdin` 恒为 `fs.discard()`（/dev/null），无写 stdin API、无
-  kill/terminate；运行时 `runtime/nutils/process.c` stdio[0] 固定 UV_IGNORE，
-  无法给 `--mode rpc` 子进程喂命令流，子进程方案存在硬阻塞（证据与方案选择见
-  `docs/phase7-storage-design.md` Phase 7.1 章节）。该差异已文档化。
-- 验收（2026-08-12 串行实跑）：`make build` 退出 0；`tests/ipc_protocol_test.n`
+- 旧 stdin blocker 已由 nature-lang/nature issue #308 / PR #309 解除：runtime
+  现在消费自定义 `cmd.stdin` 并建立真实 pipe。Nature PR #310 也已让 runtime
+  消费 `command_t.cwd`；Adou 在 spawn 前直接设置 child cwd，测试读取 session
+  header 验证该目录。
+- 多进程验收（2026-08-16 串行实跑）：`make build` 退出 0；
+  `tests/rpc_process_test.n` 2/2；`tests/ipc_protocol_test.n`
   7/7、`tests/backend_list_session_paths_test.n` 2/2、
   `tests/repository_contract_test.n` 5/5、`tests/setup_test.n` 2/2；
-  e2e `rpc-over-ipc.sh`（多实例生命周期 + rpc_stream 连接态 + 无遗留子进程）、
+  e2e `rpc-over-ipc.sh`（两个真实 child PID、并发 pending 路由、目标 cwd、
+  rpc_stream、stop 单实例隔离、父退出无 orphan）、
   `rpc-shape-parity.sh`、`rpc-empty-messages.sh`、`rpc-new-session.sh`、
-  `rpc-tree-corrupt.sh` 全绿。
+  `rpc-tree-corrupt.sh` 全绿；完整 `make e2e` 54 个脚本串行 exit 0。
 
 ### Phase 8｜evals 基建
 
@@ -228,7 +247,7 @@ selector`），单独复跑 3 次全绿；第四次（最终，全部改动落�
 - 现状：`nature-lang/nature#302` 由 PR #303（`fix-concurrent-string-pool`）合并修复；上游 `20260812_00_const_string_pool` CTest 通过。
 - 专用 toolchain：`/Users/liulianfuren/Code/nature-adou-toolchain`（commit `ad567d14`，nature v0.7.4 release build 2026-08-12）；`make clean && make build`（显式 NATURE/NATURE_ROOT）后 `nm build/bin/adou | grep const_str_pool_locker` 存在。
 - closure 实测（2026-08-12，严格串行）：修复后的专用 runtime 下，`tui-model-selector.sh` 首轮连续 50 次 47 通过 / 3 失败，但失败已不是旧 runtime 的 model 行内容损坏；`make eval` 连续 5 次全绿，`make release-check`、`make signing-check` 全绿。
-- PTY follow-up 定位：测试原先固定等待 1 秒后就发送 `Ctrl+L`；Adou 进入 raw mode 时使用 `tcsetattr(..., TCSAFLUSH, ...)`，冷启动超过 1 秒时会丢弃已排队的按键，随后是测试超时杀掉仍正常运行的 Adou，并非 Adou 自行无输出退出。人为延迟启动 2 秒时修复前稳定复现，改为等待 raw mode 之后的 `ESC[>1u` 键盘协议开启标记后同样场景通过。同类等待已覆盖 9 个会立即发键的 PTY 脚本；修复后 model selector 连续 50/50 通过，9 个定向 PTY 脚本及完整 `make e2e` 全绿。
+- PTY follow-up 定位：测试原先固定等待 1 秒后就发送 `Ctrl+L`；Adou 进入 raw mode 时曾使用 `tcsetattr(..., TCSAFLUSH, ...)`，冷启动超过 1 秒时会丢弃已排队的按键，随后是测试超时杀掉仍正常运行的 Adou，并非 Adou 自行无输出退出。当前 raw-mode 边界使用 `TCSANOW` 配合显式 `TCIFLUSH`，并改为等待 raw mode 之后的 `ESC[>1u` 键盘协议开启标记后交互。同类等待已覆盖 9 个会立即发键的 PTY 脚本；修复后 model selector 连续 50/50 通过，9 个定向 PTY 脚本及完整 `make e2e` 全绿。
 - 当前结论：#302 内容损坏和独立 PTY 启动测试竞态均已有根因与验证闭环，不再是 RC blocker。
 - 未调用真实 DeepSeek；未做真实签名/公证/发布。
 

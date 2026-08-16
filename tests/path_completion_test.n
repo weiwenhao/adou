@@ -86,15 +86,9 @@ test 'values quote paths with spaces like Pi' {
     os.rmdir(base, true)
 }
 
-test 'apply_completion replaces the prefix and moves the cursor like Pi' {
-    var (new_line, new_col) = path_completion.apply_completion('src/a', 5, path_completion.completion_item_t {value: 'src/app.n', label: 'app.n'}, 'src/a')
-    assert(new_line == 'src/app.n')
-    assert(new_col == 9)
-    // Pi's quoted scenario: the closing quote sits right after the cursor
-    // and the whole text before it is the quoted prefix.
-    var (quoted_line, quoted_col) = path_completion.apply_completion('"src/a"', 6, path_completion.completion_item_t {value: '"src/app.n"', label: 'app.n'}, '"src/a')
-    assert(quoted_line == '"src/app.n"')
-    assert(quoted_col == 11)
+test 'quoted attachment completions do not double-wrap existing quotes' {
+    assert(path_completion.quoted_at_completion_value('@plain.txt') == '@"plain.txt"')
+    assert(path_completion.quoted_at_completion_value('@"with space.txt"') == '@"with space.txt"')
 }
 
 fn suffix(): string {
@@ -118,4 +112,69 @@ test 'fuzzy attachment search scores and ranks like Pi' {
     var dir_suggestions = path_completion.get_fuzzy_file_suggestions('src', root, '/tmp')
     assert(dir_suggestions.len() >= 1)
     os.rmdir(root, true)
+}
+
+test 'B1-R4-05 fuzzy attachment values are baseDir-relative and never leak the absolute cwd' {
+    string root = '/tmp/adou-fuzzy-relative-' + fmt.sprintf('%d', time.now().ms_timestamp())
+    os.mkdirs(path.join(root, 'src', 'main'), 0o755)
+    var entry = fs.open(path.join(root, 'src', 'main', 'app.n'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    entry.close()
+    var suggestions = path_completion.get_fuzzy_file_suggestions('app', root, '/tmp')
+    assert(suggestions.len() == 1)
+    // value/label/description must be relative to base_path (fd
+    // --base-directory semantics): the absolute cwd never appears.
+    assert(suggestions[0].value == '@src/main/app.n')
+    assert(suggestions[0].label == 'app.n')
+    assert(suggestions[0].description == 'src/main/app.n')
+    assert(!suggestions[0].value.contains(root))
+    assert(!suggestions[0].description.contains(root))
+    var dir_suggestions = path_completion.get_fuzzy_file_suggestions('main', root, '/tmp')
+    // 'app.n' also matches via its full path, but the exact directory match
+    // ranks first; the top candidate must be the relative directory.
+    assert(dir_suggestions.len() >= 1)
+    assert(dir_suggestions[0].value == '@src/main/')
+    assert(dir_suggestions[0].label == 'main/')
+    assert(dir_suggestions[0].description == 'src/main')
+    assert(!dir_suggestions[0].value.contains(root))
+    os.rmdir(root, true)
+}
+
+test 'B1-R4-04 extract_at_prefix honors token boundaries and keeps email literals plain' {
+    // me@domain is a single token without a delimiter before @: plain text.
+    assert(path_completion.extract_at_prefix('me@domain') == '')
+    assert(path_completion.extract_at_prefix('send to me@domain') == '')
+    assert(path_completion.extract_at_prefix('a=b@c') == '')
+    // A token-boundary @ (after a delimiter or at line start) is a prefix.
+    assert(path_completion.extract_at_prefix('@file.txt') == '@file.txt')
+    assert(path_completion.extract_at_prefix('attach @file.txt') == '@file.txt')
+    assert(path_completion.extract_at_prefix('attach @dir/file') == '@dir/file')
+    // Quoted @" form is preserved.
+    assert(path_completion.extract_at_prefix('attach @"my file.txt') == '@"my file.txt')
+}
+
+test 'B1-R4-12 completion_range: @file appends a space, @dir/ does not, quotes adjust' {
+    // @file: one trailing space, cursor after it.
+    var file_range = path_completion.completion_range(5, 'at @a', '@a', path_completion.completion_item_t {value: '@app.n', label: 'app.n'}, true)
+    assert(file_range[0] == 3 && file_range[1] == 5)
+    assert(file_range[2] == '@app.n ')
+    assert(file_range[3] == 10)
+    // @dir/: no space, cursor at the value end.
+    var dir_range = path_completion.completion_range(5, 'at @s', '@s', path_completion.completion_item_t {value: '@src/', label: 'src/'}, true)
+    assert(dir_range[2] == '@src/')
+    assert(dir_range[3] == 8)
+    // Plain path (Tab) mode: no space for files either.
+    var path_range = path_completion.completion_range(2, 'ap', 'ap', path_completion.completion_item_t {value: 'app.n', label: 'app.n'}, false)
+    assert(path_range[2] == 'app.n')
+    assert(path_range[3] == 5)
+    // Quoted item with a following quote: the cursor sits right after the
+    // typed quoted prefix ('"@a' at index 3), the closing quote is dropped
+    // from the suffix and directories keep the cursor one cell inside.
+    var quoted_file = path_completion.completion_range(3, '"@a"', '"@a', path_completion.completion_item_t {value: '"@app.n"', label: 'app.n'}, true)
+    assert(quoted_file[0] == 0 && quoted_file[1] == 4)
+    assert(quoted_file[2] == '"@app.n" ')
+    assert(quoted_file[3] == 9)
+    var quoted_dir = path_completion.completion_range(3, '"@s"', '"@s', path_completion.completion_item_t {value: '"@src/"', label: 'src/'}, true)
+    assert(quoted_dir[0] == 0 && quoted_dir[1] == 4)
+    assert(quoted_dir[2] == '"@src/"')
+    assert(quoted_dir[3] == 6)
 }

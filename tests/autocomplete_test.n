@@ -1,0 +1,344 @@
+import adou.src.tui.autocomplete
+import adou.src.tui.editor
+import adou.src.tui.path_completion
+
+pub fn repeat(string value, int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += value
+    }
+    return result
+}
+
+// Batch 1 (pi-interactive-parity-audit-plan.md §12.1 B1-R1-01..12): the pure
+// autocomplete/SelectList contract mirrors Pi 0.82.1's autocomplete.ts /
+// editor.ts / select-list.ts.  These tests cover the observable replacement,
+// ranking, window, selection-binding and metadata contracts; the TUI key
+// dispatch and item assembly live in session_view.n (covered by the
+// slash-menu PTY runner).
+
+pub fn builtin_items(): [autocomplete.autocomplete_item_t] {
+    [autocomplete.autocomplete_item_t] result = []
+    result.push(autocomplete.autocomplete_item_t {value: 'model', label: 'model', description: 'Select model (opens selector UI)', argument_hint: '<provider/model>', kind: autocomplete.item_kind_t.BUILTIN})
+    result.push(autocomplete.autocomplete_item_t {value: 'export', label: 'export', description: 'Export session', kind: autocomplete.item_kind_t.BUILTIN})
+    result.push(autocomplete.autocomplete_item_t {value: 'import', label: 'import', description: 'Import session', kind: autocomplete.item_kind_t.BUILTIN})
+    result.push(autocomplete.autocomplete_item_t {value: 'login', label: 'login', description: 'Configure provider authentication', argument_hint: '<provider>', kind: autocomplete.item_kind_t.BUILTIN})
+    return result
+}
+
+test 'B1-R1-01 command completion replaces only the typed prefix' {
+    // "/mo" -> "/model " with the cursor after the trailing space; the old
+    // query text is never spliced in again (no "/model/model").
+    var applied = autocomplete.apply_command_completion('/mo', 3, '/mo', 'model')
+    assert(applied[0] == '/model ')
+    assert(applied[1] == 7)
+    // A cursor suffix survives the replacement.
+    var with_suffix = autocomplete.apply_command_completion('/moX', 3, '/mo', 'model')
+    assert(with_suffix[0] == '/model X')
+    assert(with_suffix[1] == 7)
+    // The replacement start is computed from the prefix length, so text
+    // before the prefix is preserved.
+    var mid_line = autocomplete.apply_command_completion('x /mo', 5, '/mo', 'model')
+    assert(mid_line[0] == 'x /model ')
+    assert(mid_line[1] == 9)
+}
+
+test 'B1-R1-02 argument completion replaces only the argument text' {
+    // "/model deep" -> "/model deepseek/deepseek-v4-flash": only "deep" is
+    // replaced, the command head stays untouched and no trailing space is
+    // added.
+    var applied = autocomplete.apply_argument_completion('/model deep', 11, 'deep', 'deepseek/deepseek-v4-flash')
+    assert(applied[0] == '/model deepseek/deepseek-v4-flash')
+    assert(applied[1] == 33)
+    // An empty argument prefix replaces nothing before the value.
+    var empty = autocomplete.apply_argument_completion('/model ', 7, '', 'deepseek/deepseek-v4-flash')
+    assert(empty[0] == '/model deepseek/deepseek-v4-flash')
+    assert(empty[1] == 33)
+    // Cursor suffix after the argument survives.
+    var suffix = autocomplete.apply_argument_completion('/model deepX', 11, 'deep', 'deepseek/deepseek-v4-flash')
+    assert(suffix[0] == '/model deepseek/deepseek-v4-flashX')
+    assert(suffix[1] == 33)
+}
+
+test 'best index prefers exact then prefix like Pi getBestAutocompleteMatchIndex' {
+    var exact = autocomplete.best_index(builtin_items(), 'login')
+    assert(exact == 3)
+    var prefix = autocomplete.best_index(builtin_items(), 'exp')
+    assert(prefix == 1)
+    var none = autocomplete.best_index(builtin_items(), 'zzz')
+    assert(none == -1)
+    var empty = autocomplete.best_index(builtin_items(), '')
+    assert(empty == -1)
+}
+
+test 'B1-R1-12 ranking keeps item identity for duplicate search text' {
+    [autocomplete.autocomplete_item_t] items = []
+    items.push(autocomplete.autocomplete_item_t {value: 'first', label: 'first', search_text: 'same'})
+    items.push(autocomplete.autocomplete_item_t {value: 'second', label: 'second', search_text: 'same'})
+    var filtered = autocomplete.rank_items(items, 'same')
+    assert(filtered.len() == 2)
+    // Both entries survive: the sort carries the original index, so equal
+    // scores can never collapse two items into one.
+    assert(filtered[0].value == 'first')
+    assert(filtered[1].value == 'second')
+}
+
+test 'ranking filters by tokens and preserves stable registry order' {
+    var items = builtin_items()
+    var empty = autocomplete.rank_items(items, '')
+    assert(empty.len() == items.len())
+    var query = autocomplete.rank_items(items, 'mo')
+    // "mo" matches both "model" and "import" (ordered characters); the
+    // exact-prefix item ranks first.
+    assert(query.len() == 2)
+    assert(query[0].value == 'model')
+    assert(query[1].value == 'import')
+    var none = autocomplete.rank_items(items, 'zzz')
+    assert(none.len() == 0)
+}
+
+test 'window is centered and clamped like Pi select-list render' {
+    assert(autocomplete.window_start(0, 26, 5) == 0)
+    assert(autocomplete.window_start(12, 26, 5) == 10)
+    assert(autocomplete.window_start(25, 26, 5) == 21)
+    assert(autocomplete.window_end(10, 26, 5) == 15)
+    assert(autocomplete.window_end(21, 26, 5) == 26)
+    assert(autocomplete.should_show_pager(0, 26, 26) == false)
+    assert(autocomplete.should_show_pager(0, 5, 26))
+    assert(autocomplete.should_show_pager(21, 26, 26))
+}
+
+test 'B1-R1-07 display description composes hint and tag at render time' {
+    var plain = autocomplete.autocomplete_item_t {value: 'export', description: 'Export session'}
+    assert(autocomplete.display_description(plain) == 'Export session')
+    var tagged = autocomplete.autocomplete_item_t {value: 'skill:x', description: 'Deterministic skill', source_tag: 'p'}
+    assert(autocomplete.display_description(tagged) == '[p] Deterministic skill')
+    // An empty description must never produce a tag with a trailing space.
+    var empty_desc = autocomplete.autocomplete_item_t {value: 'skill:x', source_tag: 'p'}
+    assert(autocomplete.display_description(empty_desc) == '[p]')
+    // Pi's composition is `hint — description`: the hint comes first.
+    var hinted = autocomplete.autocomplete_item_t {value: 'model', description: 'Select model (opens selector UI)', argument_hint: '<provider/model>'}
+    assert(autocomplete.display_description(hinted) == '<provider/model> — Select model (opens selector UI)')
+    var both = autocomplete.autocomplete_item_t {value: 'prompt', description: 'Prompt body', argument_hint: '<arg>', source_tag: 'p'}
+    assert(autocomplete.display_description(both) == '<arg> — [p] Prompt body')
+    // A hint with an empty description stands alone.
+    var hint_only = autocomplete.autocomplete_item_t {value: 'model', argument_hint: '<provider/model>'}
+    assert(autocomplete.display_description(hint_only) == '<provider/model>')
+}
+
+test 'B1-R1-10 max visible clamps to Pi 3-20 range' {
+    assert(autocomplete.clamp_max_visible(5) == 5)
+    assert(autocomplete.clamp_max_visible(3) == 3)
+    assert(autocomplete.clamp_max_visible(20) == 20)
+    assert(autocomplete.clamp_max_visible(2) == 3)
+    assert(autocomplete.clamp_max_visible(21) == 20)
+    assert(autocomplete.clamp_max_visible(0) == 3)
+}
+
+test 'state begin binds selection to the query that produced the items' {
+    var state = new autocomplete.autocomplete_state_t()
+    state.begin(autocomplete.autocomplete_mode_t.COMMAND, 1, '/mo', 'mo', builtin_items(), 5)
+    assert(state.active)
+    assert(state.mode == autocomplete.autocomplete_mode_t.COMMAND)
+    // "mo" filters to model + import; the best-ranked (exact prefix) item
+    // lands first and is selected.
+    assert(state.filtered.len() == 2)
+    assert(state.filtered[0].value == 'model')
+    assert(state.selected_index == 0)
+    assert(state.generation == 1)
+    assert(state.max_visible == 5)
+}
+
+test 'IP-001 stale selection can never survive a query change' {
+    var state = new autocomplete.autocomplete_state_t()
+    state.begin(autocomplete.autocomplete_mode_t.COMMAND, 1, '/', '', builtin_items(), 5)
+    assert(state.selected_index == 0)
+    state.move_down()
+    state.move_down()
+    assert(state.selected_index == 2)
+    // A query change re-derives the whole list and the selection (Pi
+    // updateAutocomplete -> getBestAutocompleteMatchIndex), so the old
+    // index into the old candidate set is discarded.
+    state.refresh(2, '/exp', 'exp')
+    assert(state.filtered.len() == 1)
+    assert(state.selected_index == 0)
+    assert(state.filtered[0].value == 'export')
+}
+
+test 'movement wraps at both edges like Pi select-list' {
+    var state = new autocomplete.autocomplete_state_t()
+    state.begin(autocomplete.autocomplete_mode_t.COMMAND, 1, '/', '', builtin_items(), 5)
+    assert(state.selected_index == 0)
+    state.move_up()
+    assert(state.selected_index == 3)
+    state.move_up()
+    assert(state.selected_index == 2)
+    state.move_down()
+    state.move_down()
+    // 2 -> 3 -> wrap to 0
+    assert(state.selected_index == 0)
+    state.move_down()
+    assert(state.selected_index == 1)
+    state.move_down()
+    state.move_down()
+    // 1 -> 2 -> 3
+    assert(state.selected_index == 3)
+}
+
+test 'begin with no matches cancels and empty prefix keeps default selection' {
+    var state = new autocomplete.autocomplete_state_t()
+    state.begin(autocomplete.autocomplete_mode_t.COMMAND, 1, '/zzz', 'zzz', builtin_items(), 5)
+    assert(!state.active)
+    assert(state.filtered.len() == 0)
+    var empty = new autocomplete.autocomplete_state_t()
+    empty.begin(autocomplete.autocomplete_mode_t.COMMAND, 1, '/', '', builtin_items(), 5)
+    assert(empty.active)
+    assert(empty.selected_index == 0)
+}
+
+test 'cancel clears the state so a stale menu can never render' {
+    var state = new autocomplete.autocomplete_state_t()
+    state.begin(autocomplete.autocomplete_mode_t.COMMAND, 1, '/', '', builtin_items(), 5)
+    state.cancel()
+    assert(!state.active)
+    assert(state.items.len() == 0)
+    assert(state.filtered.len() == 0)
+    assert(state.prefix == '')
+    assert(state.filter_query == '')
+}
+
+test 'pager text follows the selected index like Pi' {
+    assert(autocomplete.pager_text(0, 26) == '  (1/26)')
+    assert(autocomplete.pager_text(12, 26) == '  (13/26)')
+    assert(autocomplete.pager_text(25, 26) == '  (26/26)')
+}
+
+test 'B1-R1-04 completion is one atomic single-line edit' {
+    var value = editor.new()
+    value.set_text('first\n/mo\nlast')
+    value.move_line_start()
+    value.move_vertical(-1) catch error {}
+    assert(value.get_cursor().line == 1)
+    assert(value.get_cursor().column == 0)
+    value.apply_completion(1, 0, 3, '/model ')
+    // Only line 1 changed; the other lines and their paste markers survive.
+    assert(value.get_text() == 'first\n/model \nlast')
+    assert(value.get_cursor().line == 1)
+    assert(value.get_cursor().column == 7)
+    // A single undo step restores the whole buffer (Pi pushUndoSnapshot
+    // around applyCompletion).
+    assert(value.undo())
+    assert(value.get_text() == 'first\n/mo\nlast')
+}
+
+test 'B1-R1-04 completion keeps paste registry and mid-line cursor suffix' {
+    var value = editor.new()
+    value.insert_text('xx/mo yy')
+    value.move_line_start()
+    value.move_right()
+    value.move_right()
+    // cursor at column 2 (before "/mo"), prefix "/mo" typed at 2..5.
+    value.apply_completion(0, 2, 5, '/model ')
+    assert(value.get_text() == 'xx/model  yy')
+    assert(value.get_cursor().column == 9)
+    // A second-line slash never opens a menu; the editor keeps it as text
+    // (the TUI enforces isSlashMenuAllowed, the editor only replaces).
+    value.set_text('line1\n/mo')
+    value.move_line_end()
+    value.move_vertical(-1) catch error {}
+    value.apply_completion(1, 0, 3, '/model ')
+    assert(value.get_text() == 'line1\n/model ')
+    assert(value.undo())
+    assert(value.get_text() == 'line1\n/mo')
+}
+
+test 'argument completion through the editor preserves the command head' {
+    var value = editor.new()
+    value.set_text('/model deep')
+    value.move_line_end()
+    assert(value.get_cursor().column == 11)
+    value.apply_completion(0, 7, 11, 'deepseek/deepseek-v4-flash')
+    assert(value.get_text() == '/model deepseek/deepseek-v4-flash')
+    assert(value.get_cursor().column == 33)
+}
+
+test 'submit clears editor and reports the completed line' {
+    var value = editor.new()
+    value.set_text('/model deep')
+    value.move_line_end()
+    value.apply_completion(0, 7, 11, 'deepseek/deepseek-v4-flash')
+    var submitted = value.submit()
+    assert(submitted.submitted)
+    assert(submitted.text == '/model deepseek/deepseek-v4-flash')
+    assert(value.get_text() == '')
+}
+
+test 'B1-R3-01/10 real large-paste marker survives path completion and one undo' {
+    var value = editor.new()
+    value.set_text('alpha\nbeta\ngamma')
+    value.move_line_start()
+    value.move_vertical(-1) catch error {}
+    assert(value.get_cursor().line == 1 && value.get_cursor().column == 0)
+    // A REAL >1000-char paste creates a paste marker through handle_paste.
+    string big = repeat('y', 1001)
+    value.handle_paste(big)
+    assert(value.get_text().contains('[paste #1 1001 chars]'))
+    assert(value.get_text().starts_with('alpha\n'))
+    // Move to the first line and complete it through the PRODUCTION
+    // dispatch the view uses: path_completion.completion_range computes the
+    // atomic range, editor.apply_completion_at applies it (B1-R4-08).
+    value.move_line_start()
+    value.move_vertical(-1) catch error {}
+    value.move_line_end()
+    assert(value.get_cursor().line == 0 && value.get_cursor().column == 5)
+    string line = value.get_lines()[0]
+    var range = path_completion.completion_range(5, line, 'alpha', path_completion.completion_item_t {value: 'alpha-fixed', label: 'alpha-fixed'}, false)
+    value.apply_completion_at(0, range[0], range[1], range[2], range[3])
+    // Other lines and the paste marker survive the replacement.
+    assert(value.get_text() == 'alpha-fixed\n[paste #1 1001 chars]beta\ngamma')
+    // The paste registry is intact: expanded text still carries the full
+    // 1001-character payload.
+    assert(value.get_expanded_text() == 'alpha-fixed\n' + big + 'beta\ngamma')
+    // A single undo restores the whole multiline buffer with the marker.
+    assert(value.undo())
+    assert(value.get_text() == 'alpha\n[paste #1 1001 chars]beta\ngamma')
+    assert(value.get_expanded_text() == 'alpha\n' + big + 'beta\ngamma')
+}
+
+test 'B1-R4-12 @file completion through the production range adds a space and keeps the marker' {
+    var value = editor.new()
+    value.set_text('attach @fi\nmiddle\nlast')
+    value.move_line_end()
+    value.handle_paste(repeat('z', 1001))
+    assert(value.get_text().contains('[paste #1 1001 chars]'))
+    // Move to the first line end and complete '@fi' through the production
+    // completion_range: @file appends ONE space and the cursor follows it.
+    value.move_line_start()
+    value.move_vertical(-1) catch error {}
+    value.move_vertical(-1) catch error {}
+    value.move_line_end()
+    assert(value.get_cursor().line == 0 && value.get_cursor().column == 10)
+    var file_range = path_completion.completion_range(10, value.get_lines()[0], '@fi', path_completion.completion_item_t {value: '@file.txt', label: 'file.txt'}, true)
+    assert(file_range[0] == 7 && file_range[1] == 10)
+    assert(file_range[2] == '@file.txt ')
+    assert(file_range[3] == 17)
+    value.apply_completion_at(0, file_range[0], file_range[1], file_range[2], file_range[3])
+    assert(value.get_text() == 'attach @file.txt \nmiddle\nlast[paste #1 1001 chars]')
+    // The real paste registry survives and a single undo restores it all.
+    assert(value.get_expanded_text().contains(repeat('z', 1001)))
+    assert(value.undo())
+    assert(value.get_text() == 'attach @fi\nmiddle\nlast[paste #1 1001 chars]')
+
+    // @dir/: NO trailing space; the cursor lands at the value end.
+    var dir_editor = editor.new()
+    dir_editor.set_text('first\nattach @s\nlast')
+    dir_editor.move_line_start()
+    dir_editor.move_vertical(-1) catch error {}
+    dir_editor.move_line_end()
+    assert(dir_editor.get_cursor().line == 1 && dir_editor.get_cursor().column == 9)
+    var dir_range = path_completion.completion_range(9, dir_editor.get_lines()[1], '@s', path_completion.completion_item_t {value: '@src/', label: 'src/'}, true)
+    assert(dir_range[2] == '@src/')
+    assert(dir_range[3] == 12)
+    dir_editor.apply_completion_at(1, dir_range[0], dir_range[1], dir_range[2], dir_range[3])
+    assert(dir_editor.get_text() == 'first\nattach @src/\nlast')
+}

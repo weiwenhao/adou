@@ -41,6 +41,9 @@ pub type cli_args_t = struct {
     bool no_tools
     bool no_builtin_tools
     [string] scoped_models = []
+    // B1-R3-05: whether --models was given on the CLI; propagated through
+    // resolve into config_t.scoped_models_explicit.
+    bool scoped_models_explicit
     [string] tool_names = []
     [string] exclude_tool_names = []
     bool no_session
@@ -90,6 +93,10 @@ pub type config_t = struct {
     bool no_tools
     bool no_builtin_tools
     [string] scoped_models = []
+    // B1-R3-05: whether --models was given on the CLI.  An explicit scope
+    // persists across session rebinds; without it the view refreshes the
+    // model scope/selector backing from the trust-aware settings snapshot.
+    bool scoped_models_explicit
     [string] tool_names = []
     [string] exclude_tool_names = []
     bool no_session

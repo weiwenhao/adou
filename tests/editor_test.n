@@ -254,21 +254,6 @@ test 'tab resolves to the completion action for the host to handle' {
     assert(editor.get_text() == 'hello')
 }
 
-test 'set_text_at applies a replacement with a cursor position' {
-    var editor = editor.new()
-    editor.set_text('read foo.txt')
-    var lines = editor.get_lines()
-    var cursor = editor.get_cursor()
-    assert(cursor.line == 0)
-    editor.set_text_at('read /tmp/bar.txt', 0, 13)
-    assert(editor.get_text() == 'read /tmp/bar.txt')
-    var after = editor.get_cursor()
-    assert(after.line == 0 && after.column == 13)
-    // The change is undoable like any other edit.
-    editor.undo()
-    assert(editor.get_text() == 'read foo.txt')
-}
-
 test 'up at the top edge jumps to the line start like Pi' {
     var editor = editor.new()
     editor.set_text('hello world')

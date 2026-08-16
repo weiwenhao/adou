@@ -1,0 +1,64 @@
+import adou.src.config.settings as config_settings
+import adou.src.context.prompt_templates
+import adou.src.context.skills
+import adou.src.context.slash_commands
+
+// B1-R4-10: one trust-aware resource snapshot held by the RPC runtime and
+// atomically refreshed only at explicit boundaries (init, session switch).
+// The system-prompt skills injection, prompt execution resources and
+// get_commands all read from this single snapshot, so disk changes without
+// a refresh can never make the wire commands diverge from what actually
+// runs.  No disk read happens on the read paths.
+pub type resource_snapshot_t = struct {
+    string cwd
+    bool trusted
+    config_settings.settings_t settings = config_settings.settings_t{}
+    [ref<prompt_templates.prompt_template_t>] prompt_templates = []
+    [ref<skills.skill_t>] skills = []
+}
+
+// Build a complete snapshot privately so callers can publish it with one
+// reference assignment after every resource has been loaded.
+pub fn load(string cwd, bool trusted, string agent_dir, [string] skill_paths, bool no_skills): ref<resource_snapshot_t> {
+    var snapshot = new resource_snapshot_t()
+    refresh(snapshot, cwd, trusted, agent_dir, skill_paths, no_skills)
+    return snapshot
+}
+
+// Trust-aware refresh: trust-aware settings, user + trust-gated prompt
+// templates and skills, all filtered with the SAME enable lists from that
+// settings snapshot.
+pub fn refresh(ref<resource_snapshot_t> snapshot, string cwd, bool trusted, string agent_dir, [string] skill_paths, bool no_skills) {
+    snapshot.cwd = cwd
+    snapshot.trusted = trusted
+    snapshot.settings = config_settings.load_trusted_for(cwd, trusted)
+    [string] no_extra = []
+    var templates = prompt_templates.load_prompt_templates(cwd, agent_dir, no_extra, true, trusted)
+    var skills_result = skills.load_skills(cwd, agent_dir, skill_paths, !no_skills, trusted) catch error {
+        skills.load_skills_result_t {}
+    }
+    snapshot.prompt_templates = slash_commands.filter_prompt_templates(templates, snapshot.settings.enabled_prompt_names)
+    snapshot.skills = slash_commands.filter_skills(skills_result.skills, snapshot.settings.enabled_skill_names)
+}
+
+pub fn dynamic_commands(ref<resource_snapshot_t> snapshot): [slash_commands.slash_command_info_t] {
+    return slash_commands.compose_resource_commands(snapshot.prompt_templates, snapshot.skills)
+}
+
+// Expand one prompt/skill invocation from this exact snapshot.  This is the
+// execution counterpart to dynamic_commands(): advertising and execution
+// consult the same filtered resource identities and never perform a fresh
+// discovery/settings scan on the hot path.
+pub fn expand_command(ref<resource_snapshot_t> snapshot, string text): string {
+    string skill_expanded = skills.expand_command(text, snapshot.skills)
+    return prompt_templates.expand_prompt_template(skill_expanded, snapshot.prompt_templates)
+}
+
+// The Pi get_commands wire payload for this snapshot (no disk access).
+pub fn commands_json(ref<resource_snapshot_t> snapshot): [any] {
+    [any] values = []
+    for info in dynamic_commands(snapshot) {
+        values.push(slash_commands.rpc_command_json(info))
+    }
+    return values
+}

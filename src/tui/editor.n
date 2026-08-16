@@ -139,34 +139,6 @@ pub fn editor_t.set_text(&self, string text) {
     self.history_draft = ''
 }
 
-// Apply a completion replacement with a caller-chosen cursor position; the
-// change is recorded on the undo stack like any other edit.
-pub fn editor_t.set_text_at(&self, string text, int cursor_line, int cursor_col) {
-    string normalized = normalize_text(text)
-    if self.get_text() != normalized {
-        self.push_undo_snapshot()
-    }
-    self.pastes = vec<paste_t>.cap_of(4)
-    self.paste_counter = 0
-    var lines = split_lines(normalized)
-    self.lines = lines.len() == 0 ? [''] : lines
-    self.cursor_line = cursor_line < self.lines.len() ? cursor_line : self.lines.len() - 1
-    if self.cursor_line < 0 {
-        self.cursor_line = 0
-    }
-    self.cursor_col = cursor_col
-    if self.cursor_col < 0 {
-        self.cursor_col = 0
-    }
-    if self.cursor_col > self.lines[self.cursor_line].len() {
-        self.cursor_col = self.lines[self.cursor_line].len()
-    }
-    self.last_action = ACTION_NONE
-    self.preferred_visual_column = -1
-    self.history_index = -1
-    self.history_draft = ''
-}
-
 pub fn editor_t.add_history(&self, string text) {
     string value = text.trim([' ', '\t', '\n', '\r'])
     if value == '' {
@@ -198,6 +170,53 @@ pub fn editor_t.insert_text(&self, string text) {
     self.push_undo_snapshot()
     self.last_action = ACTION_NONE
     self.insert_text_internal(text)
+}
+
+// Pi editor.ts autocomplete applyCompletion: replace the byte range
+// [start_col, end_col) of one line with the completion value.  Other lines,
+// the paste registry and the kill ring are preserved, the cursor lands right
+// after the replacement on the same line, and the whole replacement is a
+// single undo step.  The replacement is expected to be single-line (slash
+// commands and argument values); it is not newline-normalized.
+pub fn editor_t.apply_completion(&self, int line_index, int start_col, int end_col, string replacement) {
+    self.apply_completion_at(line_index, start_col, end_col, replacement, start_col + replacement.len())
+}
+
+// Same atomic single-line range replacement as apply_completion, with an
+// explicit final cursor column (Pi setCursorCol(result.cursorCol) after
+// applyCompletion).  Used by file/@ path completion, where a quoted
+// directory completion keeps the cursor one cell before the closing quote.
+pub fn editor_t.apply_completion_at(&self, int line_index, int start_col, int end_col, string replacement, int cursor_col) {
+    if line_index < 0 || line_index >= self.lines.len() {
+        return
+    }
+    string line = self.lines[line_index]
+    if start_col < 0 {
+        start_col = 0
+    }
+    if start_col > line.len() {
+        start_col = line.len()
+    }
+    if end_col < start_col {
+        end_col = start_col
+    }
+    if end_col > line.len() {
+        end_col = line.len()
+    }
+    self.history_index = -1
+    self.history_draft = ''
+    self.push_undo_snapshot()
+    self.last_action = ACTION_NONE
+    self.lines[line_index] = line.slice(0, start_col) + replacement + line.slice(end_col, line.len())
+    self.cursor_line = line_index
+    self.cursor_col = cursor_col
+    if self.cursor_col < start_col {
+        self.cursor_col = start_col
+    }
+    if self.cursor_col > self.lines[line_index].len() {
+        self.cursor_col = self.lines[line_index].len()
+    }
+    self.preferred_visual_column = -1
 }
 
 pub fn editor_t.insert_character(&self, string value) {

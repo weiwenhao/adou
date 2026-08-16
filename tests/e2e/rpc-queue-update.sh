@@ -24,6 +24,7 @@ ready = threading.Event()
 release = threading.Event()
 request_count = 0
 request_lock = threading.Lock()
+request_bodies = []
 
 def event(value):
     return ("data: " + json.dumps(value, separators=(",", ":")) + "\n\n").encode()
@@ -39,11 +40,12 @@ class QueueProvider(BaseHTTPRequestHandler):
     def do_POST(self):
         global request_count
         length = int(self.headers.get("Content-Length", "0"))
-        if length:
-            self.rfile.read(length)
+        body = self.rfile.read(length) if length else b"{}"
+        payload = json.loads(body)
         with request_lock:
             request_count += 1
             current = request_count
+            request_bodies.append(payload)
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-cache")
@@ -71,9 +73,23 @@ server_thread.start()
 port = server.server_address[1]
 
 with tempfile.TemporaryDirectory(prefix="adou-rpc-queue-update-") as root:
+    agent_dir = os.path.join(root, "agent")
+    home_dir = os.path.join(root, "home")
+    prompt_dir = os.path.join(agent_dir, "prompts")
+    os.makedirs(home_dir, exist_ok=True)
+    os.makedirs(prompt_dir, exist_ok=True)
+
+    def write_prompt(name, description, body):
+        with open(os.path.join(prompt_dir, name + ".md"), "w", encoding="utf-8") as stream:
+            stream.write(f"---\ndescription: {description}\n---\n\n{body}")
+
+    write_prompt("start", "Start prompt", "START $@ OLD")
+    write_prompt("steer", "Steering prompt", "STEER $@ OLD")
+    write_prompt("follow", "Follow-up prompt", "FOLLOW $@ OLD")
     env = os.environ.copy()
     env.update({
-        "PI_CODING_AGENT_DIR": os.path.join(root, "agent"),
+        "HOME": home_dir,
+        "PI_CODING_AGENT_DIR": agent_dir,
         "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
     })
     command = [
@@ -94,6 +110,10 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-queue-update-") as root:
     )
     seen = []
 
+    def send(value):
+        proc.stdin.write(json.dumps(value) + "\n")
+        proc.stdin.flush()
+
     def read_until(predicate, timeout):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -110,15 +130,37 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-queue-update-") as root:
         raise SystemExit(f"timed out waiting for RPC event: {seen!r}")
 
     try:
-        proc.stdin.write(json.dumps({"id": "prompt", "type": "prompt", "message": "start"}) + "\n")
-        proc.stdin.flush()
+        send({"id": "commands-before", "type": "get_commands"})
+        read_until(lambda item: item.get("type") == "response" and item.get("id") == "commands-before", 5)
+        commands_before = next(item for item in seen if item.get("id") == "commands-before")
+        names_before = [item.get("name") for item in commands_before.get("data", {}).get("commands", [])]
+        if set(names_before) != {"start", "steer", "follow"}:
+            raise SystemExit(f"unexpected initial RPC resource commands: {commands_before!r}")
+
+        # Change an existing template and add another after startup. Neither
+        # discovery nor execution may see these files before an explicit
+        # resource refresh/session rebind.
+        write_prompt("start", "Changed start", "START $@ NEW")
+        write_prompt("late", "Late prompt", "LATE $@")
+        send({"id": "commands-after-disk", "type": "get_commands"})
+        read_until(lambda item: item.get("type") == "response" and item.get("id") == "commands-after-disk", 5)
+        commands_after = next(item for item in seen if item.get("id") == "commands-after-disk")
+        names_after = [item.get("name") for item in commands_after.get("data", {}).get("commands", [])]
+        if names_after != names_before:
+            raise SystemExit(f"get_commands changed without resource refresh: {names_before!r} -> {names_after!r}")
+
+        send({"id": "prompt", "type": "prompt", "message": "/start value"})
         read_until(lambda item: item.get("type") == "response" and item.get("id") == "prompt", 5)
         if not ready.wait(3):
             raise SystemExit("provider did not receive the initial request")
+        with request_lock:
+            first_request = request_bodies[0]
+        first_users = [item.get("content") for item in first_request.get("messages", []) if item.get("role") == "user"]
+        if not first_users or first_users[-1] != "START value OLD":
+            raise SystemExit(f"RPC prompt did not execute the startup snapshot: {first_request!r}")
 
-        proc.stdin.write(json.dumps({"id": "steer", "type": "steer", "message": "steer me"}) + "\n")
-        proc.stdin.write(json.dumps({"id": "follow", "type": "follow_up", "message": "follow me"}) + "\n")
-        proc.stdin.flush()
+        send({"id": "steer", "type": "steer", "message": "/steer me"})
+        send({"id": "follow", "type": "follow_up", "message": "/follow me"})
         read_until(
             lambda item: item.get("type") == "response" and item.get("id") == "follow",
             5,
@@ -132,16 +174,16 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-queue-update-") as root:
             if item.get("type") == "queue_update"
         ]
         expected = [
-            (("steer me",), ()),
-            (("steer me",), ("follow me",)),
-            ((), ("follow me",)),
+            (("STEER me OLD",), ()),
+            (("STEER me OLD",), ("FOLLOW me OLD",)),
+            ((), ("FOLLOW me OLD",)),
             ((), ()),
         ]
         for snapshot in expected:
             if snapshot not in snapshots:
                 raise SystemExit(f"missing queue snapshot {snapshot!r}: {snapshots!r}")
 
-        for text, snapshot in (("steer me", ((), ("follow me",))), ("follow me", ((), ()) )):
+        for text, snapshot in (("STEER me OLD", ((), ("FOLLOW me OLD",))), ("FOLLOW me OLD", ((), ()) )):
             message_index = next(
                 (index for index, item in enumerate(seen)
                  if item.get("type") == "message_start"
@@ -167,5 +209,5 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-queue-update-") as root:
             proc.wait(timeout=3)
         server.shutdown()
 
-print("e2e: RPC queue_update snapshots and delivery ordering OK")
+print("e2e: RPC resource snapshot execution and queue ordering OK")
 PY

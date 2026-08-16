@@ -23,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 binary = os.environ["ADOU_BIN"]
 root = tempfile.mkdtemp(prefix="adou-ipc-")
@@ -56,7 +57,10 @@ def request(line, timeout=10.0):
         sock.sendall((line + "\n").encode())
         data = b""
         while b"\n" not in data:
-            data += sock.recv(65536)
+            chunk = sock.recv(65536)
+            if not chunk:
+                raise SystemExit(f"server closed before replying; got: {data!r}")
+            data += chunk
         return json.loads(data.split(b"\n")[0])
 
 
@@ -83,6 +87,47 @@ def wait_online(instance_id, timeout=10.0):
         if time.time() > deadline:
             raise SystemExit(f"instance {instance_id} did not become online: {resp!r}")
         time.sleep(0.05)
+
+
+def child_pids():
+    output = subprocess.run(
+        ["ps", "-axo", "pid=,ppid=,command="], capture_output=True, text=True
+    ).stdout
+    result = set()
+    for line in output.splitlines():
+        fields = line.strip().split(None, 2)
+        if len(fields) != 3:
+            continue
+        pid, ppid, command = fields
+        if int(ppid) == proc.pid and command.startswith(binary + " ") and "--mode rpc" in command:
+            result.add(int(pid))
+    return result
+
+
+def wait_child_pids(expected_count, timeout=5.0):
+    deadline = time.time() + timeout
+    while True:
+        current = child_pids()
+        if len(current) == expected_count:
+            return current
+        if time.time() > deadline:
+            raise SystemExit(
+                f"expected {expected_count} RPC child processes, got {sorted(current)}"
+            )
+        time.sleep(0.05)
+
+
+def assert_session_cwd(instance, expected_cwd):
+    session_file = instance.get("sessionFile")
+    if not session_file:
+        raise SystemExit(f"online instance missing sessionFile: {instance!r}")
+    with open(session_file, encoding="utf-8") as handle:
+        header = json.loads(handle.readline())
+    canonical_cwd = os.path.realpath(expected_cwd)
+    if header.get("cwd") != canonical_cwd:
+        raise SystemExit(
+            f"RPC child did not enter requested cwd {canonical_cwd!r}: {header!r}"
+        )
 
 
 try:
@@ -112,6 +157,9 @@ try:
     online_a = wait_online(inst_a["id"])
     if not online_a.get("sessionId"):
         raise SystemExit(f"online instance A missing sessionId: {online_a!r}")
+    assert_session_cwd(online_a, proj_a)
+    children_after_a = wait_child_pids(1)
+    pid_a = next(iter(children_after_a))
 
     spawn_b = request(json.dumps({"type": "spawn", "cwd": proj_b, "label": "beta"}))
     if spawn_b.get("type") != "spawn_result" or spawn_b.get("ok") is not True:
@@ -122,8 +170,25 @@ try:
     if inst_b.get("cwd") != proj_b or inst_b.get("label") != "beta":
         raise SystemExit(f"spawn B cwd/label wrong: {spawn_b!r}")
     online_b = wait_online(inst_b["id"])
+    assert_session_cwd(online_b, proj_b)
+    children_after_b = wait_child_pids(2)
+    new_children = children_after_b - children_after_a
+    if len(new_children) != 1:
+        raise SystemExit(
+            f"spawn B did not create one distinct RPC child: before={children_after_a}, after={children_after_b}"
+        )
+    pid_b = next(iter(new_children))
     id_a, id_b = inst_a["id"], inst_b["id"]
     sess_a, sess_b = online_a["sessionId"], online_b["sessionId"]
+    session_files = [
+        name
+        for name in os.listdir(os.path.join(root, "sessions"))
+        if name.endswith(".jsonl")
+    ]
+    if len(session_files) != 2:
+        raise SystemExit(
+            f"server coordinator must not create its own session: {session_files!r}"
+        )
 
     # list: two instances with both ids.
     listed = request('{"type":"list"}')
@@ -155,6 +220,46 @@ try:
         raise SystemExit(f"rpc get_state B routed to wrong instance: {state_b!r}")
     if state_a.get("response", {}).get("data", {}).get("sessionId") == state_b.get("response", {}).get("data", {}).get("sessionId"):
         raise SystemExit("instances share the same session; isolation broken")
+
+    # Pi's process bridge allocates an id when clients omit one.
+    generated = request(
+        json.dumps(
+            {"type": "rpc", "instanceId": id_a, "command": {"type": "get_state"}}
+        )
+    )
+    generated_id = generated.get("response", {}).get("id", "")
+    if not generated_id.startswith("server_"):
+        raise SystemExit(f"server-generated RPC id missing: {generated!r}")
+
+    # Multiple IPC clients can have requests pending against either child at
+    # once.  Responses must stay associated with their command ids and their
+    # target instance session.
+    def concurrent_state(index):
+        target_id, target_session = (id_a, sess_a) if index % 2 == 0 else (id_b, sess_b)
+        command_id = f"parallel-{index}"
+        response = request(
+            json.dumps(
+                {
+                    "type": "rpc",
+                    "instanceId": target_id,
+                    "command": {"type": "get_state", "id": command_id},
+                }
+            )
+        )
+        return command_id, target_session, response
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        parallel_results = list(pool.map(concurrent_state, range(24)))
+    for command_id, target_session, response in parallel_results:
+        child_response = response.get("response", {})
+        if child_response.get("id") != command_id:
+            raise SystemExit(
+                f"concurrent response id mismatch for {command_id}: {response!r}"
+            )
+        if child_response.get("data", {}).get("sessionId") != target_session:
+            raise SystemExit(
+                f"concurrent response crossed instance boundary for {command_id}: {response!r}"
+            )
 
     # Unknown instance ids error for status/rpc/rpc_stream.
     for kind in ("status", "rpc", "rpc_stream"):
@@ -200,6 +305,11 @@ try:
     stop_a = request(json.dumps({"type": "stop", "instanceId": id_a}))
     if stop_a.get("type") != "stop_result" or stop_a.get("ok") is not True or stop_a.get("instanceId") != id_a:
         raise SystemExit(f"stop A failed: {stop_a!r}")
+    remaining_children = wait_child_pids(1)
+    if remaining_children != {pid_b} or pid_a in remaining_children:
+        raise SystemExit(
+            f"stop A must reap only child A: pid_a={pid_a}, pid_b={pid_b}, remaining={remaining_children}"
+        )
     status_b = request(json.dumps({"type": "status", "instanceId": id_b}))
     if status_b.get("type") != "status_result" or status_b["instance"]["id"] != id_b:
         raise SystemExit(f"stop A broke B: {status_b!r}")
@@ -233,15 +343,20 @@ finally:
         proc.kill()
         proc.wait()
 
-    # Server exit must leave no adou processes behind (instances are
-    # in-process; no child processes are ever spawned).
-    deadline = time.time() + 2
+    # Parent stdin closure must terminate every surviving RPC child.  Check
+    # both the known child PID and the executable command line so an orphaned
+    # replacement cannot hide behind a changed PID.
+    deadline = time.time() + 5
     leftover = []
     while time.time() < deadline:
         out = subprocess.run(
             ["ps", "-axo", "pid=,command="], capture_output=True, text=True
         ).stdout
-        leftover = [l for l in out.splitlines() if l.lstrip().startswith(binary)]
+        leftover = []
+        for line in out.splitlines():
+            fields = line.strip().split(None, 1)
+            if len(fields) == 2 and fields[1].startswith(binary):
+                leftover.append(line)
         if not leftover:
             break
         time.sleep(0.1)

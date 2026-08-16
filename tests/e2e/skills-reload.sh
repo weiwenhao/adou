@@ -239,6 +239,7 @@ try:
         os.write(fd, b"/skill")
         time.sleep(0.15)
         collect(fd, output, status, pid, timeout=0.3)
+        output.clear()
         if not send(fd, output, status, pid, b"\t", b"skill:demo", timeout=5.0):
             raise SystemExit("completion does not offer /skill:demo after /reload")
         if b"/skill:demo" not in output:

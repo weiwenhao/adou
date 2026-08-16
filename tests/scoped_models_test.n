@@ -1,0 +1,65 @@
+import adou.src.ai.types as ai_types
+import adou.src.tui.scoped_models
+
+fn fixture(string provider, string id, string name): ref<ai_types.model_t> {
+    return new ai_types.model_t(provider = provider, id = id, name = name, api = 'mock', context_window = 1000, max_tokens = 100)
+}
+
+test 'scoped models distinguishes all enabled from an explicit empty list' {
+    var one = fixture('alpha', 'one', 'One')
+    var two = fixture('alpha', 'two', 'Two')
+    var state = scoped_models.new([one, two], [], true)
+    assert(state.all_enabled)
+    state.clear_all()
+    assert(!state.all_enabled)
+    assert(state.enabled_ids.len() == 0)
+    assert(state.enabled_available_count() == 0)
+    state.enable_all()
+    assert(state.all_enabled)
+    assert(state.enabled_ids.len() == 0)
+}
+
+test 'first toggle from all enabled creates an explicit single-model scope' {
+    var one = fixture('alpha', 'one', 'One')
+    var two = fixture('alpha', 'two', 'Two')
+    var state = scoped_models.new([one, two], [], true)
+    state.toggle_selected()
+    assert(!state.all_enabled)
+    assert(state.enabled_ids.len() == 1 && state.enabled_ids[0] == 'alpha/one')
+    assert(state.dirty)
+}
+
+test 'scoped models retains unavailable ids and enabled order' {
+    var one = fixture('alpha', 'one', 'One')
+    var two = fixture('alpha', 'two', 'Two')
+    var state = scoped_models.new([one, two], ['alpha/missing', 'alpha/two', 'alpha/one'], false)
+    assert(state.filtered.len() == 3)
+    assert(state.filtered[0].full_id == 'alpha/missing')
+    assert(!(state.filtered[0].model is ref<ai_types.model_t>))
+    assert(state.unavailable_count() == 1)
+    state.move_selection(1)
+    state.reorder_selected(1)
+    assert(state.enabled_ids[0] == 'alpha/missing')
+    assert(state.enabled_ids[1] == 'alpha/one')
+    assert(state.enabled_ids[2] == 'alpha/two')
+}
+
+test 'provider toggle and filtered bulk actions use the visible model set' {
+    var one = fixture('alpha', 'one', 'One')
+    var two = fixture('alpha', 'two', 'Two')
+    var three = fixture('beta', 'three', 'Three')
+    var state = scoped_models.new([one, two, three], [], true)
+    state.toggle_selected_provider()
+    assert(!state.all_enabled)
+    assert(state.enabled_ids.len() == 1 && state.enabled_ids[0] == 'beta/three')
+    state.set_query('alpha')
+    state.enable_all()
+    assert(state.all_enabled)
+    state.set_query('two')
+    state.clear_all()
+    assert(!state.all_enabled)
+    assert(state.enabled_ids.len() == 2)
+    assert(state.is_enabled('alpha/one'))
+    assert(!state.is_enabled('alpha/two'))
+    assert(state.is_enabled('beta/three'))
+}

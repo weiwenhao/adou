@@ -55,13 +55,34 @@ pub fn enabled(): bool {
     return value != '' && value != '0'
 }
 
+// Pi keeps the interactive terminal clean: its TUI has no live debug stream
+// (the /debug command writes a dump to <agentDir>/pi-debug.log and shows a
+// status line).  Adou's --debug lifecycle logger must behave the same way in
+// the TUI: while the interactive view owns the terminal, log() writes only
+// to ADOU_DEBUG_FILE (or drops the line when no file is configured) instead
+// of interleaving raw stderr lines with the redraw frames on the same tty.
+var terminal_output = false
+
+pub fn set_terminal_output(bool enabled) {
+    terminal_output = enabled
+}
+
+pub fn terminal_output_enabled(): bool {
+    return terminal_output
+}
+
 pub fn log(string component, string message) {
     if !enabled() {
         return
     }
     string line = '[adou debug] ' + component + ': ' + message + '\n'
-    output_guard.write_raw_stderr(line) catch error {}
     string file_target = syscall.get_env('ADOU_DEBUG_FILE')
+    if terminal_output && file_target == '' {
+        return
+    }
+    if !terminal_output {
+        output_guard.write_raw_stderr(line) catch error {}
+    }
     if file_target != '' {
         append_file(file_target, line)
     }
@@ -184,6 +205,33 @@ pub fn log_tui_frame(string content) {
     tui_frame_sequence += 1
     string target = path.join(directory, fmt.sprintf('render-%d-%d-%d.log', time.now().ms_timestamp(), pid, tui_frame_sequence))
     write_file(target, content, false) catch error {}
+}
+
+// B1-R5-01 terminal I/O diagnostic: explicitly enabled via
+// ADOU_TUI_IO_DIAG=1 (default OFF) and written ONLY to ADOU_DEBUG_FILE —
+// never the interactive PTY output, never JSON/RPC stdout.  Payloads are
+// fixed categories plus errno classifications/counts; no local paths, no
+// credentials.  The TUI classifies read-EINTR retries, EINTR budget
+// exhaustion, genuine EOF, read/write failures, terminal restore and the
+// normal run-loop exit; the event set is in term.n (TUI_IO_*).
+pub fn tui_io_diag_enabled(): bool {
+    string value = syscall.get_env('ADOU_TUI_IO_DIAG')
+    return value != '' && value != '0'
+}
+
+pub fn tui_io_line(string category, string message): string {
+    return '[tui-io] ' + category + ': ' + message
+}
+
+pub fn log_tui_io(string category, string message) {
+    if !tui_io_diag_enabled() {
+        return
+    }
+    string file_target = syscall.get_env('ADOU_DEBUG_FILE')
+    if file_target == '' {
+        return
+    }
+    append_file(file_target, tui_io_line(category, message) + '\n')
 }
 
 pub fn write_crash_file(string content): string! {

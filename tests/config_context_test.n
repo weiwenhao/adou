@@ -165,6 +165,25 @@ test 'model listing accepts a provider pattern' {
     assert(parsed.errors.len() == 0 && parsed.list_models && parsed.list_models_pattern == 'anthropic')
 }
 
+test 'B1-R3-05 explicit --models propagates through args and resolve' {
+    var without = args.parse(['adou', '--model', 'deepseek/deepseek-v4-flash'])
+    assert(without.errors.len() == 0)
+    assert(without.scoped_models.len() == 0)
+    assert(!without.scoped_models_explicit)
+    var config_without = resolve.resolve(without, '/tmp/work')
+    assert(config_without.scoped_models.len() == 0)
+    assert(!config_without.scoped_models_explicit)
+    var with_scope = args.parse(['adou', '--model', 'deepseek/deepseek-v4-flash', '--models', 'deepseek/deepseek-v4-flash,openai/gpt-5.1-codex'])
+    assert(with_scope.errors.len() == 0)
+    assert(with_scope.scoped_models.len() == 2)
+    assert(with_scope.scoped_models_explicit)
+    var config_with = resolve.resolve(with_scope, '/tmp/work')
+    assert(config_with.scoped_models.len() == 2)
+    assert(config_with.scoped_models[0] == 'deepseek/deepseek-v4-flash')
+    assert(config_with.scoped_models[1] == 'openai/gpt-5.1-codex')
+    assert(config_with.scoped_models_explicit)
+}
+
 test 'tool scope flags preserve order and exclusions' {
     var parsed = args.parse(['adou', '--no-tools', '--tools', 'read, bash,edit', '--exclude-tools', 'bash'])
     assert(parsed.errors.len() == 0 && parsed.no_tools)

@@ -2,6 +2,7 @@ import adou.src.agent.session
 import adou.src.agent.session_stream
 import adou.src.agent.types as agent_types
 import adou.src.ai.provider
+import adou.src.ai.providers.registry
 import adou.src.ai.abort
 import adou.src.ai.attribution
 import adou.src.ai.types as ai_types
@@ -14,9 +15,9 @@ import adou.src.config.types
 import adou.src.context.project
 import adou.src.context.prompt_templates
 import adou.src.context.git_paths
+import adou.src.context.git_source
 import adou.src.context.skills
 import adou.src.context.slash_commands
-import adou.src.tui.fuzzy
 import adou.src.context.system_prompt
 import adou.src.debug
 import adou.src.json_util
@@ -28,13 +29,15 @@ import adou.src.session.export_html as session_export
 import adou.src.session.repository
 import adou.src.session.types as session_types
 import adou.src.tui.chat
+import adou.src.tui.autocomplete
 import adou.src.tui.editor
 import adou.src.tui.input_buffer
 import adou.src.tui.layout
 import adou.src.tui.unicode
 import adou.src.tui.keys
-import adou.src.tui.model_search
+import adou.src.tui.model_selector
 import adou.src.tui.path_completion
+import adou.src.tui.scoped_models
 import adou.src.tui.session_actions
 import adou.src.tui.session_search
 import adou.src.tui.renderer
@@ -62,6 +65,9 @@ import time
 pub type input_t = struct {
     string data
     bool paste
+    bool model_refresh_done
+    int model_refresh_generation
+    int model_refresh_failures
 }
 
 pub const TERMINAL_INPUT_BYTES = 1
@@ -101,7 +107,6 @@ pub const OVERLAY_BRANCH_SUMMARY = 13
 pub const OVERLAY_BRANCH_CUSTOM = 14
 pub const OVERLAY_SCOPED_MODELS = 15
 pub const OVERLAY_SESSION_INFO = 16
-pub const OVERLAY_PATH_COMPLETION = 17
 pub const OVERLAY_VISIBLE_OPTIONS = 12
 
 pub type overlay_t = struct {
@@ -123,6 +128,8 @@ pub type overlay_t = struct {
     // labeled-only/all) and the collapsed entry ids.
     int tree_filter = 0
     [string] collapsed_ids = []
+    ref<model_selector.state_t>? model_state = null
+    ref<scoped_models.state_t>? scoped_models_state = null
 }
 
 pub type view_t = struct {
@@ -136,14 +143,27 @@ pub type view_t = struct {
     chan<signal.sig_t> signals
     ref<session_stream.stream_t>? active_stream
     ref<overlay_t>? overlay
-    bool command_menu
-    int command_index
+    // Unified autocomplete state (Batch 1, IP-001/002/004/006): the
+    // selection is bound to the query generation that produced the candidate
+    // set, so a stale index can never complete a different command.
+    ref<autocomplete.autocomplete_state_t> autocomplete
     bool kitty_protocol
     bool quitting
     int cached_auth_provider_count = 0
     // --resume opens the selector before the normal prompt. Escape/cancel
     // exits that startup flow instead of silently continuing a session.
     bool startup_session_picker
+    // Pi settings autocompleteMaxVisible (3-20, default 5) resolved once
+    // from the current cwd's global+project merge (B1-R1-10) and stored on
+    // the view; ordinary key presses never re-read the settings files.
+    int autocomplete_max_visible = autocomplete.DEFAULT_MAX_VISIBLE
+    // B1-R1-09: /model argument candidates and the authenticated-provider
+    // scan are recomputed only at explicit change points (init, /reload,
+    // /login, /logout, scope change).  The scope patterns cached alongside
+    // are the invalidation condition: a changed scope set re-derives.
+    [autocomplete.autocomplete_item_t] cached_model_argument_items = []
+    [string] cached_model_scope_patterns = []
+    bool model_argument_cache_valid
     // Pi sends initialMessage and every remaining CLI message sequentially.
     // Keep the not-yet-sent startup prompts separate from the normal steering
     // and follow-up queues so they cannot be merged into one turn.
@@ -157,16 +177,34 @@ pub type view_t = struct {
     // this session.  Settings-backed /scoped-models remains a separate,
     // persistent selector and is applied when no CLI scope is present.
     [string] model_scope_patterns = []
+    // B1-R3-05: whether the CLI --models scope is explicit.  Explicit scopes
+    // persist across rebinds; otherwise refresh_resource_snapshot refreshes
+    // the scope AND the /scoped-models backing from the trust-aware
+    // enabledModels before rebuilding the model candidates.
+    bool model_scope_explicit
     [string] scoped_model_ids = []
     // Pi distinguishes an unset scope (all models) from a session scope that
     // currently contains no enabled models.  The latter is useful while the
     // selector is being edited and is persisted as the default/all state.
     bool scoped_models_active
+    bool scoped_models_dirty
+    int model_refresh_generation
+    ref<mutex.mutex_t> model_refresh_lock = mutex.mutex_t.new()
     // Keep CLI system-prompt overrides available for `/reload`; Pi reloads
     // project context without silently dropping those session-wide options.
     string system_prompt_override
     [string] append_system_prompts = []
     [ref<prompt_templates.prompt_template_t>] prompt_templates = []
+    // B1-R2-06/07/08: one trust-aware resource snapshot refreshed together
+    // at init, /reload and session rebind.  settings_snapshot is the merged
+    // global+project settings (global-only for untrusted cwds); dynamic_commands
+    // is the completion-menu resource assembly built from the SAME filtered
+    // templates/skills that drive execution; cached_skills feeds the system
+    // prompt and the /reload skills text.  Ordinary typing never re-reads
+    // settings or resources.
+    config_settings.settings_t settings_snapshot = config_settings.settings_t{}
+    [slash_commands.slash_command_info_t] dynamic_commands = []
+    [ref<skills.skill_t>] cached_skills = []
     bool no_context_files
     // CLI skills options survive /reload and session rebinds: explicit
     // --skill paths keep loading, --no-skills keeps gating default discovery,
@@ -185,8 +223,12 @@ pub type view_t = struct {
     bool redraw_dirty
 }
 
-pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model, string cwd, [string] skill_paths, bool no_skills, bool trust_override, bool trust_override_explicit): ref<view_t> {
-    var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, command_menu = false, command_index = 0, kitty_protocol = true, skill_paths = skill_paths, no_skills = no_skills, trust_override = trust_override, trust_override_explicit = trust_override_explicit)
+pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model, string cwd, [string] skill_paths, bool no_skills, bool trust_override, bool trust_override_explicit, [string] initial_model_scope_patterns, bool model_scope_explicit, string system_prompt_override, [string] append_system_prompts, bool no_context_files): ref<view_t> {
+    // CLI options land on the view BEFORE the first resource snapshot so
+    // the initial model-candidate cache and the menu already honor them
+    // (B1-R2-06 scope timing: no naked post-construction assignments in
+    // app.n).
+    var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, autocomplete = new autocomplete.autocomplete_state_t (), kitty_protocol = true, skill_paths = skill_paths, no_skills = no_skills, trust_override = trust_override, trust_override_explicit = trust_override_explicit, model_scope_patterns = initial_model_scope_patterns, model_scope_explicit = model_scope_explicit, system_prompt_override = system_prompt_override, append_system_prompts = append_system_prompts, no_context_files = no_context_files)
     string thinking = runner.agent_config.stream_options.reasoning_effort
     if !runner.agent_config.stream_options.thinking_enabled {
         thinking = 'off'
@@ -194,22 +236,72 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
         thinking = 'on'
     }
     view.chat.configure(runner.agent_config.model.context_window, thinking)
-    refresh_auth_provider_count(view)
     view.chat.set_auto_compaction(runner.compaction_settings.enabled)
     view.chat.git_branch = detect_git_branch(cwd)
     view.chat.load_messages(runner.active_messages)
-    [string] no_extra_prompts = []
-    view.prompt_templates = prompt_templates.load_prompt_templates(cwd, paths.agent_dir(), no_extra_prompts, true)
-    refresh_dynamic_commands(cwd, view.skill_paths, view.no_skills, view.trusted_for(cwd))
-    model_scope_patterns_cache = view.model_scope_patterns
-    var stored_settings = config_settings.load_for(cwd)
+    // Single trust-aware snapshot pass at init (B1-R2-06/08): trust-aware
+    // settings, filtered prompt/skill resources, dynamic menu, autocomplete
+    // max, the model scope/selector backing (B1-R3-05: when the CLI --models
+    // scope is not explicit) and the model candidate cache all derive from
+    // one refresh.
+    view.refresh_resource_snapshot(cwd, false)
+    var stored_settings = view.settings_snapshot
     theme.set_variant(stored_settings.theme)
-    view.scoped_model_ids = stored_settings.enabled_model_ids
-    view.scoped_models_active = stored_settings.enabled_model_ids.len() > 0
     if runner.repository.get_warnings().len() > 0 {
         view.chat.status = 'Session recovered: ' + runner.repository.get_warnings()[0]
     }
     return view
+}
+
+// B1-R2-06/07/08: one trust-aware resource snapshot refresh shared by init,
+// /reload and session rebind.  The trust decision is resolved once; the
+// trust-aware settings, the user + trust-gated project prompt templates and
+// skills, the filtered execution lists, the completion-menu dynamic
+// commands, the autocomplete max and (when reload_auth) the credential and
+// model candidate caches all derive from that single pass.  Ordinary
+// typing never re-reads settings or resources.
+pub fn view_t.refresh_resource_snapshot(&self, string cwd, bool reload_auth) {
+    bool trusted = self.trusted_for(cwd)
+    self.settings_snapshot = config_settings.load_trusted_for(cwd, trusted)
+    [string] no_extra = []
+    var templates = prompt_templates.load_prompt_templates(cwd, paths.agent_dir(), no_extra, true, trusted)
+    var skills_result = skills.load_skills(cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, trusted) catch error {
+        skills.load_skills_result_t {}
+    }
+    // Shared production filters (slash_commands.filter_*): the same rule as
+    // the app/RPC assembly paths.
+    self.prompt_templates = slash_commands.filter_prompt_templates(templates, self.settings_snapshot.enabled_prompt_names)
+    self.cached_skills = slash_commands.filter_skills(skills_result.skills, self.settings_snapshot.enabled_skill_names)
+    self.dynamic_commands = slash_commands.compose_resource_commands(self.prompt_templates, self.cached_skills)
+    self.autocomplete_max_visible = autocomplete.clamp_max_visible(self.settings_snapshot.autocomplete_max_visible)
+    // B1-R3-05: the /scoped-models settings backing ALWAYS follows the
+    // trust-aware enabledModels snapshot — an explicit CLI scope must not
+    // wipe the settings-backed selector to an empty default.  The CLI scope
+    // itself persists across rebinds when explicit and otherwise also
+    // derives from the snapshot.  Both are refreshed BEFORE the model
+    // candidates are rebuilt (refresh_model_argument_cache below), so a
+    // rebind never re-scans with the old project's scope.  The legacy
+    // Batch-2 selector global stays in sync until that selector drops it.
+    self.scoped_model_ids = []
+    self.scoped_models_dirty = false
+    for model_id in self.settings_snapshot.enabled_model_ids {
+        self.scoped_model_ids.push(model_id)
+    }
+    self.scoped_models_active = self.settings_snapshot.enabled_models_configured
+    if !self.model_scope_explicit {
+        self.model_scope_patterns = []
+        for model_id in self.settings_snapshot.enabled_model_ids {
+            self.model_scope_patterns.push(model_id)
+        }
+    }
+    bool model_scope_changed = !self.model_argument_cache_valid || !same_scope_patterns(self.model_scope_patterns, self.cached_model_scope_patterns)
+    if reload_auth {
+        auth.reload()
+    }
+    if reload_auth || model_scope_changed {
+        refresh_auth_provider_count(self)
+        self.refresh_model_argument_cache()
+    }
 }
 
 pub fn view_t.run(&self): void! {
@@ -224,6 +316,11 @@ pub fn view_t.run(&self): void! {
         throw error
     }
     self.stop_signals()
+    // B1-R5-01: normal run-loop exit marker.  Together with the term.n
+    // restore event it distinguishes a genuine /quit shutdown from a
+    // suspend (Ctrl+Z) restore and from an EOF/EINTR-exhaustion induced
+    // clean exit (which additionally logs 'eof'/'eintr-exhausted').
+    debug.log_tui_io(term.TUI_IO_QUIT, 'run loop exited')
     debug.log('tui', 'run loop end')
 }
 
@@ -279,8 +376,7 @@ pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! 
                 branch_aborted = event.aborted
                 branch_error = event.error_message
             }
-            self.chat.apply(event)
-            self.redraw()
+            self.apply_stream_event(event)
             if event.kind == session_stream.EVENT_SESSION_END {
                 break
             }
@@ -304,13 +400,12 @@ pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! 
     // after every operation so compaction, tree navigation, retry cleanup,
     // and cancellation cannot leave stale messages rendered in the TUI.
     if !stream_failed {
-        self.chat.load_messages(final_messages)
-        self.redraw()
+        self.reload_chat_messages(final_messages)
     }
     if self.pending_tree_navigation {
         string target_id = self.pending_tree_target_id
         if !stream_failed && !branch_aborted && branch_error == '' {
-            self.chat.load_messages(self.runner.active_messages)
+            self.reload_chat_messages(self.runner.active_messages)
             if self.pending_tree_editor_text != '' && self.editor.get_text().trim([' ', '\t', '\n', '\r']) == '' {
                 self.editor.set_text(self.pending_tree_editor_text)
             }
@@ -328,53 +423,93 @@ pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! 
     return true
 }
 
+// Stream events mutate chat-owned state on the main run-loop coroutine while
+// deferred_redraw renders it on another coroutine (Nature coroutines run in
+// parallel).  Unserialized, a burst of events reallocates buffers mid-render:
+// `bash.output += delta`, tool detail replacement and message/tool vector
+// growth can free the memory a concurrent frame is still reading, which is a
+// plausible source of the non-UTF-8 bytes and the EFAULT
+// ("bad address in system call argument") observed on the real machine
+// (consistent with a write hitting a buffer that was already released).
+// Applying events under the render lock makes mutation and rendering
+// mutually exclusive.  Apply failures propagate exactly like the original
+// synchronous path so the app's error handling and terminal restore run.
+#local
+fn view_t.apply_stream_event(&self, session_stream.event_t event): void! {
+    self.render_lock.lock()
+    self.chat.apply(event) catch error {
+        self.render_lock.unlock()
+        throw error
+    }
+    self.render_lock.unlock()
+    self.redraw()
+}
+
+// Same serialization for transcript replacement (stream completion, session
+// switches, tree navigation): the message vector is swapped under the render
+// lock so an in-flight frame never iterates a half-replaced list.
+#local
+fn view_t.reload_chat_messages(&self, [ai_types.message_t] messages) {
+    self.render_lock.lock()
+    self.chat.load_messages(messages)
+    self.render_lock.unlock()
+    self.redraw()
+}
+
+#local
+fn view_t.clear_chat(&self) {
+    self.render_lock.lock()
+    self.chat.clear()
+    self.render_lock.unlock()
+    self.redraw()
+}
+
 pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream_t>? {
+    if input.model_refresh_done {
+        self.apply_model_refresh(input.model_refresh_generation, input.model_refresh_failures)
+        return null
+    }
     if self.overlay is ref<overlay_t> active_overlay {
         self.handle_overlay_input(active_overlay, input)
         return null
     }
     if input.paste {
+        // Pi handlePaste: paste cancels autocomplete and never re-triggers it
+        // (a pasted "/" must not open the slash menu, B1-R1-05).
+        self.autocomplete.cancel()
         self.editor.handle_paste(input.data)
-        self.update_command_menu()
         self.redraw()
         return null
     }
     string key = keys.parse_key(input.data)
-    if self.command_menu {
+    // Pi editor.ts autocomplete key contract: Esc cancels; Up/Down move with
+    // wrap; Tab applies the completion without submitting; Enter applies and,
+    // for a "/" prefix, falls through to submit the completed command line.
+    // PageUp/PageDown leave the candidates, selection and pager untouched
+    // (B1-R1-06): they must never re-derive the query.
+    if self.autocomplete.active {
         if key == 'escape' {
-            self.command_menu = false
+            self.autocomplete.cancel()
             self.redraw()
             return null
         }
         if key == 'up' {
-            self.command_index -= 1
-            if self.command_index < 0 {
-                self.command_index = 0
-            }
+            self.autocomplete.move_up()
             self.redraw()
             return null
         }
         if key == 'down' {
-            int count = matching_command_names(self.editor.get_text()).len()
-            self.command_index += 1
-            if self.command_index >= count {
-                self.command_index = count - 1
-            }
+            self.autocomplete.move_down()
             self.redraw()
             return null
         }
         if key == 'tab' {
-            self.complete_command()
+            self.apply_autocomplete(false)
             self.redraw()
             return null
         }
         if key == 'enter' {
-            string command = self.complete_command()
-            self.command_menu = false
-            if command != '' {
-                self.editor.add_history(command)
-                return self.start_prompt(command)
-            }
+            return self.apply_autocomplete(true)
         }
     }
     if key == 'escape' {
@@ -396,6 +531,9 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
             self.quitting = true
         } else {
             self.editor.clear()
+            // Pi setText('') cancels autocomplete; the cleared editor must
+            // never leave a stale menu active (B1-R1-05).
+            self.autocomplete.cancel()
             self.last_sigint_time = now
             self.redraw()
         }
@@ -470,89 +608,27 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
             self.redraw()
             return null
         }
-        self.command_menu = false
+        self.autocomplete.cancel()
         self.editor.add_history(result.text)
         return self.start_prompt(result.text)
     }
-    self.update_autocomplete(key)
-    self.update_command_menu()
+    // B1-R1-06: page keys move the cursor but must not re-derive the
+    // autocomplete query; candidates, selection and pager stay untouched.
+    // Only keys that change the query/cursor text re-run the state machine.
+    if result.action == editor.ACTION_SCROLL_UP || result.action == editor.ACTION_SCROLL_DOWN {
+        self.redraw()
+        return null
+    }
+    self.update_autocomplete_state()
     self.redraw()
     return null
 }
 
-// Pi's editor autocomplete state machine (trigger character @): after every
-// edit the token before the cursor is re-evaluated; a single candidate
-// applies immediately, several open the completion overlay, and movement
-// keys or a vanished trigger close it.
-fn view_t.update_autocomplete(&self, string key) {
-    bool completion_open = false
-    if self.overlay is ref<overlay_t> active_overlay {
-        completion_open = active_overlay.kind == OVERLAY_PATH_COMPLETION
-    }
-    if completion_open {
-        if key == 'left' || key == 'right' || key == 'up' || key == 'down' || key == 'home' || key == 'end' || key == 'ctrl+b' || key == 'ctrl+f' || key == 'alt+b' || key == 'alt+f' || key == 'ctrl+left' || key == 'ctrl+right' || key == 'alt+left' || key == 'alt+right' {
-            self.overlay = null
-            return
-        }
-    }
-    var cursor = self.editor.get_cursor()
-    var lines = self.editor.get_lines()
-    if cursor.line >= lines.len() {
-        return
-    }
-    string before = lines[cursor.line].slice(0, cursor.column)
-    string at_prefix = at_prefix_for(before)
-    if at_prefix == '' {
-        if completion_open {
-            self.overlay = null
-        }
-        return
-    }
-    string home = syscall.get_env('HOME')
-    // @ attachments use the fd-style fuzzy tree search; the plain path
-    // completion stays a fallback for the quoted prefix form.
-    var items = path_completion.get_fuzzy_file_suggestions(at_prefix.slice(1, at_prefix.len()), self.runner.repository.cwd, home)
-    if items.len() == 0 {
-        items = path_completion.get_file_suggestions(at_prefix, self.runner.repository.cwd, home)
-    }
-    if items.len() == 1 {
-        self.apply_path_completion(items[0], at_prefix)
-        return
-    }
-    if items.len() > 1 {
-        [string] options = []
-        for item in items {
-            options.push(item.label)
-        }
-        self.overlay = new overlay_t(kind = OVERLAY_PATH_COMPLETION, title = 'Attach file:', options = options, query = at_prefix)
-        return
-    }
-    if completion_open {
-        self.overlay = null
-    }
-}
-
-// The @ attachment prefix at a token boundary, like Pi's extractAtPrefix.
-fn at_prefix_for(string text): string {
-    int cursor = text.len() - 1
-    for cursor >= 0 {
-        u8 byte = text[cursor]
-        if byte == '@'.char() {
-            // A quote directly after @ extends the quoted form.
-            if cursor + 1 < text.len() && text[cursor + 1] == '"'.char() {
-                return '@' + text.slice(cursor + 1, text.len())
-            }
-            return text.slice(cursor, text.len())
-        }
-        if byte == ' '.char() || byte == '\t'.char() || byte == '"'.char() || byte == '='.char() {
-            return ''
-        }
-        cursor -= 1
-    }
-    return ''
-}
-
 pub fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, input_t input) {
+    if input.model_refresh_done {
+        self.apply_model_refresh(input.model_refresh_generation, input.model_refresh_failures)
+        return
+    }
     if input.paste {
         self.editor.handle_paste(input.data)
         self.redraw()
@@ -624,8 +700,10 @@ fn view_t.apply_editor_action(&self, editor.key_result_t result) {
 
 // Tab completion follows Pi's editor: a slash command without an argument
 // opens the command menu, otherwise the token before the cursor completes
-// as a file path.  A single candidate applies immediately; several open a
-// selection overlay; none falls back to inserting an indentation.
+// as a file path.  Pi force+explicitTab semantics (B1-R4-03): a SINGLE
+// candidate applies directly; several open the shared SelectList; NONE
+// leaves the editor untouched — a failed completion is never disguised as
+// an indentation.
 fn view_t.handle_tab_completion(&self) {
     var cursor = self.editor.get_cursor()
     var lines = self.editor.get_lines()
@@ -634,53 +712,115 @@ fn view_t.handle_tab_completion(&self) {
         before = lines[cursor.line].slice(0, cursor.column)
     }
     if before.starts_with('/') && !before.contains(' ') {
-        self.complete_command()
-        self.redraw()
-        return
-    }
-    string prefix = path_completion.extract_path_prefix(before, true)
-    if prefix == '' {
-        self.editor.insert_text('    ')
+        // Pi handleTabCompletion -> handleSlashCommandCompletion (B1-R2-01):
+        // Tab with no active menu only re-requests and shows the candidates;
+        // it must never apply within the same keypress (Pi 0.82.1 oracle:
+        // /mo, Esc, Tab reopens model/scoped-models/import with the editor
+        // still "/mo").  Only an already-active menu applies the current
+        // item; in the normal dispatch the active menu consumes Tab in the
+        // autocomplete branch first, so this branch sees was_active=false,
+        // but the apply path stays reachable and defensive.
+        bool was_active = self.autocomplete.active
+        if !was_active {
+            self.update_autocomplete_state()
+            self.redraw()
+            return
+        }
+        self.apply_autocomplete(false)
         self.redraw()
         return
     }
     string home = syscall.get_env('HOME')
+    string at_prefix = path_completion.extract_at_prefix(before)
+    if at_prefix != '' {
+        var items = self.at_items(at_prefix)
+        if items.len() == 1 {
+            self.apply_path_item(items[0], autocomplete.autocomplete_mode_t.AT, at_prefix)
+        } else if items.len() > 1 {
+            self.begin_path_menu(autocomplete.autocomplete_mode_t.AT, at_prefix, items)
+        }
+        self.redraw()
+        return
+    }
+    // B1-R4-03: an empty prefix is a valid root listing (Pi: blank Tab with
+    // a single root candidate applies it; none leaves the editor alone).
+    string prefix = path_completion.extract_path_prefix(before, true)
     var items = path_completion.get_file_suggestions(prefix, self.runner.repository.cwd, home)
     if items.len() == 0 {
-        self.editor.insert_text('    ')
         self.redraw()
         return
     }
     if items.len() == 1 {
-        self.apply_path_completion(items[0], prefix)
+        var mapped = self.path_item(items[0])
+        self.apply_path_item(mapped, autocomplete.autocomplete_mode_t.PATH, prefix)
         self.redraw()
         return
     }
-    [string] options = []
+    [autocomplete.autocomplete_item_t] mapped = []
     for item in items {
-        options.push(item.label)
+        mapped.push(self.path_item(item))
     }
-    self.overlay = new overlay_t(kind = OVERLAY_PATH_COMPLETION, title = 'Complete path:', options = options, query = prefix)
+    self.begin_path_menu(autocomplete.autocomplete_mode_t.PATH, prefix, mapped)
     self.redraw()
 }
 
-fn view_t.apply_path_completion(&self, path_completion.completion_item_t item, string prefix) {
+// Open the shared SelectList for path/@ candidates (B1-R4-02), exactly like
+// slash/argument modes: same state, same wrap/max-visible/render lifecycle.
+#local
+fn view_t.begin_path_menu(&self, autocomplete.autocomplete_mode_t mode, string prefix, [autocomplete.autocomplete_item_t] items) {
+    int generation = self.autocomplete.generation + 1
+    self.autocomplete.begin(mode, generation, prefix, prefix, items, self.resolved_max_visible())
+    var cursor = self.editor.get_cursor()
+    self.autocomplete.anchor_line = cursor.line
+    self.autocomplete.anchor_column = cursor.column
+}
+
+// Map a path_completion candidate onto the shared autocomplete item.
+#local
+fn view_t.path_item(&self, path_completion.completion_item_t item): autocomplete.autocomplete_item_t {
+    return autocomplete.autocomplete_item_t {value: item.value, label: item.label, description: item.description, kind: autocomplete.item_kind_t.PATH}
+}
+
+// The @ attachment candidates from the fuzzy tree walk (B1-R4-04/05), using
+// the shared extract_at_prefix boundary parser; quoted @"prefix forms keep
+// their quotes in the inserted value.
+#local
+fn view_t.at_items(&self, string at_prefix): [autocomplete.autocomplete_item_t] {
+    string home = syscall.get_env('HOME')
+    bool quoted = at_prefix.starts_with('@"')
+    string query = quoted ? at_prefix.slice(2, at_prefix.len()) : at_prefix.slice(1, at_prefix.len())
+    var items = path_completion.get_fuzzy_file_suggestions(query, self.runner.repository.cwd, home)
+    [autocomplete.autocomplete_item_t] result = []
+    for item in items {
+        string value = item.value
+        if quoted {
+            value = path_completion.quoted_at_completion_value(item.value)
+        }
+        result.push(autocomplete.autocomplete_item_t {value: value, label: item.label, description: item.description, kind: autocomplete.item_kind_t.PATH})
+    }
+    return result
+}
+
+// Pi CombinedAutocompleteProvider.applyCompletion for file/@ attachments
+// (B1-R4-12): the byte range [cursorCol - prefix.length, cursorCol) of ONE
+// line is replaced atomically (B1-R3-01).  Other logical lines, the paste
+// registry and the kill ring survive, and the whole replacement is one undo
+// step — never editor.set_text_at(), which rebuilds the buffer and drops
+// pastes/paste_counter.  The shared completion_range computes the range,
+// the @-attachment space suffix (@file -> ' ', @dir/ -> none) and the
+// quoted cursor adjustments.
+fn view_t.apply_path_item(&self, autocomplete.autocomplete_item_t item, autocomplete.autocomplete_mode_t mode, string prefix) {
     var cursor = self.editor.get_cursor()
     var lines = self.editor.get_lines()
     if cursor.line >= lines.len() {
         return
     }
     string line = lines[cursor.line]
-    var applied = path_completion.apply_completion(line, cursor.column, item, prefix)
-    self.editor.set_text_at(applied[0], cursor.line, applied[1])
-    self.overlay = null
-}
-
-// Re-resolve the completion candidates for an open completion overlay (the
-// query may have changed while it was open).
-fn view_t.path_completion_items(&self, string prefix): [path_completion.completion_item_t] {
-    string home = syscall.get_env('HOME')
-    return path_completion.get_file_suggestions(prefix, self.runner.repository.cwd, home)
+    if cursor.column > line.len() {
+        return
+    }
+    var range = path_completion.completion_range(cursor.column, line, prefix, path_completion.completion_item_t {value: item.value, label: item.label, description: item.description}, mode == autocomplete.autocomplete_mode_t.AT)
+    self.editor.apply_completion_at(cursor.line, range[0], range[1], range[2], range[3])
 }
 
 // Pi restores the terminal before sending SIGTSTP and re-enters raw mode when
@@ -707,19 +847,57 @@ fn view_t.suspend_terminal(&self) {
 
 #local
 fn view_t.reenter_terminal(&self): void! {
-    term.enter_raw(self.terminal.input_fd)
+    // Restore/reenter and render frames share the same stdout; run both
+    // under the render lock so the terminal can never observe an interleaved
+    // frame while raw mode is being toggled.  terminal.restore() only sets
+    // restored/active after writing its sequences, so flag-based guards
+    // alone cannot close the window.  Any failure still releases the lock
+    // before propagating.
+    self.render_lock.lock()
+    term.enter_raw(self.terminal.input_fd) catch error {
+        self.render_lock.unlock()
+        throw error
+    }
+    // The shell or editor rewrote the screen while we were suspended, even
+    // when no deferred render happened to be in flight; the diff state is
+    // stale either way.  Invalidate under the lock so the first frame after
+    // reenter is a cleared full repaint instead of a no-op diff.
+    self.renderer.invalidate()
     self.terminal.restored = false
     self.terminal.active = true
-    self.write_terminal(term.BRACKETED_PASTE_ON + term.CURSOR_HIDE + term.KEYBOARD_PROTOCOL_ON)
+    self.terminal.write(term.BRACKETED_PASTE_ON + term.CURSOR_HIDE + term.KEYBOARD_PROTOCOL_ON) catch error {
+        self.render_lock.unlock()
+        throw error
+    }
+    self.render_lock.unlock()
 }
 
 #local
 fn view_t.restore_terminal(&self): void! {
+    self.render_lock.lock()
     bool was_active = !self.terminal.restored
-    self.terminal.restore()
+    self.terminal.restore() catch error {
+        self.render_lock.unlock()
+        throw error
+    }
+    self.render_lock.unlock()
     if was_active {
         debug.log_terminal_output(term.KEYBOARD_PROTOCOL_OFF + term.BRACKETED_PASTE_OFF + term.CURSOR_SHOW)
     }
+}
+
+// Shutdown entry point for the app after the run loop exits: any deferred
+// render coroutine may still hold the render lock mid-frame, so the restore
+// sequences must wait for it instead of racing on stdout.  Restore failures
+// propagate like the previous direct terminal.restore() calls; the app
+// decides whether to ignore them (error-exit path) or surface them.
+pub fn view_t.restore_terminal_sync(&self): void! {
+    self.render_lock.lock()
+    self.terminal.restore() catch error {
+        self.render_lock.unlock()
+        throw error
+    }
+    self.render_lock.unlock()
 }
 
 // Ctrl+G follows Pi's external-editor action. The TUI is restored while the
@@ -808,7 +986,7 @@ fn view_t.open_external_editor(&self) {
 }
 
 pub fn view_t.start_prompt(&self, string text): ref<session_stream.stream_t>? {
-    self.command_menu = false
+    self.autocomplete.cancel()
     self.overlay = null
     if text.starts_with('!') {
         bool excluded = text.starts_with('!!')
@@ -890,7 +1068,7 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
             self.redraw()
             return null
         }
-        self.chat.clear()
+        self.clear_chat()
         self.editor.clear()
         self.chat.status = 'Started new session'
         self.redraw()
@@ -943,10 +1121,19 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         return null
     }
     if command == '/reload' {
+        string cwd = self.runner.repository.cwd
+        bool trusted = self.trusted_for(cwd)
+        // B1-R2-08: one trust-aware snapshot pass BEFORE the system prompt
+        // is rebuilt — trust-aware settings, filtered prompt execution
+        // list, dynamic command menu, filtered skills, autocomplete max and
+        // (reload_auth=true) the credential snapshot + provider count +
+        // model candidates all refresh together from the same resources.
+        // No separate settings re-read and no legacy global cache.
+        self.refresh_resource_snapshot(cwd, true)
         [ref<project.file_t>] context_files = []
         [string] warnings = []
-        if !self.no_context_files {
-            var loaded = project.load(self.runner.repository.cwd, '') catch error {
+        if !self.no_context_files && trusted {
+            var loaded = project.load(cwd, '') catch error {
                 self.chat.error_message = error.msg()
                 self.redraw()
                 return null
@@ -959,30 +1146,25 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
             tool_names.push(tool.name)
         }
         string resolved_system_prompt = self.system_prompt_override
-        if resolved_system_prompt == '' {
-            var discovered_system = project.system_prompt_file(self.runner.repository.cwd, '')
+        if resolved_system_prompt == '' && trusted {
+            var discovered_system = project.system_prompt_file(cwd, '')
             if discovered_system is ref<project.file_t> system_file {
                 resolved_system_prompt = system_file.content
             }
         }
         [string] resolved_append_prompts = self.append_system_prompts
-        if resolved_append_prompts.len() == 0 {
-            var discovered_append = project.append_system_prompt_file(self.runner.repository.cwd, '')
+        if resolved_append_prompts.len() == 0 && trusted {
+            var discovered_append = project.append_system_prompt_file(cwd, '')
             if discovered_append is ref<project.file_t> append_file {
                 resolved_append_prompts.push(append_file.content)
             }
         }
         string append_prompt = strings.join(resolved_append_prompts, '\n\n')
-        // /reload re-discovers skills and refreshes the /skill:* dynamic
-        // command menu.  The skills prompt only re-enters the system prompt
-        // when the read tool is available, and CLI skill paths, --no-skills
-        // and the project trust decision are preserved.
-        var skills_result = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, self.trusted_for(self.runner.repository.cwd)) catch error {
-            skills.load_skills_result_t {}
-        }
-        var filtered_skills = self.filter_enabled_skills(skills_result.skills)
+        // The skills prompt uses the SAME snapshot-filtered skill list that
+        // produced the dynamic menu (B1-R2-08), so execution and menu can
+        // never diverge.
         if has_tool_name(tool_names, 'read') {
-            string skills_prompt = skills.format_skills_for_prompt(filtered_skills)
+            string skills_prompt = skills.format_skills_for_prompt(self.cached_skills)
             if skills_prompt != '' {
                 if append_prompt != '' {
                     append_prompt += '\n\n'
@@ -990,8 +1172,7 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
                 append_prompt += skills_prompt
             }
         }
-        self.runner.base_context.system_prompt = system_prompt.build_with_tools(self.runner.repository.cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
-        refresh_dynamic_commands(self.runner.repository.cwd, self.skill_paths, self.no_skills, self.trusted_for(self.runner.repository.cwd))
+        self.runner.base_context.system_prompt = system_prompt.build_with_tools(cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
         self.chat.status = warnings.len() > 0 ? 'Project instructions reloaded with warnings' : 'Project instructions reloaded'
         self.redraw()
         return null
@@ -1047,7 +1228,7 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
             return null
         }
         self.chat.model = self.runner.agent_config.model.id
-        self.chat.load_messages(self.runner.active_messages)
+        self.reload_chat_messages(self.runner.active_messages)
         self.chat.status = 'Cloned session ' + self.runner.repository.get_session_id()
         self.redraw()
         return null
@@ -1152,12 +1333,10 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         if parts.len() >= 2 {
             provider = parts[1]
         }
-        if provider != '' {
-            models.default_for(provider) catch error {
-                self.chat.error_message = error.msg()
-                self.redraw()
-                return null
-            }
+        if provider != '' && !registry.supports_api_key_login(provider) {
+            self.chat.error_message = 'Unsupported provider: ' + provider
+            self.redraw()
+            return null
         }
         string key = parts.len() >= 3 ? parts[2] : ''
         if key == '' {
@@ -1178,6 +1357,7 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         self.chat.error_message = ''
         self.chat.status = 'Logged in to ' + provider
         refresh_auth_provider_count(self)
+        self.refresh_model_argument_cache()
         self.redraw()
         return null
     }
@@ -1186,8 +1366,8 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         if parts.len() >= 2 {
             provider = parts[1]
         }
-        models.default_for(provider) catch error {
-            self.chat.error_message = error.msg()
+        if !registry.supports_api_key_login(provider) {
+            self.chat.error_message = 'Unsupported provider: ' + provider
             self.redraw()
             return null
         }
@@ -1209,6 +1389,7 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         self.chat.error_message = ''
         self.chat.status = 'Logged out of ' + provider
         refresh_auth_provider_count(self)
+        self.refresh_model_argument_cache()
         self.redraw()
         return null
     }
@@ -1256,13 +1437,17 @@ fn view_t.finish_session_switch(&self, ref<repository.manager_t> next): ref<sess
     self.rebind_project_context(next.cwd) catch error {
         self.chat.status = 'Session resumed; could not rebuild project tools'
     }
+    // B1-R3-04: the trust-aware settings snapshot (global-only for
+    // untrusted, merged for trusted) drives the core queue/compaction/retry
+    // preferences at this boundary; core never reads project settings.
+    self.runner.apply_preferences_snapshot(self.settings_snapshot)
     self.chat.model = self.runner.agent_config.model.id
     self.chat.cwd = next.cwd
     self.chat.git_branch = detect_git_branch(next.cwd)
     string thinking = self.runner.agent_config.stream_options.reasoning_effort
     if !self.runner.agent_config.stream_options.thinking_enabled {thinking = 'off'}
     self.chat.configure(self.runner.agent_config.model.context_window, thinking)
-    self.chat.load_messages(self.runner.active_messages)
+    self.reload_chat_messages(self.runner.active_messages)
     self.chat.error_message = ''
     self.chat.status = 'Resumed session ' + self.runner.repository.get_session_id()
     self.overlay = null
@@ -1280,28 +1465,47 @@ fn view_t.finish_session_switch(&self, ref<repository.manager_t> next): ref<sess
 // behaves like one started there.
 #local
 fn view_t.rebind_project_context(&self, string cwd): void! {
+    bool trusted = self.trusted_for(cwd)
+    // B1-R2-08: the trust-aware resource snapshot (settings, prompt
+    // execution list, dynamic menu, filtered skills, autocomplete max,
+    // auth + model candidates) refreshes atomically for the new cwd before
+    // the system prompt is rebuilt; the menu and expand use the same
+    // self.prompt_templates afterwards.
+    self.refresh_resource_snapshot(cwd, true)
     [string] tool_names = []
     for tool in self.runner.base_context.tools {
         tool_names.push(tool.name)
     }
     [ref<project.file_t>] context_files = []
-    if !self.no_context_files {
+    if !self.no_context_files && trusted {
         var loaded = project.load(cwd, '') catch error {
             self.chat.status = 'Session resumed; project instructions unavailable'
             project.load_result_t{}
         }
         context_files = loaded.files
     }
+    // B1-R3-02: same trust-gated system/append resolution as startup and
+    // /reload — CLI overrides win, otherwise a trusted target cwd's
+    // .pi/SYSTEM.md and .pi/APPEND_SYSTEM.md are discovered and applied.
+    string resolved_system_prompt = self.system_prompt_override
+    if resolved_system_prompt == '' && trusted {
+        var discovered_system = project.system_prompt_file(cwd, '')
+        if discovered_system is ref<project.file_t> system_file {
+            resolved_system_prompt = system_file.content
+        }
+    }
+    [string] resolved_append_prompts = self.append_system_prompts
+    if resolved_append_prompts.len() == 0 && trusted {
+        var discovered_append = project.append_system_prompt_file(cwd, '')
+        if discovered_append is ref<project.file_t> append_file {
+            resolved_append_prompts.push(append_file.content)
+        }
+    }
     var tools = tool_names.len() > 0 ? builtins.select_tools(cwd, tool_names, [], false) : []
     self.runner.base_context.tools = tools
-    string append_prompt = strings.join(self.append_system_prompts, '\n\n')
-    bool trusted = self.trusted_for(cwd)
-    var skills_result = skills.load_skills(cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, trusted) catch error {
-        skills.load_skills_result_t {}
-    }
-    var filtered_skills = self.filter_enabled_skills(skills_result.skills)
+    string append_prompt = strings.join(resolved_append_prompts, '\n\n')
     if has_tool_name(tool_names, 'read') {
-        string skills_prompt = skills.format_skills_for_prompt(filtered_skills)
+        string skills_prompt = skills.format_skills_for_prompt(self.cached_skills)
         if skills_prompt != '' {
             if append_prompt != '' {
                 append_prompt += '\n\n'
@@ -1309,8 +1513,7 @@ fn view_t.rebind_project_context(&self, string cwd): void! {
             append_prompt += skills_prompt
         }
     }
-    self.runner.base_context.system_prompt = system_prompt.build_with_tools(cwd, context_files, self.system_prompt_override, append_prompt, tool_names)
-    refresh_dynamic_commands(cwd, self.skill_paths, self.no_skills, trusted)
+    self.runner.base_context.system_prompt = system_prompt.build_with_tools(cwd, context_files, resolved_system_prompt, append_prompt, tool_names)
 }
 
 // The trust decision for a project cwd, re-resolved on every session rebind:
@@ -1758,7 +1961,7 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     if self.overlay is ref<overlay_t> active_overlay {
         editor_lines = render_overlay(active_overlay, width, self.runner.repository.session_dir, self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id, self.runner)
     } else {
-        editor_lines = render_editor(self.editor, width, self.command_menu, self.command_index, self.chat.thinking, height)
+        editor_lines = render_editor(self.editor, width, self.autocomplete, self.chat.thinking, height)
     }
     [string] footer_lines = self.chat.render_footer(width)
     return layout.compose_interactive(transcript_lines, editor_lines, footer_lines)
@@ -1822,6 +2025,18 @@ fn view_t.write_terminal(&self, string output): void! {
     // here keeps terminal.restore()'s sequences the last output on screen
     // instead of flashing one stale frame on the restored terminal.
     if self.quitting {
+        return
+    }
+    // Redundant defense only: terminal.restore() sets restored/active AFTER
+    // it has already written its control sequences, so these flags cannot by
+    // themselves close the suspension window.  The actual exclusion comes
+    // from restore_terminal/reenter_terminal taking the render lock, which
+    // makes the lifecycle switch and every frame write mutually exclusive.
+    // The renderer state is invalidated under the same lock so the first
+    // frame after reenter is a cleared full repaint instead of a no-op diff
+    // over a screen the shell/editor may have replaced.
+    if self.terminal.restored || !self.terminal.active {
+        self.renderer.invalidate()
         return
     }
     self.terminal.write(output)
@@ -1909,6 +2124,7 @@ fn deferred_redraw(ref<view_t> view): void! {
     // keeps input handling responsive while coalescing deltas from one SSE
     // burst into a single terminal write.
     co.sleep(16)
+    int consecutive_failures = 0
     for true {
         if view.quitting {
             view.render_lock.lock()
@@ -1940,14 +2156,28 @@ fn deferred_redraw(ref<view_t> view): void! {
             view.chat.error_message = error.msg()
             view.chat.status = 'Render failed'
             // A failed frame must not leave the diff state ahead of the
-            // screen: forget the committed lines so the next render repaints
-            // the complete frame instead of skipping the lost rows.
-            view.renderer.previous_lines = []
+            // screen.  invalidate() forgets the committed lines AND forces a
+            // cleared full repaint on the next attempt, so a partially
+            // written frame or foreign screen content cannot survive as
+            // stale diff state.
+            view.renderer.invalidate()
             view.redraw_dirty = true
             view.render_lock.unlock()
+            // A failing render must not hot-spin: pace retries and give up
+            // after a bounded budget so the loop exits and a later redraw
+            // (user input) retries fresh.
+            consecutive_failures += 1
+            if consecutive_failures > 50 {
+                view.render_lock.lock()
+                view.redraw_dirty = false
+                view.render_lock.unlock()
+                break
+            }
+            co.sleep(16)
             continue
         }
         view.render_lock.unlock()
+        consecutive_failures = 0
         if view.quitting {
             view.render_lock.lock()
             view.redraw_dirty = false
@@ -2140,7 +2370,7 @@ fn codepoint_boundary(string value, int offset): (int, int) {
 }
 
 #local
-fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int command_index, string thinking, int terminal_rows): [string]! {
+fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autocomplete_state_t> autocomplete_state, string thinking, int terminal_rows): [string]! {
     [string] result = vec<string>.cap_of(16)
     bool bash_mode = editor.get_text().starts_with('!')
     result.push(theme.editor_border_line(thinking, bash_mode, width))
@@ -2215,34 +2445,178 @@ fn render_editor(ref<editor.editor_t> editor, int width, bool command_menu, int 
         result.push(' ' + theme.fg(theme.dim_color(), fmt.sprintf('↓ %d more', remaining)))
     }
     result.push(theme.editor_border_line(thinking, bash_mode, width))
-    if command_menu {
-        result.append(render_command_menu(editor.get_text(), command_index, width))
+    if autocomplete_state.active {
+        result.append(render_command_menu(autocomplete_state, width))
     }
     return result
 }
 
-pub fn view_t.update_command_menu(&self) {
-    string text = self.editor.get_text()
-    self.command_menu = text.starts_with('/') && !text.contains(' ') && matching_command_names(text).len() > 0
-    if !self.command_menu {
-        self.command_index = 0
+// Re-derive the autocomplete state after every editor edit/move (Pi editor.ts
+// updateAutocomplete): the state re-queries from the text before the cursor;
+// movement out of the completable context cancels it. The selection is bound
+// to the query generation, so a stale index never survives a query change
+// (IP-001).  B1-R4-02/04: @ attachments join the same state machine on ANY
+// line; Pi checks extractAtPrefix before the slash context, and a natural
+// (non-explicit) request opens the SelectList even with a single candidate.
+pub fn view_t.update_autocomplete_state(&self) {
+    var cursor = self.editor.get_cursor()
+    var lines = self.editor.get_lines()
+    if cursor.line >= lines.len() {
+        self.autocomplete.cancel()
         return
     }
-    int count = matching_command_names(text).len()
-    if self.command_index >= count {
-        self.command_index = count - 1
+    string before = lines[cursor.line].slice(0, cursor.column)
+    int generation = self.autocomplete.generation + 1
+    int max_visible = self.resolved_max_visible()
+    // @ attachment prefix at a token boundary (shared extract_at_prefix):
+    // me@domain stays plain text and never triggers completion (B1-R4-04).
+    string at_prefix = path_completion.extract_at_prefix(before)
+    if at_prefix != '' {
+        var items = self.at_items(at_prefix)
+        if items.len() > 0 {
+            self.autocomplete.begin(autocomplete.autocomplete_mode_t.AT, generation, at_prefix, at_prefix, items, max_visible)
+            self.autocomplete.anchor_line = cursor.line
+            self.autocomplete.anchor_column = cursor.column
+        } else {
+            self.autocomplete.cancel()
+        }
+        return
     }
+    // Pi isSlashMenuAllowed: the slash menu only exists on the first editor
+    // line (B1-R1-04); a "/" on any other line is plain text.
+    if cursor.line != 0 {
+        self.autocomplete.cancel()
+        return
+    }
+    if before.starts_with('/') {
+        int space = before.find(' ')
+        if space < 0 {
+            // Command-name completion ("/model"): Pi's suggestions.prefix is
+            // the whole text before the cursor, e.g. "/mo".
+            string query = before.slice(1, before.len())
+            self.autocomplete.begin(autocomplete.autocomplete_mode_t.COMMAND, generation, before, query, self.command_items(), max_visible)
+            self.autocomplete.anchor_line = cursor.line
+            self.autocomplete.anchor_column = cursor.column
+            return
+        }
+        string command = before.slice(0, space)
+        // B1-R1-02: the argument prefix is ONLY the text after the space
+        // (Pi suggestions.prefix = argumentText), never the whole "/model
+        // deep" before-text; both the replacement range and best-match use
+        // it.
+        string argument = before.slice(space + 1, before.len())
+        if command == '/model' {
+            var items = self.model_argument_items()
+            if items.len() > 0 {
+                self.autocomplete.begin(autocomplete.autocomplete_mode_t.MODEL_ARGUMENT, generation, argument, argument, items, max_visible)
+                self.autocomplete.anchor_line = cursor.line
+                self.autocomplete.anchor_column = cursor.column
+            } else {
+                self.autocomplete.cancel()
+            }
+            return
+        }
+        if command == '/login' {
+            var items = self.login_argument_items()
+            if items.len() > 0 {
+                self.autocomplete.begin(autocomplete.autocomplete_mode_t.LOGIN_ARGUMENT, generation, argument, argument, items, max_visible)
+                self.autocomplete.anchor_line = cursor.line
+                self.autocomplete.anchor_column = cursor.column
+            } else {
+                self.autocomplete.cancel()
+            }
+            return
+        }
+        self.autocomplete.cancel()
+        return
+    }
+    self.autocomplete.cancel()
 }
 
-pub fn view_t.complete_command(&self): string {
-    var matches = matching_command_names(self.editor.get_text())
-    if matches.len() == 0 || self.command_index < 0 || self.command_index >= matches.len() {
-        return ''
+// Apply the selected item (B1-R1-01..03).  submit=true follows Pi's Enter
+// contract: a "/" command completion applies to the editor lines first, then
+// the REPLACED full editor text is submitted through editor.submit() (single
+// source of truth for history/execution); argument completions apply without
+// submitting.  submit=false (Tab) always applies without submitting.
+pub fn view_t.apply_autocomplete(&self, bool submit): ref<session_stream.stream_t>? {
+    if !self.autocomplete.active || self.autocomplete.selected_index < 0 || self.autocomplete.selected_index >= self.autocomplete.filtered.len() {
+        self.autocomplete.cancel()
+        return null
     }
-    string value = matches[self.command_index]
-    self.editor.set_text(value + ' ')
-    self.command_menu = false
-    return value
+    var selected = self.autocomplete.filtered[self.autocomplete.selected_index]
+    var cursor = self.editor.get_cursor()
+    var lines = self.editor.get_lines()
+    if cursor.line >= lines.len() {
+        self.autocomplete.cancel()
+        return null
+    }
+    string text = lines[cursor.line]
+    int cursor_col = cursor.column
+    string prefix = self.autocomplete.prefix
+    if cursor_col > text.len() {
+        self.autocomplete.cancel()
+        self.redraw()
+        return null
+    }
+    if self.autocomplete.anchor_line != cursor.line || self.autocomplete.anchor_column != cursor_col {
+        self.autocomplete.cancel()
+        self.redraw()
+        return null
+    }
+    int replace_start = cursor_col - prefix.len()
+    if replace_start < 0 {
+        self.autocomplete.cancel()
+        self.redraw()
+        return null
+    }
+    if text.slice(replace_start, cursor_col) != prefix {
+        self.autocomplete.cancel()
+        self.redraw()
+        return null
+    }
+    if self.autocomplete.mode == autocomplete.autocomplete_mode_t.COMMAND {
+        // Pi: beforePrefix + '/' + value + ' ' + afterCursor, cursor after
+        // the trailing space; only the typed command prefix is replaced.
+        self.editor.apply_completion(cursor.line, replace_start, cursor_col, '/' + selected.value + ' ')
+        self.autocomplete.cancel()
+        if !submit {
+            return null
+        }
+        // Pi Enter falls through to submit: the completed line (including
+        // any cursor suffix and other editor lines) is submitted verbatim.
+        var submitted = self.editor.submit()
+        if submitted.text == '' {
+            self.redraw()
+            return null
+        }
+        self.editor.add_history(submitted.text)
+        return self.start_prompt(submitted.text)
+    }
+    if self.autocomplete.mode == autocomplete.autocomplete_mode_t.PATH || self.autocomplete.mode == autocomplete.autocomplete_mode_t.AT {
+        // B1-R4-02/12: file/@ completion shares the atomic range apply;
+        // the shared completion_range adds the @file trailing space and
+        // keeps the quoted/cursor/undo semantics.  Enter and Tab both
+        // apply without submitting.
+        self.apply_path_item(selected, self.autocomplete.mode, prefix)
+        self.autocomplete.cancel()
+        self.redraw()
+        return null
+    }
+    // Argument completion: only the argument prefix is replaced by the
+    // value; no trailing space; Enter and Tab both apply without submitting.
+    // The applied text and the closed menu must be repainted immediately:
+    // the caller returns here without another redraw (Pi's onChange ->
+    // requestRender on the same input).
+    self.editor.apply_completion(cursor.line, replace_start, cursor_col, selected.value)
+    self.autocomplete.cancel()
+    self.redraw()
+    return null
+}
+
+// B1-R1-10: the merged settings value is cached on the view at init and
+// reload; ordinary key presses never re-read the settings files.
+pub fn view_t.resolved_max_visible(&self): int {
+    return self.autocomplete_max_visible
 }
 
 pub fn view_t.show_auth_overlay(&self, string provider) {
@@ -2252,51 +2626,105 @@ pub fn view_t.show_auth_overlay(&self, string provider) {
 }
 
 pub fn view_t.show_model_overlay(&self, string query) {
-    [string] options = vec<string>.cap_of(8)
+    [ref<ai_types.model_t>] available = []
     for model in models.all() {
-        string reference = model.provider + '/' + model.id
-        if !models.allowed(reference, self.model_scope_patterns) {
-            continue
-        }
         if !model_is_authenticated(self.runner, model) {
             continue
         }
-        options.push(reference)
+        available.push(model)
     }
-    self.overlay = new overlay_t(kind = OVERLAY_MODEL, title = 'Select model:', options = options, query = query)
-    var active = self.overlay as ref<overlay_t>
-    for index, value in active.options {
-        if value == self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id {
-            active.selected = index
-            break
+    [ref<ai_types.model_t>] scoped = []
+    for entry in models.resolve_scope(self.model_scope_patterns) {
+        if model_is_authenticated(self.runner, entry.model) {
+            scoped.push(entry.model)
         }
     }
-    // Pi refreshes the remote catalogs while the selector is open; adou
-    // refreshes synchronously when networking is enabled and reports the
-    // outcome on the status line (success or explicit failure).
+    string current = self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id
+    var state = model_selector.new(available, scoped, current, query)
+    self.model_refresh_generation += 1
+    state.refresh_generation = self.model_refresh_generation
+    self.overlay = new overlay_t(kind = OVERLAY_MODEL, title = 'Select model:', model_state = state)
+    // The cached catalog is rendered immediately. A generation-tagged
+    // background refresh can never block input or update a later selector.
     if syscall.get_env('ADOU_CATALOG_NETWORK') != '' && syscall.get_env('PI_OFFLINE') == '' {
-        self.chat.status = 'Refreshing model catalogs...'
-        models.refresh_remote_catalogs()
-        self.chat.status = 'Model catalogs refreshed.'
+        state.refresh_status = 'Refreshing model catalogs...'
+        go refresh_model_catalog(self, state.refresh_generation)
     }
 }
 
 pub fn view_t.show_scoped_models_overlay(&self) {
-    [string] options = []
+    [ref<ai_types.model_t>] available = []
     for model in models.all() {
-        string id = model.provider + '/' + model.id
-        options.push(scoped_model_option(id, self.is_model_enabled(id)))
+        if model_is_authenticated(self.runner, model) {
+            available.push(model)
+        }
     }
-    self.overlay = new overlay_t(kind = OVERLAY_SCOPED_MODELS, title = 'Model Configuration', options = options)
+    [string] enabled_ids = []
+    bool all_enabled = !self.scoped_models_active
+    if self.model_scope_explicit && self.model_scope_patterns.len() > 0 {
+        all_enabled = false
+        for entry in models.resolve_scope(self.model_scope_patterns) {
+            enabled_ids.push(entry.model.provider + '/' + entry.model.id)
+        }
+    } else {
+        for id in self.scoped_model_ids {
+            enabled_ids.push(id)
+        }
+    }
+    var state = scoped_models.new(available, enabled_ids, all_enabled)
+    state.dirty = self.scoped_models_dirty
+    self.overlay = new overlay_t(kind = OVERLAY_SCOPED_MODELS, title = 'Model Configuration', scoped_models_state = state)
     var active = self.overlay as ref<overlay_t>
-    self.refresh_scoped_model_options(active)
     string current = self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id
-    for index, option in active.options {
-        if scoped_model_id(option) == current {
-            active.selected = index
+    for index, item in state.filtered {
+        if item.full_id == current {
+            state.selected = index
             break
         }
     }
+}
+
+#local
+fn refresh_model_catalog(ref<view_t> view, int generation): void! {
+    view.model_refresh_lock.lock()
+    int failures = models.refresh_remote_catalogs_with_status()
+    view.model_refresh_lock.unlock()
+    view.input_events.try_send(input_t {model_refresh_done: true, model_refresh_generation: generation, model_refresh_failures: failures}) catch error {}
+}
+
+#local
+fn view_t.apply_model_refresh(&self, int generation, int failures) {
+    if !(self.overlay is ref<overlay_t>) {
+        return
+    }
+    var overlay = self.overlay as ref<overlay_t>
+    if overlay.kind != OVERLAY_MODEL || !(overlay.model_state is ref<model_selector.state_t>) {
+        return
+    }
+    var state = overlay.model_state as ref<model_selector.state_t>
+    if state.refresh_generation != generation {
+        return
+    }
+    [ref<ai_types.model_t>] available = []
+    for model in models.all() {
+        if model_is_authenticated(self.runner, model) {available.push(model)}
+    }
+    [ref<ai_types.model_t>] scoped = []
+    for entry in models.resolve_scope(self.model_scope_patterns) {
+        if model_is_authenticated(self.runner, entry.model) {scoped.push(entry.model)}
+    }
+    state.replace_models(available, scoped)
+    if failures == 1 {
+        state.error_message = 'Could not refresh one model catalog; showing cached models.'
+        state.refresh_status = ''
+    } else if failures > 1 {
+        state.error_message = fmt.sprintf('Could not refresh %d model catalogs; showing cached models.', failures)
+        state.refresh_status = ''
+    } else {
+        state.error_message = ''
+        state.refresh_status = 'Model catalogs refreshed.'
+    }
+    self.redraw()
 }
 
 pub fn view_t.show_logout_overlay(&self) {
@@ -2352,20 +2780,19 @@ fn view_t.handle_settings_submenu(&self, ref<overlay_t> overlay) {
 // that completes by writing a marker file below the agent directory.
 // Pi's config-selector manages package resources; adou's equivalent lists
 // the skills and prompt templates with per-resource enable toggles.
+// B1-R2-06/07: the list comes from the trust-aware snapshot
+// (self.cached_skills / self.prompt_templates / self.settings_snapshot), so
+// an untrusted cwd never displays project resources and no disk read
+// happens on open.
 pub fn view_t.show_config_overlay(&self) {
     [string] options = []
-    var settings = config_settings.load()
+    var settings = self.settings_snapshot
     options.push('Skills')
-    var skills_result = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, self.trusted_for(self.runner.repository.cwd)) catch error {
-        skills.load_skills_result_t {}
-    }
-    for skill in skills_result.skills {
+    for skill in self.cached_skills {
         options.push('  ' + skill.name + ': ' + (resource_enabled(settings.enabled_skill_names, skill.name) ? 'enabled' : 'disabled'))
     }
     options.push('Prompts')
-    [string] no_extra = []
-    var templates = prompt_templates.load_prompt_templates(self.runner.repository.cwd, paths.agent_dir(), no_extra, true)
-    for template in templates {
+    for template in self.prompt_templates {
         options.push('  ' + template.name + ': ' + (resource_enabled(settings.enabled_prompt_names, template.name) ? 'enabled' : 'disabled'))
     }
     self.overlay = new overlay_t(kind = OVERLAY_CONFIG, title = 'Resources', options = options)
@@ -2402,6 +2829,9 @@ fn view_t.toggle_resource(&self, string option, bool is_skill) {
         return
     }
     self.chat.status = (is_skill ? 'Skill ' : 'Prompt ') + name + ' ' + (resource_enabled(is_skill ? settings.enabled_skill_names : settings.enabled_prompt_names, name) ? 'enabled' : 'disabled')
+    // The snapshot must reflect the persisted toggle before the overlay
+    // re-renders (B1-R2-07); the menu/execution lists follow it.
+    self.refresh_resource_snapshot(self.runner.repository.cwd, false)
     self.show_config_overlay()
 }
 
@@ -2421,33 +2851,15 @@ fn toggle_list([string] enabled, string name): [string] {
     return result
 }
 
-// Apply the enabled-resource lists from settings to a loaded skill list.
+// Apply the enable lists from the trust-aware settings snapshot (B1-R2-07).
+// Thin proxies over the shared production filters; the snapshot is refreshed
+// at init/reload/rebind, so this never reads settings from disk.
 pub fn view_t.filter_enabled_skills(&self, [ref<skills.skill_t>] loaded): [ref<skills.skill_t>] {
-    var settings = config_settings.load()
-    if settings.enabled_skill_names.len() == 0 {
-        return loaded
-    }
-    [ref<skills.skill_t>] result = []
-    for skill in loaded {
-        if resource_enabled(settings.enabled_skill_names, skill.name) {
-            result.push(skill)
-        }
-    }
-    return result
+    return slash_commands.filter_skills(loaded, self.settings_snapshot.enabled_skill_names)
 }
 
 pub fn view_t.filter_enabled_prompts(&self, [ref<prompt_templates.prompt_template_t>] loaded): [ref<prompt_templates.prompt_template_t>] {
-    var settings = config_settings.load()
-    if settings.enabled_prompt_names.len() == 0 {
-        return loaded
-    }
-    [ref<prompt_templates.prompt_template_t>] result = []
-    for template in loaded {
-        if resource_enabled(settings.enabled_prompt_names, template.name) {
-            result.push(template)
-        }
-    }
-    return result
+    return slash_commands.filter_prompt_templates(loaded, self.settings_snapshot.enabled_prompt_names)
 }
 
 pub fn view_t.show_setup_overlay(&self) {
@@ -2518,54 +2930,17 @@ fn view_t.show_help_overlay(&self) {
 
 // Pi's /skill:name command expands to the skill body wrapped in a skill
 // block with its location and relative-path guidance.
+// B1-R2-08: only self.cached_skills (the trust-aware snapshot filtered by
+// the same settings that built the menu) is consulted — never a fresh
+// load_skills on the hot path; /reload and rebind refresh the snapshot.
 pub fn view_t.expand_skill_command(&self, string text): string {
-    if !text.starts_with('/skill:') {
-        return text
-    }
-    int space = text.find(' ')
-    string skill_name = ''
-    string args = ''
-    if space < 0 {
-        skill_name = text.slice(7, text.len())
-    } else {
-        skill_name = text.slice(7, space)
-        args = text.slice(space + 1, text.len()).trim([' ', '\t'])
-    }
-    var loaded = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, self.trusted_for(self.runner.repository.cwd)) catch error {
-        return text
-    }
-    var expanded_filtered = self.filter_enabled_skills(loaded.skills)
-    for skill in expanded_filtered {
-        if skill.name == skill_name {
-            string content = read_skill_file(skill.file_path) catch error {
-                return text
-            }
-            string body = skills.strip_frontmatter(content).trim([' ', '\t', '\n', '\r'])
-            string block = '<skill name="' + skills.escape_xml(skill.name) + '" location="' + skills.escape_xml(skill.file_path) + '">\nReferences are relative to ' + skill.base_dir + '.\n\n' + body + '\n</skill>'
-            if args != '' {
-                return block + '\n\n' + args
-            }
-            return block
-        }
-    }
-    return text
+    return skills.expand_command(text, self.cached_skills)
 }
 
-fn read_skill_file(string file_path): string! {
-    var file = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
-        throw error
-    }
-    string content = file.content()
-    file.close()
-    return content
-}
-
-pub fn view_t.show_skills(&self, string text, [string] parts) {    var loaded = skills.load_skills(self.runner.repository.cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, self.trusted_for(self.runner.repository.cwd)) catch error {
-        self.chat.error_message = error.msg()
-        self.redraw()
-        return
-    }
-    var filtered_skills = self.filter_enabled_skills(loaded.skills)
+pub fn view_t.show_skills(&self, string text, [string] parts) {
+    // B1-R2-08: the snapshot-filtered skill list only; no fresh load_skills
+    // (the menu, execution and this display share the same resources).
+    var filtered_skills = self.cached_skills
     if filtered_skills.len() == 0 {
         self.chat.status = 'No skills found in user or project skills directories'
         return
@@ -2704,6 +3079,14 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         }
         return
     }
+    if overlay.kind == OVERLAY_MODEL {
+        self.handle_model_selector_input(overlay, input)
+        return
+    }
+    if overlay.kind == OVERLAY_SCOPED_MODELS {
+        self.handle_scoped_models_input(overlay, input)
+        return
+    }
     if input.paste {
         overlay.query += input.data
         overlay.selected = 0
@@ -2711,30 +3094,6 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         return
     }
     string key = keys.parse_key(input.data)
-    if overlay.kind == OVERLAY_SCOPED_MODELS {
-        if key == 'ctrl+s' {
-            self.save_preferences()
-            self.chat.status = 'Model scope saved'
-            self.redraw()
-            return
-        }
-        if key == 'ctrl+a' {
-            self.enable_all_scoped_models(overlay)
-            return
-        }
-        if key == 'ctrl+x' {
-            self.clear_scoped_models(overlay)
-            return
-        }
-        if key == 'ctrl+p' {
-            self.toggle_scoped_provider(overlay)
-            return
-        }
-        if key == 'alt+up' || key == 'alt+down' {
-            self.reorder_scoped_model(overlay, key == 'alt+up' ? -1 : 1)
-            return
-        }
-    }
     if overlay.kind == OVERLAY_SESSION && overlay.confirming_delete {
         if key == 'enter' {
             self.confirm_delete_session(overlay)
@@ -2746,12 +3105,6 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         return
     }
     if key == 'escape' || key == 'ctrl+c' {
-        if overlay.kind == OVERLAY_SCOPED_MODELS && key == 'ctrl+c' && overlay.query != '' {
-            overlay.query = ''
-            overlay.selected = 0
-            self.redraw()
-            return
-        }
         if overlay.kind == OVERLAY_BRANCH_SUMMARY {
             self.restore_tree_overlay(overlay.provider)
             self.redraw()
@@ -2783,46 +3136,6 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             self.redraw()
         }
         return
-    }
-    if overlay.kind == OVERLAY_PATH_COMPLETION {
-        if input.paste == false && key == 'escape' {
-            self.overlay = null
-            self.redraw()
-            return
-        }
-        if input.paste == false && (key == 'up' || key == 'ctrl+p') {
-            if overlay.selected > 0 {
-                overlay.selected -= 1
-            }
-            self.redraw()
-            return
-        }
-        if input.paste == false && (key == 'down' || key == 'ctrl+n') {
-            if overlay.selected < overlay.options.len() - 1 {
-                overlay.selected += 1
-            }
-            self.redraw()
-            return
-        }
-        if input.paste == false && key == 'enter' {
-            var items = self.path_completion_items(overlay.query)
-            if overlay.selected < items.len() {
-                self.apply_path_completion(items[overlay.selected], overlay.query)
-            } else {
-                self.overlay = null
-            }
-            self.redraw()
-            return
-        }
-        return
-    }
-    if overlay.kind == OVERLAY_MODEL {
-        if key == 'tab' {
-            overlay.scope = overlay.scope == 0 ? 1 : 0
-            overlay.selected = 0
-            self.redraw()
-            return
-        }
     }
     if overlay.kind == OVERLAY_SESSION {
         if key == 'tab' {
@@ -2997,6 +3310,169 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
 }
 
 #local
+fn view_t.handle_model_selector_input(&self, ref<overlay_t> overlay, input_t input) {
+    if !(overlay.model_state is ref<model_selector.state_t>) {return}
+    var state = overlay.model_state as ref<model_selector.state_t>
+    if input.paste {
+        state.append_query(input.data)
+        self.redraw()
+        return
+    }
+    string key = keys.parse_key(input.data)
+    if key == 'tab' {
+        state.toggle_scope()
+        self.redraw()
+        return
+    }
+    if key == 'up' || key == 'down' {
+        state.move(key == 'up' ? -1 : 1)
+        self.redraw()
+        return
+    }
+    if key == 'enter' {
+        self.select_model_reference(state.selected_reference())
+        return
+    }
+    if key == 'escape' || key == 'ctrl+c' {
+        self.model_refresh_generation += 1
+        self.overlay = null
+        self.redraw()
+        return
+    }
+    if key == 'backspace' || key == 'ctrl+h' {
+        state.backspace()
+        self.redraw()
+        return
+    }
+    string printable = keys.decode_printable(input.data)
+    if printable == '' && input.data != '' && input.data[0] >= 32 && input.data[0] != 0x1b {
+        printable = input.data
+    }
+    if printable != '' {
+        state.append_query(printable)
+        self.redraw()
+    }
+}
+
+#local
+fn view_t.select_model_reference(&self, string reference) {
+    if reference == '' {return}
+    ref<ai_types.model_t>? model = models.find(reference)
+    if !(model is ref<ai_types.model_t>) {return}
+    var next_model = model as ref<ai_types.model_t>
+    self.runner.set_model(next_model) catch error {
+        self.chat.error_message = error.msg()
+        self.redraw()
+        return
+    }
+    self.apply_scoped_thinking(next_model)
+    self.chat.model = next_model.id
+    self.chat.configure(next_model.context_window, self.chat.thinking)
+    self.save_default_model()
+    self.chat.status = 'Model: ' + reference
+    self.chat.error_message = ''
+    self.model_refresh_generation += 1
+    self.overlay = null
+    self.redraw()
+}
+
+#local
+fn view_t.handle_scoped_models_input(&self, ref<overlay_t> overlay, input_t input) {
+    if !(overlay.scoped_models_state is ref<scoped_models.state_t>) {return}
+    var state = overlay.scoped_models_state as ref<scoped_models.state_t>
+    if input.paste {
+        state.append_query(input.data)
+        self.redraw()
+        return
+    }
+    string key = keys.parse_key(input.data)
+    bool changed = false
+    if key == 'up' || key == 'down' {
+        state.move_selection(key == 'up' ? -1 : 1)
+        self.redraw()
+        return
+    } else if key == 'enter' {
+        state.toggle_selected()
+        changed = true
+    } else if key == 'ctrl+a' {
+        state.enable_all()
+        changed = true
+    } else if key == 'ctrl+x' {
+        state.clear_all()
+        changed = true
+    } else if key == 'ctrl+p' {
+        state.toggle_selected_provider()
+        changed = true
+    } else if key == 'alt+up' || key == 'alt+down' {
+        state.reorder_selected(key == 'alt+up' ? -1 : 1)
+        changed = true
+    } else if key == 'ctrl+s' {
+        config_settings.set_enabled_models(state.enabled_ids, !state.all_enabled) catch error {
+            self.chat.error_message = 'Could not save model selection: ' + error.msg()
+            self.redraw()
+            return
+        }
+        self.settings_snapshot.enabled_model_ids = state.enabled_ids
+        self.settings_snapshot.enabled_models_configured = !state.all_enabled
+        state.dirty = false
+        self.scoped_models_dirty = false
+        self.chat.status = 'Model selection saved to settings'
+        self.redraw()
+        return
+    } else if key == 'ctrl+c' {
+        if state.query != '' {
+            state.set_query('')
+        } else {
+            self.overlay = null
+        }
+        self.redraw()
+        return
+    } else if key == 'escape' {
+        self.overlay = null
+        self.redraw()
+        return
+    } else if key == 'backspace' || key == 'ctrl+h' {
+        state.backspace()
+        self.redraw()
+        return
+    } else {
+        string printable = keys.decode_printable(input.data)
+        if printable == '' && input.data != '' && input.data[0] >= 32 && input.data[0] != 0x1b {
+            printable = input.data
+        }
+        if printable != '' {
+            state.append_query(printable)
+            self.redraw()
+        }
+        return
+    }
+    if changed {
+        self.apply_scoped_models_state(state)
+        self.chat.status = 'Model scope changed (Ctrl+S to save)'
+        self.redraw()
+    }
+}
+
+#local
+fn view_t.apply_scoped_models_state(&self, ref<scoped_models.state_t> state) {
+    self.model_scope_explicit = false
+    self.scoped_models_dirty = true
+    self.scoped_models_active = !state.all_enabled
+    self.scoped_model_ids = []
+    for id in state.enabled_ids {
+        self.scoped_model_ids.push(id)
+    }
+    self.model_scope_patterns = []
+    int enabled_available = state.enabled_available_count()
+    if !state.all_enabled && enabled_available > 0 && enabled_available < state.catalog.len() {
+        for id in state.enabled_ids {
+            self.model_scope_patterns.push(id)
+        }
+    }
+    self.refresh_model_argument_cache()
+}
+
+#local
 fn view_t.begin_delete_session(&self, ref<overlay_t> overlay) {
     var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
     if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
@@ -3136,6 +3612,7 @@ pub fn view_t.complete_api_key_login(&self, ref<overlay_t> overlay) {
     self.chat.error_message = ''
     self.chat.status = 'Saved API key for ' + overlay.provider
     refresh_auth_provider_count(self)
+    self.refresh_model_argument_cache()
     self.overlay = null
     self.redraw()
 }
@@ -3186,10 +3663,6 @@ pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
         return
     }
     string selected = options[overlay.selected]
-    if overlay.kind == OVERLAY_SCOPED_MODELS {
-        self.toggle_scoped_model(scoped_model_id(selected), overlay)
-        return
-    }
     if overlay.kind == OVERLAY_SESSION {
         self.open_session(selected)
         return
@@ -3234,30 +3707,11 @@ pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
             self.redraw()
             return
         }
-        self.chat.load_messages(self.runner.active_messages)
+        self.reload_chat_messages(self.runner.active_messages)
         self.editor.set_text(selected_text)
         self.chat.status = 'Forked to new session'
         self.overlay = null
         self.redraw()
-        return
-    }
-    if overlay.kind == OVERLAY_MODEL {
-        ref<ai_types.model_t>? model = models.find(selected)
-        if model is ref<ai_types.model_t> next_model {
-            self.runner.set_model(next_model) catch error {
-                self.chat.error_message = error.msg()
-                self.redraw()
-                return
-            }
-            self.apply_scoped_thinking(next_model)
-            self.chat.model = next_model.id
-            self.chat.configure(next_model.context_window, self.chat.thinking)
-            self.save_default_model()
-            self.chat.status = 'Model: ' + selected
-            self.chat.error_message = ''
-            self.overlay = null
-            self.redraw()
-        }
         return
     }
     if overlay.kind == OVERLAY_LOGOUT {
@@ -3273,6 +3727,7 @@ pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
         }
         self.chat.status = 'Removed stored API key for ' + selected
         refresh_auth_provider_count(self)
+        self.refresh_model_argument_cache()
         self.overlay = null
         self.redraw()
         return
@@ -3339,7 +3794,7 @@ pub fn view_t.complete_tree_navigation(&self, string entry_id) {
         self.redraw()
         return
     }
-    self.chat.load_messages(self.runner.active_messages)
+    self.reload_chat_messages(self.runner.active_messages)
     if editor_text != '' && self.editor.get_text().trim([' ', '\t', '\n', '\r']) == '' {
         self.editor.set_text(editor_text)
     }
@@ -3479,7 +3934,7 @@ pub fn view_t.restore_queued_messages(&self) {
 
 pub fn view_t.save_preferences(&self) {
     var existing = config_settings.load()
-    var preferences = config_settings.settings_t {default_provider: existing.default_provider, default_model: existing.default_model, default_thinking_level: self.chat.thinking, auto_compaction: self.runner.compaction_settings.enabled, steering_mode: self.runner.agent_config.queues.steering_mode, follow_up_mode: self.runner.agent_config.queues.follow_up_mode, hide_thinking: !self.chat.thinking_visible, retry_enabled: self.runner.retry_enabled, retry_max_attempts: existing.retry_max_attempts, retry_base_delay_ms: existing.retry_base_delay_ms, enabled_model_ids: self.scoped_model_ids, theme: theme.variant(), enabled_skill_names: existing.enabled_skill_names, enabled_prompt_names: existing.enabled_prompt_names,}
+    var preferences = config_settings.settings_t {default_provider: existing.default_provider, default_model: existing.default_model, default_thinking_level: self.chat.thinking, auto_compaction: self.runner.compaction_settings.enabled, steering_mode: self.runner.agent_config.queues.steering_mode, follow_up_mode: self.runner.agent_config.queues.follow_up_mode, hide_thinking: !self.chat.thinking_visible, retry_enabled: self.runner.retry_enabled, retry_max_attempts: existing.retry_max_attempts, retry_base_delay_ms: existing.retry_base_delay_ms, enabled_model_ids: self.scoped_model_ids, enabled_models_configured: self.scoped_models_active, theme: theme.variant(), enabled_skill_names: existing.enabled_skill_names, enabled_prompt_names: existing.enabled_prompt_names,}
     config_settings.save(preferences) catch error {
         self.chat.error_message = 'Could not save settings: ' + error.msg()
     }
@@ -3515,17 +3970,140 @@ pub fn view_t.copy_last_response(&self) {
     }
     string encoded = base64.encode(text as [u8]) as string
     string clipboard_output = '\x1b]52;c;' + encoded + '\x07'
+    // OSC-52 payloads share stdout with render frames; serialize the write
+    // so the payload cannot be torn by a concurrent frame.
+    self.render_lock.lock()
     self.terminal.write(clipboard_output) catch error {
+        self.render_lock.unlock()
         self.chat.error_message = 'Clipboard copy failed: ' + error.msg()
         self.redraw()
         return
     }
+    self.render_lock.unlock()
     debug.log_terminal_output(clipboard_output)
     self.chat.status = 'Copied last assistant response to clipboard'
     self.redraw()
 }
 
+fn render_model_selector(ref<overlay_t> overlay, ref<model_selector.state_t> state, int width): [string]! {
+    [string] result = []
+    result.push(theme.border_line(width))
+    result.push('')
+    result.push(' ' + theme.bold(theme.fg(theme.accent(), overlay.title)))
+    result.push('')
+    if state.has_scoped() {
+        string all_text = state.scope == model_selector.SCOPE_ALL ? theme.fg(theme.accent(), 'all') : theme.fg(theme.muted_color(), 'all')
+        string scoped_text = state.scope == model_selector.SCOPE_SCOPED ? theme.fg(theme.accent(), 'scoped') : theme.fg(theme.muted_color(), 'scoped')
+        result.push(' ' + theme.fg(theme.muted_color(), 'Scope: ') + all_text + theme.fg(theme.muted_color(), ' | ') + scoped_text)
+        result.push(' ' + theme.fg(theme.muted_color(), 'Tab scope (all/scoped)'))
+    } else {
+        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.WARNING, 'Only showing models from configured providers. Use /login to add providers.'), width))
+    }
+    result.push('')
+    result.push(' > ' + theme.fg(theme.text(), state.query))
+    result.push('')
+    int start = state.selected - model_selector.MAX_VISIBLE / 2
+    if start < 0 {start = 0}
+    int max_start = state.filtered.len() - model_selector.MAX_VISIBLE
+    if max_start < 0 {max_start = 0}
+    if start > max_start {start = max_start}
+    int finish = start + model_selector.MAX_VISIBLE
+    if finish > state.filtered.len() {finish = state.filtered.len()}
+    for int index = start; index < finish; index += 1 {
+        var item = state.filtered[index]
+        bool selected = index == state.selected
+        string prefix = selected ? theme.fg(theme.accent(), '-> ') : '   '
+        string model_text = selected ? theme.fg(theme.accent(), item.id) : theme.fg(theme.text(), item.id)
+        string badge = theme.fg(theme.muted_color(), ' [' + item.provider + ']')
+        string check = item.reference == state.current_reference ? theme.fg(theme.SUCCESS, ' ✓') : ''
+        string line = prefix + model_text + badge + check
+        result.push(' ' + text_utils.truncate_to_width(line, width - 2, '...', true))
+    }
+    if start > 0 || finish < state.filtered.len() {
+        result.push('  ' + theme.fg(theme.muted_color(), fmt.sprintf('(%d/%d)', state.selected + 1, state.filtered.len())))
+    }
+    if state.error_message != '' {
+        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.ERROR, state.error_message), width))
+    } else if state.filtered.len() == 0 {
+        result.push('  ' + theme.fg(theme.muted_color(), 'No matching models'))
+    } else {
+        var selected = state.filtered[state.selected]
+        result.push('')
+        result.push('  ' + theme.fg(theme.muted_color(), 'Model Name: ' + selected.name))
+    }
+    if state.refresh_status != '' {
+        result.push('')
+        result.push('  ' + theme.fg(theme.muted_color(), state.refresh_status))
+    }
+    result.push('')
+    result.push(theme.border_line(width))
+    return result
+}
+
+fn render_scoped_models(ref<overlay_t> overlay, ref<scoped_models.state_t> state, int width): [string]! {
+    [string] result = []
+    result.push(theme.border_line(width))
+    result.push('')
+    result.push(' ' + theme.bold(theme.fg(theme.accent(), overlay.title)))
+    result.push(' ' + theme.fg(theme.muted_color(), 'Session-only. Ctrl+S to save to settings.'))
+    result.push('')
+    result.push(' > ' + theme.fg(theme.text(), state.query))
+    result.push('')
+    int start = state.selected - scoped_models.MAX_VISIBLE / 2
+    if start < 0 {start = 0}
+    int max_start = state.filtered.len() - scoped_models.MAX_VISIBLE
+    if max_start < 0 {max_start = 0}
+    if start > max_start {start = max_start}
+    int finish = start + scoped_models.MAX_VISIBLE
+    if finish > state.filtered.len() {finish = state.filtered.len()}
+    for int index = start; index < finish; index += 1 {
+        var item = state.filtered[index]
+        bool selected = index == state.selected
+        string prefix = selected ? theme.fg(theme.accent(), '-> ') : '   '
+        string id = item.id
+        string badge = ''
+        string status = ''
+        if item.model is ref<ai_types.model_t> {
+            badge = theme.fg(theme.muted_color(), ' [' + item.provider + ']')
+            if !state.all_enabled {
+                status = state.is_enabled(item.full_id) ? theme.fg(theme.SUCCESS, ' ✓') : theme.fg(theme.dim_color(), ' ✗')
+            }
+        } else {
+            id = item.full_id
+            badge = theme.fg(theme.muted_color(), ' [unavailable]')
+            status = theme.fg(theme.dim_color(), ' ✗')
+        }
+        string model_text = selected ? theme.fg(theme.accent(), id) : theme.fg(theme.text(), id)
+        result.push(' ' + text_utils.truncate_to_width(prefix + model_text + badge + status, width - 2, '...', true))
+    }
+    if start > 0 || finish < state.filtered.len() {
+        result.push('  ' + theme.fg(theme.muted_color(), fmt.sprintf('(%d/%d)', state.selected + 1, state.filtered.len())))
+    }
+    if state.filtered.len() == 0 {
+        result.push('  ' + theme.fg(theme.muted_color(), 'No matching models'))
+    } else {
+        var selected = state.filtered[state.selected]
+        result.push('')
+        result.push('  ' + theme.fg(theme.muted_color(), selected.model is ref<ai_types.model_t> ? 'Model Name: ' + selected.name : 'Model unavailable'))
+    }
+    string count = state.all_enabled ? 'all enabled' : fmt.sprintf('%d/%d enabled', state.enabled_available_count(), state.catalog.len())
+    int unavailable = state.unavailable_count()
+    if unavailable > 0 {count += fmt.sprintf(' · %d unavailable', unavailable)}
+    string help = 'enter toggle · ctrl+a all · ctrl+x clear · ctrl+p provider · alt+up/down reorder · ctrl+s save · ' + count
+    if state.dirty {help += ' (unsaved)'}
+    result.push('')
+    result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.dim_color(), help), width))
+    result.push(theme.border_line(width))
+    return result
+}
+
 pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, string current_model_reference, ref<session.runner_t> runner): [string]! {
+    if overlay.kind == OVERLAY_MODEL && overlay.model_state is ref<model_selector.state_t> {
+        return render_model_selector(overlay, overlay.model_state as ref<model_selector.state_t>, width)
+    }
+    if overlay.kind == OVERLAY_SCOPED_MODELS && overlay.scoped_models_state is ref<scoped_models.state_t> {
+        return render_scoped_models(overlay, overlay.scoped_models_state as ref<scoped_models.state_t>, width)
+    }
     [string] result = vec<string>.cap_of(24)
     result.push(theme.border_line(width))
     result.push('')
@@ -3533,18 +4111,6 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
     if title_width < 1 {title_width = 1}
     result.push(' ' + theme.bold(theme.fg(theme.accent(), text_utils.truncate_to_width(overlay.title, title_width, '...', false))))
     result.push('')
-    if overlay.kind == OVERLAY_PATH_COMPLETION {
-        for index, option in overlay.options {
-            string line = index == overlay.selected ? theme.fg(theme.accent(), '→ ' + option) : '  ' + theme.fg(theme.text(), option)
-            int available = width - 2
-            if available < 1 {available = 1}
-            result.push(text_utils.truncate_to_width(line, available, '...', false))
-        }
-        result.push('')
-        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.dim_color(), 'up/down select · enter apply · escape close'), width))
-        result.push(theme.border_line(width))
-        return result
-    }
     if overlay.kind == OVERLAY_SESSION_INFO {
         for line in overlay.options {
             if line == '' {
@@ -3661,19 +4227,20 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
 fn filtered_options(string session_dir, ref<overlay_t> overlay, ref<session.runner_t> runner): [string] {
     if overlay.kind == OVERLAY_MODEL {
         [string] result = []
-        for option in overlay.options {
-            int separator = option.find('/')
-            string provider = separator >= 0 ? option.slice(0, separator) : option
-            if overlay.scope == 1 && !model_search.provider_in_scope(provider, model_scope_patterns_cache) {
-                continue
+        if overlay.model_state is ref<model_selector.state_t> {
+            var state = overlay.model_state as ref<model_selector.state_t>
+            for item in state.filtered {
+                result.push(item.reference)
             }
-            var model = models.find(option)
-            string model_name = ''
-            if model is ref<ai_types.model_t> model_ref {
-                model_name = model_ref.name
-            }
-            if model_search.match_model(option, model_name, overlay.query) {
-                result.push(option)
+        }
+        return result
+    }
+    if overlay.kind == OVERLAY_SCOPED_MODELS {
+        [string] result = []
+        if overlay.scoped_models_state is ref<scoped_models.state_t> {
+            var state = overlay.scoped_models_state as ref<scoped_models.state_t>
+            for item in state.filtered {
+                result.push(item.full_id)
             }
         }
         return result
@@ -3931,19 +4498,6 @@ fn next_queue_mode(string value): string {
 }
 
 #local
-fn view_t.is_model_enabled(&self, string model_id): bool {
-    if !self.scoped_models_active {
-        return true
-    }
-    for value in self.scoped_model_ids {
-        if value == model_id {
-            return true
-        }
-    }
-    return false
-}
-
-#local
 fn view_t.available_cycle_models(&self): [ref<ai_types.model_t>] {
     if self.model_scope_patterns.len() > 0 {
         [ref<ai_types.model_t>] scoped = []
@@ -3965,19 +4519,7 @@ fn view_t.available_cycle_models(&self): [ref<ai_types.model_t>] {
             available.push(model)
         }
     }
-    if !self.scoped_models_active || self.model_scope_patterns.len() > 0 {
-        return available
-    }
-    [ref<ai_types.model_t>] result = []
-    for model_id in self.scoped_model_ids {
-        ref<ai_types.model_t>? selected = models.find(model_id)
-        if selected is ref<ai_types.model_t> model {
-            if model_is_authenticated(self.runner, model) {
-                result.push(model)
-            }
-        }
-    }
-    return result
+    return available
 }
 
 #local
@@ -3989,235 +4531,55 @@ fn model_is_authenticated(ref<session.runner_t> runner, ref<ai_types.model_t> mo
 }
 
 #local
-fn view_t.toggle_scoped_model(&self, string model_id, ref<overlay_t> overlay) {
-    if model_id == '' {
-        return
-    }
-    if !self.scoped_models_active {
-        self.scoped_models_active = true
-        self.scoped_model_ids = [model_id]
-    } else {
-        int found = -1
-        for index, value in self.scoped_model_ids {
-            if value == model_id {
-                found = index
-                break
-            }
-        }
-        if found >= 0 {
-            [string] remaining = []
-            for index, value in self.scoped_model_ids {
-                if index != found {
-                    remaining.push(value)
-                }
-            }
-            self.scoped_model_ids = remaining
-        } else {
-            self.scoped_model_ids.push(model_id)
-        }
-    }
-    self.refresh_scoped_model_options(overlay)
-    self.chat.status = 'Model scope changed (Ctrl+S to save)'
-    self.redraw()
-}
-
-#local
-fn view_t.enable_all_scoped_models(&self, ref<overlay_t> overlay) {
-    self.scoped_models_active = true
-    self.scoped_model_ids = []
-    for model in models.all() {
-        self.scoped_model_ids.push(model.provider + '/' + model.id)
-    }
-    self.refresh_scoped_model_options(overlay)
-    self.chat.status = 'All models enabled (Ctrl+S to save)'
-    self.redraw()
-}
-
-#local
-fn view_t.clear_scoped_models(&self, ref<overlay_t> overlay) {
-    self.scoped_models_active = true
-    self.scoped_model_ids = []
-    self.refresh_scoped_model_options(overlay)
-    self.chat.status = 'All models disabled (Ctrl+S to save)'
-    self.redraw()
-}
-
-#local
-fn view_t.toggle_scoped_provider(&self, ref<overlay_t> overlay) {
-    var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
-    if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
-        return
-    }
-    string selected_id = scoped_model_id(options[overlay.selected])
-    int separator = selected_id.find('/')
-    if separator < 0 {
-        return
-    }
-    string provider = selected_id.slice(0, separator)
-    [string] provider_ids = []
-    for model in models.all() {
-        if model.provider == provider {
-            provider_ids.push(model.provider + '/' + model.id)
-        }
-    }
-    bool all_enabled = true
-    for id in provider_ids {
-        if !self.is_model_enabled(id) {
-            all_enabled = false
-            break
-        }
-    }
-    self.scoped_models_active = true
-    if all_enabled {
-        [string] remaining = []
-        for id in self.scoped_model_ids {
-            bool remove = false
-            for provider_id in provider_ids {
-                if id == provider_id {remove = true; break}
-            }
-            if !remove {remaining.push(id)}
-        }
-        self.scoped_model_ids = remaining
-    } else {
-        for provider_id in provider_ids {
-            bool found = false
-            for id in self.scoped_model_ids {
-                if id == provider_id {found = true; break}
-            }
-            if !found {self.scoped_model_ids.push(provider_id)}
-        }
-    }
-    self.refresh_scoped_model_options(overlay)
-    self.chat.status = 'Provider ' + provider + ' toggled (Ctrl+S to save)'
-    self.redraw()
-}
-
-#local
-fn view_t.reorder_scoped_model(&self, ref<overlay_t> overlay, int delta) {
-    if !self.scoped_models_active || self.scoped_model_ids.len() == 0 {
-        return
-    }
-    var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
-    if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
-        return
-    }
-    string selected_id = scoped_model_id(options[overlay.selected])
-    int current = -1
-    for index, id in self.scoped_model_ids {
-        if id == selected_id {current = index; break}
-    }
-    if current < 0 {
-        return
-    }
-    int next = current + delta
-    if next < 0 || next >= self.scoped_model_ids.len() {
-        return
-    }
-    string swap = self.scoped_model_ids[next]
-    self.scoped_model_ids[next] = self.scoped_model_ids[current]
-    self.scoped_model_ids[current] = swap
-    self.refresh_scoped_model_options(overlay)
-    self.chat.status = 'Model order changed (Ctrl+S to save)'
-    self.redraw()
-}
-
-#local
-fn view_t.refresh_scoped_model_options(&self, ref<overlay_t> overlay) {
-    [string] refreshed = []
-    [string] ordered = []
-    for id in self.scoped_model_ids {
-        bool known = false
-        for model in models.all() {
-            string known_id = model.provider + '/' + model.id
-            if id == known_id {known = true; break}
-        }
-        if known {ordered.push(id)}
-    }
-    for model in models.all() {
-        string id = model.provider + '/' + model.id
-        bool listed = false
-        for existing in ordered {
-            if existing == id {listed = true; break}
-        }
-        if !listed {ordered.push(id)}
-    }
-    for id in ordered {
-        refreshed.push(scoped_model_option(id, self.is_model_enabled(id)))
-    }
-    overlay.options = refreshed
-    if overlay.selected >= overlay.options.len() {
-        overlay.selected = overlay.options.len() - 1
-    }
-    if overlay.selected < 0 {overlay.selected = 0}
-}
-
-#local
-fn scoped_model_option(string model_id, bool enabled): string {
-    return (enabled ? '[x] ' : '[ ] ') + model_id
-}
-
-#local
-fn scoped_model_id(string option): string {
-    return option.len() > 4 ? option.slice(4, option.len()) : option
-}
-
-#local
 fn builtin_command_names(): [string] {
-    // Keep slash completion in the same order as Pi's built-in registry.
-    // `/help` remains accepted by run_command as a convenience, but is not
-    // advertised as a Pi built-in command.
+    // Pi BUILTIN_SLASH_COMMANDS order (slash-commands.ts). `/help` remains
+    // accepted by run_command as a convenience, but is not advertised as a
+    // Pi built-in command.
     return ['/settings', '/model', '/scoped-models', '/export', '/import', '/share', '/copy', '/name', '/session', '/changelog', '/hotkeys', '/fork', '/clone', '/tree', '/trust', '/login', '/logout', '/new', '/compact', '/resume', '/reload', '/quit']
 }
 
-// Prompt template and skill commands join the built-ins in the completion
-// menu, deduplicated against them.  The host refreshes the cache whenever a
-// session starts (view construction) so project resources stay current.
-[slash_commands.slash_command_info_t] dynamic_commands_cache = []
-[string] model_scope_patterns_cache = []
-bool dynamic_commands_loaded = false
-
-fn refresh_dynamic_commands(string cwd, [string] skill_paths, bool no_skills, bool project_trusted) {
-    [string] no_extra = []
-    var templates = prompt_templates.load_prompt_templates(cwd, paths.agent_dir(), no_extra, true)
-    var skills_result = skills.load_skills(cwd, paths.agent_dir(), skill_paths, !no_skills, project_trusted) catch error {
-        skills.load_skills_result_t {}
-    }
-    // The config selector's enable lists filter which dynamic commands are
-    // advertised in the completion menu.
-    var settings = config_settings.load()
-    [slash_commands.slash_command_info_t] commands = []
-    for template in templates {
-        if resource_enabled(settings.enabled_prompt_names, template.name) {
-            commands.push(slash_commands.slash_command_info_t {name: template.name, description: template.description, source: 'prompt', source_info: template.source_info})
-        }
-    }
-    for skill in skills_result.skills {
-        if resource_enabled(settings.enabled_skill_names, skill.name) {
-            commands.push(slash_commands.slash_command_info_t {name: 'skill:' + skill.name, description: skill.description, source: 'skill', source_info: skill.source_info})
-        }
-    }
-    dynamic_commands_cache = commands
-    dynamic_commands_loaded = true
+// Pi BUILTIN_SLASH_COMMANDS (slash-commands.ts) raw descriptions and
+// argument hints.  The display description "hint — [tag] description" is
+// composed at render time (B1-R1-07), so the raw fields stay separate.
+#local
+fn builtin_command_description(string command): string {
+    if command == '/settings' {return 'Open settings menu'}
+    if command == '/model' {return 'Select model (opens selector UI)'}
+    if command == '/scoped-models' {return 'Enable/disable models for Ctrl+P cycling'}
+    if command == '/export' {return 'Export session (HTML default, or specify path: .html/.jsonl)'}
+    if command == '/import' {return 'Import and resume a session from a JSONL file'}
+    if command == '/share' {return 'Share session as a secret GitHub gist'}
+    if command == '/copy' {return 'Copy last agent message to clipboard'}
+    if command == '/name' {return 'Set session display name'}
+    if command == '/session' {return 'Show session info and stats'}
+    if command == '/changelog' {return 'Show changelog entries'}
+    if command == '/hotkeys' {return 'Show all keyboard shortcuts'}
+    if command == '/fork' {return 'Create a new fork from a previous user message'}
+    if command == '/clone' {return 'Duplicate the current session at the current position'}
+    if command == '/tree' {return 'Navigate session tree (switch branches)'}
+    if command == '/trust' {return 'Save project trust decision for future sessions'}
+    if command == '/login' {return 'Configure provider authentication'}
+    if command == '/logout' {return 'Remove provider authentication'}
+    if command == '/new' {return 'Start a new session'}
+    if command == '/compact' {return 'Manually compact the session context'}
+    if command == '/resume' {return 'Resume a different session'}
+    if command == '/reload' {return 'Reload keybindings, extensions, skills, prompts, themes, and context files'}
+    if command == '/quit' {return 'Quit pi'}
+    return ''
 }
 
 #local
-fn command_names(): [string] {
-    [string] result = vec<string>.cap_of(16)
-    for command in builtin_command_names() {
-        result.push(command)
-    }
-    for info in dynamic_commands_cache {
-        if info.name.starts_with('/') {
-            continue
-        }
-        string candidate = '/' + info.name
-        if !list_contains(result, candidate) {
-            result.push(candidate)
-        }
-    }
-    return result
+fn builtin_command_argument_hint(string command): string {
+    if command == '/model' {return '<provider/model>'}
+    if command == '/login' {return '<provider>'}
+    return ''
 }
 
+// Prompt template and skill commands join the built-ins in the completion
+// menu (Pi order: builtins, prompts, skills).  The dynamic part comes from
+// self.dynamic_commands, assembled by refresh_resource_snapshot from the
+// same filtered resources that drive execution (B1-R2-07/08); there is no
+// process-global dynamic cache anymore.
 #local
 fn list_contains([string] values, string target): bool {
     for value in values {
@@ -4238,63 +4600,215 @@ fn has_tool_name([string] tool_names, string wanted): bool {
     return false
 }
 
+// Pi interactive-mode.ts getAutocompleteSourceTag lives in
+// adou.src.context.git_source (B1-R3-07): scope mapping, npm: sources and
+// the full parseGitUrl git tag are extracted there as the testable
+// production parser, and command_items() below calls it.
+
+// The full slash-command item set (builtins, prompts, skills) with Pi's
+// display descriptions.  Dynamic items keep their real description and a
+// source tag; unknown dynamic descriptions stay empty, never a fallback.
+// Raw fields stay separate (B1-R1-07): description/argument_hint/source_tag
+// are composed into the display string only at render time, exactly like
+// Pi's prefixAutocompleteDescription + `hint — description` composition.
+pub fn view_t.command_items(&self): [autocomplete.autocomplete_item_t] {
+    [autocomplete.autocomplete_item_t] result = []
+    for command in builtin_command_names() {
+        string name = command.slice(1, command.len())
+        result.push(autocomplete.autocomplete_item_t {
+            value: name,
+            label: name,
+            description: builtin_command_description(command),
+            argument_hint: builtin_command_argument_hint(command),
+            kind: autocomplete.item_kind_t.BUILTIN,
+        })
+    }
+    for info in self.dynamic_commands {
+        string tag = git_source.source_tag(info.source_info)
+        autocomplete.item_kind_t kind = info.source == 'prompt' ? autocomplete.item_kind_t.PROMPT : autocomplete.item_kind_t.SKILL
+        result.push(autocomplete.autocomplete_item_t {
+            value: info.name,
+            label: info.name,
+            description: info.description,
+            argument_hint: info.argument_hint,
+            source_tag: tag,
+            kind: kind,
+        })
+    }
+    return result
+}
+
+// Pi interactive-mode.ts /model argument completion: models from the
+// configured providers (scoped set / runtime getAvailable), value
+// provider/id, label id, description provider, ranking text mirrors
+// getModelSearchText.  Batch 2 owns the selector itself.
+//
+// B1-R1-09: the candidate list is computed once and cached on the view.
+// Refresh happens only at explicit change points (init, /reload, /login,
+// /logout) or when the scope patterns changed; ordinary typing never scans
+// ~1200 models or reads the credential file per keystroke.
+pub fn view_t.refresh_model_argument_cache(&self) {
+    [string] scope_copy = []
+    for pattern in self.model_scope_patterns {
+        scope_copy.push(pattern)
+    }
+    self.cached_model_scope_patterns = scope_copy
+    self.cached_model_argument_items = self.build_model_argument_items()
+    self.model_argument_cache_valid = true
+}
+
 #local
-fn matching_command_names(string prefix): [string] {
-    // Pi fuzzy-sorts slash completion; an empty query keeps the registry
-    // order.  The fallback keeps prefix matches when fuzzy scoring is empty.
-    var all = command_names()
-    if prefix == '' {
-        return all
+fn view_t.build_model_argument_items(&self): [autocomplete.autocomplete_item_t] {
+    [autocomplete.autocomplete_item_t] result = []
+    [string] seen = []
+    for model in models.all() {
+        string reference = model.provider + '/' + model.id
+        if !models.allowed(reference, self.model_scope_patterns) {
+            continue
+        }
+        if !model_is_authenticated(self.runner, model) {
+            continue
+        }
+        if list_contains(seen, reference) {
+            continue
+        }
+        seen.push(reference)
+        string search = model.id + ' ' + model.provider + ' ' + reference + ' ' + model.provider + ' ' + model.id + ' ' + model.name
+        result.push(autocomplete.autocomplete_item_t {
+            value: reference,
+            label: model.id,
+            description: model.provider,
+            search_text: search,
+            kind: autocomplete.item_kind_t.MODEL_ARGUMENT,
+        })
     }
-    var fuzzy = fuzzy.fuzzy_filter_strings(all, prefix)
-    if fuzzy.len() > 0 {
-        return fuzzy
+    return result
+}
+
+#local
+fn same_scope_patterns([string] left, [string] right): bool {
+    if left.len() != right.len() {
+        return false
     }
-    [string] result = vec<string>.cap_of(9)
-    for command in all {
-        if command.starts_with(prefix) {
-            result.push(command)
+    for int index = 0; index < left.len(); index += 1 {
+        if left[index] != right[index] {
+            return false
         }
     }
-    return result
+    return true
 }
 
-#local
-fn render_command_menu(string prefix, int selected_index, int width): [string]! {
-    [string] result = vec<string>.cap_of(10)
-    var matches = matching_command_names(prefix)
-    for index, command in matches {
-        string description = command_description(command)
-        string line = index == selected_index ? theme.fg(theme.accent(), '→ ' + command) : '  ' + theme.fg(theme.text(), command)
-        line += '  ' + theme.fg(theme.muted_color(), description)
-        result.push(text_utils.truncate_to_width(line, width, '...', false))
+pub fn view_t.model_argument_items(&self): [autocomplete.autocomplete_item_t] {
+    if !self.model_argument_cache_valid || !same_scope_patterns(self.model_scope_patterns, self.cached_model_scope_patterns) {
+        self.refresh_model_argument_cache()
+    }
+    [autocomplete.autocomplete_item_t] copy = []
+    for item in self.cached_model_argument_items {
+        copy.push(item)
+    }
+    return copy
+}
+
+// Pi interactive-mode.ts /login argument completion: the login provider
+// list, deduplicated by id and sorted by provider NAME, with the api_key
+// auth type (OAuth/subscription auth types stay EXCLUDED until Batch
+// 5/IP-011).  Runtime-registered providers are not silently dropped
+// (B1-R1-11) and override same-id builtins (B1-R2-03).  The candidate
+// assembly (merge, capability filter, name sort, description/search text)
+// lives in registry.login_completion_options() so the tests exercise the
+// exact list the TUI renders; this function only maps it onto the
+// autocomplete item contract (B1-R2-04: OAuth-only providers such as
+// openai-codex never appear).
+pub fn view_t.login_argument_items(&self): [autocomplete.autocomplete_item_t] {
+    [autocomplete.autocomplete_item_t] result = []
+    for option in registry.login_completion_options() {
+        result.push(autocomplete.autocomplete_item_t {
+            value: option.id,
+            label: option.id,
+            description: option.description,
+            search_text: option.search_text,
+            kind: autocomplete.item_kind_t.LOGIN_ARGUMENT,
+        })
     }
     return result
 }
 
 #local
-fn command_description(string command): string {
-    if command == '/help' {return 'Show commands'}
-    if command == '/settings' {return 'Open settings'}
-    if command == '/scoped-models' {return 'Select configured models'}
-    if command == '/model' {return 'Select model'}
-    if command == '/export' {return 'Export session'}
-    if command == '/import' {return 'Import session'}
-    if command == '/share' {return 'Share session'}
-    if command == '/copy' {return 'Copy last response'}
-    if command == '/name' {return 'Name session'}
-    if command == '/session' {return 'Show session info'}
-    if command == '/changelog' {return 'Show changelog'}
-    if command == '/hotkeys' {return 'Show keyboard commands'}
-    if command == '/fork' {return 'Fork session'}
-    if command == '/clone' {return 'Clone session'}
-    if command == '/tree' {return 'Browse session tree'}
-    if command == '/trust' {return 'Manage project trust'}
-    if command == '/login' {return 'Configure authentication'}
-    if command == '/logout' {return 'Remove stored credentials'}
-    if command == '/compact' {return 'Compact context'}
-    if command == '/new' {return 'Start a new session'}
-    if command == '/reload' {return 'Reload project instructions'}
-    if command == '/resume' {return 'Resume saved session'}
-    return 'Quit Adou'
+fn repeat_spaces(int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += ' '
+    }
+    return result
+}
+
+// Pi select-list.ts renderItem: two-column label + description with the
+// layout primary column width, value/description truncation and the
+// selection marker.  B1-R1-07: the description column is composed at render
+// time (`hint — [tag] description`, see autocomplete.display_description).
+// B1-R1-08: the selected row's prefix, value, spacing and description all
+// carry the accent (Pi selectedText(accent)); only the unselected
+// description is muted (theme.description).
+#local
+fn render_autocomplete_item(autocomplete.autocomplete_item_t item, bool is_selected, int width, int primary): string {
+    string prefix = is_selected ? '→ ' : '  '
+    string display = item.label != '' ? item.label : item.value
+    string description = autocomplete.normalize_single_line(autocomplete.display_description(item))
+    if description != '' && width > 40 {
+        int effective = primary
+        int bound = width - 2 - 4
+        if effective > bound {
+            effective = bound
+        }
+        if effective < 1 {
+            effective = 1
+        }
+        int max_primary = effective - autocomplete.PRIMARY_COLUMN_GAP
+        if max_primary < 1 {
+            max_primary = 1
+        }
+        string truncated_value = text_utils.truncate_to_width(display, max_primary, '', false) catch error {display}
+        int value_width = text_utils.visible_width(truncated_value) catch error {truncated_value.len()}
+        int spacing = effective - value_width
+        if spacing < 1 {
+            spacing = 1
+        }
+        int description_start = 2 + value_width + spacing
+        int remaining = width - description_start - 2
+        if remaining > autocomplete.MIN_DESCRIPTION_WIDTH {
+            string truncated_desc = text_utils.truncate_to_width(description, remaining, '', false) catch error {description}
+            string row = prefix + truncated_value + repeat_spaces(spacing) + truncated_desc
+            if is_selected {
+                return theme.fg(theme.accent(), row)
+            }
+            return prefix + truncated_value + repeat_spaces(spacing) + theme.fg(theme.muted_color(), truncated_desc)
+        }
+    }
+    int max_width = width - 2 - 2
+    string value = text_utils.truncate_to_width(display, max_width, '', false) catch error {display}
+    if is_selected {
+        return theme.fg(theme.accent(), prefix + value)
+    }
+    return prefix + value
+}
+
+#local
+fn render_command_menu(ref<autocomplete.autocomplete_state_t> state, int width): [string]! {
+    [string] result = vec<string>.cap_of(state.max_visible + 1)
+    if !state.active || state.filtered.len() == 0 {
+        return result
+    }
+    int primary = autocomplete.primary_column_width(state.filtered, state.mode)
+    int start = autocomplete.window_start(state.selected_index, state.filtered.len(), state.max_visible)
+    int end = autocomplete.window_end(start, state.filtered.len(), state.max_visible)
+    for int index = start; index < end; index += 1 {
+        var item = state.filtered[index]
+        bool is_selected = index == state.selected_index
+        result.push(render_autocomplete_item(item, is_selected, width, primary))
+    }
+    if autocomplete.should_show_pager(start, end, state.filtered.len()) {
+        string scroll = autocomplete.pager_text(state.selected_index, state.filtered.len())
+        result.push(theme.fg(theme.dim_color(), text_utils.truncate_to_width(scroll, width - 2, '', false) catch error {scroll}))
+    }
+    return result
 }

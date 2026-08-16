@@ -1,0 +1,17 @@
+import adou.src.server.rpc_process
+
+test 'RPC process stdout writer restores split and combined JSONL frames' {
+    var writer = new rpc_process.line_writer_t(lines = chan<string>.new(8))
+    writer.write('{"type":"response","id":"a"' as [u8])
+    writer.write('}\n{"type":"session_start"}\r\n' as [u8])
+    assert(writer.lines.recv() == '{"type":"response","id":"a"}')
+    assert(writer.lines.recv() == '{"type":"session_start"}')
+    writer.finish()
+}
+
+test 'RPC process stdout writer flushes a final line without newline' {
+    var writer = new rpc_process.line_writer_t(lines = chan<string>.new(4))
+    writer.write('{"type":"response","id":"tail"}' as [u8])
+    writer.finish()
+    assert(writer.lines.recv() == '{"type":"response","id":"tail"}')
+}
