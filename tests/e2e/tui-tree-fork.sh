@@ -120,7 +120,27 @@ try:
     if not collect(b"\x1b[>1u", timeout=10.0):
         raise SystemExit("TUI did not become ready for keyboard input")
 
-    # 1. /tree opens the overlay with the seeded entries and the label.
+    # 1. /trust opens the project selector, supports j/k navigation and
+    # cancel, then applies a session-only decision without writing a store.
+    if not send(b"/trust\r", b"Project trust:", timeout=5.0):
+        raise SystemExit("/trust did not open the project trust selector")
+    collect(timeout=0.3)
+    if b"Trust (this session only)" not in output or b"Saved source:" not in output:
+        raise SystemExit("trust selector is missing session/source state")
+    if not send(b"j", None, timeout=2.0):
+        pass
+    if not send(b"k", None, timeout=2.0):
+        pass
+    os.write(fd, b"\x1b")
+    time.sleep(0.3)
+    if not send(b"/trust\r", b"Project trust:", timeout=5.0):
+        raise SystemExit("/trust did not reopen after cancel")
+    os.write(fd, b"\x1b[B" * 2)
+    time.sleep(0.15)
+    if not send(b"\r", b"for this session", timeout=5.0):
+        raise SystemExit("session-only trust choice did not apply")
+
+    # 2. /tree opens the overlay with the seeded entries and the label.
     if not send(b"/tree\r", b"Session tree:", timeout=5.0):
         raise SystemExit("/tree did not open the session tree overlay")
     collect(timeout=0.4)
@@ -128,15 +148,34 @@ try:
         raise SystemExit("session label missing from the tree overlay")
     if b"seed-user" not in output or b"seed-assistant" not in output:
         raise SystemExit("tree overlay lacks the seeded message entries")
+    # The fixture is intentionally old, so a real epoch conversion must
+    # render a day-based age rather than the fallback "just now".
+    if not send(b"\x1b[116;2u", b"d ago", timeout=4.0):
+        raise SystemExit("tree timestamp toggle did not render a relative age")
+    # Select the parent message and exercise fold/unfold.  A folded parent
+    # remains visible with a '+' marker while only its descendant disappears.
+    os.write(fd, b"\x1b")
+    time.sleep(0.005)
+    os.write(fd, b"[A")
+    time.sleep(0.2)
+    if not send(b"\x1b[1;3D", b"+ seed-assistant", timeout=4.0):
+        raise SystemExit("tree fold did not preserve the collapsed parent row")
+    send(b"\x1b[1;3C", None, timeout=2.0)
+    # Tree copy and page navigation are overlay-local actions; the copy uses
+    # OSC-52 and must leave the selector open with a visible status.
+    if not send(b"\x18", b"Copied tree entry to clipboard", timeout=4.0):
+        raise SystemExit("tree copy action did not reach the clipboard path")
+    send(b"\x1b[6~", None, timeout=2.0)
+    send(b"\x1b[5~", None, timeout=2.0)
 
-    # 2. Escape cancels the tree overlay without crashing, then /tree reopens.
+    # 3. Escape cancels the tree overlay without crashing, then /tree reopens.
     if not send(b"\x1b", None, timeout=2.0):
         pass
     time.sleep(0.4)
     if not send(b"/tree\r", b"Session tree:", timeout=5.0):
         raise SystemExit("/tree did not reopen after escape")
 
-    # 3. Arrow-up selects the non-leaf user message (the 50 ms escape window
+    # 4. Arrow-up selects the non-leaf user message (the 50 ms escape window
     #    absorbs PTY-split sequences), then the branch-summary dialog
     #    completes with "No summary" (offline mode: no provider round-trip).
     os.write(fd, b"\x1b")
@@ -148,7 +187,7 @@ try:
     if not send(b"\r", b"Navigated to selected point", timeout=4.0):
         raise SystemExit("No summary did not complete the tree navigation")
 
-    # 4. Clear the editor text that tree navigation inserted, then /fork
+    # 5. Clear the editor text that tree navigation inserted, then /fork
     #    lists user messages and forks the selected one.
     os.write(fd, b"\x7f" * 64)
     time.sleep(0.3)
@@ -160,7 +199,7 @@ try:
     if not send(b"\r", b"Forked to new session", timeout=5.0):
         raise SystemExit("fork selection did not create a new session")
 
-    # 5. Clear the editor text fork inserted, then clean quit restores the
+    # 6. Clear the editor text fork inserted, then clean quit restores the
     #    terminal and exits 0.
     os.write(fd, b"\x7f" * 64)
     time.sleep(0.3)

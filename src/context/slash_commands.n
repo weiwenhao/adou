@@ -29,12 +29,12 @@ pub fn skill_commands([ref<skills.skill_t>] skills_list): [slash_command_info_t]
     return result
 }
 
-// Shared enable-list filter (B1-R2-07): an empty enabled list keeps
-// everything; a non-empty list keeps exactly the named resources.  This is
-// the production filter used by the TUI snapshot and the app/RPC assembly
-// paths, so menu, execution and display always apply the same rule.
-pub fn filter_prompt_templates([ref<prompt_templates.prompt_template_t>] templates, [string] enabled_prompt_names): [ref<prompt_templates.prompt_template_t>] {
-    if enabled_prompt_names.len() == 0 {
+// Shared enable-list filters (B1-R2-07): `configured=false` means the setting
+// is absent and all resources remain available; `configured=true` applies the
+// exact allow-list, including an explicit empty list (none). Production
+// snapshot paths use these functions so menu, execution and display agree.
+pub fn filter_prompt_templates_configured([ref<prompt_templates.prompt_template_t>] templates, [string] enabled_prompt_names, bool configured): [ref<prompt_templates.prompt_template_t>] {
+    if !configured {
         return templates
     }
     [ref<prompt_templates.prompt_template_t>] result = []
@@ -46,8 +46,8 @@ pub fn filter_prompt_templates([ref<prompt_templates.prompt_template_t>] templat
     return result
 }
 
-pub fn filter_skills([ref<skills.skill_t>] skills_list, [string] enabled_skill_names): [ref<skills.skill_t>] {
-    if enabled_skill_names.len() == 0 {
+pub fn filter_skills_configured([ref<skills.skill_t>] skills_list, [string] enabled_skill_names, bool configured): [ref<skills.skill_t>] {
+    if !configured {
         return skills_list
     }
     [ref<skills.skill_t>] result = []

@@ -37,8 +37,8 @@ pub fn refresh(ref<resource_snapshot_t> snapshot, string cwd, bool trusted, stri
     var skills_result = skills.load_skills(cwd, agent_dir, skill_paths, !no_skills, trusted) catch error {
         skills.load_skills_result_t {}
     }
-    snapshot.prompt_templates = slash_commands.filter_prompt_templates(templates, snapshot.settings.enabled_prompt_names)
-    snapshot.skills = slash_commands.filter_skills(skills_result.skills, snapshot.settings.enabled_skill_names)
+    snapshot.prompt_templates = slash_commands.filter_prompt_templates_configured(templates, snapshot.settings.enabled_prompt_names, snapshot.settings.enabled_prompts_configured)
+    snapshot.skills = slash_commands.filter_skills_configured(skills_result.skills, snapshot.settings.enabled_skill_names, snapshot.settings.enabled_skills_configured)
 }
 
 pub fn dynamic_commands(ref<resource_snapshot_t> snapshot): [slash_commands.slash_command_info_t] {

@@ -1,6 +1,7 @@
 import adou.src.config.paths
 import fmt
 import adou.src.config.settings
+import adou.src.tools.path_utils
 import fs
 import os
 import path
@@ -21,6 +22,33 @@ test 'theme and resource lists persist through settings round trips' {
     assert(loaded.enabled_skill_names[0] == 'demo')
     assert(loaded.enabled_prompt_names.len() == 1)
     assert(loaded.enabled_prompt_names[0] == 'review')
+    var none = settings.settings_t {enabled_skills_configured: true, enabled_prompts_configured: true,}
+    settings.save(none) catch error {
+        assert(false)
+    }
+    var explicit_none = settings.load()
+    assert(explicit_none.enabled_skills_configured)
+    assert(explicit_none.enabled_prompts_configured)
+    assert(explicit_none.enabled_skill_names.len() == 0)
     syscall.set_env('PI_CODING_AGENT_DIR', '')
     os.rmdir(dir, true)
+}
+
+test 'project resource settings stay in the project file' {
+    string agent_dir = path.join('/tmp', 'adou-settings-project-' + fmt.sprintf('%d', time.now().ms_timestamp()))
+    string project_dir = path.join(agent_dir, 'project')
+    syscall.set_env('PI_CODING_AGENT_DIR', agent_dir)
+    os.mkdirs(project_dir, 0o700)
+    var project = settings.settings_t {enabled_skill_names: ['project-skill'], enabled_prompt_names: ['project-prompt'],}
+    settings.save_project(project_dir, project) catch error {
+        assert(false)
+    }
+    var merged = settings.load_for(project_dir)
+    assert(merged.enabled_skill_names.len() == 1)
+    assert(merged.enabled_skill_names[0] == 'project-skill')
+    assert(merged.enabled_prompt_names[0] == 'project-prompt')
+    assert(path_utils.exists(paths.project_settings_path(project_dir)))
+    assert(!path_utils.exists(paths.settings_path()))
+    syscall.set_env('PI_CODING_AGENT_DIR', '')
+    os.rmdir(agent_dir, true)
 }

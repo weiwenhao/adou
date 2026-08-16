@@ -8,15 +8,19 @@ import path
 import syscall
 import time
 
-pub fn isolated_trust_path(): string {
-    // Redirect the trust store so tests never touch the real agent dir.
-    string dir = path.join('/tmp', 'adou-trust-test-' + suffix())
+var trust_store_sequence = 0
+
+pub fn isolate_trust_store() {
+    // Redirect every case so inherited decisions cannot leak between tests
+    // and the suite never touches the user's real agent directory.
+    trust_store_sequence += 1
+    string dir = path.join('/tmp', 'adou-trust-test-' + suffix() + '-' + fmt.sprintf('%d', trust_store_sequence))
     os.mkdirs(dir, 0o700) catch error {}
-    return path.join(dir, 'trust.json')
+    syscall.set_env('PI_CODING_AGENT_DIR', dir) catch error {}
 }
 
 test 'decision resolves the nearest ancestor like Pi' {
-    string file_path = isolated_trust_path()
+    isolate_trust_store()
     os.mkdirs(path.join('/tmp', 'adou-trust-root-' + suffix()), 0o700)
     // Direct store manipulation through the module is exercised via save/decision.
     trust.save('/tmp/a/b/c', true) catch error {}
@@ -24,10 +28,13 @@ test 'decision resolves the nearest ancestor like Pi' {
     assert(first)
     bool nested = trust.decision('/tmp/a/b/c/sub') is bool && trust.decision('/tmp/a/b/c/sub') as bool
     assert(nested)
+    assert(trust.decision_source('/tmp/a/b/c/sub') == '/tmp/a/b/c')
     assert(trust.decision('/tmp/a/b/x') is null)
+    assert(trust.decision_source('/tmp/a/b/x') == '')
 }
 
 test 'clear removes a decision like Pi null updates' {
+    isolate_trust_store()
     trust.save('/tmp/a/clear-test', false) catch error {}
     bool stored = trust.decision('/tmp/a/clear-test') is bool && !(trust.decision('/tmp/a/clear-test') as bool)
     assert(stored)
@@ -36,6 +43,7 @@ test 'clear removes a decision like Pi null updates' {
 }
 
 test 'set_many applies updates and null deletions like Pi' {
+    isolate_trust_store()
     [trust.trust_update_t] updates = []
     updates.push(trust.trust_update_t {trust_path: '/tmp/a/multi-1', decision: true})
     updates.push(trust.trust_update_t {trust_path: '/tmp/a/multi-2', decision: false})
@@ -53,12 +61,14 @@ test 'set_many applies updates and null deletions like Pi' {
 }
 
 test 'trust_parent_path returns the parent directory like Pi' {
+    isolate_trust_store()
     string parent = trust.trust_parent_path('/tmp/a/b/c')
     assert(parent == '/tmp/a/b')
     assert(trust.trust_parent_path('/') == '')
 }
 
 test 'has_trust_requiring_resources detects .pi resources and agents skills' {
+    isolate_trust_store()
     string root = path.join('/tmp', 'adou-trust-res-' + suffix())
     os.mkdirs(path.join(root, '.pi'), 0o700)
     assert(!trust.has_trust_requiring_resources(root))
@@ -70,6 +80,7 @@ test 'has_trust_requiring_resources detects .pi resources and agents skills' {
 }
 
 test 'resolve_trust applies stored decisions per cwd and explicit overrides win' {
+    isolate_trust_store()
     // A project with trust-requiring resources picks up its stored decision.
     string project = path.join('/tmp', 'adou-trust-res-' + suffix())
     os.mkdirs(path.join(project, '.pi', 'skills'), 0o700)
@@ -92,6 +103,7 @@ test 'resolve_trust applies stored decisions per cwd and explicit overrides win'
 }
 
 test 'defaultProjectTrust fallback gates projects without stored decisions' {
+    isolate_trust_store()
     string project = path.join('/tmp', 'adou-trust-default-' + suffix())
     os.mkdirs(path.join(project, '.pi', 'skills'), 0o700)
     var file = fs.open(path.join(project, '.pi', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
@@ -113,6 +125,7 @@ fn suffix(): string {
 }
 
 test 'get_project_trust_options builds the Pi choice set' {
+    isolate_trust_store()
     var options = trust.get_project_trust_options('/tmp/adou-trust-opt-' + suffix(), false)
     assert(options.len() == 3)
     assert(options[0].label == 'Trust')

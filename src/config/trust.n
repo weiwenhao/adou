@@ -34,6 +34,33 @@ pub fn decision(string cwd): bool? {
     return null
 }
 
+// Return the path that supplied the nearest saved decision.  The interactive
+// trust selector displays this provenance so an inherited parent decision is
+// distinguishable from a local one (Pi's ProjectTrustStore.getEntry).
+pub fn decision_source(string cwd): string {
+    string file_path = trust_path()
+    if !path_utils.exists(file_path) {return ''}
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return ''}
+    string content = input.content() catch error {
+        input.close()
+        return ''
+    }
+    input.close()
+    var root = json_util.parse(content) catch error {return ''}
+    if !json_util.is_obj(root) {return ''}
+    {string:any} object = root as {string:any}
+    string current = normalize(cwd)
+    for true {
+        if object.contains(current) && object[current] is bool {
+            return current
+        }
+        string parent = path.dir(current)
+        if parent == current || parent == '' {break}
+        current = parent
+    }
+    return ''
+}
+
 pub fn save(string cwd, bool trusted): void! {
     string file_path = trust_path()
     {string:any} object = read_object(file_path)

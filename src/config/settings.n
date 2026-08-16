@@ -39,6 +39,10 @@ pub type settings_t = struct {
     string theme = 'dark'
     [string] enabled_skill_names = []
     [string] enabled_prompt_names = []
+    // An absent enabledSkills/enabledPrompts key means "all"; an explicit
+    // empty array means "none".  Keep that distinction for Config toggles.
+    bool enabled_skills_configured
+    bool enabled_prompts_configured
     // Pi settings.autocompleteMaxVisible: max visible rows of the editor
     // autocomplete SelectList (3-20, default 5).
     int autocomplete_max_visible = 5
@@ -144,6 +148,7 @@ fn load_file(string file_path, settings_t initial): settings_t {
     int max_visible = autocomplete_value(object, 'autocompleteMaxVisible', result.autocomplete_max_visible)
     result.autocomplete_max_visible = autocomplete_clamp(max_visible)
     if object.contains('enabledSkills') && object['enabledSkills'] is [any] {
+        result.enabled_skills_configured = true
         result.enabled_skill_names = []
         for item in object['enabledSkills'] as [any] {
             if item is string && (item as string) != '' {
@@ -152,6 +157,7 @@ fn load_file(string file_path, settings_t initial): settings_t {
         }
     }
     if object.contains('enabledPrompts') && object['enabledPrompts'] is [any] {
+        result.enabled_prompts_configured = true
         result.enabled_prompt_names = []
         for item in object['enabledPrompts'] as [any] {
             if item is string && (item as string) != '' {
@@ -273,8 +279,7 @@ fn load_warnings({string:any} object, settings_t initial): settings_t {
 }
 
 #local
-fn read_raw(): {string:any} {
-    string file_path = settings_path()
+fn read_raw(string file_path): {string:any} {
     if !path_utils.exists(file_path) {return {}}
     var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return {}}
     string content = input.content() catch error {
@@ -287,10 +292,23 @@ fn read_raw(): {string:any} {
     return root as {string:any}
 }
 pub fn save(settings_t settings): void! {
+    save_to(settings, settings_path())
+}
+
+// Project-local resource toggles use the same Pi-shaped document writer as
+// global settings, but must never overwrite the user's global settings file.
+// Keep the target explicit so a Config selector scope switch is observable
+// in the correct file.
+pub fn save_project(string cwd, settings_t settings): void! {
+    save_to(settings, paths.project_settings_path(cwd))
+}
+
+#local
+fn save_to(settings_t settings, string file_path): void! {
     // Merge over the existing file so unknown keys (theme, packages,
     // transport, ...) survive a save; Pi's settings manager keeps the full
     // document shape.
-    {string:any} object = read_raw()
+    {string:any} object = read_raw(file_path)
     object['defaultProvider'] = settings.default_provider
     object['defaultModel'] = settings.default_model
     object['defaultThinkingLevel'] = settings.default_thinking_level
@@ -352,7 +370,7 @@ pub fn save(settings_t settings): void! {
     } else if object.contains('enabledModels') {
         object.del('enabledModels')
     }
-    if settings.enabled_skill_names.len() > 0 {
+    if settings.enabled_skills_configured || settings.enabled_skill_names.len() > 0 {
         [any] skill_values = []
         for name in settings.enabled_skill_names {
             skill_values.push(name)
@@ -361,7 +379,7 @@ pub fn save(settings_t settings): void! {
     } else if object.contains('enabledSkills') {
         object.del('enabledSkills')
     }
-    if settings.enabled_prompt_names.len() > 0 {
+    if settings.enabled_prompts_configured || settings.enabled_prompt_names.len() > 0 {
         [any] prompt_values = []
         for name in settings.enabled_prompt_names {
             prompt_values.push(name)
@@ -370,7 +388,6 @@ pub fn save(settings_t settings): void! {
     } else if object.contains('enabledPrompts') {
         object.del('enabledPrompts')
     }
-    string file_path = settings_path()
     os.mkdirs(path.dir(file_path), 0o700)
     var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
     string content = json.serialize(object)

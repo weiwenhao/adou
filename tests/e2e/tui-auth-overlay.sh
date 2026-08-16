@@ -73,6 +73,14 @@ def collect(until=None, timeout=4.0):
             break
     return until is not None and until in output
 
+def paste_text(text, until, timeout=4.0):
+    os.write(fd, b"\x1b[200~")
+    time.sleep(0.12)
+    os.write(fd, text.encode())
+    time.sleep(0.12)
+    os.write(fd, b"\x1b[201~")
+    return collect(until, timeout=timeout)
+
 try:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 160, 0, 0))
     if not collect(b"\x1b[>1u", timeout=10.0):
@@ -92,6 +100,30 @@ try:
     if output.count(b"\x1b[38;2;95;135;255m") < 2:
         raise SystemExit("authentication selector does not render Pi border colors")
 
+    # Choose the API-key path, search the runtime provider registry, and verify
+    # an empty key reports an error without wedging the overlay.  Escape then
+    # recovers cleanly from the error state.
+    os.write(fd, b"\x1b[B")
+    time.sleep(0.1)
+    os.write(fd, b"\r")
+    if not collect(b"Select provider:", timeout=4.0):
+        raise SystemExit("API-key method did not open the provider selector")
+    if not paste_text("deepseek", b"DeepSeek", timeout=4.0):
+        raise SystemExit("runtime provider selector search did not find DeepSeek")
+    time.sleep(0.5)
+    collect(timeout=0.5)
+    os.write(fd, b"\r")
+    if not collect(b"Login to deepseek", timeout=4.0):
+        raise SystemExit("provider selection did not open the API-key field")
+    os.write(fd, b"\r")
+    if not collect(b"API key is required", timeout=4.0):
+        raise SystemExit("empty API-key submission did not render recoverable error")
+    os.write(fd, b"\x1b")
+    time.sleep(0.2)
+    # A fresh /login confirms the cancelled error overlay is gone.
+    os.write(fd, b"/login\r")
+    if not collect(b"Select authentication method:", timeout=4.0):
+        raise SystemExit("cancelled API-key overlay did not restore the editor")
     # Escape cancels the selector; then quit through the normal slash command
     # path so terminal restoration is exercised instead of killing the child.
     os.write(fd, b"\x1b")

@@ -115,6 +115,7 @@ pub const OVERLAY_SETTINGS_WARNINGS = 21
 pub const OVERLAY_THEME = 22
 pub const OVERLAY_THEME_AUTO = 23
 pub const OVERLAY_THEME_SELECT = 24
+pub const OVERLAY_TRUST = 25
 
 pub type overlay_t = struct {
     int kind
@@ -147,6 +148,11 @@ pub type overlay_t = struct {
     // Pi app.tree.toggleLabelTimestamp: show each entry's timestamp next
     // to its label in the tree rows.
     bool label_timestamps
+    // Config selector state.  scope 0 is global/user resources; scope 1 is
+    // project-local resources.  The query is kept on the overlay so Esc can
+    // clear a search before closing, matching Pi's selector behavior.
+    int config_scope
+    [trust.trust_option_t] trust_options = []
 }
 
 pub type view_t = struct {
@@ -216,6 +222,7 @@ pub type view_t = struct {
     string system_prompt_override
     [string] append_system_prompts = []
     [ref<prompt_templates.prompt_template_t>] prompt_templates = []
+    [ref<prompt_templates.prompt_template_t>] available_prompt_templates = []
     // B1-R2-06/07/08: one trust-aware resource snapshot refreshed together
     // at init, /reload and session rebind.  settings_snapshot is the merged
     // global+project settings (global-only for untrusted cwds); dynamic_commands
@@ -226,6 +233,7 @@ pub type view_t = struct {
     config_settings.settings_t settings_snapshot = config_settings.settings_t{}
     [slash_commands.slash_command_info_t] dynamic_commands = []
     [ref<skills.skill_t>] cached_skills = []
+    [ref<skills.skill_t>] available_skills = []
     bool no_context_files
     // CLI skills options survive /reload and session rebinds: explicit
     // --skill paths keep loading, --no-skills keeps gating default discovery,
@@ -236,6 +244,12 @@ pub type view_t = struct {
     bool no_skills
     bool trust_override
     bool trust_override_explicit
+    // A trust choice made for this TUI session must not mutate CLI override
+    // state or the persistent trust store.  It is scoped to the current cwd
+    // and is re-evaluated on session rebind.
+    bool session_trust_override_set
+    bool session_trust_override
+    string session_trust_cwd
     // Pi coalesces render requests into one frame per animation interval.
     // Keep the same property so a burst of stream deltas cannot race the
     // differential renderer or write duplicate terminal frames.
@@ -256,7 +270,7 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     // before the view is built so the editor resolves the same instance.
     var keybinding_registry = keybindings.create(paths.agent_dir())
     keybindings.set_current(keybinding_registry)
-    var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, autocomplete = new autocomplete.autocomplete_state_t (), kitty_protocol = true, skill_paths = skill_paths, no_skills = no_skills, trust_override = trust_override, trust_override_explicit = trust_override_explicit, model_scope_patterns = initial_model_scope_patterns, model_scope_explicit = model_scope_explicit, system_prompt_override = system_prompt_override, append_system_prompts = append_system_prompts, no_context_files = no_context_files, keybindings = keybinding_registry)
+    var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, autocomplete = new autocomplete.autocomplete_state_t (), kitty_protocol = true, skill_paths = skill_paths, no_skills = no_skills, trust_override = trust_override, trust_override_explicit = trust_override_explicit, session_trust_override_set = false, session_trust_override = false, session_trust_cwd = cwd, model_scope_patterns = initial_model_scope_patterns, model_scope_explicit = model_scope_explicit, system_prompt_override = system_prompt_override, append_system_prompts = append_system_prompts, no_context_files = no_context_files, keybindings = keybinding_registry)
     string thinking = runner.agent_config.stream_options.reasoning_effort
     if !runner.agent_config.stream_options.thinking_enabled {
         thinking = 'off'
@@ -315,8 +329,10 @@ pub fn view_t.refresh_resource_snapshot(&self, string cwd, bool reload_auth) {
     }
     // Shared production filters (slash_commands.filter_*): the same rule as
     // the app/RPC assembly paths.
-    self.prompt_templates = slash_commands.filter_prompt_templates(templates, self.settings_snapshot.enabled_prompt_names)
-    self.cached_skills = slash_commands.filter_skills(skills_result.skills, self.settings_snapshot.enabled_skill_names)
+    self.available_prompt_templates = templates
+    self.available_skills = skills_result.skills
+    self.prompt_templates = slash_commands.filter_prompt_templates_configured(self.available_prompt_templates, self.settings_snapshot.enabled_prompt_names, self.settings_snapshot.enabled_prompts_configured)
+    self.cached_skills = slash_commands.filter_skills_configured(self.available_skills, self.settings_snapshot.enabled_skill_names, self.settings_snapshot.enabled_skills_configured)
     self.dynamic_commands = slash_commands.compose_resource_commands(self.prompt_templates, self.cached_skills, self.settings_snapshot.enable_skill_commands)
     self.autocomplete_max_visible = autocomplete.clamp_max_visible(self.settings_snapshot.autocomplete_max_visible)
     self.editor_padding_x = self.settings_snapshot.editor_padding_x
@@ -1315,6 +1331,11 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         return null
     }
     if command == '/trust' {
+        if parts.len() == 1 {
+            self.show_trust_overlay()
+            self.redraw()
+            return null
+        }
         string target = ''
         if parts.len() > 1 {
             target = parts[1]
@@ -1325,7 +1346,9 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
                 self.redraw()
                 return null
             }
-            self.chat.status = 'Saved project trust decision: not trusted. Restart Adou to reload project resources.'
+            self.session_trust_override_set = false
+            self.refresh_resource_snapshot(self.runner.repository.cwd, false)
+            self.chat.status = 'Saved project trust decision: not trusted.'
             self.redraw()
             return null
         }
@@ -1344,7 +1367,9 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
                 self.redraw()
                 return null
             }
-            self.chat.status = 'Saved project trust decision: trusted via parent folder. Restart Adou to reload project resources.'
+            self.session_trust_override_set = false
+            self.refresh_resource_snapshot(self.runner.repository.cwd, false)
+            self.chat.status = 'Saved project trust decision: trusted via parent folder.'
             self.redraw()
             return null
         }
@@ -1353,7 +1378,9 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
             self.redraw()
             return null
         }
-        self.chat.status = 'Saved project trust decision: trusted. Restart Adou to reload project resources.'
+        self.session_trust_override_set = false
+        self.refresh_resource_snapshot(self.runner.repository.cwd, false)
+        self.chat.status = 'Saved project trust decision: trusted.'
         self.redraw()
         return null
     }
@@ -1515,6 +1542,11 @@ fn view_t.finish_session_switch(&self, ref<repository.manager_t> next): ref<sess
         self.redraw()
         return null
     }
+    // Session-only trust is scoped to the project that was selected; a
+    // resume/import into another cwd must not carry it across projects.
+    if trust.normalize(next.cwd) != trust.normalize(self.session_trust_cwd) {
+        self.session_trust_override_set = false
+    }
     self.rebind_project_context(next.cwd) catch error {
         self.chat.status = 'Session resumed; could not rebuild project tools'
     }
@@ -1602,6 +1634,9 @@ fn view_t.rebind_project_context(&self, string cwd): void! {
 // applies when the project hosts trust-requiring resources, and the global
 // settings.defaultProjectTrust supplies the fallback.
 fn view_t.trusted_for(&self, string cwd): bool {
+    if self.session_trust_override_set && trust.normalize(cwd) == trust.normalize(self.session_trust_cwd) {
+        return self.session_trust_override
+    }
     return trust.resolve_trust(self.trust_override_explicit, self.trust_override, cwd, self.settings_snapshot.default_project_trust)
 }
 
@@ -1850,18 +1885,9 @@ fn relative_time(string timestamp): string {
 
 #local
 fn iso_timestamp_ms(string timestamp): i64 {
-    // Entry timestamps are Pi-style ISO strings ('2026-08-16T09-46-42-603Z');
-    // parse the date/time prefix into a millisecond epoch.
-    if timestamp.len() < 17 {
-        return 0
-    }
-    int year = timestamp.slice(0, 4).to_int() catch error {return 0}
-    int month = timestamp.slice(5, 7).to_int() catch error {return 0}
-    int day = timestamp.slice(8, 10).to_int() catch error {return 0}
-    int hour = timestamp.slice(11, 13).to_int() catch error {return 0}
-    int minute = timestamp.slice(14, 16).to_int() catch error {return 0}
-    int second = timestamp.slice(17, 19).to_int() catch error {return 0}
-    return (year as i64) * 31536000000 + (month as i64) * 2628000000 + (day as i64) * 86400000 + (hour as i64) * 3600000 + (minute as i64) * 60000 + (second as i64) * 1000
+    // Reuse the repository's libc/timegm parser so relative labels use the
+    // same epoch as the rest of session handling.
+    return repository.timestamp_ms(timestamp) as i64
 }
 
 pub fn view_t.restore_tree_overlay(&self, string entry_id) {
@@ -2791,6 +2817,55 @@ pub fn view_t.show_auth_overlay(&self, string provider) {
     self.overlay = new overlay_t(kind = OVERLAY_AUTH_METHOD, title = title, provider = provider, options = options)
 }
 
+// Interactive project-trust selector.  Persistent choices use the same
+// atomic set_many path as `/trust trust|no|parent`; session-only choices stay
+// on the view and are deliberately absent from the trust store.
+pub fn view_t.show_trust_overlay(&self) {
+    string cwd = self.runner.repository.cwd
+    bool trusted = self.trusted_for(cwd)
+    [trust.trust_option_t] choices = trust.get_project_trust_options(cwd, true)
+    [string] labels = []
+    for choice in choices {
+        labels.push(choice.label)
+    }
+    string source = trust.decision_source(cwd)
+    string title = 'Project trust: ' + (trusted ? 'trusted' : 'untrusted')
+    self.overlay = new overlay_t(kind = OVERLAY_TRUST, title = title, provider = cwd, options = labels, trust_options = choices)
+    if source != '' {
+        self.chat.status = 'Saved trust source: ' + source
+    } else {
+        self.chat.status = 'No saved trust decision for ' + cwd
+    }
+}
+
+#local
+fn view_t.apply_trust_option(&self, ref<overlay_t> overlay) {
+    if overlay.selected < 0 || overlay.selected >= overlay.trust_options.len() {
+        return
+    }
+    var choice = overlay.trust_options[overlay.selected]
+    bool session_only = choice.label.contains('(this session only)')
+    if session_only {
+        self.session_trust_override_set = true
+        self.session_trust_override = choice.trusted
+        self.session_trust_cwd = overlay.provider
+    } else {
+        trust.set_many(choice.updates) catch error {
+            self.chat.error_message = 'Could not save project trust: ' + error.msg()
+            self.redraw()
+            return
+        }
+        self.session_trust_override_set = false
+        self.session_trust_cwd = overlay.provider
+    }
+    bool trusted = self.trusted_for(overlay.provider)
+    self.refresh_resource_snapshot(overlay.provider, false)
+    self.chat.status = (trusted ? 'Project trusted' : 'Project not trusted') + (session_only ? ' for this session' : ' and saved')
+    self.chat.error_message = ''
+    self.overlay = null
+    self.redraw()
+}
+
 pub fn view_t.show_model_overlay(&self, string query) {
     [ref<ai_types.model_t>] available = []
     for model in models.all() {
@@ -2894,8 +2969,71 @@ fn view_t.apply_model_refresh(&self, int generation, int failures) {
 }
 
 pub fn view_t.show_logout_overlay(&self) {
-    [string] options = ['deepseek', 'openai', 'anthropic']
+    [string] options = logout_provider_options()
+    if options.len() == 0 {
+        self.chat.status = 'No stored credentials to remove'
+        self.redraw()
+        return
+    }
     self.overlay = new overlay_t(kind = OVERLAY_LOGOUT, title = 'Select provider to logout:', options = options)
+}
+
+#local
+fn login_provider_options(): [string] {
+    [string] result = []
+    for item in registry.login_completion_options() {
+        // Keep the provider id in the value while carrying the display name
+        // and search text for the selector.
+        result.push(item.id + ' [' + item.name + ']')
+    }
+    return result
+}
+
+#local
+fn logout_provider_options(): [string] {
+    [string] result = []
+    for credential in auth.list_credentials() {
+        if credential.credential_type != '' && credential.credential_type != 'api_key' {
+            // OAuth credentials are intentionally outside this batch; do not
+            // present an unsupported credential type as an API-key action.
+            continue
+        }
+        string name = credential.provider_id
+        var definition = registry.find_def(credential.provider_id)
+        if definition is ai_types.provider_def_t found {
+            if found.name != '' {
+                name = found.name
+            }
+        }
+        result.push(credential.provider_id + ' [' + name + ']')
+    }
+    for int outer = 0; outer < result.len(); outer += 1 {
+        for int inner = outer + 1; inner < result.len(); inner += 1 {
+            if result[inner].to_lower() < result[outer].to_lower() {
+                string swap = result[outer]
+                result[outer] = result[inner]
+                result[inner] = swap
+            }
+        }
+    }
+    return result
+}
+
+#local
+fn provider_id_from_option(string option): string {
+    int separator = option.find(' [')
+    return separator >= 0 ? option.slice(0, separator) : option
+}
+
+#local
+fn provider_name_from_option(string option): string {
+    int separator = option.find(' [')
+    if separator < 0 {return option}
+    int end = option.len() - 1
+    if end > separator && option[end] == ']'.char() {
+        return option.slice(separator + 2, end)
+    }
+    return option.slice(separator + 2, option.len())
 }
 
 // Batch 3: Pi's settings list order (settings-selector.ts).  Value items
@@ -3353,26 +3491,48 @@ fn theme_label(string setting): string {
 // Pi's config-selector manages package resources; adou's equivalent lists
 // the skills and prompt templates with per-resource enable toggles.
 // B1-R2-06/07: the list comes from the trust-aware snapshot
-// (self.cached_skills / self.prompt_templates / self.settings_snapshot), so
+// (the trust-gated available resource lists / self.settings_snapshot), so
 // an untrusted cwd never displays project resources and no disk read
 // happens on open.
 pub fn view_t.show_config_overlay(&self) {
-    [string] options = []
-    var settings = self.settings_snapshot
-    options.push('Skills')
-    for skill in self.cached_skills {
-        options.push('  ' + skill.name + ': ' + (resource_enabled(settings.enabled_skill_names, skill.name) ? 'enabled' : 'disabled'))
-    }
-    options.push('Prompts')
-    for template in self.prompt_templates {
-        options.push('  ' + template.name + ': ' + (resource_enabled(settings.enabled_prompt_names, template.name) ? 'enabled' : 'disabled'))
-    }
-    self.overlay = new overlay_t(kind = OVERLAY_CONFIG, title = 'Resources', options = options)
+    var active = new overlay_t(kind = OVERLAY_CONFIG, title = 'Resources', config_scope = 0)
+    active.options = self.config_resource_options(active.config_scope)
+    active.selected = config_move_selection(active.options, 0, 1, 1)
+    self.overlay = active
     self.redraw()
 }
 
-fn resource_enabled([string] enabled, string name): bool {
-    if enabled.len() == 0 {
+#local
+fn view_t.config_resource_options(&self, int scope): [string] {
+    [string] options = []
+    options.push('Skills')
+    // Global scope reflects the user file alone; project scope uses the
+    // trust-aware merged snapshot already resolved for the active cwd.
+    var settings = scope == 0 ? config_settings.load() : self.settings_snapshot
+    bool any_skill = false
+    for skill in self.available_skills {
+        // Project mode includes inherited user resources, just as Pi does;
+        // global mode only lists user/temporary resources.
+        if scope == 0 && skill.source_info.scope == 'project' {continue}
+        any_skill = true
+        string source = skill.source_info.scope == '' ? 'user' : skill.source_info.scope
+        options.push('  [' + source + '] ' + skill.name + ': ' + (resource_enabled(settings.enabled_skill_names, settings.enabled_skills_configured, skill.name) ? 'enabled' : 'disabled'))
+    }
+    if !any_skill {options.push('  (none)')}
+    options.push('Prompts')
+    bool any_prompt = false
+    for template in self.available_prompt_templates {
+        if scope == 0 && template.source_info.scope == 'project' {continue}
+        any_prompt = true
+        string source = template.source_info.scope == '' ? 'user' : template.source_info.scope
+        options.push('  [' + source + '] ' + template.name + ': ' + (resource_enabled(settings.enabled_prompt_names, settings.enabled_prompts_configured, template.name) ? 'enabled' : 'disabled'))
+    }
+    if !any_prompt {options.push('  (none)')}
+    return options
+}
+
+fn resource_enabled([string] enabled, bool configured, string name): bool {
+    if !configured {
         return true
     }
     for candidate in enabled {
@@ -3383,55 +3543,172 @@ fn resource_enabled([string] enabled, string name): bool {
     return false
 }
 
-fn view_t.toggle_resource(&self, string option, bool is_skill) {
+fn view_t.toggle_resource(&self, string option, bool is_skill, int scope, string query) {
     int separator = option.find(':')
     if separator < 0 {
         return
     }
-    string name = option.slice(2, separator).trim([' ', '\t'])
-    var settings = config_settings.load()
+    int name_start = option.find('] ')
+    name_start = name_start >= 0 ? name_start + 2 : 2
+    string name = option.slice(name_start, separator).trim([' ', '\t'])
+    var settings = scope == 1 ? config_settings.load_for(self.runner.repository.cwd) : config_settings.load()
+    [string] all_names = []
     if is_skill {
-        settings.enabled_skill_names = toggle_list(settings.enabled_skill_names, name)
+        for skill in self.available_skills {
+            if scope == 0 && skill.source_info.scope == 'project' {continue}
+            all_names.push(skill.name)
+        }
     } else {
-        settings.enabled_prompt_names = toggle_list(settings.enabled_prompt_names, name)
+        for template in self.available_prompt_templates {
+            if scope == 0 && template.source_info.scope == 'project' {continue}
+            all_names.push(template.name)
+        }
     }
-    config_settings.save(settings) catch error {
-        self.chat.error_message = 'Could not save config: ' + error.msg()
-        self.redraw()
-        return
+    bool was_enabled = is_skill ? resource_enabled(settings.enabled_skill_names, settings.enabled_skills_configured, name) : resource_enabled(settings.enabled_prompt_names, settings.enabled_prompts_configured, name)
+    if is_skill {
+        settings.enabled_skills_configured = true
+        settings.enabled_skill_names = toggle_resource_list(settings.enabled_skill_names, all_names, name, was_enabled)
+    } else {
+        settings.enabled_prompts_configured = true
+        settings.enabled_prompt_names = toggle_resource_list(settings.enabled_prompt_names, all_names, name, was_enabled)
     }
-    self.chat.status = (is_skill ? 'Skill ' : 'Prompt ') + name + ' ' + (resource_enabled(is_skill ? settings.enabled_skill_names : settings.enabled_prompt_names, name) ? 'enabled' : 'disabled')
+    if scope == 1 {
+        config_settings.save_project(self.runner.repository.cwd, settings) catch error {
+            self.chat.error_message = 'Could not save project config: ' + error.msg()
+            self.redraw()
+            return
+        }
+    } else {
+        config_settings.save(settings) catch error {
+            self.chat.error_message = 'Could not save config: ' + error.msg()
+            self.redraw()
+            return
+        }
+    }
+    bool enabled_now = is_skill ? resource_enabled(settings.enabled_skill_names, settings.enabled_skills_configured, name) : resource_enabled(settings.enabled_prompt_names, settings.enabled_prompts_configured, name)
+    self.chat.status = (is_skill ? 'Skill ' : 'Prompt ') + name + ' ' + (enabled_now ? 'enabled' : 'disabled')
     // The snapshot must reflect the persisted toggle before the overlay
     // re-renders (B1-R2-07); the menu/execution lists follow it.
     self.refresh_resource_snapshot(self.runner.repository.cwd, false)
-    self.show_config_overlay()
+    var replacement = new overlay_t(kind = OVERLAY_CONFIG, title = 'Resources', config_scope = scope, query = query)
+    replacement.options = self.config_resource_options(scope)
+    replacement.selected = config_move_selection(config_filtered_options(replacement), 0, 1, 1)
+    self.overlay = replacement
+    self.redraw()
 }
 
-fn toggle_list([string] enabled, string name): [string] {
+fn toggle_resource_list([string] enabled, [string] all_names, string name, bool was_enabled): [string] {
     [string] result = []
-    bool removed = false
+    if was_enabled {
+        // An empty list means "all".  To disable one item, materialize the
+        // allow-list with that item removed.
+        if enabled.len() == 0 {
+            for candidate in all_names {
+                if candidate != name {result.push(candidate)}
+            }
+            return result
+        }
+        for candidate in enabled {
+            if candidate != name {result.push(candidate)}
+        }
+        return result
+    }
     for candidate in enabled {
-        if candidate == name {
-            removed = true
-        } else {
-            result.push(candidate)
+        result.push(candidate)
+    }
+    result.push(name)
+    return result
+}
+
+#local
+fn config_option_is_item(string option): bool {
+    return option.starts_with('  [') && !option.contains('(none)')
+}
+
+#local
+fn config_option_is_skill([string] options, int index): bool {
+    if index < 0 || index >= options.len() {return false}
+    for int cursor = index - 1; cursor >= 0; cursor -= 1 {
+        if options[cursor] == 'Prompts' {return false}
+        if options[cursor] == 'Skills' {return true}
+    }
+    return false
+}
+
+// Config rows contain non-selectable scope and section headers.  Keep those
+// headers in a filtered result only when a matching resource remains, so the
+// selected index always refers to the rows rendered on screen.
+#local
+fn config_filtered_options(ref<overlay_t> overlay): [string] {
+    if overlay.query == '' {
+        [string] all = []
+        for option in overlay.options {
+            all.push(option)
+        }
+        return all
+    }
+    bool skill_match = false
+    bool prompt_match = false
+    string query = overlay.query.to_lower()
+    for index, option in overlay.options {
+        if !config_option_is_item(option) {continue}
+        if fuzzy_match(option.to_lower(), query) {
+            if config_option_is_skill(overlay.options, index) {
+                skill_match = true
+            } else {
+                prompt_match = true
+            }
         }
     }
-    if !removed {
-        result.push(name)
+    [string] result = []
+    for index, option in overlay.options {
+        if option == 'Skills' {
+            if skill_match {result.push(option)}
+            continue
+        }
+        if option == 'Prompts' {
+            if prompt_match {result.push(option)}
+            continue
+        }
+        if config_option_is_item(option) && fuzzy_match(option.to_lower(), query) {
+            result.push(option)
+        }
     }
     return result
+}
+
+#local
+fn config_move_selection([string] options, int current, int direction, int distance): int {
+    if options.len() == 0 {return 0}
+    int selected = current
+    if selected < 0 || selected >= options.len() {selected = direction > 0 ? 0 : options.len() - 1}
+    int moves = distance < 1 ? 1 : distance
+    for int step = 0; step < moves; step += 1 {
+        int next = selected
+        bool found = false
+        for int attempt = 0; attempt < options.len(); attempt += 1 {
+            next += direction
+            if next < 0 {next = options.len() - 1}
+            if next >= options.len() {next = 0}
+            if config_option_is_item(options[next]) {
+                found = true
+                break
+            }
+        }
+        if found {selected = next}
+    }
+    return selected
 }
 
 // Apply the enable lists from the trust-aware settings snapshot (B1-R2-07).
 // Thin proxies over the shared production filters; the snapshot is refreshed
 // at init/reload/rebind, so this never reads settings from disk.
 pub fn view_t.filter_enabled_skills(&self, [ref<skills.skill_t>] loaded): [ref<skills.skill_t>] {
-    return slash_commands.filter_skills(loaded, self.settings_snapshot.enabled_skill_names)
+    return slash_commands.filter_skills_configured(loaded, self.settings_snapshot.enabled_skill_names, self.settings_snapshot.enabled_skills_configured)
 }
 
 pub fn view_t.filter_enabled_prompts(&self, [ref<prompt_templates.prompt_template_t>] loaded): [ref<prompt_templates.prompt_template_t>] {
-    return slash_commands.filter_prompt_templates(loaded, self.settings_snapshot.enabled_prompt_names)
+    return slash_commands.filter_prompt_templates_configured(loaded, self.settings_snapshot.enabled_prompt_names, self.settings_snapshot.enabled_prompts_configured)
 }
 
 pub fn view_t.show_setup_overlay(&self) {
@@ -3494,7 +3771,7 @@ fn view_t.show_help_overlay(&self) {
         '/skill        List skills or show one skill',
         '/reload       Reload project instructions and skills',
         '/share        Create a shareable local session artifact',
-        '/trust        Save project trust decision (trust|no|parent)',
+        '/trust        Choose project trust (or trust|no|parent)',
         '/quit         Exit Adou',
     ]
     self.overlay = new overlay_t(kind = OVERLAY_HELP, title = 'Commands', options = options)
@@ -3605,38 +3882,102 @@ fn header_hint_line(ref<keybindings.keybindings_t> registry): string {
 }
 
 pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input) {
-    if overlay.kind == OVERLAY_CONFIG && !input.paste {
+    if overlay.kind == OVERLAY_TRUST && !input.paste {
         string key = keys.parse_key(input.data)
-        if key == 'up' {
-            overlay.selected = overlay.selected == 0 ? overlay.options.len() - 1 : overlay.selected - 1
+        if key == 'up' || key == 'k' {
+            if overlay.selected > 0 {overlay.selected -= 1}
             self.redraw()
             return
         }
-        if key == 'down' {
-            overlay.selected = overlay.selected == overlay.options.len() - 1 ? 0 : overlay.selected + 1
+        if key == 'down' || key == 'j' {
+            if overlay.selected + 1 < overlay.options.len() {overlay.selected += 1}
             self.redraw()
             return
         }
-        if key == 'enter' && overlay.selected < overlay.options.len() {
-            string option = overlay.options[overlay.selected]
-            if option.starts_with('  ') {
-                bool is_skill = false
-                for int index = overlay.selected - 1; index >= 0; index -= 1 {
-                    if overlay.options[index] == 'Prompts' {
-                        is_skill = false
-                        break
-                    }
-                    if overlay.options[index] == 'Skills' {
-                        is_skill = true
-                        break
-                    }
-                }
-                self.toggle_resource(option, is_skill)
-            }
+        if key == 'enter' {
+            self.select_overlay_option(overlay)
             return
         }
         if key == 'escape' || key == 'ctrl+c' {
             self.overlay = null
+            self.redraw()
+            return
+        }
+        return
+    }
+    if overlay.kind == OVERLAY_CONFIG {
+        if input.paste {
+            overlay.query += input.data
+            overlay.selected = config_move_selection(config_filtered_options(overlay), 0, 1, 1)
+            self.redraw()
+            return
+        }
+        string key = keys.parse_key(input.data)
+        var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
+        if key == 'escape' || key == 'ctrl+c' {
+            if overlay.query != '' {
+                overlay.query = ''
+                overlay.selected = config_move_selection(overlay.options, 0, 1, 1)
+                self.redraw()
+                return
+            }
+            self.overlay = null
+            self.redraw()
+            return
+        }
+        if key == 'tab' {
+            overlay.config_scope = overlay.config_scope == 0 ? 1 : 0
+            overlay.options = self.config_resource_options(overlay.config_scope)
+            overlay.query = ''
+            overlay.selected = config_move_selection(overlay.options, 0, 1, 1)
+            self.redraw()
+            return
+        }
+        if key == 'up' || key == 'k' {
+            overlay.selected = config_move_selection(options, overlay.selected, -1, 1)
+            self.redraw()
+            return
+        }
+        if key == 'down' || key == 'j' {
+            overlay.selected = config_move_selection(options, overlay.selected, 1, 1)
+            self.redraw()
+            return
+        }
+        if self.keybindings.matches(key, keybindings.SELECT_PAGE_UP) {
+            overlay.selected = config_move_selection(options, overlay.selected, -1, OVERLAY_VISIBLE_OPTIONS)
+            self.redraw()
+            return
+        }
+        if self.keybindings.matches(key, keybindings.SELECT_PAGE_DOWN) {
+            overlay.selected = config_move_selection(options, overlay.selected, 1, OVERLAY_VISIBLE_OPTIONS)
+            self.redraw()
+            return
+        }
+        if key == 'enter' || key == 'space' {
+            if overlay.selected >= 0 && overlay.selected < options.len() {
+                string option = options[overlay.selected]
+                if config_option_is_item(option) {
+                    bool is_skill = config_option_is_skill(options, overlay.selected)
+                    self.toggle_resource(option, is_skill, overlay.config_scope, overlay.query)
+                }
+            }
+            return
+        }
+        if key == 'backspace' || key == 'ctrl+h' {
+            if overlay.query.len() > 0 {
+                overlay.query = overlay.query.slice(0, overlay.query.len() - 1)
+                overlay.selected = config_move_selection(config_filtered_options(overlay), 0, 1, 1)
+            }
+            self.redraw()
+            return
+        }
+        string printable = keys.decode_printable(input.data)
+        if printable == '' && input.data != '' && input.data[0] >= 32 && input.data[0] != 0x1b {
+            printable = input.data
+        }
+        if printable != '' {
+            overlay.query += printable
+            overlay.selected = config_move_selection(config_filtered_options(overlay), 0, 1, 1)
             self.redraw()
         }
         return
@@ -3741,6 +4082,12 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         }
         return
     }
+    if (key == 'escape' || key == 'ctrl+c') && overlay.query != '' && (overlay.kind == OVERLAY_SESSION || overlay.kind == OVERLAY_TREE || overlay.kind == OVERLAY_FORK || overlay.kind == OVERLAY_PROVIDER || overlay.kind == OVERLAY_LOGOUT) {
+        overlay.query = ''
+        overlay.selected = 0
+        self.redraw()
+        return
+    }
     if key == 'escape' || key == 'ctrl+c' {
         if overlay.kind == OVERLAY_BRANCH_SUMMARY {
             self.restore_tree_overlay(overlay.provider)
@@ -3788,11 +4135,11 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             return
         }
         if self.keybindings.matches(key, keybindings.APP_SESSION_TOGGLE_SORT) {
-            // Pi cycles recent → alpha → relevance; the filtered list is
-            // re-derived on render, so switching modes just changes how the
-            // query results are ordered.
+            // Pi cycles recent → relevance → threaded.  Re-normalize the
+            // backing list before each mode so changing modes never leaves an
+            // earlier ordering baked into the next search.
             overlay.sort_mode = (overlay.sort_mode + 1) % 3
-            overlay.options = overlay.sort_mode == 1 ? sort_session_paths_alpha(overlay.options) : sort_session_paths(overlay.options)
+            overlay.options = sort_session_paths(overlay.options)
             overlay.selected = 0
             self.redraw()
             return
@@ -3828,6 +4175,25 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         }
     }
     if overlay.kind == OVERLAY_TREE {
+        if self.keybindings.matches(key, keybindings.SELECT_PAGE_UP) || self.keybindings.matches(key, keybindings.SELECT_PAGE_DOWN) {
+            var page_options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
+            int direction = self.keybindings.matches(key, keybindings.SELECT_PAGE_UP) ? -1 : 1
+            overlay.selected += direction * OVERLAY_VISIBLE_OPTIONS
+            if overlay.selected < 0 {overlay.selected = 0}
+            if page_options.len() > 0 && overlay.selected >= page_options.len() {overlay.selected = page_options.len() - 1}
+            self.redraw()
+            return
+        }
+        if self.keybindings.matches(key, keybindings.APP_MESSAGE_COPY) {
+            var copy_options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
+            if copy_options.len() > 0 && overlay.selected >= 0 && overlay.selected < copy_options.len() {
+                string entry_id = option_entry_id(copy_options[overlay.selected])
+                string copied = session_search.entry_content_preview(self.runner.repository, entry_id)
+                if copied == '' {copied = copy_options[overlay.selected]}
+                self.copy_overlay_text(copied, 'Copied tree entry to clipboard')
+            }
+            return
+        }
         // Pi's seven tree filter actions: five direct modes plus the
         // forward/backward cycles.
         int filter_target = -1
@@ -3855,9 +4221,13 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         if self.keybindings.matches(key, keybindings.APP_TREE_FOLD_OR_UP) {
             var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
             if options.len() > 0 && overlay.selected < options.len() {
-                string collapsed_id = option_entry_id(options[overlay.selected])
-                if !list_in(overlay.collapsed_ids, collapsed_id) {
-                    overlay.collapsed_ids.push(collapsed_id)
+                string target_id = option_entry_id(options[overlay.selected])
+                if tree_has_children(self.runner.repository, target_id) {
+                    if !list_in(overlay.collapsed_ids, target_id) {
+                        overlay.collapsed_ids.push(target_id)
+                    }
+                } else if overlay.selected > 0 {
+                    overlay.selected -= 1
                 }
             }
             self.redraw()
@@ -3867,13 +4237,19 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
             if options.len() > 0 && overlay.selected < options.len() {
                 string expanded_id = option_entry_id(options[overlay.selected])
+                bool removed = false
                 [string] remaining = []
                 for collapsed in overlay.collapsed_ids {
                     if collapsed != expanded_id {
                         remaining.push(collapsed)
+                    } else {
+                        removed = true
                     }
                 }
                 overlay.collapsed_ids = remaining
+                if !removed && overlay.selected + 1 < options.len() {
+                    overlay.selected += 1
+                }
             }
             self.redraw()
             return
@@ -3895,6 +4271,25 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
         overlay.collapsed_ids = collapsed
         self.redraw()
         return
+    }
+    if overlay.kind == OVERLAY_FORK {
+        if self.keybindings.matches(key, keybindings.SELECT_PAGE_UP) || self.keybindings.matches(key, keybindings.SELECT_PAGE_DOWN) {
+            var page_options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
+            int direction = self.keybindings.matches(key, keybindings.SELECT_PAGE_UP) ? -1 : 1
+            overlay.selected += direction * OVERLAY_VISIBLE_OPTIONS
+            if overlay.selected < 0 {overlay.selected = 0}
+            if page_options.len() > 0 && overlay.selected >= page_options.len() {overlay.selected = page_options.len() - 1}
+            self.redraw()
+            return
+        }
+        if self.keybindings.matches(key, keybindings.APP_MESSAGE_COPY) {
+            var copy_options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
+            if copy_options.len() > 0 && overlay.selected >= 0 && overlay.selected < copy_options.len() {
+                string entry_id = option_entry_id(copy_options[overlay.selected])
+                self.copy_overlay_text(self.fork_message_text(entry_id), 'Copied fork message to clipboard')
+            }
+            return
+        }
     }
     if overlay.kind == OVERLAY_TREE && self.keybindings.matches(key, keybindings.APP_TREE_EDIT_LABEL) {
         var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
@@ -4291,12 +4686,16 @@ pub fn view_t.complete_api_key_login(&self, ref<overlay_t> overlay) {
 
 pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
     var options = filtered_options(self.runner.repository.session_dir, overlay, self.runner)
+    if overlay.kind == OVERLAY_TRUST {
+        self.apply_trust_option(overlay)
+        return
+    }
     if overlay.kind == OVERLAY_AUTH_METHOD {
         string method = overlay.selected == 0 ? 'account' : 'api_key'
         if overlay.provider == '' {
             overlay.kind = OVERLAY_PROVIDER
             overlay.title = 'Select provider:'
-            overlay.options = ['deepseek', 'openai', 'anthropic']
+            overlay.options = login_provider_options()
             overlay.provider = method
             overlay.query = ''
             overlay.selected = 0
@@ -4315,7 +4714,7 @@ pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
         if options.len() == 0 || overlay.selected < 0 || overlay.selected >= options.len() {
             return
         }
-        string provider = options[overlay.selected]
+        string provider = provider_id_from_option(options[overlay.selected])
         if overlay.provider == 'account' {
             self.chat.status = 'Account sign-in for ' + provider + ' requires its OAuth flow; choose API key or set the provider environment variable.'
             self.overlay = null
@@ -4387,7 +4786,8 @@ pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
         return
     }
     if overlay.kind == OVERLAY_LOGOUT {
-        auth.remove(selected) catch error {
+        string provider = provider_id_from_option(selected)
+        auth.remove(provider) catch error {
             self.chat.error_message = error.msg()
             self.redraw()
             return
@@ -4397,7 +4797,7 @@ pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
             self.redraw()
             return
         }
-        self.chat.status = 'Removed stored API key for ' + selected
+        self.chat.status = 'Removed stored API key for ' + provider
         refresh_auth_provider_count(self)
         self.refresh_model_argument_cache()
         self.overlay = null
@@ -4624,6 +5024,27 @@ fn view_t.save_default_model(&self) {
     }
 }
 
+fn view_t.copy_overlay_text(&self, string text, string status) {
+    if text == '' {
+        self.chat.status = 'Nothing to copy'
+        self.redraw()
+        return
+    }
+    string encoded = base64.encode(text as [u8]) as string
+    string clipboard_output = '\x1b]52;c;' + encoded + '\x07'
+    self.render_lock.lock()
+    self.terminal.write(clipboard_output) catch error {
+        self.render_lock.unlock()
+        self.chat.error_message = 'Clipboard copy failed: ' + error.msg()
+        self.redraw()
+        return
+    }
+    self.render_lock.unlock()
+    debug.log_terminal_output(clipboard_output)
+    self.chat.status = status
+    self.redraw()
+}
+
 pub fn view_t.copy_last_response(&self) {
     string text = ''
     for int index = self.chat.messages.len() - 1; index >= 0; index -= 1 {
@@ -4642,21 +5063,7 @@ pub fn view_t.copy_last_response(&self) {
         self.redraw()
         return
     }
-    string encoded = base64.encode(text as [u8]) as string
-    string clipboard_output = '\x1b]52;c;' + encoded + '\x07'
-    // OSC-52 payloads share stdout with render frames; serialize the write
-    // so the payload cannot be torn by a concurrent frame.
-    self.render_lock.lock()
-    self.terminal.write(clipboard_output) catch error {
-        self.render_lock.unlock()
-        self.chat.error_message = 'Clipboard copy failed: ' + error.msg()
-        self.redraw()
-        return
-    }
-    self.render_lock.unlock()
-    debug.log_terminal_output(clipboard_output)
-    self.chat.status = 'Copied last assistant response to clipboard'
-    self.redraw()
+    self.copy_overlay_text(text, 'Copied last assistant response to clipboard')
 }
 
 fn render_model_selector(ref<overlay_t> overlay, ref<model_selector.state_t> state, int width): [string]! {
@@ -4802,6 +5209,60 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
         result.push(theme.border_line(width))
         return result
     }
+    if overlay.kind == OVERLAY_TRUST {
+        string source = trust.decision_source(overlay.provider)
+        string source_text = source == '' ? 'none' : source
+        result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.muted_color(), 'Project: ' + overlay.provider), width))
+        result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.muted_color(), 'Saved source: ' + source_text), width))
+        result.push('')
+        int trust_last = overlay.options.len()
+        for int index = 0; index < trust_last; index += 1 {
+            string option = overlay.options[index]
+            bool selected = index == overlay.selected
+            string prefix = selected ? theme.fg(theme.accent(), '→ ') : '  '
+            string fitted = text_utils.truncate_to_width(option, width - 4, '...', false)
+            result.push(' ' + prefix + (selected ? theme.fg(theme.accent(), fitted) : theme.fg(theme.text(), fitted)))
+        }
+        result.push('')
+        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.dim_color(), 'j/k or ↑/↓ navigate   enter save   escape cancel'), width))
+        result.push(theme.border_line(width))
+        return result
+    }
+    if overlay.kind == OVERLAY_CONFIG {
+        string scope_text = overlay.config_scope == 0 ? 'global resources' : 'project resources'
+        result.push(' ' + theme.fg(theme.muted_color(), 'Scope: ') + theme.fg(theme.accent(), scope_text) + theme.fg(theme.muted_color(), '  (Tab to switch)'))
+        result.push(' ' + theme.fg(theme.muted_color(), 'Search: ') + theme.fg(theme.text(), overlay.query))
+        result.push('')
+        var options = filtered_options(session_dir, overlay, runner)
+        if options.len() == 0 {
+            result.push('  ' + theme.fg(theme.muted_color(), 'No matching resources'))
+        } else {
+            if overlay.selected >= options.len() {overlay.selected = options.len() - 1}
+            int first = 0
+            if overlay.selected >= OVERLAY_VISIBLE_OPTIONS {
+                first = overlay.selected - OVERLAY_VISIBLE_OPTIONS + 1
+            }
+            int last = first + OVERLAY_VISIBLE_OPTIONS
+            if last > options.len() {last = options.len()}
+            for int index = first; index < last; index += 1 {
+                string option = options[index]
+                if option == 'Skills' || option == 'Prompts' || option.starts_with('Scope:') {
+                    result.push(' ' + theme.bold(theme.fg(theme.accent(), option)))
+                    continue
+                }
+                bool selected = index == overlay.selected
+                string prefix = selected ? theme.fg(theme.accent(), '→ ') : '  '
+                string fitted = text_utils.truncate_to_width(option, width - 4, '...', false)
+                result.push(' ' + prefix + (selected ? theme.fg(theme.accent(), fitted) : theme.fg(theme.text(), fitted)))
+            }
+            if first > 0 {result.push('  ' + theme.fg(theme.dim_color(), '...'))}
+            if last < options.len() {result.push('  ' + theme.fg(theme.dim_color(), '...'))}
+        }
+        result.push('')
+        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.dim_color(), 'j/k navigate   space/enter toggle   tab scope   page up/down   escape cancel'), width))
+        result.push(theme.border_line(width))
+        return result
+    }
     if overlay.kind == OVERLAY_API_KEY || overlay.kind == OVERLAY_NAME || overlay.kind == OVERLAY_LABEL || overlay.kind == OVERLAY_BRANCH_CUSTOM {
         string field = overlay.kind == OVERLAY_NAME ? 'Session name' : overlay.kind == OVERLAY_LABEL ? 'Label' : overlay.kind == OVERLAY_BRANCH_CUSTOM ? 'Instructions' : 'API key'
         result.push(' ' + theme.fg(theme.muted_color(), field))
@@ -4827,6 +5288,16 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
                 result.push('')
             }
         }
+        if overlay.kind == OVERLAY_SESSION {
+            string scope_text = overlay.scope == 0 ? 'current folder' : 'all projects'
+            string sort_text = overlay.sort_mode == 0 ? 'recent' : overlay.sort_mode == 1 ? 'relevance' : 'threaded'
+            result.push(' ' + theme.fg(theme.muted_color(), 'Scope: ') + theme.fg(theme.accent(), scope_text) + theme.fg(theme.muted_color(), '  (Tab to switch)'))
+            result.push(' ' + theme.fg(theme.muted_color(), 'Sort: ') + theme.fg(theme.accent(), sort_text) + theme.fg(theme.muted_color(), '  (Ctrl+S to cycle)'))
+            if overlay.query != '' {
+                result.push(' ' + theme.fg(theme.muted_color(), 'Search: ') + theme.fg(theme.text(), overlay.query))
+            }
+            result.push('')
+        }
         var options = filtered_options(session_dir, overlay, runner)
         int first = 0
         if overlay.selected >= OVERLAY_VISIBLE_OPTIONS {
@@ -4849,8 +5320,12 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
             string display_option = overlay.kind == OVERLAY_SESSION ? session_option_display(option, overlay.show_paths) : option
             if overlay.kind == OVERLAY_MODEL {
                 display_option = model_option_display(option, current_model_reference)
+            } else if overlay.kind == OVERLAY_PROVIDER || overlay.kind == OVERLAY_LOGOUT {
+                display_option = provider_name_from_option(option) + ' [' + provider_id_from_option(option) + ']'
+            } else if overlay.kind == OVERLAY_TREE {
+                display_option = tree_option_display(runner.repository, option, overlay.collapsed_ids)
             }
-            if overlay.kind == OVERLAY_SESSION && overlay.sort_mode == 3 {
+            if overlay.kind == OVERLAY_SESSION && overlay.sort_mode == 2 {
                 display_option = session_tree_prefix(options, index) + display_option
             }
             string fitted = text_utils.truncate_to_width(display_option, option_width, '...', false)
@@ -4910,6 +5385,9 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
 
 #local
 fn filtered_options(string session_dir, ref<overlay_t> overlay, ref<session.runner_t> runner): [string] {
+    if overlay.kind == OVERLAY_CONFIG {
+        return config_filtered_options(overlay)
+    }
     if overlay.kind == OVERLAY_MODEL {
         [string] result = []
         if overlay.model_state is ref<model_selector.state_t> {
@@ -4932,9 +5410,9 @@ fn filtered_options(string session_dir, ref<overlay_t> overlay, ref<session.runn
     }
     if overlay.kind == OVERLAY_SESSION {
         // Pi's session search: id + name + every message text + cwd, with
-        // `re:` regex, quoted phrases and fuzzy tokens; sort_mode 2 ranks
-        // by relevance instead of mtime or name, and the scope narrows the
-        // merged option list to the current project folder.
+        // `re:` regex, quoted phrases and fuzzy tokens; sort_mode 1 ranks
+        // by relevance, while sort_mode 2 renders threaded parent/child
+        // order.  Scope narrows the merged option list to this folder.
         [string] scoped = []
         if overlay.scope == 0 {
             for option in overlay.options {
@@ -4945,7 +5423,7 @@ fn filtered_options(string session_dir, ref<overlay_t> overlay, ref<session.runn
         } else {
             scoped = overlay.options
         }
-        if overlay.sort_mode == 3 {
+        if overlay.sort_mode == 2 {
             return session_search.filter_and_sort_sessions_threaded(scoped, overlay.query, overlay.named_only)
         }
         return session_search.filter_and_sort_sessions(scoped, overlay.query, overlay.sort_mode, overlay.named_only)
@@ -4955,7 +5433,7 @@ fn filtered_options(string session_dir, ref<overlay_t> overlay, ref<session.runn
         string query = overlay.query.to_lower()
         for option in overlay.options {
             string entry_id = option_entry_id(option)
-            if list_in(overlay.collapsed_ids, entry_id) {
+            if tree_hidden_by_collapse(runner.repository, entry_id, overlay.collapsed_ids) {
                 continue
             }
             if !session_search.entry_matches_tree_filter(runner.repository, entry_id, overlay.tree_filter) {
@@ -5144,6 +5622,61 @@ fn list_in([string] values, string target): bool {
     return false
 }
 
+#local
+fn tree_has_children(ref<repository.manager_t> manager, string entry_id): bool {
+    for entry in manager.get_entries() {
+        if entry.parent_id == entry_id {
+            return true
+        }
+    }
+    return false
+}
+
+#local
+fn tree_hidden_by_collapse(ref<repository.manager_t> manager, string entry_id, [string] collapsed): bool {
+    var raw = manager.get_entry(entry_id) catch error {return false}
+    if !(raw is ref<session_types.entry_t>) {return false}
+    var entry = raw as ref<session_types.entry_t>
+    string parent = entry.parent_id
+    int guard = 0
+    for parent != '' && guard < 128 {
+        if list_in(collapsed, parent) {
+            return true
+        }
+        var parent_raw = manager.get_entry(parent) catch error {break}
+        if !(parent_raw is ref<session_types.entry_t>) {break}
+        var parent_entry = parent_raw as ref<session_types.entry_t>
+        parent = parent_entry.parent_id
+        guard += 1
+    }
+    return false
+}
+
+#local
+fn tree_option_display(ref<repository.manager_t> manager, string option, [string] collapsed): string {
+    string entry_id = option_entry_id(option)
+    var raw = manager.get_entry(entry_id) catch error {return option}
+    if !(raw is ref<session_types.entry_t>) {return option}
+    var entry = raw as ref<session_types.entry_t>
+    int depth = 0
+    string parent = entry.parent_id
+    int guard = 0
+    for parent != '' && guard < 128 {
+        depth += 1
+        var parent_raw = manager.get_entry(parent) catch error {break}
+        if !(parent_raw is ref<session_types.entry_t>) {break}
+        var parent_entry = parent_raw as ref<session_types.entry_t>
+        parent = parent_entry.parent_id
+        guard += 1
+    }
+    string prefix = ''
+    for int level = 0; level < depth; level += 1 {
+        prefix += '  '
+    }
+    string branch = tree_has_children(manager, entry_id) ? (list_in(collapsed, entry_id) ? '+ ' : '- ') : '  '
+    return prefix + branch + option
+}
+
 fn shorten_overlay_path(string value): string {
     string home = syscall.get_env('HOME')
     if home != '' && value.starts_with(home + '/') {
@@ -5242,7 +5775,7 @@ fn builtin_command_description(string command): string {
     if command == '/fork' {return 'Create a new fork from a previous user message'}
     if command == '/clone' {return 'Duplicate the current session at the current position'}
     if command == '/tree' {return 'Navigate session tree (switch branches)'}
-    if command == '/trust' {return 'Save project trust decision for future sessions'}
+    if command == '/trust' {return 'Choose project trust for this or future sessions'}
     if command == '/login' {return 'Configure provider authentication'}
     if command == '/logout' {return 'Remove provider authentication'}
     if command == '/new' {return 'Start a new session'}

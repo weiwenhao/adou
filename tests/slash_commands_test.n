@@ -55,7 +55,7 @@ test 'compose_resource_commands keeps user-scope metadata as-is' {
     assert(commands[1].name == 'skill:beta-ops' && commands[1].source_info.scope == 'user')
 }
 
-test 'B1-R2-07 filter_* with empty enabled lists keeps everything' {
+test 'B1-R2-07 configured filters distinguish absent and explicit empty lists' {
     [ref<prompt_templates.prompt_template_t>] templates = []
     var template = new prompt_templates.prompt_template_t(name = 'code-review', description = 'Review', content = 'Body', file_path = '/x/prompts/code-review.md')
     template.source_info = skills.source_info_t {source: 'local', scope: 'project', origin: 'top-level', base_dir: '/x/prompts'}
@@ -66,10 +66,14 @@ test 'B1-R2-07 filter_* with empty enabled lists keeps everything' {
     skill_list.push(skill)
     [string] no_prompts = []
     [string] no_skills = []
-    var kept_templates = slash_commands.filter_prompt_templates(templates, no_prompts)
-    var kept_skills = slash_commands.filter_skills(skill_list, no_skills)
+    var kept_templates = slash_commands.filter_prompt_templates_configured(templates, no_prompts, false)
+    var kept_skills = slash_commands.filter_skills_configured(skill_list, no_skills, false)
     assert(kept_templates.len() == 1 && kept_templates[0].name == 'code-review')
     assert(kept_skills.len() == 1 && kept_skills[0].name == 'alpha-toolkit')
+    var no_templates = slash_commands.filter_prompt_templates_configured(templates, [], true)
+    var no_skills_configured = slash_commands.filter_skills_configured(skill_list, [], true)
+    assert(no_templates.len() == 0)
+    assert(no_skills_configured.len() == 0)
 }
 
 test 'B1-R3-08 rpc_command_json emits the Pi sourceInfo wire contract' {
@@ -125,8 +129,8 @@ test 'B1-R2-07 filter_* keeps exactly the named resources and compose preserves 
     skill_list.push(drop_skill)
     [string] enabled_prompts = ['code-review']
     [string] enabled_skills = ['beta-ops']
-    var filtered_templates = slash_commands.filter_prompt_templates(templates, enabled_prompts)
-    var filtered_skills = slash_commands.filter_skills(skill_list, enabled_skills)
+    var filtered_templates = slash_commands.filter_prompt_templates_configured(templates, enabled_prompts, true)
+    var filtered_skills = slash_commands.filter_skills_configured(skill_list, enabled_skills, true)
     assert(filtered_templates.len() == 1 && filtered_templates[0].name == 'code-review')
     assert(filtered_skills.len() == 1 && filtered_skills[0].name == 'beta-ops')
     var commands = slash_commands.compose_resource_commands(filtered_templates, filtered_skills, true)

@@ -1379,3 +1379,43 @@ app action ↔ Adou 映射（Pi 40 个 action）：
 
 残余 FAIL：无。HerDr 3 轮同键对照 PASS（0 failures），见
 docs/pi-batch3-evidence/herdr-keybindings-parity-summary.json。
+
+## 15. Batch 5 记录（其余 Interactive 组件，2026-08-17）
+
+### 15.1 实施记录
+
+- Config：`/config` 现在提供全局/项目 scope、来源标记、可搜索的
+  header/item 列表、j/k 与方向键、PageUp/PageDown、Space/Enter toggle、
+  Tab scope 切换，以及 Esc 先清 query、再关闭的生命周期。显式空
+  `enabledSkills`/`enabledPrompts` 会保留为“全部禁用”，资源仍留在列表中
+  可重新启用；项目写入 `.pi/settings.json`，全局写入用户 settings。
+- Auth API-key：provider 选择来自运行时 registry，带名称和搜索；logout
+  只显示已保存的 API-key provider，并在无凭据时给出状态。空 key 提交会
+  留在 overlay 展示错误，Esc 后可重新打开；OAuth 流程明确不实现。
+- Trust：`/trust` 无参数进入选择器，显示当前 cwd、最近保存决策来源、
+  Trust/Trust parent/Do not trust 与 session-only 选项；j/k、方向键、Enter
+  保存、Esc 取消均可用。持久化选择走 `set_many`，session-only 只存在于
+  当前 view，切换项目时清除，并在保存后立即刷新 trust-aware 资源快照。
+- Session：resume selector 补齐 current-folder/all scope、recent/relevance/
+  threaded sort、named/path toggle、rename、delete confirmation、分页、
+  empty state 和 query-first Esc recovery；排序状态与显示 header 使用同一
+  三态模型。
+- Tree/Fork：过滤五档与前后 cycle、折叠/展开、label、相对 timestamp、
+  OSC-52 copy、分页和 branch summary 生命周期已接通；折叠保留父行并
+  按祖先隐藏后代。overlay 关闭/取消后恢复编辑器文本、光标、autocomplete
+  与 footer 状态，不重启进程。
+
+### 15.2 验收记录
+
+- `make build` 串行成功；未运行耗时且不必要的完整 `make test`。
+- 定向 Nature 测试：settings_persistence 2/2、settings 12/12、
+  slash_commands 7/7、resource_snapshot 2/2、trust 8/8、
+  session_search 7/7、registry_runtime 8/8、session_actions 2/2，
+  共 48/48 通过。
+- PTY e2e：tui-config、tui-auth-overlay、tui-session-selector、
+  tui-tree-fork、tui-setup 全部 exit 0；覆盖 direct slash entry、overlay
+  key actions、取消恢复和干净 terminal restore。
+- `git diff --check` 干净；本批没有 vendors 改动，也没有提交凭据。
+
+残余 FAIL：无。OAuth 仍按批次定义 EXCLUDED；项目资源 scope 使用 Adou
+现有 named allow-list 模型，未引入 Pi package manager 的额外三态包配置。

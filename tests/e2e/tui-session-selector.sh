@@ -143,6 +143,28 @@ try:
         if name not in output:
             raise SystemExit(f"seeded session {name} missing from the resume list")
 
+    # Scope, sort, path, named-filter and page actions stay inside the picker.
+    if not key(b"\x1b[115;5u", b"relevance", timeout=4.0):
+        raise SystemExit("Ctrl+S did not switch session sort to relevance")
+    if not key(b"\x1b[115;5u", b"threaded", timeout=4.0):
+        raise SystemExit("Ctrl+S did not expose threaded session sort")
+    if not key(b"\x1b[115;5u", b"recent", timeout=4.0):
+        raise SystemExit("session sort did not cycle back to recent")
+    if not key(b"\x1b[112;5u", b"adou-tui-", timeout=4.0):
+        raise SystemExit("Ctrl+P did not show session paths")
+    if not key(b"\t", b"all projects", timeout=4.0):
+        raise SystemExit("Tab did not broaden session scope")
+    if not key(b"\t", b"current folder", timeout=4.0):
+        raise SystemExit("Tab did not restore current-folder scope")
+    os.write(fd, b"\x1b[110;5u")
+    time.sleep(0.1)
+    os.write(fd, b"\x1b[110;5u")
+    time.sleep(0.1)
+    os.write(fd, b"\x1b[6~")
+    time.sleep(0.1)
+    os.write(fd, b"\x1b[5~")
+    collect(timeout=0.4)
+
     # A search by message text filters the list to the matching session.
     before = len(output)
     if not paste_text("parser", b"beta-session", timeout=4.0):
@@ -158,7 +180,10 @@ try:
     if not paste_text("zzz-no-such-session", b"No sessions in current folder", timeout=4.0):
         raise SystemExit("empty search result lacks the scoped empty-state message")
 
-    # Escape cancels the picker and the TUI stays alive for a clean quit.
+    # Pi clears an active search on the first Escape, then closes the picker
+    # on the second; verify both transitions before a clean quit.
+    os.write(fd, b"\x1b")
+    time.sleep(0.4)
     os.write(fd, b"\x1b")
     time.sleep(0.4)
     os.write(fd, b"/quit\r")

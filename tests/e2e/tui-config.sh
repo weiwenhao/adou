@@ -171,6 +171,14 @@ try:
                     break
             return until is not None and until in output2
 
+        def paste2(text, until, timeout=4.0):
+            os.write(fd2, b"\x1b[200~")
+            time.sleep(0.12)
+            os.write(fd2, text.encode())
+            time.sleep(0.12)
+            os.write(fd2, b"\x1b[201~")
+            return collect2(until, timeout=timeout)
+
         fcntl.ioctl(fd2, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
         if not collect2(b"\x1b[>1u", timeout=10.0):
             raise SystemExit("restarted TUI did not become ready for keyboard input")
@@ -181,12 +189,38 @@ try:
         collect2(timeout=0.4)
         if b"demo" not in bytes(output2) or b"review" not in bytes(output2):
             raise SystemExit("/config resource list is missing entries")
+        # Search and toggle an enabled skill.  The resource remains in the
+        # selector after disabling, and its explicit empty allow-list survives
+        # the save (so it can be enabled again).
+        if not paste2("demo", b"demo: enabled", timeout=4.0):
+            raise SystemExit("/config search did not find the skill")
+        os.write(fd2, b" ")
+        if not collect2(b"demo: disabled", timeout=4.0):
+            raise SystemExit("/config toggle did not disable the searched skill")
+        os.write(fd2, b"\x1b")
+        time.sleep(0.25)
+        os.write(fd2, b"\x1b")
+        time.sleep(0.25)
+        # Reopen and switch write scope; inherited resources remain visible
+        # while the header changes to project-local mode.
+        os.write(fd2, b"/config\r")
+        if not collect2(b"Resources", timeout=5.0):
+            raise SystemExit("/config did not reopen after cancel recovery")
+        if not collect2(b"demo: disabled", timeout=4.0):
+            raise SystemExit("disabled resource state did not persist in the selector")
+        os.write(fd2, b"\t")
+        if not collect2(b"project resources", timeout=4.0):
+            raise SystemExit("Tab did not switch config scope")
+        os.write(fd2, b"\x1b")
+        time.sleep(0.25)
         # Verify the persisted theme file.
         with open(os.path.join(agent, "settings.json")) as raw:
             settings = json.load(raw)
             if settings.get("theme") != "light":
                 raise SystemExit("saved settings do not carry the light theme")
-        quit_tui(fd2, pid2, status2)
+        result = quit_tui(fd2, pid2, status2)
+        if result is None or os.waitstatus_to_exitcode(result) != 0:
+            raise SystemExit("restarted TUI did not exit cleanly after config cancel")
     finally:
         try:
             os.close(fd2)
