@@ -41,6 +41,18 @@ pub fn renderer_t.set_clear_on_shrink(&self, bool enabled) {
 }
 
 pub fn renderer_t.render(&self, [string] input_lines, int width, int height): result_t! {
+    return self.render_frame(input_lines, width, height, self.clear_on_shrink)
+}
+
+// Selector overlays are transient UI, so rows removed while filtering or
+// closing them must never remain visible even when the user's general
+// terminal.clearOnShrink setting is off.
+pub fn renderer_t.render_overlay_frame(&self, [string] input_lines, int width, int height): result_t! {
+    return self.render_frame(input_lines, width, height, true)
+}
+
+#local
+fn renderer_t.render_frame(&self, [string] input_lines, int width, int height, bool clear_on_shrink): result_t! {
     if width <= 0 || height <= 0 {
         throw errorf('terminal dimensions must be positive')
     }
@@ -135,7 +147,7 @@ pub fn renderer_t.render(&self, [string] input_lines, int width, int height): re
     if target_row > previous_bottom {
         next_viewport_top += target_row - previous_bottom
     }
-    string output = differential_output(self.previous_lines, lines, self.hardware_cursor_row, self.previous_viewport_top, height, first_changed, last_changed, self.clear_on_shrink)
+    string output = differential_output(self.previous_lines, lines, self.hardware_cursor_row, self.previous_viewport_top, height, first_changed, last_changed, clear_on_shrink)
     string frame_debug = fmt.sprintf('firstChanged: %d\nviewportTop: %d\ncursorRow: %d\nheight: %d\nlineDiff: %d\nhardwareCursorRow: %d\nnewLines.length: %d\npreviousLines.length: %d\n\n=== newLines ===\n%s\n\n=== previousLines ===\n%s\n\n=== buffer ===\n%s\n', first_changed, self.previous_viewport_top, self.hardware_cursor_row, height, last_changed - first_changed + 1, self.hardware_cursor_row, lines.len(), self.previous_lines.len(), strings.join(lines, '\n'), strings.join(self.previous_lines, '\n'), output)
     debug.log_tui_frame(frame_debug)
     int final_cursor = lines.len() > 0 ? (last_changed < lines.len() ? last_changed : lines.len() - 1) : 0

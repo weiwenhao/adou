@@ -166,6 +166,10 @@ pub type view_t = struct {
     chan<signal.sig_t> signals
     ref<session_stream.stream_t>? active_stream
     ref<overlay_t>? overlay
+    // The frame after an overlay closes still owns its deleted terminal rows.
+    // Keep one bit of render history so that transition also uses the
+    // overlay-specific shrink policy.
+    bool overlay_rendered
     // Unified autocomplete state (Batch 1, IP-001/002/004/006): the
     // selection is bound to the query generation that produced the candidate
     // set, so a stale index can never complete a different command.
@@ -2160,8 +2164,15 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
 pub fn view_t.render(&self): void! {
     var size = self.terminal.size()
     var lines = self.render_lines(size.columns, size.rows)
-    var result = self.renderer.render(lines, size.columns, size.rows)
+    bool has_overlay = self.overlay is ref<overlay_t>
+    renderer.result_t result = renderer.result_t {}
+    if has_overlay || self.overlay_rendered {
+        result = self.renderer.render_overlay_frame(lines, size.columns, size.rows)
+    } else {
+        result = self.renderer.render(lines, size.columns, size.rows)
+    }
     self.write_terminal(result.output)
+    self.overlay_rendered = has_overlay
 }
 
 pub fn view_t.handle_debug_command(&self) {

@@ -114,6 +114,15 @@ test 'clearOnShrink off leaves shrunk rows untouched like Pi default' {
     assert(screen[0] == 'one' && screen[1] == 'two' && screen[2] == 'three')
 }
 
+test 'overlay frame clears removed rows independent of global shrink setting' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 5)
+    terminal.write(value.render_overlay_frame(['selector', 'option one', 'option two'], 20, 5).output)
+    terminal.write(value.render_overlay_frame(['prompt'], 20, 5).output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'prompt' && screen[1] == '' && screen[2] == '')
+}
+
 test 'shrink after a changed first line preserves the replacement line' {
     var value = renderer.new()
     value.set_clear_on_shrink(true)

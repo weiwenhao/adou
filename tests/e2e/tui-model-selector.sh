@@ -21,14 +21,19 @@ import shutil
 import signal
 import threading
 import struct
+import sys
 import tempfile
 import termios
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 binary = os.environ["ADOU_BIN"]
+sys.path.insert(0, os.path.join(os.getcwd(), "tests", "e2e", "lib"))
+from vt_screen import VTParser
+
 root = tempfile.mkdtemp(prefix="adou-tui-model-")
 catalog_requested = threading.Event()
+vt = VTParser(24, 100)
 
 
 class SlowCatalog(BaseHTTPRequestHandler):
@@ -104,7 +109,9 @@ def collect(until=None, timeout=4.0):
         ready, _, _ = select.select([fd], [], [], 0.05)
         if ready:
             try:
-                output.extend(os.read(fd, 65536))
+                chunk = os.read(fd, 65536)
+                output.extend(chunk)
+                vt.feed(chunk)
             except OSError as exc:
                 if exc.errno == errno.EIO:
                     break
@@ -167,6 +174,10 @@ try:
     collect(timeout=0.5)
     if not key(b"\r", b"Model:", timeout=4.0):
         raise SystemExit("selecting a model did not update the status")
+    collect(timeout=0.5)
+    visible = vt.screen.visible_text()
+    if "Select model:" in visible or "deepseek-v4-pro" in visible:
+        raise SystemExit("closed model selector left stale rows on screen")
     if not key(b"\x0c", b"Select model:", timeout=5.0):
         raise SystemExit("selector did not reopen after selection")
     # The initial scoped tab contains only the configured model. Tab switches

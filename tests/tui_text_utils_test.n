@@ -7,6 +7,12 @@ test 'visible width strips terminal strings and normalizes tabs' {
     assert(text_utils.normalize_terminal_output('กำ\t\x1b]x\t\x07') == 'กํา   \x1b]x\t\x07')
 }
 
+test 'visible width handles large styled rows without per-byte rebuilding' {
+    [u8] bytes = vec<u8>.new('x'.char(), 50000)
+    string styled = '\x1b[38;2;102;102;102m' + (bytes as string) + '\x1b[0m'
+    assert(text_utils.visible_width(styled) == 50000)
+}
+
 test 'truncate is grapheme safe preserves ANSI and pads by cells' {
     string plain = text_utils.truncate_to_width('ab界cd', 5, '...', false)
     assert(text_utils.visible_width(plain) == 5)

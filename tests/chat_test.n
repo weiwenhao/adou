@@ -186,6 +186,25 @@ test 'tool output diff bodies render with per-line colors like Pi' {
     assert(!plain_lines.contains('-just') && !plain_lines.contains('+just'))
 }
 
+test 'expanded tool bodies stay bounded for long results' {
+    var value = chat.new('mock-model', '/tmp/project')
+    string body = ''
+    for int index = 1; index <= 240; index += 1 {
+        body += fmt.sprintf('line %d\n', index)
+    }
+    var tool = new types.tool_result_message_t(tool_call_id = 'call-long', tool_name = 'read', content = [new types.text_content_t(text = body)])
+    types.message_t message = tool
+    value.load_messages([message])
+    value.toggle_tool_output()
+    string rendered = strings.join(value.render(80), '\n')
+    assert(rendered.contains('line 1'))
+    assert(rendered.contains('line 100'))
+    assert(!rendered.contains('line 120'))
+    assert(rendered.contains('line 141'))
+    assert(rendered.contains('line 240'))
+    assert(rendered.contains('40 lines omitted from display'))
+}
+
 test 'B3 outputPad 0 widens the user message content area' {
     var value = chat.new('mock-model', '/tmp/project')
     // 19 characters at width 20: pad 1 leaves 18 content columns (wraps to

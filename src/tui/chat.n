@@ -517,6 +517,10 @@ fn render_message_lines(ai_types.message_t message, int width, bool tool_output_
 // lines with an expand hint, the truncated flag surfaces the full output
 // path, and the exit status is a short inline footer.
 const BASH_PREVIEW_VISUAL_LINES = 20
+// Expanded tool output is still a viewport aid, not a second file viewer.
+// Keep rendering bounded while preserving both edges so read continuation
+// hints and command tails remain visible. The full result stays in context.
+const TOOL_BODY_MAX_PHYSICAL_LINES = 200
 
 #local
 fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, bool expanded): [string]! {
@@ -817,8 +821,19 @@ fn tool_result_text(tool_types.tool_result_t result): string {
 fn render_tool_body(string body, int width): [string]! {
     [string] lines = body.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     bool is_diff = looks_like_diff(lines)
-    [string] result = vec<string>.cap_of(lines.len())
-    for line in lines {
+    int limit = lines.len() < TOOL_BODY_MAX_PHYSICAL_LINES ? lines.len() : TOOL_BODY_MAX_PHYSICAL_LINES
+    [string] result = vec<string>.cap_of(limit + 1)
+    bool truncated = lines.len() > limit
+    int head_end = truncated ? limit / 2 : lines.len()
+    int tail_start = truncated ? lines.len() - (limit - head_end) : lines.len()
+    for int index = 0; index < lines.len(); index += 1 {
+        if truncated && index == head_end {
+            result.push(theme.fg(theme.muted_color(), fmt.sprintf('... (%d lines omitted from display)', tail_start - head_end)))
+        }
+        if truncated && index >= head_end && index < tail_start {
+            continue
+        }
+        string line = lines[index]
         string rendered = '  ' + line
         if is_diff {
             rendered = '  ' + diff_line_color(line)

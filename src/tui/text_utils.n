@@ -54,21 +54,38 @@ pub fn visible_width(string text): int! {
     if text == '' {
         return 0
     }
+    // Most transcript rows are plain UTF-8. Avoid rebuilding those rows one
+    // byte at a time before handing them to ICU; large tool results can
+    // otherwise turn one width check into tens of thousands of allocations.
+    if text.find('\x1b') < 0 && text.find('\t') < 0 {
+        return unicode.visible_width(text)
+    }
     string clean = ''
     int cursor = 0
+    int plain_start = 0
     for cursor < text.len() {
         var ansi = extract_ansi(text, cursor)
         if ansi.found {
+            if plain_start < cursor {
+                clean += text.slice(plain_start, cursor)
+            }
             cursor += ansi.length
+            plain_start = cursor
             continue
         }
         if text[cursor] == '\t'.char() {
+            if plain_start < cursor {
+                clean += text.slice(plain_start, cursor)
+            }
             clean += '   '
             cursor += 1
+            plain_start = cursor
             continue
         }
-        clean += text.slice(cursor, cursor + 1)
         cursor += 1
+    }
+    if plain_start < text.len() {
+        clean += text.slice(plain_start, text.len())
     }
     return unicode.visible_width(clean)
 }
