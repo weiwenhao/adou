@@ -110,22 +110,27 @@ test 'bash messages collapse to visual lines with expand and truncation hints' {
     var value = chat.new('mock-model', '/tmp/project')
     var started = session_stream.event_t {kind: session_stream.EVENT_BASH_START, bash_command: 'echo hi', bash_exclude_from_context: false,}
     value.apply(started)
-    // 60 lines at width 40: the collapsed preview keeps the last 20 visual
-    // lines and reports the skipped count.
+    // 240 lines at width 40: the collapsed preview keeps the last 20 visual
+    // lines and the expanded view keeps bounded head/tail slices.
     string output = ''
-    for int index = 1; index <= 60; index += 1 {
+    for int index = 1; index <= 240; index += 1 {
         output += fmt.sprintf('line %d\n', index)
     }
     var ended = session_stream.event_t {kind: session_stream.EVENT_BASH_END, bash_command: 'echo hi', bash_output: output, bash_exit_code: 0, bash_cancelled: false, bash_truncated: false, bash_full_output_path: '', bash_exclude_from_context: false,}
     value.apply(ended)
     var lines = strings.join(value.render(40), '\n')
     assert(lines.contains('more lines, press Ctrl+O to expand'))
-    assert(lines.contains('line 60'))
+    assert(lines.contains('line 240'))
     assert(!lines.contains('line 1'))
-    // Expanded state shows the full body.
+    // Expanded state is bounded but preserves both edges.
     value.toggle_tool_output()
     var expanded = strings.join(value.render(40), '\n')
     assert(expanded.contains('line 1'))
+    assert(expanded.contains('line 100'))
+    assert(!expanded.contains('line 120'))
+    assert(expanded.contains('line 141'))
+    assert(expanded.contains('line 240'))
+    assert(expanded.contains('40 lines omitted from display'))
     value.toggle_tool_output()
 }
 

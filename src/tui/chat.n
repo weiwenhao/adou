@@ -540,9 +540,7 @@ fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, boo
                 result.append(wrapped_lines(theme.fg(theme.muted_color(), line), width))
             }
         } else {
-            for line in body.split('\n') {
-                result.append(wrapped_lines(theme.fg(theme.muted_color(), line), width))
-            }
+            result.append(render_bounded_bash_body(body, width))
         }
     } else {
         result.push(theme.fg(theme.muted_color(), '(no output)'))
@@ -558,6 +556,26 @@ fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, boo
     }
     if footer != '' {
         result.append(wrapped_lines(theme.fg(theme.ERROR, footer), width))
+    }
+    return result
+}
+
+#local
+fn render_bounded_bash_body(string body, int width): [string]! {
+    [string] lines = body.split('\n')
+    int limit = lines.len() < TOOL_BODY_MAX_PHYSICAL_LINES ? lines.len() : TOOL_BODY_MAX_PHYSICAL_LINES
+    [string] result = vec<string>.cap_of(limit + 1)
+    bool truncated = lines.len() > limit
+    int head_end = truncated ? limit / 2 : lines.len()
+    int tail_start = truncated ? lines.len() - (limit - head_end) : lines.len()
+    for int index = 0; index < lines.len(); index += 1 {
+        if truncated && index == head_end {
+            result.push(theme.fg(theme.muted_color(), fmt.sprintf('... (%d lines omitted from display)', tail_start - head_end)))
+        }
+        if truncated && index >= head_end && index < tail_start {
+            continue
+        }
+        result.append(wrapped_lines(theme.fg(theme.muted_color(), lines[index]), width))
     }
     return result
 }
