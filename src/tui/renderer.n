@@ -44,10 +44,10 @@ pub fn renderer_t.render(&self, [string] input_lines, int width, int height): re
     return self.render_frame(input_lines, width, height, self.clear_on_shrink)
 }
 
-// Selector overlays are transient UI, so rows removed while filtering or
-// closing them must never remain visible even when the user's general
-// terminal.clearOnShrink setting is off.
-pub fn renderer_t.render_overlay_frame(&self, [string] input_lines, int width, int height): result_t! {
+// Selectors and autocomplete menus are transient UI, so rows removed while
+// filtering or closing them must never remain visible even when the user's
+// general terminal.clearOnShrink setting is off.
+pub fn renderer_t.render_transient_frame(&self, [string] input_lines, int width, int height): result_t! {
     return self.render_frame(input_lines, width, height, true)
 }
 
