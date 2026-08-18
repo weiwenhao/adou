@@ -1528,8 +1528,22 @@ docs/pi-batch3-evidence/herdr-keybindings-parity-summary.json。
 
 ### 18.3 尚未关闭的真机事项
 
-- 离线 PTY 和 RPC 场景未复现 RM-TUI-005，但这不能替代 Herdr 中带 debug 文件
-  与进程内存采样的真实复现；该风险仍保持开放。
+- RM-TUI-005 已在 Herdr 真实 TUI 中带逐秒进程内存采样复现：旧安装版
+  `/usr/local/bin/adou`（SHA-256 前缀 `ceebb911`）前 10 轮 `/model` 操作完成，
+  第 11 轮以 `runtime: out of memory: page allocation failed` 退出。118 个样本
+  中 RSS 从 3,440 KiB 增至 74,576 KiB；原始数据保存在
+  `/tmp/rm-tui-005-memory-20260818.log`。
+- 同一 pane、session 和操作协议下，当前 `build/bin/adou`（SHA-256 前缀
+  `505856`）完成 100 轮后仍存活。141 个样本的 RSS 峰值为 41,168 KiB，
+  末值为 7,056 KiB；原始数据与 debug 日志分别保存在
+  `/tmp/rm-tui-005-memory-built-20260818.log` 和
+  `/tmp/adou-built-rm-tui-005.log`。
+- `tests/nature_repros/rm_tui_registry.n` 将热点缩到无 TUI 的 Nature 入口：
+  每轮 1,200 次 `registry.find_def` 会反复构造全部 provider definitions，能
+  产生大幅瞬时分配压力。纯短生命周期 vector + GC/scheduler 对照保持平稳。
+  该最小用例尚未独立触发 allocator abort，因此当前裁决是 Adou 旧热点已由
+  provider 级认证缓存消除；Nature runtime 在高压下直接 abort 的次级问题需
+  上游继续评估，不能写成已证实的编译器误编译。
 - 取消实现现在在 `src/ai/event_stream.n` 对取消后的迟到增量和正常 DONE 做了
   原子化收口，离线 PTY 已覆盖“Ctrl+C 后 provider 继续发送”的竞态；真实
   DeepSeek 流仍需一轮针对性 Herdr 验证，才能关闭真机风险记录。

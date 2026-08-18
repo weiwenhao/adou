@@ -154,16 +154,38 @@ Herdr 终端内的真实用户操作：真实 DeepSeek、真实 TUI、真实终�
 - `Error: bad address in system call argument`（偶发于输入/重绘期间，
   单次出现后 TUI 继续工作）
 - `Render failed`（渲染帧失败，随后帧自愈）
-- `RM-TUI-005`：真实 `/model` 操作前偶发 Nature runtime
-  `out of memory: page allocation failed`。离线 PTY、RPC 和新隔离 session
-  尚未复现；在具备 debug 文件与进程内存采样的 Herdr 环境中复现或连续多轮
-  不复现前，不得标记为已解决。
+- `RM-TUI-005`：旧安装版在真实 `/model` 操作压力下触发 Nature runtime
+  `out of memory: page allocation failed`。该异常已在 Herdr 中带 debug 文件和
+  逐秒 RSS 采样复现；当前构建已连续 100 轮同等操作存活，但 Nature allocator
+  在高分配压力下的次级健壮性问题仍未单独裁决。
 - 流式请求在过早 Ctrl+C 后仍可能继续消费旧输出。当前实现已在事件流层丢弃
   取消后的迟到增量，并新增 `tests/e2e/tui-stream-cancel.sh` 覆盖本地 SSE
   竞态；真实 DeepSeek 流仍需专项压力复验，暂不把真机风险标成关闭。
 
 若上述异常在后续批次被修复或根因定位，本文档对应条目更新为已解决并
 注明 commit。
+
+### 10.1 RM-TUI-005 复现证据（2026-08-18）
+
+在 `w7:pE` 的真实 TUI 中，旧安装版 `/usr/local/bin/adou`（SHA-256 前缀
+`ceebb911`，PID 36897）执行 `/model` → Enter → 上/下导航 → Esc 循环。前
+10 轮完成，第 11 轮进程退出，shell 原样报告：
+
+```text
+runtime: out of memory: page allocation failed
+```
+
+逐秒采样 `/tmp/rm-tui-005-memory-20260818.log`：118 个样本，RSS 从
+3,440 KiB 增至 74,576 KiB（+71,136 KiB）。同一环境的当前构建
+`build/bin/adou`（SHA-256 前缀 `505856`，PID 61655）完成 100 轮后仍存活；
+`/tmp/rm-tui-005-memory-built-20260818.log` 的 RSS 峰值为 41,168 KiB，末值
+7,056 KiB。对应 debug 日志为 `/tmp/adou-built-rm-tui-005.log`。
+
+代码审计和最小用例见 `tests/nature_repros/README.md`：旧路径在每个模型上
+重复 `registry.find_def`，而该函数每次都会重建全部 provider definitions。
+当前 commit 已将认证结果提升为 provider 级缓存，因此这条分配热点已从
+`/model` 扫描中移除。结论是“Adou 旧热点触发了真实 OOM，Nature allocator
+仍有高压下 abort 的待上游评估项”，不是已证实的 Nature 编译器误编译。
 
 ## 11. 2026-08-13 Pi/Adou 同指令对照：间歇性重绘损坏
 

@@ -12,7 +12,7 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 - Phase 7（storage + server）已完成：storage 已完成（JSONL/memory/SQLite 三后端契约测试 + migrations + materialized 表），server supervisor/protocol/rpc_stream 已验收（Phase 7.1 于 2026-08-12 关闭）。
 - 历史失败记录（cli-startup-boundaries 挂起、auth stdout 泄漏、ESC 10ms、deepseek fixture、全量 7 文件 OOM）均已由后续修复或重跑覆盖，见各批实跑证据。
 - Phase 8（evals harness）已完成：`make eval` 3/3 绿（2026-08-12），见 `docs/evals-design.md`。
-- 2026-08-18 当前 worktree 复验：受影响 Nature 单测全部通过；完整 `make e2e` 58/58 通过；`make eval` 3/3、`make pkg-check`、`make signing-check` 和 `make release-check` 均通过。`tests/e2e/rpc-over-ipc.sh` 同时修复了相对二进制路径导致的 macOS 子进程探测误判。
+- 2026-08-18 当前 worktree 复验：受影响 Nature 单测全部通过；完整 `make e2e` 58/58 通过；`make eval` 3/3、`make pkg-check`、`make signing-check` 和 `make release-check` 均通过。Herdr 已带内存采样复现旧安装版 RM-TUI-005；当前构建完成 100 轮同等 `/model` 操作仍存活，最小用例定位到 provider registry 重建热点。`tests/e2e/rpc-over-ipc.sh` 同时修复了相对二进制路径导致的 macOS 子进程探测误判。
 - Skills parity foundation 增量批次已关闭（2026-08-13）：`--skill`/`--no-skills`、发现优先级、trust 重解析、`/reload`、RPC `get_commands` 与 Markdown 单次分词已落地并验证（见下文 Skills parity foundation 节）。
 - Pi extension 已在生产入口停用：不扫描扩展目录、不初始化 QuickJS、不注册扩展工具/命令、不派发生命周期事件；默认构建不再链接 QuickJS。相关源码暂留作未来重新设计的参考。
 
@@ -22,7 +22,7 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 | Phase 2：Agent harness | 已完成 | agent loop、工具、memory repo、shell 捕获、取消和 tool context 已覆盖 |
 | Phase 3：coding-agent core | 已完成（排除扩展） | session、compaction、配置、skills、prompts、模型目录、诊断与导出已覆盖 |
 | Phase 4：TUI 基础 | **reopened（2026-08-14，Interactive/TUI 交互子项）** | editor/autocomplete/keybindings/cursor 等交互子项（IP-006/008、Batch 1/4）按 `docs/pi-interactive-parity-audit-plan.md` 重新验收；renderer 差分渲染、terminal recovery、fuzzy、路径补全、markdown 等已验证子项保留原结论 |
-| Phase 5：Interactive UI | **reopened（2026-08-14）** | 原"已完成"结论被 `docs/pi-interactive-parity-audit-plan.md` 撤销（IP-001..012）；按该计划 Batch 0→7 重新验收，Batch 0 至 Batch 6 已由主代理验收通过；离线稳定性与发布门禁已复验，Batch 7 仍等待真实 provider smoke、Herdr 长会话和 RM-TUI-005 最终裁决 |
+| Phase 5：Interactive UI | **reopened（2026-08-14）** | 原"已完成"结论被 `docs/pi-interactive-parity-audit-plan.md` 撤销（IP-001..012）；按该计划 Batch 0→7 重新验收，Batch 0 至 Batch 6 已由主代理验收通过；离线稳定性与发布门禁已复验，RM-TUI-005 的 Adou 热点已定位并通过 100 轮 Herdr 复验，Batch 7 仍等待真实 provider smoke、长会话及 Nature allocator 次级风险裁决 |
 | Phase 6：CLI | 已完成 | 9 个上游模块逐项对照；空 stdin 挂起、credential 输出隔离、help/参数矩阵、启动边界均通过（help-matrix/cli-startup-boundaries/auth-print/rpc-shape-parity 等 45 个 e2e） |
 | Phase 7：storage + server | 已完成 | SQLite backend 已落地（nature-sqlite 绑定 + migrations/repo + 三后端契约测试 5/5）；server supervisor/协议/rpc_stream 已按上游 ipc/protocol.ts 重写，多实例生命周期与 rpc_stream e2e 通过（Phase 7.1 于 2026-08-12 关闭） |
 | Phase 8：evals | 已完成 | pi-harness/smoke.eval 已移植（本地脚本化 HTTP mock），`make eval` 3/3 绿；extensions.eval 明确排除；见 `docs/evals-design.md` |

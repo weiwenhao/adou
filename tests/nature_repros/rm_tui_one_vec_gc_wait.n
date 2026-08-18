@@ -1,0 +1,21 @@
+import co
+import runtime
+
+fn allocate_round() {
+    [int] values = []
+    for int index = 0; index < 41; index += 1 {
+        values.push(index)
+    }
+}
+
+fn main() {
+    for int round = 1; round <= 10000; round += 1 {
+        allocate_round()
+        if round % 1000 == 0 {
+            runtime.gc()
+            co.sleep(200)
+            println('round', round, 'malloc', runtime.malloc_bytes())
+        }
+    }
+    println('done')
+}

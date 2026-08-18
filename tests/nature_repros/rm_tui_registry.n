@@ -1,0 +1,14 @@
+import adou.src.ai.providers.registry
+import co
+import runtime
+
+fn main() {
+    for int round = 1; round <= 100; round += 1 {
+        for int index = 0; index < 1200; index += 1 {
+            registry.find_def('missing-provider')
+        }
+        co.sleep(100)
+        println('round', round, 'malloc', runtime.malloc_bytes())
+    }
+    println('done')
+}
