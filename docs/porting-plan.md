@@ -1,17 +1,18 @@
 # Adou 全量移植计划（Pi 0.82.1，扩展机制暂缓）
 
-状态：Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12；**Phase 4（Interactive/TUI 交互子项）与 Phase 5（Interactive UI）已于 2026-08-14 重新打开（reopened）**，见 `docs/pi-interactive-parity-audit-plan.md`（Batch 0、Batch 1、Batch 2 已由主代理验收通过；下一批为 Batch 3）；Skills parity foundation 增量批次已关闭（2026-08-13 复核收口并验证）
+状态：Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12；**Phase 4（Interactive/TUI 交互子项）与 Phase 5（Interactive UI）已于 2026-08-14 重新打开（reopened）**，见 `docs/pi-interactive-parity-audit-plan.md`（Batch 0 至 Batch 6 已由主代理验收通过；下一批为 Batch 7）；Skills parity foundation 增量批次已关闭（2026-08-13 复核收口并验证）
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
 release hardening：macOS 主线进行中（Batch 1、Batch 2A、native `.pkg` installer 已完成；Batch 2B 真实签名/公证需新权限；Linux 暂缓，见 `docs/release-hardening-plan.md`、`docs/macos-signing.md` 与 `docs/macos-installer.md`）
 RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make release-check`、`make signing-check` 证据见下）；历史 runtime blocker `nature#302` 已由上游 PR #303 修复并用专用 toolchain 验证，后续 PTY 冷启动失败也已定位为测试在 raw mode 前过早发键的同步缺陷并修复
 
 ## 当前进度快照
 
-- Adou 当前有 218 个 `src/**/*.n` 文件、41,925 行 Nature 源码、138 个 Nature 单元测试文件（665 个 test case、2,724 个 `assert`）和 46 个 e2e 脚本。
+- Adou 当前有 233 个 `src/**/*.n` 文件、50,663 行 Nature 源码、150 个 Nature 单元测试文件和 58 个普通离线 e2e 脚本；另有 3 个 opt-in live 脚本、4 个 release 脚本和 1 个 e2e helper。
 - Phase 1–3、6 已完成并有源码差分、单元测试和跨模块验收记录；Phase 4/5 的 Interactive 相关结论于 2026-08-14 重新打开（见 `docs/pi-interactive-parity-audit-plan.md`）；137 个单测文件在 2026-08-11 全量串行通过（7 个 OOM abort 单独重跑全过，deepseek fixture 回归已修复）。
 - Phase 7（storage + server）已完成：storage 已完成（JSONL/memory/SQLite 三后端契约测试 + migrations + materialized 表），server supervisor/protocol/rpc_stream 已验收（Phase 7.1 于 2026-08-12 关闭）。
 - 历史失败记录（cli-startup-boundaries 挂起、auth stdout 泄漏、ESC 10ms、deepseek fixture、全量 7 文件 OOM）均已由后续修复或重跑覆盖，见各批实跑证据。
 - Phase 8（evals harness）已完成：`make eval` 3/3 绿（2026-08-12），见 `docs/evals-design.md`。
+- 2026-08-18 当前 worktree 复验：受影响 Nature 单测全部通过；完整 `make e2e` 58/58 通过；`make eval` 3/3、`make pkg-check`、`make signing-check` 和 `make release-check` 均通过。`tests/e2e/rpc-over-ipc.sh` 同时修复了相对二进制路径导致的 macOS 子进程探测误判。
 - Skills parity foundation 增量批次已关闭（2026-08-13）：`--skill`/`--no-skills`、发现优先级、trust 重解析、`/reload`、RPC `get_commands` 与 Markdown 单次分词已落地并验证（见下文 Skills parity foundation 节）。
 - Pi extension 已在生产入口停用：不扫描扩展目录、不初始化 QuickJS、不注册扩展工具/命令、不派发生命周期事件；默认构建不再链接 QuickJS。相关源码暂留作未来重新设计的参考。
 
@@ -21,7 +22,7 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 | Phase 2：Agent harness | 已完成 | agent loop、工具、memory repo、shell 捕获、取消和 tool context 已覆盖 |
 | Phase 3：coding-agent core | 已完成（排除扩展） | session、compaction、配置、skills、prompts、模型目录、诊断与导出已覆盖 |
 | Phase 4：TUI 基础 | **reopened（2026-08-14，Interactive/TUI 交互子项）** | editor/autocomplete/keybindings/cursor 等交互子项（IP-006/008、Batch 1/4）按 `docs/pi-interactive-parity-audit-plan.md` 重新验收；renderer 差分渲染、terminal recovery、fuzzy、路径补全、markdown 等已验证子项保留原结论 |
-| Phase 5：Interactive UI | **reopened（2026-08-14）** | 原"已完成"结论被 `docs/pi-interactive-parity-audit-plan.md` 撤销（IP-001..012）；按该计划 Batch 0→7 重新验收，Batch 0、Batch 1、Batch 2 已由主代理验收通过；下一批为 Batch 3（Settings 全量契约） |
+| Phase 5：Interactive UI | **reopened（2026-08-14）** | 原"已完成"结论被 `docs/pi-interactive-parity-audit-plan.md` 撤销（IP-001..012）；按该计划 Batch 0→7 重新验收，Batch 0 至 Batch 6 已由主代理验收通过；离线稳定性与发布门禁已复验，Batch 7 仍等待真实 provider smoke、Herdr 长会话和 RM-TUI-005 最终裁决 |
 | Phase 6：CLI | 已完成 | 9 个上游模块逐项对照；空 stdin 挂起、credential 输出隔离、help/参数矩阵、启动边界均通过（help-matrix/cli-startup-boundaries/auth-print/rpc-shape-parity 等 45 个 e2e） |
 | Phase 7：storage + server | 已完成 | SQLite backend 已落地（nature-sqlite 绑定 + migrations/repo + 三后端契约测试 5/5）；server supervisor/协议/rpc_stream 已按上游 ipc/protocol.ts 重写，多实例生命周期与 rpc_stream e2e 通过（Phase 7.1 于 2026-08-12 关闭） |
 | Phase 8：evals | 已完成 | pi-harness/smoke.eval 已移植（本地脚本化 HTTP mock），`make eval` 3/3 绿；extensions.eval 明确排除；见 `docs/evals-design.md` |

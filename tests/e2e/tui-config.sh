@@ -212,7 +212,10 @@ try:
         if not collect2(b"project resources", timeout=4.0):
             raise SystemExit("Tab did not switch config scope")
         os.write(fd2, b"\x1b")
-        time.sleep(0.25)
+        # Drain the close frame before sending /quit.  Without this input
+        # barrier, the ESC and slash command can arrive in one terminal read
+        # batch and the slash text is still consumed by the config query.
+        collect2(timeout=0.5)
         # Verify the persisted theme file.
         with open(os.path.join(agent, "settings.json")) as raw:
             settings = json.load(raw)

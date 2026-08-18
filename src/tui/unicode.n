@@ -39,8 +39,27 @@ pub fn graphemes(string text): [segment_t]! {
         throw errorf('ICU grapheme segmentation failed: %d', count)
     }
     [segment_t] result = vec<segment_t>.cap_of(count - 1)
+    int previous = 0
     for int index = 0; index < count - 1; index += 1 {
-        result.push(segment_t {start: boundaries[index], end: boundaries[index + 1],})
+        int start = boundaries[index]
+        int end = boundaries[index + 1]
+        // ICU normally returns native UTF-8 byte offsets.  Clamp a stale or
+        // malformed native boundary before it reaches string.slice; a redraw
+        // must never turn a transient segmentation mismatch into a TUI panic.
+        if start < previous {
+            start = previous
+        }
+        if start > text.len() {
+            start = text.len()
+        }
+        if end < start {
+            end = start
+        }
+        if end > text.len() {
+            end = text.len()
+        }
+        result.push(segment_t {start: start, end: end,})
+        previous = end
     }
     return result
 }

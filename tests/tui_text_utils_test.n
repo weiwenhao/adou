@@ -1,4 +1,5 @@
 import adou.src.tui.text_utils
+import strings
 
 test 'visible width strips terminal strings and normalizes tabs' {
     assert(text_utils.visible_width('\x1b[31m红\x1b[0m\tX') == 6)
@@ -39,4 +40,51 @@ test 'wrap preserves styles hyperlinks words and CJK boundaries' {
     assert(styled.len() == 2 && styled[0].contains('\x1b[24m') && styled[1].contains('\x1b[4;31m'))
     var linked = text_utils.wrap_text_with_ansi('\x1b]8;;u\x07abcdef\x1b]8;;\x07', 3)
     assert(linked.len() == 2 && linked[0].contains('\x1b]8;;\x07') && linked[1].contains('\x1b]8;;u\x07'))
+}
+
+test 'wraps large colored output without rebuilding each byte' {
+    [u8] bytes = vec<u8>.new('x'.char(), 50000)
+    string styled = '\x1b[38;2;102;102;102m' + (bytes as string) + '\x1b[0m'
+    var wrapped = text_utils.wrap_text_with_ansi(styled, 100)
+    assert(wrapped.len() == 500)
+    for line in wrapped {
+        assert(text_utils.visible_width(line) <= 100)
+    }
+}
+
+test 'wraps large colored CJK output without rebuilding each grapheme' {
+    [string] parts = vec<string>.cap_of(5000)
+    for int index = 0; index < 5000; index += 1 {
+        parts.push('中')
+    }
+    string styled = '\x1b[38;2;102;102;102m' + strings.join(parts, '') + '\x1b[0m'
+    var wrapped = text_utils.wrap_text_with_ansi(styled, 100)
+    assert(wrapped.len() == 100)
+    for line in wrapped {
+        assert(text_utils.visible_width(line) <= 100)
+    }
+}
+
+test 'truncates large streamed rows without retaining the full visual history' {
+    [u8] bytes = vec<u8>.new('x'.char(), 50000)
+    string styled = '\x1b[38;2;102;102;102m' + (bytes as string) + '\x1b[0m'
+    var truncated = text_utils.truncate_visual_lines(styled, 100, 20)
+    assert(truncated[1] == 480)
+    var rows = truncated[0].split('\n')
+    assert(rows.len() == 20)
+    for line in rows {
+        assert(text_utils.visible_width(line) <= 100)
+    }
+}
+
+test 'wraps high-frequency ANSI sequences in linear time' {
+    [string] parts = vec<string>.cap_of(5000)
+    for int index = 0; index < 5000; index += 1 {
+        parts.push('\x1b[31mx\x1b[0m')
+    }
+    var wrapped = text_utils.wrap_text_with_ansi(strings.join(parts, ''), 100)
+    assert(wrapped.len() == 50)
+    for line in wrapped {
+        assert(text_utils.visible_width(line) <= 100)
+    }
 }

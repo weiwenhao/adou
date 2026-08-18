@@ -1,9 +1,9 @@
 # Pi Interactive Parity 审计与实施计划
 
-状态：Batch 0 已由主代理验收通过（2026-08-14）；Batch 1（Autocomplete 与 SelectList 基础）与 Batch 2（Model 与 Scoped Models）已由主代理验收通过（2026-08-15）；下一批为 Batch 3
+状态：Batch 0（2026-08-14）、Batch 1（Autocomplete 与 SelectList 基础）、Batch 2（Model 与 Scoped Models）、Batch 3（Keybindings）、Batch 4（Editor/cursor/IME）、Batch 5（其余 Interactive 组件）与 Batch 6（Streaming、Resize 与稳定性组合回归）均已由主代理验收通过（2026-08-17）；下一批为 Batch 7
 审计日期：2026-08-14
 范围：Adou 交互式 TUI、编辑器、autocomplete、overlay、快捷键和终端生命周期
-Nature 实现基线：当前未提交 worktree（HEAD `5da8bb0`，包含 2026-08-13/14 的稳定性修复和未验收的 slash-menu WIP）
+Nature 实现基线：当前未提交 worktree（HEAD `91a24bb`；Batch 6 的实现与测试改动尚未提交）
 
 ## 1. 结论
 
@@ -1419,3 +1419,119 @@ docs/pi-batch3-evidence/herdr-keybindings-parity-summary.json。
 
 残余 FAIL：无。OAuth 仍按批次定义 EXCLUDED；项目资源 scope 使用 Adou
 现有 named allow-list 模型，未引入 Pi package manager 的额外三态包配置。
+
+## 16. Batch 6 记录（Streaming、Resize 与稳定性组合回归，2026-08-17）
+
+### 16.1 实施记录
+
+- `assistant_stream.result()` 的测试 fixture 现在在终端事件后显式执行
+  `stream.end()`，与 provider teardown 生命周期一致，避免测试等待永久挂起。
+- 编辑器在高频多行输入下对过期 byte cursor 做边界归一；可视光标宽度、
+  autocomplete 查询和路径菜单锚点在读取编辑器快照时也限制在当前行长度内。
+  ICU grapheme 边界进入 `string.slice` 前统一校验，非法 native offset 不再使
+  TUI 直接 panic。
+- 新增 `tests/e2e/tui-stream-resize.sh`：本地 SSE provider 交错输出 tool/final
+  事件，PTY 连续 resize、Ctrl+O 展开、`/settings` overlay、Esc 取消和 `/quit`
+  全链路验证 UTF-8、同步输出边界、终端恢复与请求数量。
+- `tui-editor-wrapping.sh` 改为等待本次输入产生的新帧，并处理 PTY close 的
+  EIO；`tui-config.sh` 与 `tui-session-selector.sh` 增加 overlay close 输入屏障，
+  消除脚本自身的时序抢跑。
+
+### 16.2 验收记录
+
+- `make build` 串行成功。
+- 定向 Nature 测试：agent_loop 17/17、agent_session 33/33、compaction
+  15/15、retained-tail 1/1、provider-retry 5/5、event-stream 5/5、
+  tui-redraw 3/3、term 9/9、shell-capture 3/3、debug 2/2、editor 26/26、
+  tui-unicode 3/3、tui-text-utils 5/5，合计 127 个用例通过。
+- `rpc-queue-update.sh` 单项压力重复 30/30 通过；其余 Batch 6 相关 RPC、
+  redraw、latency、job-control 与本地 coding journey 均通过。
+- 完整 `make e2e` exit 0，串行执行当前 57 个离线 e2e 脚本；包含新增
+  `tui-stream-resize.sh`，以及 3 轮 slash-menu 语义/屏幕一致性验证。
+- 按项目约束未运行耗时的完整 `make test`，未修改 `vendors/`，未提交任何凭据。
+
+残余 FAIL：无。下一批为 Batch 7（安装产物、真实 provider smoke 与 Herdr 长会话
+组合验收）；OAuth、扩展运行时和完整 `make test` 仍按计划范围处理。
+
+## 17. Batch 7 中间记录（安装、真机 provider 与日志诊断，2026-08-18）
+
+### 17.1 日志模块补强
+
+- `--debug`/`ADOU_DEBUG=1` 在未显式设置 `ADOU_DEBUG_FILE` 时，默认把文件日志
+  写入当前 Adou agent 目录的 `adou-debug.log`；显式目标仍优先，TUI stderr
+  保持干净，headless/RPC stderr 契约不变。
+- `[adou debug] component:` 原前缀保持不变，每行追加 `ts` 与 `pid`。启动、
+  config resolve、模型缓存/远程 catalog（跳过、尝试、成功、失败、耗时）、
+  session、资源快照、runner、slash command、`/model` 候选计数和 stream cancel
+  都有阶段日志，且不记录 API key、请求 URL、请求正文或完整 prompt。
+- `tests/debug_test.n` 3/3、`tests/e2e/debug-isolation.sh`、
+  `tests/e2e/rpc-debug-stderr.sh` 均通过。真实 `adou-test` 使用显式 debug
+  文件观察到 `/model` 的 `begin -> candidates -> ready` 链路约 18ms（端到端
+  pane 测量约 134ms），provider 往返和 `ctrl+c` 取消均能在日志中闭合到
+  `session_end`。
+
+### 17.2 安装与真实 pane
+
+- `DESTDIR` 安装检查、`make pkg-check` 通过；sudo 安装后
+  `/usr/local/bin/adou` 与 `build/bin/adou` SHA-256 均为
+  `ceebb911ad4346257797dcb26abadf4d5ab3f32c7a61117504166ce6d361cc21`，
+  `--version` exit 0。
+- Herdr `adou-test`（`w7:pE`）重启后真实 DeepSeek 往返、跨轮记忆、项目
+  skill 命中、只读 `pwd` 工具、长输出完成与后续对话均通过；`/settings`、
+  `/hotkeys`、`/help`、`/session`、`/reload` 和 `/model` 均可操作。
+- Herdr `pi-test`（`w7:pD`）此前已退出到 shell，本轮重新启动 Pi 0.81.0
+  后，用相同的无副作用提示完成精确回复、跨轮记忆与只读工具对照；Pi 的
+  model selector 也能打开。
+
+### 17.3 未关闭的真机风险
+
+- 旧的 `adou-test` 进程在一次 `/model` 操作前出现
+  `runtime: out of memory: page allocation failed` 并退出；使用隔离的新
+  session、持久 session 和显式 debug 日志重启后未复现，不能据此宣称已修复。
+  暂记为 RM-TUI-005，后续必须在 debug 文件和进程内存采样可用的环境下重复
+  验证。此次 pane 后续把 `/model` 延迟和 provider/cancel 链路记录完整。
+- 一次过早发送的 Ctrl+C 显示 `Request aborted` 后仍继续长输出；在 provider
+  已进入活动流的复现实验中，第二次测试正常记录 `stream cancel requested`
+  及 `Request aborted -> session_end`。取消时序仍需下一轮针对性压力验证。
+
+本中间记录不改变 Batch 7 的最终验收状态；未运行完整 `make test`，未修改
+`vendors/`，尚未提交或推送。
+
+## 18. 当前 worktree 复验记录（2026-08-18）
+
+### 18.1 模型候选与内存热点加固
+
+- `/model`、`/scoped-models` 和 `/model` 参数补全现在共享 view 生命周期内的
+  provider 认证快照。认证结果只在初始化、`/reload`、`/login`、`/logout` 或
+  scope 变化时刷新；普通输入不再对每个模型重复调用 `auth.effective()`。
+- 该修复对应 B1-R1-09 的实际遗漏：此前代码只缓存 provider 数量，候选扫描仍
+  逐模型重新解析认证状态。修改位于 `src/tui/session_view.n`，不改变候选顺序或
+  scope 语义。
+- `tests/model_selector_test.n` 4/4、`tests/autocomplete_test.n` 20/20、
+  `tests/settings_test.n` 12/12、`tests/settings_persistence_test.n` 2/2、
+  `tests/agent_session_test.n` 33/33、`tests/chat_test.n` 16/16、
+  `tests/debug_test.n` 3/3 通过；完整 `make build` 通过。
+
+### 18.2 取消、离线回归与发布门禁
+
+- `rpc-abort.sh`、`rpc-abort-retry.sh`、`rpc-abort-bash.sh`、
+  `rpc-compaction-abort.sh`、`tui-stream-resize.sh` 和新增的
+  `tui-stream-cancel.sh` 均通过；取消链路在离线 fixture 中能按
+  `cancel requested → agent_settled → session_end` 收束，并丢弃取消之后迟到的
+  provider 增量。
+- 当前完整 `make e2e` 串行 58/58 通过；`make eval` 3/3 通过。
+- `make pkg-check`、`make signing-check`、`make release-check` 全部通过，产出
+  `build/dist/adou-0.1.0-dev-darwin-arm64.tar.gz`、校验文件和 unsigned `.pkg`。
+- `tests/e2e/rpc-over-ipc.sh` 将输入的二进制路径先做 `realpath`，修复
+  `make release-check` 传相对路径时 macOS `ps` 显示绝对路径、导致子进程被误报为
+  0 个的验收脚本缺陷。
+
+### 18.3 尚未关闭的真机事项
+
+- 离线 PTY 和 RPC 场景未复现 RM-TUI-005，但这不能替代 Herdr 中带 debug 文件
+  与进程内存采样的真实复现；该风险仍保持开放。
+- 取消实现现在在 `src/ai/event_stream.n` 对取消后的迟到增量和正常 DONE 做了
+  原子化收口，离线 PTY 已覆盖“Ctrl+C 后 provider 继续发送”的竞态；真实
+  DeepSeek 流仍需一轮针对性 Herdr 验证，才能关闭真机风险记录。
+- 按项目约束仍未运行约两小时的完整 `make test`；没有修改 `vendors/`，本轮
+  改动已形成当前 commit。

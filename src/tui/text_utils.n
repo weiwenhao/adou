@@ -60,14 +60,14 @@ pub fn visible_width(string text): int! {
     if text.find('\x1b') < 0 && text.find('\t') < 0 {
         return unicode.visible_width(text)
     }
-    string clean = ''
+    [string] clean_parts = vec<string>.cap_of(8)
     int cursor = 0
     int plain_start = 0
     for cursor < text.len() {
         var ansi = extract_ansi(text, cursor)
         if ansi.found {
             if plain_start < cursor {
-                clean += text.slice(plain_start, cursor)
+                clean_parts.push(text.slice(plain_start, cursor))
             }
             cursor += ansi.length
             plain_start = cursor
@@ -75,9 +75,9 @@ pub fn visible_width(string text): int! {
         }
         if text[cursor] == '\t'.char() {
             if plain_start < cursor {
-                clean += text.slice(plain_start, cursor)
+                clean_parts.push(text.slice(plain_start, cursor))
             }
-            clean += '   '
+            clean_parts.push('   ')
             cursor += 1
             plain_start = cursor
             continue
@@ -85,35 +85,62 @@ pub fn visible_width(string text): int! {
         cursor += 1
     }
     if plain_start < text.len() {
-        clean += text.slice(plain_start, text.len())
+        clean_parts.push(text.slice(plain_start, text.len()))
     }
-    return unicode.visible_width(clean)
+    return unicode.visible_width(strings.join(clean_parts, ''))
 }
 
 pub fn normalize_terminal_output(string text): string {
-    string result = ''
+    if text.find('\x1b') < 0 && text.find('\t') < 0 && text.find('ำ') < 0 && text.find('ຳ') < 0 {
+        return text
+    }
+    [string] parts = vec<string>.cap_of(8)
     int cursor = 0
+    int plain_start = 0
     for cursor < text.len() {
         var ansi = extract_ansi(text, cursor)
         if ansi.found {
-            result += ansi.code
+            if plain_start < cursor {
+                parts.push(text.slice(plain_start, cursor))
+            }
+            parts.push(ansi.code)
             cursor += ansi.length
+            plain_start = cursor
             continue
         }
         if cursor + 3 <= text.len() && text.slice(cursor, cursor + 3) == 'ำ' {
-            result += 'ํา'
+            if plain_start < cursor {
+                parts.push(text.slice(plain_start, cursor))
+            }
+            parts.push('ํา')
             cursor += 3
+            plain_start = cursor
             continue
         }
         if cursor + 3 <= text.len() && text.slice(cursor, cursor + 3) == 'ຳ' {
-            result += 'ໍາ'
+            if plain_start < cursor {
+                parts.push(text.slice(plain_start, cursor))
+            }
+            parts.push('ໍາ')
             cursor += 3
+            plain_start = cursor
             continue
         }
-        result += text[cursor] == '\t'.char() ? '   ' : text.slice(cursor, cursor + 1)
+        if text[cursor] == '\t'.char() {
+            if plain_start < cursor {
+                parts.push(text.slice(plain_start, cursor))
+            }
+            parts.push('   ')
+            cursor += 1
+            plain_start = cursor
+            continue
+        }
         cursor += 1
     }
-    return result
+    if plain_start < text.len() {
+        parts.push(text.slice(plain_start, text.len()))
+    }
+    return strings.join(parts, '')
 }
 
 pub fn truncate_to_width(string text, int maximum, string ellipsis, bool pad): string! {
@@ -256,6 +283,16 @@ fn wrap_single_line(string line, int width): [string]! {
     if visible_width(line) <= width {
         return [line]
     }
+    // A long unbroken UTF-8 word is common while an assistant streams a
+    // token at a time.  The general tokenizer appends every grapheme to a
+    // growing string, which makes each redraw increasingly expensive.  Slice
+    // the original string at grapheme boundaries instead.
+    if line.find('\x1b') < 0 && line.find('\t') < 0 && line.find(' ') < 0 {
+        return break_plain_word(line, width)
+    }
+    if line.find('\x1b') >= 0 && line.find('\t') < 0 && line.find(' ') < 0 {
+        return break_long_word(line, width, '', false, '', '')
+    }
     var tokens = split_tokens(line)
     [string] result = vec<string>.cap_of(8)
     var tracker = new tracker_t()
@@ -307,9 +344,47 @@ fn wrap_single_line(string line, int width): [string]! {
 }
 
 #local
+fn break_plain_word(string word, int width): [string]! {
+    if is_ascii_text(word) {
+        [string] lines = vec<string>.cap_of((word.len() + width - 1) / width)
+        for int start = 0; start < word.len(); start += width {
+            int end = start + width
+            if end > word.len() {
+                end = word.len()
+            }
+            lines.push(word.slice(start, end))
+        }
+        return lines.len() > 0 ? lines : ['']
+    }
+    [string] lines = vec<string>.cap_of(8)
+    int segment_start = 0
+    int cursor = 0
+    int current_width = 0
+    var graphemes = unicode.graphemes(word)
+    for grapheme in graphemes {
+        string value = word.slice(grapheme.start, grapheme.end)
+        int value_width = unicode.grapheme_width(value)
+        if current_width + value_width > width && current_width > 0 {
+            lines.push(word.slice(segment_start, cursor))
+            segment_start = cursor
+            current_width = 0
+        }
+        cursor = grapheme.end
+        current_width += value_width
+    }
+    if segment_start < word.len() {
+        lines.push(word.slice(segment_start, word.len()))
+    }
+    return lines.len() > 0 ? lines : ['']
+}
+
+#local
 fn split_tokens(string text): [string]! {
+    if text.find('\x1b') < 0 && text.find('\t') < 0 {
+        return split_plain_tokens(text)
+    }
     [string] tokens = vec<string>.cap_of(16)
-    string current = ''
+    [string] current_parts = vec<string>.cap_of(16)
     string pending_ansi = ''
     int current_kind = 0
     int cursor = 0
@@ -326,9 +401,9 @@ fn split_tokens(string text): [string]! {
             string value = text.slice(cursor + grapheme.start, cursor + grapheme.end)
             bool space = value == ' '
             if !space && unicode.is_cjk_break(value) {
-                if current != '' {
-                    tokens.push(current)
-                    current = ''
+                if current_parts.len() > 0 {
+                    tokens.push(strings.join(current_parts, ''))
+                    current_parts = vec<string>.cap_of(16)
                     current_kind = 0
                 }
                 tokens.push(pending_ansi + value)
@@ -336,36 +411,101 @@ fn split_tokens(string text): [string]! {
                 continue
             }
             int kind = space ? 1 : 2
-            if current != '' && current_kind != kind {
-                tokens.push(current)
-                current = ''
+            if current_parts.len() > 0 && current_kind != kind {
+                tokens.push(strings.join(current_parts, ''))
+                current_parts = vec<string>.cap_of(16)
             }
-            current += pending_ansi + value
+            current_parts.push(pending_ansi + value)
             pending_ansi = ''
             current_kind = kind
         }
         cursor = end
     }
     if pending_ansi != '' {
-        if current != '' {current += pending_ansi} else if tokens.len() > 0 {tokens[tokens.len() - 1] += pending_ansi} else {current = pending_ansi}
+        if current_parts.len() > 0 {current_parts.push(pending_ansi)} else if tokens.len() > 0 {tokens[tokens.len() - 1] += pending_ansi} else {current_parts.push(pending_ansi)}
     }
-    if current != '' {
-        tokens.push(current)
+    if current_parts.len() > 0 {
+        tokens.push(strings.join(current_parts, ''))
+    }
+    return tokens
+}
+
+#local
+fn split_plain_tokens(string text): [string]! {
+    if is_ascii_text(text) {
+        return split_ascii_tokens(text)
+    }
+    [string] tokens = vec<string>.cap_of(16)
+    int start = -1
+    int kind = 0
+    var graphemes = unicode.graphemes(text)
+    for grapheme in graphemes {
+        string value = text.slice(grapheme.start, grapheme.end)
+        bool space = value == ' '
+        if !space && unicode.is_cjk_break(value) {
+            if start >= 0 {
+                tokens.push(text.slice(start, grapheme.start))
+                start = -1
+                kind = 0
+            }
+            tokens.push(value)
+            continue
+        }
+        int next_kind = space ? 1 : 2
+        if start >= 0 && kind != next_kind {
+            tokens.push(text.slice(start, grapheme.start))
+            start = grapheme.start
+        } else if start < 0 {
+            start = grapheme.start
+        }
+        kind = next_kind
+    }
+    if start >= 0 {
+        tokens.push(text.slice(start, text.len()))
+    }
+    return tokens
+}
+
+#local
+fn split_ascii_tokens(string text): [string]! {
+    [string] tokens = vec<string>.cap_of(16)
+    int start = -1
+    int kind = 0
+    for int cursor = 0; cursor <= text.len(); cursor += 1 {
+        if cursor == text.len() {
+            if start >= 0 {
+                tokens.push(text.slice(start, cursor))
+            }
+            break
+        }
+        bool space = text[cursor] == ' '.char()
+        int next_kind = space ? 1 : 2
+        if start >= 0 && kind != next_kind {
+            tokens.push(text.slice(start, cursor))
+            start = cursor
+        } else if start < 0 {
+            start = cursor
+        }
+        kind = next_kind
     }
     return tokens
 }
 
 #local
 fn break_long_word(string word, int width, string sgr_history, bool underline, string hyperlink, string hyperlink_terminator): [string]! {
+    if is_ascii_text(word) {
+        return break_ascii_ansi_word(word, width, sgr_history, underline, hyperlink, hyperlink_terminator)
+    }
     [string] lines = vec<string>.cap_of(8)
     var tracker = new tracker_t(sgr_history = sgr_history, underline = underline, hyperlink = hyperlink, hyperlink_terminator = hyperlink_terminator)
-    string current = tracker.active_codes()
+    [string] current_parts = vec<string>.cap_of(16)
+    current_parts.push(tracker.active_codes())
     int current_width = 0
     int cursor = 0
     for cursor < word.len() {
         var ansi = extract_ansi(word, cursor)
         if ansi.found {
-            current += ansi.code
+            current_parts.push(ansi.code)
             tracker.process(ansi.code)
             cursor += ansi.length
             continue
@@ -376,19 +516,95 @@ fn break_long_word(string word, int width, string sgr_history, bool underline, s
             string value = word.slice(cursor + grapheme.start, cursor + grapheme.end)
             int grapheme_width = unicode.grapheme_width(value)
             if current_width + grapheme_width > width && current_width > 0 {
-                lines.push(current + tracker.line_end_reset())
-                current = tracker.active_codes()
+                lines.push(strings.join(current_parts, '') + tracker.line_end_reset())
+                current_parts = vec<string>.cap_of(16)
+                current_parts.push(tracker.active_codes())
                 current_width = 0
             }
-            current += value
+            current_parts.push(value)
             current_width += grapheme_width
         }
         cursor = end
     }
-    if current != '' {
-        lines.push(current)
+    if current_parts.len() > 0 {
+        lines.push(strings.join(current_parts, ''))
     }
     return lines.len() > 0 ? lines : ['']
+}
+
+#local
+fn break_ascii_ansi_word(string word, int width, string sgr_history, bool underline, string hyperlink, string hyperlink_terminator): [string]! {
+    [string] lines = vec<string>.cap_of(8)
+    var tracker = new tracker_t(sgr_history = sgr_history, underline = underline, hyperlink = hyperlink, hyperlink_terminator = hyperlink_terminator)
+    [string] current_parts = vec<string>.cap_of(8)
+    int current_width = 0
+    int remaining_visible = ascii_visible_length(word)
+    int cursor = 0
+    for cursor < word.len() {
+        var ansi = extract_ansi(word, cursor)
+        if ansi.found {
+            if current_width >= width && remaining_visible > 0 {
+                lines.push(strings.join(current_parts, '') + tracker.line_end_reset())
+                current_parts = vec<string>.cap_of(8)
+                current_width = 0
+                current_parts.push(tracker.active_codes())
+            }
+            current_parts.push(ansi.code)
+            tracker.process(ansi.code)
+            cursor += ansi.length
+            continue
+        }
+        int end = next_ansi_or_end(word, cursor)
+        int plain_cursor = cursor
+        for plain_cursor < end {
+            int available = width - current_width
+            if available <= 0 {
+                lines.push(strings.join(current_parts, '') + tracker.line_end_reset())
+                current_parts = vec<string>.cap_of(8)
+                current_width = 0
+                current_parts.push(tracker.active_codes())
+                available = width
+            }
+            int remaining = end - plain_cursor
+            int take = remaining < available ? remaining : available
+            current_parts.push(word.slice(plain_cursor, plain_cursor + take))
+            current_width += take
+            remaining_visible -= take
+            plain_cursor += take
+        }
+        cursor = end
+    }
+    if current_parts.len() > 0 {
+        lines.push(strings.join(current_parts, ''))
+    }
+    return lines.len() > 0 ? lines : ['']
+}
+
+#local
+fn ascii_visible_length(string text): int {
+    int visible = 0
+    int cursor = 0
+    for cursor < text.len() {
+        var ansi = extract_ansi(text, cursor)
+        if ansi.found {
+            cursor += ansi.length
+            continue
+        }
+        int end = next_ansi_or_end(text, cursor)
+        visible += end - cursor
+        cursor = end
+    }
+    return visible
+}
+
+#local
+fn is_ascii_text(string text): bool {
+    for int cursor = 0; cursor < text.len(); cursor += 1 {
+        if text[cursor] >= 0x80 {
+            return false
+        }
+    }
+    return true
 }
 
 pub fn tracker_t.update(&self, string text) {
@@ -543,14 +759,29 @@ pub fn truncate_visual_lines(string text, int width, int max_visual_lines): (str
     if text == '' {
         return ('', 0)
     }
-    var visual = wrap_text_with_ansi(text, width)
-    if visual.len() <= max_visual_lines {
+    if max_visual_lines <= 0 {
+        return ('', 0)
+    }
+    // Keep only the tail window while wrapping. The old implementation built
+    // every visual row before slicing the last few, so a growing streamed
+    // line caused each redraw to retain an unnecessary full row vector.
+    [string] tail = vec<string>.cap_of(max_visual_lines)
+    var tracker = new tracker_t()
+    int total = 0
+    for input_line in split_lines(text) {
+        string prefix = total > 0 ? tracker.active_codes() : ''
+        var wrapped = wrap_single_line(prefix + input_line, width)
+        for line in wrapped {
+            if tail.len() >= max_visual_lines {
+                tail = tail.slice(1, tail.len())
+            }
+            tail.push(line)
+            total += 1
+        }
+        tracker.update(input_line)
+    }
+    if total <= max_visual_lines {
         return (text, 0)
     }
-    int first = visual.len() - max_visual_lines
-    if first < 0 {
-        first = 0
-    }
-    [string] kept = visual.slice(first, visual.len())
-    return (strings.join(kept, '\n'), visual.len() - max_visual_lines)
+    return (strings.join(tail, '\n'), total - max_visual_lines)
 }

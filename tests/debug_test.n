@@ -4,6 +4,33 @@ import os
 import path
 import syscall
 
+test 'debug configure creates a default durable sink and records process metadata' {
+    string root = '/tmp/adou-debug-configure-test'
+    os.rmdir(root, true) catch error {}
+    os.mkdirs(root, 0o700)
+    string previous_agent_dir = syscall.get_env('PI_CODING_AGENT_DIR')
+    string previous_debug = syscall.get_env('ADOU_DEBUG')
+    string previous_debug_file = syscall.get_env('ADOU_DEBUG_FILE')
+    syscall.set_env('PI_CODING_AGENT_DIR', path.join(root, 'agent'))
+    syscall.set_env('ADOU_DEBUG', '')
+    syscall.set_env('ADOU_DEBUG_FILE', '')
+
+    debug.configure(true)
+    assert(syscall.get_env('ADOU_DEBUG') == '1')
+    assert(syscall.get_env('ADOU_DEBUG_FILE') == path.join(root, 'agent/adou-debug.log'))
+    debug.log('test', 'configure fixture')
+    var file = fs.open(path.join(root, 'agent/adou-debug.log'), syscall.O_RDONLY, 0)
+    string content = file.content()
+    file.close()
+    assert(content.contains('[adou debug] test: configure fixture ts='))
+    assert(content.contains(' pid='))
+
+    syscall.set_env('PI_CODING_AGENT_DIR', previous_agent_dir)
+    syscall.set_env('ADOU_DEBUG', previous_debug)
+    syscall.set_env('ADOU_DEBUG_FILE', previous_debug_file)
+    os.rmdir(root, true)
+}
+
 test 'Pi debug artifacts follow the configured agent directory' {
     string root = '/tmp/adou-debug-artifacts-test'
     os.rmdir(root, true) catch error {}

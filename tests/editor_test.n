@@ -339,3 +339,21 @@ test 'visual cursor at EOL keeps byte offset at line length' {
     assert(cursor.byte_offset == 3)
     assert(cursor.visual_col == 3)
 }
+
+test 'stale cursor columns are clamped before fast multiline insertion' {
+    var editor = editor.new()
+    editor.set_text('0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ')
+    editor.add_newline()
+    editor.insert_text('second')
+    editor.cursor_col = editor.get_lines()[editor.get_cursor().line].len() + 5
+    editor.insert_character('x')
+    assert(editor.get_text().contains('secondx'))
+    string suffix = '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ'
+    for byte in suffix as [u8] {
+        editor.insert_character([byte] as string)
+        var lines = editor.get_lines()
+        assert(editor.get_cursor().column <= lines[editor.get_cursor().line].len())
+        editor.visual_lines()
+    }
+    assert(editor.get_text().contains('secondx' + suffix))
+}

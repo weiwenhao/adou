@@ -20,6 +20,9 @@ pub fn produce_done_later(ref<event_stream.assistant_stream_t> stream, ref<types
     co.sleep(20)
     var done = types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,}
     stream.push(done)
+    // result() waits for the provider's final teardown touch, not merely the
+    // terminal event. Close the fixture stream so the waiter can wake.
+    stream.end()
 }
 pub fn mutate_after_start(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message, chan<u8> started, chan<u8> release, chan<u8> mutated): void! {
     stream.push(types.assistant_event_t {kind: types.EVENT_START, partial: message,})
@@ -98,4 +101,23 @@ test 'abort callbacks run exactly once including late registration' {
     token.on_abort(late)
     assert(token.is_aborted())
     assert(calls == 2)
+}
+test 'aborted stream drops late deltas and coerces a late normal terminal' {
+    var stream = event_stream.new()
+    var message = new types.assistant_message_t(model = 'late-abort')
+    stream.push(types.assistant_event_t {kind: types.EVENT_START, partial: message,})
+    stream.abort()
+    stream.push(types.assistant_event_t {kind: types.EVENT_TEXT_DELTA, delta: 'must-not-render', partial: message,})
+    stream.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,})
+    var started = stream.recv()
+    var done = stream.recv()
+    assert(started.kind == types.EVENT_START)
+    assert(done.kind == types.EVENT_DONE)
+    assert(done.reason == types.STOP_ABORTED)
+    var final_message = stream.result()
+    assert(final_message.stop_reason == types.STOP_ABORTED)
+    assert(final_message.error_message == 'Operation aborted')
+    var (ignored, received) = stream.events.try_recv()
+    assert(!received)
+    stream.end()
 }

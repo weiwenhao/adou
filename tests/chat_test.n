@@ -3,6 +3,7 @@ import adou.src.agent.types as agent_types
 import adou.src.ai.types
 import adou.src.tools.types as tool_types
 import adou.src.tui.chat
+import adou.src.tui.theme
 import co
 import fmt
 import strings
@@ -130,7 +131,7 @@ test 'bash messages collapse to visual lines with expand and truncation hints' {
     assert(!expanded.contains('line 120'))
     assert(expanded.contains('line 141'))
     assert(expanded.contains('line 240'))
-    assert(expanded.contains('40 lines omitted from display'))
+    assert(expanded.contains('40 physical lines omitted from display'))
     value.toggle_tool_output()
 }
 
@@ -207,7 +208,38 @@ test 'expanded tool bodies stay bounded for long results' {
     assert(!rendered.contains('line 120'))
     assert(rendered.contains('line 141'))
     assert(rendered.contains('line 240'))
-    assert(rendered.contains('40 lines omitted from display'))
+    assert(rendered.contains('40 physical lines omitted from display'))
+}
+
+test 'expanded long colored lines stay bounded by physical rows' {
+    [u8] bytes = vec<u8>.new('x'.char(), 50000)
+    string body = '\x1b[38;2;102;102;102m' + (bytes as string) + '\x1b[0m'
+    var value = chat.new('mock-model', '/tmp/project')
+    var started = session_stream.event_t {kind: session_stream.EVENT_BASH_START, bash_command: 'colored', bash_exclude_from_context: false,}
+    value.apply(started)
+    value.apply(session_stream.event_t {kind: session_stream.EVENT_BASH_END, bash_command: 'colored', bash_output: body, bash_exit_code: 0, bash_cancelled: false, bash_truncated: false, bash_full_output_path: '', bash_exclude_from_context: false,})
+    value.toggle_tool_output()
+    var bash_lines = value.render(80)
+    assert(bash_lines.len() <= 205)
+
+    var tool = new types.tool_result_message_t(tool_call_id = 'colored-call', tool_name = 'read', content = [new types.text_content_t(text = body)])
+    types.message_t message = tool
+    value.load_messages([message])
+    var tool_lines = value.render(80)
+    assert(tool_lines.len() <= 202)
+}
+
+test 'bash render cache follows live theme changes' {
+    theme.set_variant('dark')
+    var value = chat.new('mock-model', '/tmp/project')
+    value.apply(session_stream.event_t {kind: session_stream.EVENT_BASH_START, bash_command: 'echo theme', bash_exclude_from_context: false,})
+    value.apply(session_stream.event_t {kind: session_stream.EVENT_BASH_END, bash_command: 'echo theme', bash_output: 'theme line', bash_exit_code: 0, bash_cancelled: false, bash_truncated: false, bash_full_output_path: '', bash_exclude_from_context: false,})
+    string dark = strings.join(value.render(60), '\n')
+    theme.set_variant('light')
+    string light = strings.join(value.render(60), '\n')
+    theme.set_variant('dark')
+    assert(dark.contains('\x1b[38;2;128;128;128m'))
+    assert(light.contains('\x1b[38;2;110;110;115m'))
 }
 
 test 'B3 outputPad 0 widens the user message content area' {

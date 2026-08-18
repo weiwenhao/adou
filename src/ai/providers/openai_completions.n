@@ -8,6 +8,11 @@ import strings
 pub const SLOT_TEXT = 'text'
 pub const SLOT_THINKING = 'thinking'
 pub const SLOT_TOOL_CALL = 'toolCall'
+// Provider deltas can arrive one byte at a time in practice (and in the
+// memory regression fixture).  Keep the public partial-message snapshots,
+// but publish them in bounded batches so a long response does not allocate a
+// full message for every byte.
+const STREAM_TEXT_FLUSH_BYTES = 256
 
 pub type slot_t = struct {
     string kind
@@ -23,6 +28,12 @@ pub type processor_t = struct {
     map<int, slot_t> slots = {}
     int text_index = -1
     int thinking_index = -1
+    [string] text_chunks = []
+    [string] text_pending_parts = []
+    int text_pending_bytes
+    [string] thinking_chunks = []
+    [string] thinking_pending_parts = []
+    int thinking_pending_bytes
     bool started
     bool saw_finish_reason
     bool saw_terminal
@@ -111,6 +122,8 @@ pub fn processor_t.finish(&self): [types.assistant_event_t]! {
     if !self.saw_finish_reason {
         throw errorf('OpenAI Completions stream ended without finish_reason')
     }
+    self.flush_text()
+    self.flush_thinking()
     [types.assistant_event_t] events = []
     for content_index, block in self.output.content {
         if block is ref<types.text_content_t> text {
@@ -136,36 +149,64 @@ pub fn processor_t.finish(&self): [types.assistant_event_t]! {
 pub fn processor_t.append_text(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
     ref<types.text_content_t>? text = self.find_text()
     int index = -1
+    bool started_block = false
     if text is ref<types.text_content_t> existing {
         index = self.content_index(existing)
-        existing.text += value
+        self.text_pending_parts.push(value)
+        self.text_pending_bytes += value.len()
+        if self.text_pending_bytes >= STREAM_TEXT_FLUSH_BYTES {
+            string flushed = self.flush_text()
+            if flushed != '' {
+                events.push(update_event(types.EVENT_TEXT_DELTA, index, flushed, '', self.output))
+            }
+        }
     } else {
         var block = new types.text_content_t(text = value)
         types.content_t content = block
         self.output.content.push(content)
         index = self.output.content.len() - 1
         self.text_index = index
+        self.text_chunks = [value]
+        self.text_pending_parts = []
+        self.text_pending_bytes = 0
         events.push(update_event(types.EVENT_TEXT_START, index, '', '', self.output))
+        started_block = true
     }
-    events.push(update_event(types.EVENT_TEXT_DELTA, index, value, '', self.output))
+    if started_block {
+        events.push(update_event(types.EVENT_TEXT_DELTA, index, value, '', self.output))
+    }
     return events
 }
 
 pub fn processor_t.append_thinking(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
     ref<types.thinking_content_t>? thinking = self.find_thinking()
     int index = -1
+    bool started_block = false
     if thinking is ref<types.thinking_content_t> existing {
         index = self.content_index_thinking(existing)
-        existing.thinking += value
+        self.thinking_pending_parts.push(value)
+        self.thinking_pending_bytes += value.len()
+        if self.thinking_pending_bytes >= STREAM_TEXT_FLUSH_BYTES {
+            string flushed = self.flush_thinking()
+            if flushed != '' {
+                events.push(update_event(types.EVENT_THINKING_DELTA, index, flushed, '', self.output))
+            }
+        }
     } else {
         var block = new types.thinking_content_t(thinking_signature = 'reasoning_content', thinking = value)
         types.content_t content = block
         self.output.content.push(content)
         index = self.output.content.len() - 1
         self.thinking_index = index
+        self.thinking_chunks = [value]
+        self.thinking_pending_parts = []
+        self.thinking_pending_bytes = 0
         events.push(update_event(types.EVENT_THINKING_START, index, '', '', self.output))
+        started_block = true
     }
-    events.push(update_event(types.EVENT_THINKING_DELTA, index, value, '', self.output))
+    if started_block {
+        events.push(update_event(types.EVENT_THINKING_DELTA, index, value, '', self.output))
+    }
     return events
 }
 
@@ -321,6 +362,40 @@ pub fn processor_t.find_thinking(&self): ref<types.thinking_content_t>? {
         }
     }
     return null
+}
+
+pub fn processor_t.flush_text(&self): string {
+    if self.text_index < 0 || (self.text_chunks.len() == 0 && self.text_pending_parts.len() == 0) {
+        return ''
+    }
+    string flushed = ''
+    if self.text_pending_parts.len() > 0 {
+        flushed = strings.join(self.text_pending_parts, '')
+        self.text_chunks.push(flushed)
+        self.text_pending_parts = []
+    }
+    if self.output.content[self.text_index] is ref<types.text_content_t> text {
+        text.text = strings.join(self.text_chunks, '')
+        self.text_pending_bytes = 0
+    }
+    return flushed
+}
+
+pub fn processor_t.flush_thinking(&self): string {
+    if self.thinking_index < 0 || (self.thinking_chunks.len() == 0 && self.thinking_pending_parts.len() == 0) {
+        return ''
+    }
+    string flushed = ''
+    if self.thinking_pending_parts.len() > 0 {
+        flushed = strings.join(self.thinking_pending_parts, '')
+        self.thinking_chunks.push(flushed)
+        self.thinking_pending_parts = []
+    }
+    if self.output.content[self.thinking_index] is ref<types.thinking_content_t> thinking {
+        thinking.thinking = strings.join(self.thinking_chunks, '')
+        self.thinking_pending_bytes = 0
+    }
+    return flushed
 }
 
 pub fn processor_t.content_index(&self, ref<types.text_content_t> target): int {

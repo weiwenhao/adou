@@ -83,8 +83,8 @@ pub type terminal_input_t = struct {
 
 pub type interactive_bash_state_t = struct {
     ref<mutex.mutex_t> lock
-    string output
-    int sent_bytes
+    [string] output_chunks = []
+    int sent_chunks
     bool done
     chan<u8> relay_done
 }
@@ -177,6 +177,11 @@ pub type view_t = struct {
     bool kitty_protocol
     bool quitting
     int cached_auth_provider_count = 0
+    // Authentication is a provider-level property. Keep the resolved
+    // result alongside the count so model selector, scoped-models and
+    // /model argument completion can reuse one snapshot instead of calling
+    // auth.effective once per model entry.
+    map<string, bool> cached_authenticated_providers = {}
     // --resume opens the selector before the normal prompt. Escape/cancel
     // exits that startup flow instead of silently continuing a session.
     bool startup_session_picker
@@ -724,6 +729,7 @@ pub fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, in
     // Adou aborts on escape (app.interrupt) and ctrl+c (app.clear) while
     // streaming; both resolve through the registry.
     if self.keybindings.matches(key, keybindings.APP_INTERRUPT) || self.keybindings.matches(key, keybindings.APP_CLEAR) {
+        debug.log('tui', 'stream cancel requested key=' + key)
         stream.abort()
         self.chat.status = 'Cancelling...'
         self.redraw()
@@ -797,7 +803,14 @@ fn view_t.handle_tab_completion(&self) {
     var lines = self.editor.get_lines()
     string before = ''
     if cursor.line < lines.len() {
-        before = lines[cursor.line].slice(0, cursor.column)
+        int column = cursor.column
+        if column < 0 {
+            column = 0
+        }
+        if column > lines[cursor.line].len() {
+            column = lines[cursor.line].len()
+        }
+        before = lines[cursor.line].slice(0, column)
     }
     if before.starts_with('/') && !before.contains(' ') {
         // Pi handleTabCompletion -> handleSlashCommandCompletion (B1-R2-01):
@@ -859,8 +872,16 @@ fn view_t.begin_path_menu(&self, autocomplete.autocomplete_mode_t mode, string p
     int generation = self.autocomplete.generation + 1
     self.autocomplete.begin(mode, generation, prefix, prefix, items, self.resolved_max_visible())
     var cursor = self.editor.get_cursor()
+    var lines = self.editor.get_lines()
     self.autocomplete.anchor_line = cursor.line
-    self.autocomplete.anchor_column = cursor.column
+    int column = cursor.column
+    if cursor.line >= 0 && cursor.line < lines.len() && column > lines[cursor.line].len() {
+        column = lines[cursor.line].len()
+    }
+    if column < 0 {
+        column = 0
+    }
+    self.autocomplete.anchor_column = column
 }
 
 // Map a path_completion candidate onto the shared autocomplete item.
@@ -1146,6 +1167,7 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         return null
     }
     string command = parts[0]
+    debug.log('tui', 'slash command=' + command + ' args=' + fmt.sprintf('%d', parts.len() - 1))
     if command == '/quit' || command == '/exit' {
         self.quitting = true
         return null
@@ -2018,12 +2040,12 @@ fn run_interactive_bash_inner(ref<session.runner_t> runner, ref<session_stream.s
     go relay_interactive_bash(state, output, script, excluded)
     var result = shell_tools.execute_bash_stream(runner.repository.cwd, script, 0, output.cancellation, fn(string chunk) {
         state.lock.lock()
-        state.output += chunk
+        state.output_chunks.push(chunk)
         state.lock.unlock()
     }) catch error {
         state.lock.lock()
         state.done = true
-        string partial = state.output
+        string partial = strings.join(state.output_chunks, '')
         state.lock.unlock()
         state.relay_done.recv() catch relay_error {}
         // An aborted or failed subprocess can finish before producing the
@@ -2058,11 +2080,12 @@ fn run_interactive_bash_inner(ref<session.runner_t> runner, ref<session_stream.s
 fn relay_interactive_bash(ref<interactive_bash_state_t> state, ref<session_stream.stream_t> output, string script, bool excluded): void! {
     for true {
         state.lock.lock()
-        int available = state.output.len() - state.sent_bytes
         bool done = state.done
-        string chunk = available > 0 ? state.output.slice(state.sent_bytes, state.output.len()) : ''
-        state.sent_bytes = state.output.len()
+        int available = state.output_chunks.len() - state.sent_chunks
+        [string] pending = available > 0 ? state.output_chunks.slice(state.sent_chunks, state.output_chunks.len()) : []
+        state.sent_chunks = state.output_chunks.len()
         state.lock.unlock()
+        string chunk = pending.len() > 0 ? strings.join(pending, '') : ''
         if chunk != '' {
             output.push(session_stream.event_t {kind: session_stream.EVENT_BASH_UPDATE, bash_command: script, bash_output: chunk, bash_exclude_from_context: excluded,}) catch error {}
         }
@@ -2258,11 +2281,7 @@ fn view_t.write_terminal(&self, string output): void! {
 // reads auth.json once per provider.
 #local
 fn refresh_auth_provider_count(ref<view_t> view) {
-    view.cached_auth_provider_count = count_authenticated_providers(view.runner)
-}
-
-#local
-fn count_authenticated_providers(ref<session.runner_t> runner): int {
+    view.cached_authenticated_providers = {}
     [string] seen = []
     for model in models.all() {
         bool already_seen = false
@@ -2278,13 +2297,16 @@ fn count_authenticated_providers(ref<session.runner_t> runner): int {
     }
     int count = 0
     for provider in seen {
-        if auth.effective(provider) != '' {
-            count += 1
-        } else if runner.agent_config.model.provider == provider && runner.agent_config.stream_options.api_key != '' {
+        bool configured = auth.effective(provider) != ''
+        if view.runner.agent_config.model.provider == provider && view.runner.agent_config.stream_options.api_key != '' {
+            configured = true
+        }
+        view.cached_authenticated_providers[provider] = configured
+        if configured {
             count += 1
         }
     }
-    return count
+    view.cached_auth_provider_count = count
 }
 
 #local
@@ -2419,6 +2441,7 @@ fn read_signals(ref<view_t> view): void! {
         }
         if received == syscall.SIGINT as signal.sig_t {
             if view.active_stream is ref<session_stream.stream_t> stream {
+                debug.log('tui', 'SIGINT cancel requested while streaming')
                 stream.abort()
                 view.chat.status = 'Cancelling...'
                 view.redraw()
@@ -2669,7 +2692,14 @@ pub fn view_t.update_autocomplete_state(&self) {
         self.autocomplete.cancel()
         return
     }
-    string before = lines[cursor.line].slice(0, cursor.column)
+    int column = cursor.column
+    if column < 0 {
+        column = 0
+    }
+    if column > lines[cursor.line].len() {
+        column = lines[cursor.line].len()
+    }
+    string before = lines[cursor.line].slice(0, column)
     int generation = self.autocomplete.generation + 1
     int max_visible = self.resolved_max_visible()
     // @ attachment prefix at a token boundary (shared extract_at_prefix):
@@ -2680,7 +2710,7 @@ pub fn view_t.update_autocomplete_state(&self) {
         if items.len() > 0 {
             self.autocomplete.begin(autocomplete.autocomplete_mode_t.AT, generation, at_prefix, at_prefix, items, max_visible)
             self.autocomplete.anchor_line = cursor.line
-            self.autocomplete.anchor_column = cursor.column
+            self.autocomplete.anchor_column = column
         } else {
             self.autocomplete.cancel()
         }
@@ -2700,7 +2730,7 @@ pub fn view_t.update_autocomplete_state(&self) {
             string query = before.slice(1, before.len())
             self.autocomplete.begin(autocomplete.autocomplete_mode_t.COMMAND, generation, before, query, self.command_items(), max_visible)
             self.autocomplete.anchor_line = cursor.line
-            self.autocomplete.anchor_column = cursor.column
+            self.autocomplete.anchor_column = column
             return
         }
         string command = before.slice(0, space)
@@ -2714,7 +2744,7 @@ pub fn view_t.update_autocomplete_state(&self) {
             if items.len() > 0 {
                 self.autocomplete.begin(autocomplete.autocomplete_mode_t.MODEL_ARGUMENT, generation, argument, argument, items, max_visible)
                 self.autocomplete.anchor_line = cursor.line
-                self.autocomplete.anchor_column = cursor.column
+                self.autocomplete.anchor_column = column
             } else {
                 self.autocomplete.cancel()
             }
@@ -2725,7 +2755,7 @@ pub fn view_t.update_autocomplete_state(&self) {
             if items.len() > 0 {
                 self.autocomplete.begin(autocomplete.autocomplete_mode_t.LOGIN_ARGUMENT, generation, argument, argument, items, max_visible)
                 self.autocomplete.anchor_line = cursor.line
-                self.autocomplete.anchor_column = cursor.column
+                self.autocomplete.anchor_column = column
             } else {
                 self.autocomplete.cancel()
             }
@@ -2879,19 +2909,21 @@ fn view_t.apply_trust_option(&self, ref<overlay_t> overlay) {
 }
 
 pub fn view_t.show_model_overlay(&self, string query) {
+    debug.log('tui', 'model selector begin query_chars=' + fmt.sprintf('%d', query.len()) + ' scope_patterns=' + fmt.sprintf('%d', self.model_scope_patterns.len()))
     [ref<ai_types.model_t>] available = []
     for model in models.all() {
-        if !model_is_authenticated(self.runner, model) {
+        if !self.model_is_authenticated(model) {
             continue
         }
         available.push(model)
     }
     [ref<ai_types.model_t>] scoped = []
     for entry in models.resolve_scope(self.model_scope_patterns) {
-        if model_is_authenticated(self.runner, entry.model) {
+        if self.model_is_authenticated(entry.model) {
             scoped.push(entry.model)
         }
     }
+    debug.log('tui', 'model selector candidates available=' + fmt.sprintf('%d', available.len()) + ' scoped=' + fmt.sprintf('%d', scoped.len()))
     string current = self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id
     var state = model_selector.new(available, scoped, current, query)
     self.model_refresh_generation += 1
@@ -2903,12 +2935,13 @@ pub fn view_t.show_model_overlay(&self, string query) {
         state.refresh_status = 'Refreshing model catalogs...'
         go refresh_model_catalog(self, state.refresh_generation)
     }
+    debug.log('tui', 'model selector ready refresh=' + (state.refresh_status != '' ? 'pending' : 'disabled'))
 }
 
 pub fn view_t.show_scoped_models_overlay(&self) {
     [ref<ai_types.model_t>] available = []
     for model in models.all() {
-        if model_is_authenticated(self.runner, model) {
+        if self.model_is_authenticated(model) {
             available.push(model)
         }
     }
@@ -2960,11 +2993,11 @@ fn view_t.apply_model_refresh(&self, int generation, int failures) {
     }
     [ref<ai_types.model_t>] available = []
     for model in models.all() {
-        if model_is_authenticated(self.runner, model) {available.push(model)}
+        if self.model_is_authenticated(model) {available.push(model)}
     }
     [ref<ai_types.model_t>] scoped = []
     for entry in models.resolve_scope(self.model_scope_patterns) {
-        if model_is_authenticated(self.runner, entry.model) {scoped.push(entry.model)}
+        if self.model_is_authenticated(entry.model) {scoped.push(entry.model)}
     }
     state.replace_models(available, scoped)
     if failures == 1 {
@@ -5733,7 +5766,7 @@ fn view_t.available_cycle_models(&self): [ref<ai_types.model_t>] {
         [ref<ai_types.model_t>] scoped = []
         [models.scoped_model_t] resolved = models.resolve_scope(self.model_scope_patterns)
         for entry in resolved {
-            if model_is_authenticated(self.runner, entry.model) {
+            if self.model_is_authenticated(entry.model) {
                 scoped.push(entry.model)
             }
         }
@@ -5745,7 +5778,7 @@ fn view_t.available_cycle_models(&self): [ref<ai_types.model_t>] {
     }
     [ref<ai_types.model_t>] available = []
     for model in models.all() {
-        if model_is_authenticated(self.runner, model) {
+        if self.model_is_authenticated(model) {
             available.push(model)
         }
     }
@@ -5753,11 +5786,19 @@ fn view_t.available_cycle_models(&self): [ref<ai_types.model_t>] {
 }
 
 #local
-fn model_is_authenticated(ref<session.runner_t> runner, ref<ai_types.model_t> model): bool {
-    if auth.effective(model.provider) != '' {
-        return true
+pub fn view_t.model_is_authenticated(&self, ref<ai_types.model_t> model): bool {
+    if self.cached_authenticated_providers.contains(model.provider) {
+        return self.cached_authenticated_providers[model.provider]
     }
-    return runner.agent_config.model.provider == model.provider && runner.agent_config.stream_options.api_key != ''
+    // The view is normally initialized with a provider snapshot. This
+    // fallback keeps the method safe during construction and after a scope
+    // refresh that introduces a provider not present in the catalog scan.
+    bool configured = auth.effective(model.provider) != ''
+    if self.runner.agent_config.model.provider == model.provider && self.runner.agent_config.stream_options.api_key != '' {
+        configured = true
+    }
+    self.cached_authenticated_providers[model.provider] = configured
+    return configured
 }
 
 #local
@@ -5896,7 +5937,7 @@ fn view_t.build_model_argument_items(&self): [autocomplete.autocomplete_item_t] 
         if !models.allowed(reference, self.model_scope_patterns) {
             continue
         }
-        if !model_is_authenticated(self.runner, model) {
+        if !self.model_is_authenticated(model) {
             continue
         }
         if list_contains(seen, reference) {

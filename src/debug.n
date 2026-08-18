@@ -48,6 +48,12 @@ pub fn configure(bool requested): void! {
     if requested {
         syscall.set_env('ADOU_DEBUG', '1')
     }
+    // Interactive stderr is owned by the TUI, so a requested debug session
+    // must have a durable sink even when the caller did not provide one.
+    // Preserve an explicit ADOU_DEBUG_FILE value for CI and Herdr capture.
+    if enabled() && syscall.get_env('ADOU_DEBUG_FILE') == '' {
+        syscall.set_env('ADOU_DEBUG_FILE', paths.debug_log_path())
+    }
 }
 
 pub fn enabled(): bool {
@@ -75,7 +81,8 @@ pub fn log(string component, string message) {
     if !enabled() {
         return
     }
-    string line = '[adou debug] ' + component + ': ' + message + '\n'
+    int pid = syscall.getpid() catch error {0}
+    string line = '[adou debug] ' + component + ': ' + message + ' ts=' + timestamp() + ' pid=' + fmt.sprintf('%d', pid) + '\n'
     string file_target = syscall.get_env('ADOU_DEBUG_FILE')
     if terminal_output && file_target == '' {
         return
@@ -205,6 +212,10 @@ pub fn log_tui_frame(string content) {
     tui_frame_sequence += 1
     string target = path.join(directory, fmt.sprintf('render-%d-%d-%d.log', time.now().ms_timestamp(), pid, tui_frame_sequence))
     write_file(target, content, false) catch error {}
+}
+
+pub fn tui_frame_debug_enabled(): bool {
+    return syscall.get_env('PI_TUI_DEBUG') == '1'
 }
 
 // B1-R5-01 terminal I/O diagnostic: explicitly enabled via

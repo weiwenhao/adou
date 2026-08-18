@@ -142,6 +142,8 @@ try:
         debug_text = fh.read()
     if "[adou debug]" not in debug_text or "run loop start" not in debug_text:
         raise SystemExit("ADOU_DEBUG_FILE missing lifecycle lines in TUI mode")
+    if "config: resolve complete" not in debug_text or ("models: remote catalog refresh skipped" not in debug_text and "models: startup catalog refresh skipped" not in debug_text):
+        raise SystemExit("ADOU_DEBUG_FILE missing model startup diagnostics in TUI mode")
     print("e2e: TUI mode keeps the terminal clean and logs to ADOU_DEBUG_FILE")
 
     # Part B: headless mode keeps the historical stderr stream.  Offline
@@ -163,6 +165,8 @@ try:
         debug_text = fh.read()
     if "[adou debug]" not in debug_text:
         raise SystemExit("headless mode did not write ADOU_DEBUG_FILE")
+    if "config: resolve complete" not in debug_text or "models: startup catalog refresh skipped" not in debug_text:
+        raise SystemExit("headless mode missing model startup diagnostics")
     print("e2e: headless mode keeps stderr debug and the debug file")
 finally:
     shutil.rmtree(root, ignore_errors=True)

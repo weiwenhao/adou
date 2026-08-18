@@ -85,3 +85,22 @@ test 'continues a tool call by id when the provider omits index' {
         assert(false)
     }
 }
+
+test 'coalesces tiny text deltas without losing the final message' {
+    var processor = openai_completions.processor(model(), 1)
+    processor.start()
+    int emitted = 0
+    for int index = 0; index < 300; index += 1 {
+        var events = processor.feed(frame('{"choices":[{"delta":{"content":"x"},"finish_reason":null}]}'))
+        emitted += events.len()
+    }
+    processor.feed(frame('{"choices":[{"delta":{},"finish_reason":"stop"}]}'))
+    var done = processor.finish()
+    assert(emitted <= 4)
+    if done[done.len() - 1].message is ref<types.assistant_message_t> message {
+        assert(message.content.len() == 1)
+        assert((message.content[0] as ref<types.text_content_t>).text.len() == 300)
+    } else {
+        assert(false)
+    }
+}

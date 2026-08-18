@@ -25,7 +25,7 @@ import tempfile
 import time
 from concurrent.futures import ThreadPoolExecutor
 
-binary = os.environ["ADOU_BIN"]
+binary = os.path.realpath(os.environ["ADOU_BIN"])
 root = tempfile.mkdtemp(prefix="adou-ipc-")
 port = 18951
 

@@ -14,6 +14,11 @@ pub type assistant_stream_t = struct {
     ref<types.assistant_message_t> final_message = new types.assistant_message_t()
     bool terminal
     bool ended
+    // Keep the cancellation edge serialized with push().  The provider may
+    // still deliver one final normal-looking frame after its HTTP response
+    // has been closed; once abort wins, that frame must not resurrect a live
+    // assistant turn or append more text to the TUI.
+    bool aborted
 }
 pub fn new(): ref<assistant_stream_t> {
     return with_capacity(DEFAULT_CAPACITY)
@@ -33,6 +38,11 @@ pub fn assistant_stream_t.push(&self, types.assistant_event_t event): void! {
         self.lock.unlock()
         return
     }
+    bool was_aborted = self.aborted || self.cancellation.is_aborted()
+    if was_aborted && event.kind != types.EVENT_DONE && event.kind != types.EVENT_ERROR {
+        self.lock.unlock()
+        return
+    }
     // Provider processors keep one mutable `output` object and update it for
     // every SSE frame.  Never put that object on the channel directly: a
     // buffered send lets the provider continue mutating it before the agent,
@@ -44,6 +54,13 @@ pub fn assistant_stream_t.push(&self, types.assistant_event_t event): void! {
     debug.log('ai-stream', 'snapshot complete kind=' + snapshot.kind)
     bool is_terminal = snapshot.kind == types.EVENT_DONE || snapshot.kind == types.EVENT_ERROR
     if is_terminal {
+        if was_aborted && snapshot.kind == types.EVENT_DONE {
+            snapshot.reason = types.STOP_ABORTED
+            if snapshot.message is ref<types.assistant_message_t> message {
+                message.stop_reason = types.STOP_ABORTED
+                message.error_message = 'Operation aborted'
+            }
+        }
         if snapshot.kind == types.EVENT_DONE {
             self.final_message = snapshot.message as ref<types.assistant_message_t>
         } else {
@@ -100,10 +117,16 @@ pub fn assistant_stream_t.end(&self): void! {
     debug.log('ai-stream', 'end completed terminal=' + (has_terminal ? 'true' : 'false'))
 }
 pub fn assistant_stream_t.abort(&self) {
+    self.lock.lock()
+    self.aborted = true
+    self.lock.unlock()
     self.cancellation.abort()
 }
 pub fn assistant_stream_t.is_aborted(&self): bool {
-    return self.cancellation.is_aborted()
+    self.lock.lock()
+    bool result = self.aborted
+    self.lock.unlock()
+    return result || self.cancellation.is_aborted()
 }
 
 #local

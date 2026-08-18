@@ -118,6 +118,17 @@ pub type bash_execution_message_t = struct {
     string full_output_path
     bool exclude_from_context
     int timestamp
+    // TUI-only render caches. They are intentionally not serialized or sent
+    // to providers; completed Bash output is immutable after it enters the
+    // transcript, so caching avoids rebuilding the same visual tail on every
+    // redraw of a long session.
+    [string] collapsed_render_rows = []
+    int collapsed_render_width
+    int collapsed_render_skipped
+    string collapsed_render_theme
+    [string] expanded_render_rows = []
+    int expanded_render_width
+    string expanded_render_theme
 }
 pub type message_t = ref<user_message_t>| ref<assistant_message_t>| ref<tool_result_message_t>| ref<compaction_summary_message_t>| ref<branch_summary_message_t>| ref<custom_message_t>| ref<bash_execution_message_t>
 pub type tool_t = struct {

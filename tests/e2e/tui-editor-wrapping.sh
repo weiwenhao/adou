@@ -59,13 +59,20 @@ output = bytearray()
 status = None
 
 
-def collect(until=None, timeout=4.0):
+def collect(until=None, timeout=4.0, start=0):
     global status
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if until is not None and until in output:
+        if until is not None and until in output[start:]:
             return True
-        ready, _, _ = select.select([fd], [], [], 0.05)
+        try:
+            ready, _, _ = select.select([fd], [], [], 0.05)
+        except OSError as exc:
+            # Linux reports EIO on the PTY master after the child closes its
+            # slave; that is a normal end-of-session signal.
+            if exc.errno == errno.EIO:
+                break
+            raise
         if ready:
             try:
                 output.extend(os.read(fd, 65536))
@@ -104,10 +111,11 @@ try:
     os.write(fd, b"second")
     if not collect(b"second", timeout=2.0):
         raise SystemExit("multiline input did not render after newline")
+    second_start = len(output)
     for ch in long_text:
         os.write(fd, ch.encode())
         time.sleep(0.005)
-    if not collect(long_text.encode(), timeout=3.0):
+    if not collect(long_text.encode(), timeout=3.0, start=second_start):
         print("DEBUG output len=", len(output))
         print("DEBUG head=", output[:400])
         raise SystemExit("editor did not render the typed text")
@@ -121,18 +129,12 @@ try:
     if tail_segment.encode() not in output:
         raise SystemExit("wrapped continuation segment missing from the render")
 
-    # A newline enters multiline editing; the editor border stays visible.
-    os.write(fd, b"\r")
-    time.sleep(0.2)
-    os.write(fd, b"second")
-    if b"second" not in output:
-        raise SystemExit("multiline input did not render after newline")
-
     # Quit through the slash command path so terminal restoration runs.
     os.write(fd, b"\x03")
-    collect(timeout=2.0)
-    os.write(fd, b"\x03")
-    time.sleep(0.3)
+    # Drain the clear frame before entering /quit; a second Ctrl+C after a
+    # long wait can already terminate the TUI and make the following write
+    # observe PTY EIO.
+    collect(timeout=0.5)
     os.write(fd, b"/quit\r")
     collect(timeout=6.0)
     if status is None:

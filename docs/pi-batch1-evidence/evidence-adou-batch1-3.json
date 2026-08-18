@@ -2,9 +2,9 @@
   "case": "slash-menu",
   "side": "adou",
   "fixture": "batch1",
-  "adou_head": "2236c586dcd52043eddbe6289ed063c4116d991e",
-  "binary_sha256": "3f560c4a41c1ce806f04b070c47eb300f3d2251adcb1789c9659afee9579e7a3",
-  "source_fingerprint": "a198db959c64af2921d9b40e4cf44df22dece1d06628d0b401eadf5e3b1df3d9",
+  "adou_head": "91a24bbfca1a018b35223f3134c2fe032283157d",
+  "binary_sha256": "505856271edd15b60bd9abf4afd3a2f5cb7d77f041ddd47f9e5b20df54055084",
+  "source_fingerprint": "f3bfa528b1f3a300ab2037b039d6216b5197d591c6a32918e95cfa872a867464",
   "run": 3,
   "terminal": {
     "rows": 24,
@@ -370,7 +370,7 @@
         "  fork                 Create a new fork from a previous user message",
         "→ clone                Duplicate the current session at the current position",
         "  tree                 Navigate session tree (switch branches)",
-        "  trust                Save project trust decision for future sessions",
+        "  trust                Choose project trust for this or future sessions",
         "  (13/26)",
         "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
@@ -386,13 +386,13 @@
         "",
         ""
       ],
-      "screen_sha256": "8119a51bbb2b738f9c1c6e7198e1c85454d45321b317360546a2ab4c7e2fd575",
+      "screen_sha256": "70ea64c4b4e0f7aec03bfb4c748ac54735b67940861630070bf46b5c236d23a4",
       "cursor": [
         10,
         9
       ],
-      "normalized_raw_sha256": "b1845db9439674eb0a842f7a3826a558bec93a8ffd0be5a4a262400d28a3d4c6",
-      "normalized_raw_bytes": 597
+      "normalized_raw_sha256": "1bb51a94eb1a8e9ea939aa71adb7910617a1f4495342540a5b11c3cc300e8c51",
+      "normalized_raw_bytes": 598
     },
     {
       "milestone": "slash-down",
@@ -787,8 +787,8 @@
         17,
         80
       ],
-      "normalized_raw_sha256": "1b3b419a5dab167127839357bf7dd78be7e6f052b3a858a7aee29a5c0acf7a5e",
-      "normalized_raw_bytes": 2070
+      "normalized_raw_sha256": "78ae30094fc1f76e787f5962fc382b3346b7e9ca01a20ea51643f3577f524252",
+      "normalized_raw_bytes": 1518
     },
     {
       "milestone": "slash-model-esc",

@@ -530,17 +530,35 @@ fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, boo
     result.push(theme.fg(color, text_utils.truncate_to_width('$ ' + bash.command, width, '...', false)))
     string body = bash.output.replace('\r\n', '\n').replace('\r', '\n')
     if body != '' {
+        string theme_variant = theme.variant()
         if !expanded {
-            var truncated = text_utils.truncate_visual_lines(body, width, BASH_PREVIEW_VISUAL_LINES)
-            int skipped = truncated[1]
+            int skipped = bash.collapsed_render_skipped
+            [string] body_rows = bash.collapsed_render_rows
+            if bash.collapsed_render_width != width || bash.collapsed_render_theme != theme_variant || body_rows.len() == 0 {
+                var truncated = text_utils.truncate_visual_lines(body, width, BASH_PREVIEW_VISUAL_LINES)
+                skipped = truncated[1]
+                body_rows = []
+                for line in truncated[0].split('\n') {
+                    body_rows.append(wrapped_lines(theme.fg(theme.muted_color(), line), width))
+                }
+                bash.collapsed_render_rows = body_rows
+                bash.collapsed_render_width = width
+                bash.collapsed_render_skipped = skipped
+                bash.collapsed_render_theme = theme_variant
+            }
             if skipped > 0 {
                 result.push(theme.fg(theme.dim_color(), fmt.sprintf('... (%d more lines, press Ctrl+O to expand)', skipped)))
             }
-            for line in truncated[0].split('\n') {
-                result.append(wrapped_lines(theme.fg(theme.muted_color(), line), width))
-            }
+            result.append(body_rows)
         } else {
-            result.append(render_bounded_bash_body(body, width))
+            [string] body_rows = bash.expanded_render_rows
+            if bash.expanded_render_width != width || bash.expanded_render_theme != theme_variant || body_rows.len() == 0 {
+                body_rows = render_bounded_bash_body(body, width)
+                bash.expanded_render_rows = body_rows
+                bash.expanded_render_width = width
+                bash.expanded_render_theme = theme_variant
+            }
+            result.append(body_rows)
         }
     } else {
         result.push(theme.fg(theme.muted_color(), '(no output)'))
@@ -563,21 +581,26 @@ fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, boo
 #local
 fn render_bounded_bash_body(string body, int width): [string]! {
     [string] lines = body.split('\n')
-    int limit = lines.len() < TOOL_BODY_MAX_PHYSICAL_LINES ? lines.len() : TOOL_BODY_MAX_PHYSICAL_LINES
-    [string] result = vec<string>.cap_of(limit + 1)
-    bool truncated = lines.len() > limit
-    int head_end = truncated ? limit / 2 : lines.len()
-    int tail_start = truncated ? lines.len() - (limit - head_end) : lines.len()
-    for int index = 0; index < lines.len(); index += 1 {
-        if truncated && index == head_end {
-            result.push(theme.fg(theme.muted_color(), fmt.sprintf('... (%d lines omitted from display)', tail_start - head_end)))
+    int head_limit = TOOL_BODY_MAX_PHYSICAL_LINES / 2
+    int tail_limit = TOOL_BODY_MAX_PHYSICAL_LINES - head_limit
+    [string] head_rows = vec<string>.cap_of(head_limit)
+    [string] tail_rows = vec<string>.cap_of(tail_limit)
+    int total_rows = 0
+    for line in lines {
+        var wrapped = wrapped_lines(theme.fg(theme.muted_color(), line), width)
+        for row in wrapped {
+            if total_rows < head_limit {
+                head_rows.push(row)
+            } else {
+                tail_rows.push(row)
+                if tail_rows.len() > tail_limit {
+                    tail_rows = tail_rows.slice(1, tail_rows.len())
+                }
+            }
+            total_rows += 1
         }
-        if truncated && index >= head_end && index < tail_start {
-            continue
-        }
-        result.append(wrapped_lines(theme.fg(theme.muted_color(), lines[index]), width))
     }
-    return result
+    return finish_bounded_rows(head_rows, tail_rows, total_rows, TOOL_BODY_MAX_PHYSICAL_LINES)
 }
 
 #local
@@ -839,25 +862,40 @@ fn tool_result_text(tool_types.tool_result_t result): string {
 fn render_tool_body(string body, int width): [string]! {
     [string] lines = body.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     bool is_diff = looks_like_diff(lines)
-    int limit = lines.len() < TOOL_BODY_MAX_PHYSICAL_LINES ? lines.len() : TOOL_BODY_MAX_PHYSICAL_LINES
-    [string] result = vec<string>.cap_of(limit + 1)
-    bool truncated = lines.len() > limit
-    int head_end = truncated ? limit / 2 : lines.len()
-    int tail_start = truncated ? lines.len() - (limit - head_end) : lines.len()
-    for int index = 0; index < lines.len(); index += 1 {
-        if truncated && index == head_end {
-            result.push(theme.fg(theme.muted_color(), fmt.sprintf('... (%d lines omitted from display)', tail_start - head_end)))
-        }
-        if truncated && index >= head_end && index < tail_start {
-            continue
-        }
-        string line = lines[index]
-        string rendered = '  ' + line
+    int head_limit = TOOL_BODY_MAX_PHYSICAL_LINES / 2
+    int tail_limit = TOOL_BODY_MAX_PHYSICAL_LINES - head_limit
+    [string] head_rows = vec<string>.cap_of(head_limit)
+    [string] tail_rows = vec<string>.cap_of(tail_limit)
+    int total_rows = 0
+    for line in lines {
+        string styled_line = '  ' + line
         if is_diff {
-            rendered = '  ' + diff_line_color(line)
+            styled_line = '  ' + diff_line_color(line)
         }
-        result.append(wrapped_lines(rendered, width))
+        var wrapped = wrapped_lines(styled_line, width)
+        for row in wrapped {
+            if total_rows < head_limit {
+                head_rows.push(row)
+            } else {
+                tail_rows.push(row)
+                if tail_rows.len() > tail_limit {
+                    tail_rows = tail_rows.slice(1, tail_rows.len())
+                }
+            }
+            total_rows += 1
+        }
     }
+    return finish_bounded_rows(head_rows, tail_rows, total_rows, TOOL_BODY_MAX_PHYSICAL_LINES)
+}
+
+#local
+fn finish_bounded_rows([string] head_rows, [string] tail_rows, int total_rows, int limit): [string]! {
+    [string] result = vec<string>.cap_of(limit + 1)
+    result.append(head_rows)
+    if total_rows > limit {
+        result.push(theme.fg(theme.muted_color(), fmt.sprintf('... (%d physical lines omitted from display)', total_rows - limit)))
+    }
+    result.append(tail_rows)
     return result
 }
 

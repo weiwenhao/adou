@@ -154,6 +154,13 @@ Herdr 终端内的真实用户操作：真实 DeepSeek、真实 TUI、真实终�
 - `Error: bad address in system call argument`（偶发于输入/重绘期间，
   单次出现后 TUI 继续工作）
 - `Render failed`（渲染帧失败，随后帧自愈）
+- `RM-TUI-005`：真实 `/model` 操作前偶发 Nature runtime
+  `out of memory: page allocation failed`。离线 PTY、RPC 和新隔离 session
+  尚未复现；在具备 debug 文件与进程内存采样的 Herdr 环境中复现或连续多轮
+  不复现前，不得标记为已解决。
+- 流式请求在过早 Ctrl+C 后仍可能继续消费旧输出。当前实现已在事件流层丢弃
+  取消后的迟到增量，并新增 `tests/e2e/tui-stream-cancel.sh` 覆盖本地 SSE
+  竞态；真实 DeepSeek 流仍需专项压力复验，暂不把真机风险标成关闭。
 
 若上述异常在后续批次被修复或根因定位，本文档对应条目更新为已解决并
 注明 commit。
@@ -413,10 +420,13 @@ Pi debug 行为对照（同批完成）：Pi 的 CLI `args.ts` 无 `--debug` 开
 TUI 中仅 `/debug` 命令把调试转储写入 `<agentDir>/pi-debug.log` 文件并在
 TUI 内显示 "✓ Debug log written"，终端不被 lifecycle 日志污染。Adou 原
 `--debug` 把 `[adou debug]` 行写入 stderr——在 TUI 中 stderr 就是同一
-终端，与原地重绘交错成阶梯错列。已按 Pi 行为修复：`debug.set_terminal_output`
-在交互路径（`interactive` 判定后、startup 日志之前）开启，`log()` 只写
-`ADOU_DEBUG_FILE`（未配置文件时丢弃该行），stderr 保持干净；headless/
-RPC/JSON/serve 模式保持原 stderr 行为。覆盖：新增确定性 e2e
+终端，与原地重绘交错成阶梯错列。已按 Pi 行为修复：解析 CLI 后先按
+stdin/stdout 和 mode 预设 `debug.set_terminal_output`，并在交互路径（正式
+`interactive` 判定后、startup 日志之前）再次确认；`log()` 只写
+`ADOU_DEBUG_FILE`，未显式指定时默认落到 `<agentDir>/adou-debug.log`，
+stderr 保持干净；headless/RPC/JSON/serve 模式保持原 stderr 行为。每行
+保留 `[adou debug] component:` 兼容前缀并追加 `ts`/`pid`，便于按进程和
+时间重建事件顺序。覆盖：新增确定性 e2e
 `tests/e2e/debug-isolation.sh`（真实代码路径）——Part A 以 PTY 启动 TUI
 并断言原始字节流不含 `[adou debug]` 且 `ADOU_DEBUG_FILE` 含 startup/run
 loop 行、`/quit` exit 0；Part B 以 `--offline -p` 断言 headless 模式

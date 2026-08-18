@@ -64,6 +64,7 @@ pub fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
         debug.log('provider', 'openai-completions read bytes=' + fmt.sprintf('%d', n))
         var frames = decoder.feed(scratch.slice(0, n))
         saw_done = push_frames(stream, state.processor, frames)
+        frames = []
         // OpenAI-compatible SSE streams are complete at the protocol-level
         // `[DONE]` record. Do not perform another transport read: on some
         // Nature HTTP connection implementations the peer close that follows

@@ -225,6 +225,15 @@ pub fn editor_t.insert_character(&self, string value) {
     }
     self.last_action = ACTION_TYPE_WORD
     string line = self.lines[self.cursor_line]
+    // Input can be delivered in a later frame than a concurrent redraw or
+    // editor update. Keep the byte cursor within the current line before
+    // slicing so a stale column cannot crash the TUI on fast typing.
+    if self.cursor_col < 0 {
+        self.cursor_col = 0
+    }
+    if self.cursor_col > line.len() {
+        self.cursor_col = line.len()
+    }
     self.lines[self.cursor_line] = line.slice(0, self.cursor_col) + value + line.slice(self.cursor_col, line.len())
     self.cursor_col += value.len()
     self.preferred_visual_column = -1
@@ -1122,7 +1131,14 @@ fn snap_out_of_marker([paste_t] pastes, string text, int cursor): int {
 
 #local
 fn visible_prefix_width(string line, int byte_column): int! {
-    return unicode.visible_width(line.slice(0, byte_column))
+    int safe_column = byte_column
+    if safe_column < 0 {
+        safe_column = 0
+    }
+    if safe_column > line.len() {
+        safe_column = line.len()
+    }
+    return unicode.visible_width(line.slice(0, safe_column))
 }
 
 #local

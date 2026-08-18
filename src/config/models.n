@@ -7,6 +7,7 @@ import adou.src.config.resolve_config_value
 import adou.src.config.paths as config_paths
 import adou.src.debug
 import adou.src.tools.path_utils
+import fmt
 import path
 import time
 import strings
@@ -369,17 +370,21 @@ fn ensure_models_json() {
 // see the last fetched pi.dev overlay; the fetch itself is opt-in.
 pub fn load_remote_overlays() {
     if remote_overlays_loaded {
+        debug.log('models', 'remote overlays already loaded providers=' + fmt.sprintf('%d', remote_overlays.len()))
         return
     }
     remote_overlays_loaded = true
+    debug.log('models', 'remote overlays load begin')
     string file = models_store_path()
     var store = models_store.new_store()
     store.load(file) catch error {
+        debug.log('models', 'remote overlays load skipped: ' + error.msg())
         return
     }
     for provider_id, entry in store.entries {
         remote_overlays[provider_id] = entry
     }
+    debug.log('models', 'remote overlays load complete providers=' + fmt.sprintf('%d', remote_overlays.len()))
 }
 
 // Pi's ModelRuntime.create refreshes the remote catalogs when networking is
@@ -395,10 +400,15 @@ pub fn refresh_remote_catalogs() {
 // onto the input loop. ADOU_CATALOG_BASE_URL supports self-hosted catalogs
 // and deterministic local fixtures; the default remains pi.dev.
 pub fn refresh_remote_catalogs_with_status(): int {
-    if syscall.get_env('PI_OFFLINE') != '' || syscall.get_env('ADOU_CATALOG_NETWORK') == '' {
+    bool offline_env = syscall.get_env('PI_OFFLINE') != ''
+    bool network_opt_in = syscall.get_env('ADOU_CATALOG_NETWORK') != ''
+    if offline_env || !network_opt_in {
+        debug.log('models', 'remote catalog refresh skipped offline_env=' + (offline_env ? 'true' : 'false') + ' network_opt_in=' + (network_opt_in ? 'true' : 'false'))
         return 0
     }
     int failures = 0
+    int attempted = 0
+    debug.log('models', 'remote catalog refresh begin')
     var store = models_store.new_store()
     string file = models_store_path()
     string catalog_base_url = syscall.get_env('ADOU_CATALOG_BASE_URL')
@@ -410,17 +420,25 @@ pub fn refresh_remote_catalogs_with_status(): int {
         if def.api == '' && def.base_url == '' {
             continue
         }
+        attempted += 1
+        int started_at = time.now().ms_timestamp() as int
+        debug.log('models', 'remote catalog provider=' + def.id + ' request begin')
         int now_ms = time.now().ms_timestamp() as int
-        var models = remote_catalog.refresh_remote_catalog(def.id, store, catalog_base_url, 0, now_ms, true) catch error {
+        var catalog_models = remote_catalog.refresh_remote_catalog(def.id, store, catalog_base_url, 0, now_ms, true) catch error {
             failures += 1
+            debug.log('models', 'remote catalog provider=' + def.id + ' request failed elapsed_ms=' + fmt.sprintf('%d', (time.now().ms_timestamp() as int) - started_at) + ' error=' + error.msg())
             continue
         }
         var stored = store.read(def.id)
         if stored is ref<models_store.models_store_entry_t> entry {
             remote_overlays[def.id] = entry
         }
+        debug.log('models', 'remote catalog provider=' + def.id + ' request complete models=' + fmt.sprintf('%d', catalog_models.len()) + ' elapsed_ms=' + fmt.sprintf('%d', (time.now().ms_timestamp() as int) - started_at))
     }
-    store.save(file) catch error {}
+    store.save(file) catch error {
+        debug.log('models', 'remote catalog store save failed: ' + error.msg())
+    }
+    debug.log('models', 'remote catalog refresh end attempted=' + fmt.sprintf('%d', attempted) + ' failures=' + fmt.sprintf('%d', failures))
     return failures
 }
 

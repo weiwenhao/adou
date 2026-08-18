@@ -185,9 +185,13 @@ try:
     os.write(fd, b"\x1b")
     time.sleep(0.4)
     os.write(fd, b"\x1b")
-    time.sleep(0.4)
-    os.write(fd, b"/quit\r")
-    collect(timeout=6.0)
+    # A startup picker treats the second Escape as the clean exit action. The
+    # close frame must be drained before falling back to /quit for non-startup
+    # picker variants; otherwise the command can race a closing overlay.
+    collect(timeout=0.5)
+    if status is None:
+        os.write(fd, b"/quit\r")
+        collect(timeout=6.0)
     if status is None:
         os.kill(pid, signal.SIGKILL)
         _, status = os.waitpid(pid, 0)

@@ -100,6 +100,14 @@ pub fn run(): void! {
     }
     var arguments = args.parse(argv)
     debug.configure(arguments.debug)
+    // Resolve the terminal ownership before any config/model work emits
+    // diagnostics.  TUI startup can spend time in model resolution and
+    // catalog loading; those lines must already be routed to the durable
+    // debug file instead of interleaving with the first redraw frame.
+    bool launch_stdin_tty = term.is_tty(term.STDIN)
+    bool launch_stdout_tty = term.is_tty(term.STDOUT)
+    bool launch_interactive = launch_stdin_tty && launch_stdout_tty && arguments.mode == 'text' && !arguments.print_mode && arguments.serve_port == 0
+    debug.set_terminal_output(launch_interactive)
     timings.time('resolveConfig')
     if arguments.version {
         println('adou ', VERSION)
@@ -149,12 +157,17 @@ pub fn run(): void! {
         timings.print_timings()
         return
     }
+    debug.log('config', 'resolve begin')
     var config = resolve.resolve(arguments, cwd)
+    debug.log('config', 'resolve complete provider=' + config.provider + ' model=' + config.model.id)
     // Pi's ModelRuntime.create loads the persisted remote catalog overlay
     // before the model resolver runs; an opt-in network refresh follows.
     models.load_remote_overlays()
     if !config.offline {
-        models.refresh_remote_catalogs()
+        int catalog_failures = models.refresh_remote_catalogs_with_status()
+        debug.log('models', 'startup catalog refresh complete failures=' + fmt.sprintf('%d', catalog_failures))
+    } else {
+        debug.log('models', 'startup catalog refresh skipped offline=true')
     }
     if config.mode == 'rpc' && arguments.file_args.len() > 0 {
         println('Error: @file arguments are not supported in RPC mode')
@@ -177,6 +190,7 @@ pub fn run(): void! {
     // interleaving from the very first line.
     debug.set_terminal_output(interactive)
     debug.log('startup', 'adou start pid=' + fmt.sprintf('%d', syscall.getpid()))
+    debug.log('startup', 'config resolved mode=' + config.mode + ' interactive=' + (interactive ? 'true' : 'false') + ' offline=' + (config.offline ? 'true' : 'false') + ' provider=' + config.provider + ' model=' + config.model.id)
     // RPC owns stdin as its command stream.  Reading piped stdin here would
     // consume the JSONL commands before run_rpc() gets a chance to decode
     // them, making `--mode rpc` appear to hang with no responses.
@@ -215,6 +229,7 @@ pub fn run(): void! {
         syscall.exit(1) catch exit_error {}
         return
     }
+    debug.log('session', 'repository opened persisted=' + (repository.persisted ? 'true' : 'false') + ' session_id=' + repository.get_session_id())
     if repository.persisted && !path_utils.exists(repository.cwd) {
         // Pi's assertSessionCwdExists: opening a session whose stored cwd is
         // gone would silently bind every tool to a missing directory.
@@ -367,6 +382,7 @@ pub fn run(): void! {
     // commands can never drift from the running resources without an
     // explicit refresh.
     var rpc_snapshot = resource_snapshot.load(session_cwd, config.project_trusted, config_paths.agent_dir(), config.skill_paths, config.no_skills)
+    debug.log('resources', 'snapshot trusted=' + (config.project_trusted ? 'true' : 'false') + ' context_files=' + fmt.sprintf('%d', context_files.len()) + ' skills=' + fmt.sprintf('%d', rpc_snapshot.skills.len()) + ' prompts=' + fmt.sprintf('%d', rpc_snapshot.prompt_templates.len()))
     if list_contains(tool_names, 'read') {
         string skills_prompt = skills.format_skills_for_prompt(rpc_snapshot.skills)
         if skills_prompt != '' {
@@ -382,6 +398,7 @@ pub fn run(): void! {
     agent_config.queues.steering_mode = config.steering_mode
     agent_config.queues.follow_up_mode = config.follow_up_mode
     var runner = session.new(repository, context, agent_config, stream_provider(), config.compaction)
+    debug.log('startup', 'runner ready tools=' + fmt.sprintf('%d', tools.len()) + ' system_chars=' + fmt.sprintf('%d', system.len()) + ' compaction=' + (config.compaction.enabled ? 'on' : 'off'))
     runner.retry_enabled = config.retry_enabled
     runner.retry_max_attempts = config.retry_max_attempts
     runner.retry_base_delay_ms = config.retry_base_delay_ms
