@@ -1,9 +1,9 @@
 import adou.src.json_util
 
 // Port of vendors/pi/packages/agent/src/harness/tools/image.ts.
-// Image input detection stays available for tools even though Adou's read
-// tool only promises the UTF-8 text branch; the mime detection and base64
-// helpers keep the same byte-level acceptance rules as Pi.
+// Image input detection stays available for tools while the read image
+// processor integration is completed; the mime detection and base64 helpers
+// keep the same byte-level acceptance rules as Pi.
 
 pub fn detect_supported_image_mime_type([u8] buffer): string {
     if starts_with(buffer, [0xff, 0xd8, 0xff]) {

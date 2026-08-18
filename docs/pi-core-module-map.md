@@ -1,6 +1,6 @@
 # Pi Core Module Map
 
-状态：MVP 核心路径已完成逐模块核对（Pi 基线 `0.82.1`, commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`）；Phase 6–8 完成，**Phase 4（Interactive/TUI 交互子项）与 Phase 5（Interactive UI）已于 2026-08-14 重新打开**（见 `docs/pi-interactive-parity-audit-plan.md`，Batch 0 已由主代理验收通过，Batch 1 实施中；与 `docs/porting-plan.md` 状态一致），macOS release hardening 进行中（Batch 1、Batch 2A、native `.pkg` installer 已完成；Batch 2B 需新权限，Linux 暂缓），Pi extension 运行时已停用。
+状态：Pi `0.82.1` 全量可观察行为对齐正在进行；唯一明确排除是 TypeScript/QuickJS extension runtime。Phase 6–8 完成，**Phase 4（Interactive/TUI 交互子项）与 Phase 5（Interactive UI）已于 2026-08-14 重新打开**（见 `docs/pi-interactive-parity-audit-plan.md`，Batch 0 至 Batch 6 已验收，Batch 7 待完成；与 `docs/porting-plan.md` 状态一致），macOS release hardening 进行中，Linux 属于平台发布工作。
 
 本文把 `vendors/pi` 中必须翻译到 Nature 的核心边界固定下来。判断标准是 Pi 的可观察 coding-agent 行为，而不是 TypeScript 文件是否已经有一个同名 Nature 文件。每个模块只有在完成源码差分、单元测试和至少一个跨模块集成测试后，才可标记为完成。
 
@@ -8,26 +8,27 @@
 
 | 模块 | Pi 行为来源 | Nature 当前边界 | 当前测试 | 状态 |
 |---|---|---|---|---|
-| AI 数据模型与流协议 | `packages/ai/src/types.ts`, `api/openai-responses.ts`, `api/openai-completions.ts`, `api/anthropic-messages.ts`, `utils/event-stream.ts`, `utils/json-parse.ts`, `utils/retry.ts` | `src/ai/types.n`, `src/ai/event_stream.n`, `src/ai/sse.n`, `src/ai/streaming_json.n`, `src/ai/providers/*` | request tests；OpenAI HTTP 8/8；Anthropic HTTP 6/6；SSE 8/8；streaming JSON 3/3 | MVP 已通过：DeepSeek/OpenAI Responses/Anthropic 流式、重试、取消和 malformed JSON 覆盖 |
-| Agent loop | `packages/agent/src/agent-loop.ts`, `agent.ts`, `types.ts`, `stream-fn.ts`, `harness/messages.ts` | `src/agent/loop.n`, `types.n`, `schema.n`, `event_stream.n`, `session_stream.n` | agent loop 17/17；agent types 1/1；event stream 5/5；session 集成覆盖生命周期与工具结果 | MVP 已通过：并发/顺序工具、队列、取消、prepare arguments、added tool names 已对齐 |
-| 内置工具 | `packages/coding-agent/src/core/tools/{read,write,edit,bash,grep,find,ls,truncate,path-utils,file-mutation-queue}.ts`, `packages/agent/src/harness/tools/*` | `src/tools/{read,write,shell_tools,command,truncate,path_utils,mutation_queue,builtins}.n` | tools 20/20；builtins 3/3；tool-edge/tool-stream-repair e2e | MVP 已通过：读写、编辑、bash、grep/find/ls 边界和 UTF-16 截断语义覆盖 |
-| Session 与 JSONL | `packages/coding-agent/src/core/session-manager.ts`, `core/session-cwd.ts`, `packages/agent/src/harness/session/{session,jsonl-repo,jsonl-storage}.ts`；Phase 7：`packages/storage/sqlite-node` | `src/session/{repository,jsonl,message_json,types,identity,export_html}.n`、`src/session/backend.n`、`src/storage/*.n` | session 27/27；RPC clone/new/tree/import/export 场景通过；Phase 7 三后端契约测试（JSONL/memory/SQLite） | MVP 已通过：Pi v3 append-only 链、分支、恢复、fork/clone 和跨 cwd 语义覆盖；SQLite backend 已随 Phase 7 storage 段落落地 |
-| Server IPC（Phase 7.1） | `packages/server/src/ipc/{protocol,server}.ts`, `supervisor.ts`, `handler.ts`, `rpc-process.ts` | `src/server/{protocol,rpc_process,supervisor,ipc_server}.n` + `src/app.n` run_serve/serve_command | `tests/ipc_protocol_test.n`、`tests/rpc_process_test.n`；`tests/e2e/rpc-over-ipc.sh` 多进程/并发/rpc_stream e2e | 已完成：spawn/list/status/stop/rpc/rpc_stream 与每实例 `--mode rpc` 子进程隔离已落地；2026-08-16 在 Nature stdin pipe 修复后通过真实双 PID、cwd、并发 pending、单实例 stop、父退出无 orphan 验收；radius/实例表持久化继续排除 |
-| 自动压缩与分支摘要 | `packages/coding-agent/src/core/compaction/{compaction,branch-summarization,utils}.ts`, `packages/agent/src/harness/compaction/*` | `src/compaction/*.n`, `src/agent/session.n` | compaction 15/15；RPC compaction abort/retry/preprompt e2e | MVP 已通过：cut point、retained tail、previous summary/file details、取消和重试覆盖 |
-| 配置、认证、模型与项目上下文 | `packages/coding-agent/src/{config,core/auth-storage,core/model-{config,registry,resolver,runtime},core/settings-manager,core/resource-loader,core/system-prompt,core/project-trust}.ts`, `cli/args.ts` | `src/config/*.n`, `src/context/*.n`, `src/platform/cwd.n` | config context 22/22；model/settings/auth 全部通过；CLI validation/project-config/model-selection e2e | MVP 已通过：`.pi` 优先级、API key、模型 scope/thinking、session cwd 和启动错误语义覆盖 |
-| TUI、输入与终端渲染 | `packages/tui/src/{terminal,tui,stdin-buffer,keys,keybindings,editor-component,autocomplete,word-navigation,terminal-colors}.ts`, `packages/tui/src/components/*`, `packages/coding-agent/src/modes/interactive/components/*` | `src/tui/*.n` | 10 个 TUI PTY e2e（含 `tui-tree-fork.sh`）；renderer/editor/input/model/session/settings/config/setup/theme/chat 等单测 | **Interactive/TUI 交互子项于 2026-08-14 重新打开**：逐组件等价验收（state/transition/render/effect/cancel 契约 + direct/integration PTY + 同版本 Pi 真机对照）改由 `docs/pi-interactive-parity-audit-plan.md` Batch 0→7 执行；Batch 0 已由主代理验收通过（0.82.1 oracle、env 隔离的共享 PTY 协议、语义断言 + slash `/` 三轮一致，证据 `docs/pi-batch0-evidence/`）；Batch 1 实施中。renderer 差分渲染、terminal recovery 等已验证子项保留原结论 |
-| CLI、print mode 与 RPC | `packages/coding-agent/src/{main,cli/*,modes/print-mode,modes/rpc/{rpc-mode,rpc-types,jsonl}}.ts` | `src/app.n`, `src/config/args.n`, `src/agent/event_json.n` | 45 个 e2e；event JSON 9/9 | MVP 已通过：one-shot、JSON/RPC、abort/queue/retry/compact/session 命令、启动边界与事件顺序覆盖 |
-| 导出与可观测性 | `packages/coding-agent/src/core/export-html/*`, `core/diagnostics.ts`, `core/timings.ts`, `core/output-guard.ts` | `src/session/export_html.n`, `src/debug.n`, `src/timings.n`, `src/output_guard.n`, `src/tui/virtual_terminal.n` | debug/observability 3/3；session/export assertions；`rpc-debug-stderr`、TUI/logging e2e | MVP 核心链路已覆盖：JSONL/静态 HTML 导出、诊断、启动计时和 RPC 输出隔离；Pi 的交互式导出模板、主题解析和扩展工具渲染器仍明确排除 |
+| AI 数据模型与流协议 | `packages/ai/src/types.ts`, `api/openai-responses.ts`, `api/openai-completions.ts`, `api/anthropic-messages.ts`, `utils/event-stream.ts`, `utils/json-parse.ts`, `utils/retry.ts` | `src/ai/types.n`, `src/ai/event_stream.n`, `src/ai/sse.n`, `src/ai/streaming_json.n`, `src/ai/providers/*` | request tests；OpenAI HTTP 8/8；Anthropic HTTP 6/6；SSE 8/8；streaming JSON 3/3 | 当前基线已通过：DeepSeek/OpenAI Responses/Anthropic 流式、重试、取消和 malformed JSON 覆盖；OAuth 仍开放 |
+| Agent loop | `packages/agent/src/agent-loop.ts`, `agent.ts`, `types.ts`, `stream-fn.ts`, `harness/messages.ts` | `src/agent/loop.n`, `types.n`, `schema.n`, `event_stream.n`, `session_stream.n` | agent loop 17/17；agent types 1/1；event stream 5/5；session 集成覆盖生命周期与工具结果 | 已通过：并发/顺序工具、队列、取消、prepare arguments、added tool names 已对齐 |
+| 内置工具 | `packages/coding-agent/src/core/tools/{read,write,edit,bash,grep,find,ls,truncate,path-utils,file-mutation-queue}.ts`, `packages/agent/src/harness/tools/*` | `src/tools/{read,write,shell_tools,command,truncate,path_utils,mutation_queue,builtins}.n` | tools 20/20；builtins 3/3；tool-edge/tool-stream-repair e2e | 当前文本工具基线已通过；图片读取和 image processing 仍开放 |
+| Session 与 JSONL | `packages/coding-agent/src/core/session-manager.ts`, `core/session-cwd.ts`, `packages/agent/src/harness/session/{session,jsonl-repo,jsonl-storage}.ts`；Phase 7：`packages/storage/sqlite-node` | `src/session/{repository,jsonl,message_json,types,identity,export_html}.n`、`src/session/backend.n`、`src/storage/*.n` | session 27/27；RPC clone/new/tree/import/export 场景通过；Phase 7 三后端契约测试（JSONL/memory/SQLite） | 已通过：Pi v3 append-only 链、分支、恢复、fork/clone 和跨 cwd 语义覆盖；SQLite backend 已随 Phase 7 storage 段落落地 |
+| Server IPC（Phase 7.1） | `packages/server/src/ipc/{protocol,server}.ts`, `supervisor.ts`, `handler.ts`, `rpc-process.ts` | `src/server/{protocol,rpc_process,supervisor,ipc_server}.n` + `src/app.n` run_serve/serve_command | `tests/ipc_protocol_test.n`、`tests/rpc_process_test.n`；`tests/e2e/rpc-over-ipc.sh` 多进程/并发/rpc_stream e2e | 当前 IPC 基线已完成：spawn/list/status/stop/rpc/rpc_stream 与每实例 `--mode rpc` 子进程隔离已落地；radius presence、OAuth 与实例表持久化仍开放 |
+| 自动压缩与分支摘要 | `packages/coding-agent/src/core/compaction/{compaction,branch-summarization,utils}.ts`, `packages/agent/src/harness/compaction/*` | `src/compaction/*.n`, `src/agent/session.n` | compaction 15/15；RPC compaction abort/retry/preprompt e2e | 已通过：cut point、retained tail、previous summary/file details、取消和重试覆盖 |
+| 配置、认证、模型与项目上下文 | `packages/coding-agent/src/{config,core/auth-storage,core/model-{config,registry,resolver,runtime},core/settings-manager,core/resource-loader,core/system-prompt,core/project-trust}.ts`, `cli/args.ts` | `src/config/*.n`, `src/context/*.n`, `src/platform/cwd.n` | config context 22/22；model/settings/auth 全部通过；CLI validation/project-config/model-selection e2e | 当前 API-key 基线已通过：`.pi` 优先级、模型 scope/thinking、session cwd 和启动错误语义覆盖；OAuth/account 仍开放 |
+| TUI、输入与终端渲染 | `packages/tui/src/{terminal,tui,stdin-buffer,keys,keybindings,editor-component,autocomplete,word-navigation,terminal-colors}.ts`, `packages/tui/src/components/*`, `packages/coding-agent/src/modes/interactive/components/*` | `src/tui/*.n` | TUI PTY e2e；renderer/editor/input/model/session/settings/config/setup/theme/chat 等单测 | **Interactive/TUI 交互子项于 2026-08-14 重新打开**：Batch 0 至 Batch 6 已验收，Batch 7 的同版本真机、长会话与稳定性收口待完成；OAuth 和交互式图片另为开放 parity 工作 |
+| CLI、print mode 与 RPC | `packages/coding-agent/src/{main,cli/*,modes/print-mode,modes/rpc/{rpc-mode,rpc-types,jsonl}}.ts` | `src/app.n`, `src/config/args.n`, `src/agent/event_json.n` | 45 个 e2e；event JSON 9/9 | 已通过：one-shot、JSON/RPC、abort/queue/retry/compact/session 命令、启动边界与事件顺序覆盖 |
+| 导出与可观测性 | `packages/coding-agent/src/core/export-html/*`, `core/diagnostics.ts`, `core/timings.ts`, `core/output-guard.ts` | `src/session/export_html.n`, `src/debug.n`, `src/timings.n`, `src/output_guard.n`, `src/tui/virtual_terminal.n` | debug/observability 3/3；session/export assertions；`rpc-debug-stderr`、TUI/logging e2e | 当前 JSONL/静态 HTML 导出、诊断、启动计时和 RPC 输出隔离已覆盖；非 extension 的导出差异仍按全量目标审计 |
 
-## 明确不翻译
+## 当前明确排除与开放边界
 
-以下目录不是核心移植目标，不能被“已有文件数”计入完成度：
+下列边界必须区分“extension 明确排除”和“非 extension 尚未完成”，不能被
+“已有文件数”或当前局部测试结果掩盖：
 
 - `packages/coding-agent/src/core/extensions/**`、`src/extensions/**`：TypeScript extension ABI、加载器、事件总线和扩展 UI。早期 QuickJS 实验源码暂留，但生产入口、TUI/RPC 接线和默认链接已停用。
 - `packages/coding-agent/src/extensions/**`：Llama 等扩展 provider。
 - 动态 `.pi/extensions` 资源加载和扩展包管理。`.pi/skills`、`.pi/prompts`、slash commands 已作为核心功能实现，不属于本排除项。
-- `packages/server/**` 中仅 radius/OAuth、实例表持久化继续排除；IPC、rpc-process、supervisor 和 rpc_stream 已按 Phase 7.1 落地。`packages/evals/**` 不属于当前 MVP 核心验收；若继续全量工作区移植，分别在 Phase 7–8 处理。OAuth/account 登录、远程分享、npm/Bun 发布和安装器继续排除。
-- Pi 的图片读取、图片渲染和 image processing；MVP 的 `read` 仅承诺 UTF-8 文本分支。
+- `packages/server/**` 中的 radius、OAuth、实例表持久化和远程分享仍有开放 parity 工作；IPC、rpc-process、supervisor 和 rpc_stream 已按 Phase 7.1 落地。`packages/evals/**` 只代表当前已有的 eval harness，不应被误读为完整工作区 parity。
+- Pi 的图片读取、图片渲染和 image processing 仍是开放 parity 工作；当前实现包含图片类型检测、图片 API 和部分终端编码能力，但不应标记为完成。
 
 ## 验收规则
 
@@ -55,4 +56,4 @@
 - 若 `nature --version` 已更新但 `/usr/local/nature/lib/darwin_arm64/libruntime.a` 仍是旧文件，Adou 仍会链接旧 runtime；需用管理员权限覆盖该静态库后再重新 `make clean && make build`。
 - TUI 退出路径使用 Nature 标准输入接口；输入读取在独立协程中阻塞等待 `fs/libuv` 数据，解析协程通过 Nature channel 接收字节并用定时协程处理 ESC 超时，不修改 stdin fd flags。退出时先恢复终端再结束 CLI，避免后台监听协程拖住进程。
 
-表中“已通过”只表示 MVP 范围内的核心行为已经有源码差分和测试证据，不表示 Pi 的扩展机制、图片能力、OAuth 或其他第 4.2 节排除项已经移植。
+表中“已通过”只表示对应模块当前已验收的行为已经有源码差分和测试证据；它不表示全量 parity 已完成。Pi extension 是明确排除项，OAuth、图片、分享和其他非 extension 能力则属于开放工作。

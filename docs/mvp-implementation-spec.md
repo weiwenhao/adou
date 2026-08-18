@@ -1,4 +1,10 @@
-# Adou MVP 移植实现规范
+# Adou MVP 移植实现规范（历史基线）
+
+> 状态说明：本文保留为早期实现与验收的历史基线，不再定义当前产品范围。
+> 当前目标是 Pi `0.82.1` 全量可观察行为对齐，唯一明确排除为
+> TypeScript/QuickJS extension runtime；OAuth、图片、分享等本文曾列为
+> MVP 外的能力现均属于开放 parity 工作。当前权威范围见
+> `docs/porting-plan.md`。
 
 状态：实施基线  
 文档版本：0.27

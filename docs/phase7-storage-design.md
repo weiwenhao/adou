@@ -1,5 +1,9 @@
 # Phase 7 Storage Design（2026-08-11 batch 1）
 
+> 范围更新：本文记录 Phase 7 当时的实现边界；其中 Radius/OAuth 和实例表
+> 持久化不再是产品排除项，而是全量 Pi parity 的开放工作。唯一明确排除仍是
+> TypeScript/QuickJS extension runtime。
+
 ## 目标
 
 在不替换默认 JSONL 存储的前提下，把 repository 的 backend 边界固定下来，
@@ -112,7 +116,7 @@ parent_session 血缘、重复 id 错误、list/delete（持久化后端）与�
 
 ## 下一批边界（2026-08-12 复核：均已收口）
 
-- radius（OAuth/遥测）：已按排除项评估并排除，不移植。
+- radius（OAuth/遥测）：本批未移植，现作为开放 parity 工作继续实施。
 - IPC 多实例 supervisor：已由下方 Phase 7.1 落地；2026-08-16 在 Nature stdin
   pipe 修复后进一步替换为与上游一致的每实例 RPC 子进程。
 - 系统 SQLite 动态链接：维持静态 .o 链接不变，本批不引入系统库依赖。
@@ -128,7 +132,7 @@ parent_session 血缘、重复 id 错误、list/delete（持久化后端）与�
 | `packages/server/src/supervisor.ts`（实例表 + 生命周期） | `src/server/supervisor.n`（实例表、spawn/list/stop/status 路由、subscriber 扇出） |
 | `packages/server/src/handler.ts`（命令面与错误形状） | `src/app.n` `serve_command` 重写（按响应类型分发 + `Unknown instance: <id>`） |
 | `packages/server/src/rpc-process.ts`（子进程 + 行分帧） | `src/server/rpc_process.n`（真实 stdin/stdout/stderr pipe、JSONL 分帧、pending id 关联、事件转发、退出/终止） |
-| `packages/server/src/{serve,config,storage,radius,cli}.ts` | 不移植：radius 排除；实例表保持内存态（不持久化 instances 记录） |
+| `packages/server/src/{serve,config,storage,radius,cli}.ts` | 本批仅实现核心 server；Radius 和实例表持久化仍为开放 parity 工作 |
 
 ### 协议响应形状（每行一个 JSON，逐行帧与上游 encodeMessage 一致）
 

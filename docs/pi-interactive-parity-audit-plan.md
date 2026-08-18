@@ -3,7 +3,7 @@
 状态：Batch 0（2026-08-14）、Batch 1（Autocomplete 与 SelectList 基础）、Batch 2（Model 与 Scoped Models）、Batch 3（Keybindings）、Batch 4（Editor/cursor/IME）、Batch 5（其余 Interactive 组件）与 Batch 6（Streaming、Resize 与稳定性组合回归）均已由主代理验收通过（2026-08-17）；下一批为 Batch 7
 审计日期：2026-08-14
 范围：Adou 交互式 TUI、编辑器、autocomplete、overlay、快捷键和终端生命周期
-Nature 实现基线：当前未提交 worktree（HEAD `91a24bb`；Batch 6 的实现与测试改动尚未提交）
+Nature 实现基线：Batch 0 至 Batch 6 已进入当前提交历史；本文后续记录覆盖 Batch 7 与当前全量 parity 范围修订
 
 ## 1. 结论
 
@@ -29,20 +29,22 @@ Phase 4 的 "TUI 基础" 范畴，因此 Phase 4 与 Phase 5 一起重新打开
 
 ## 2. 审计权威与基线门禁
 
-### 2.1 当前存在两个不同的 Pi 基线
+### 2.1 当前统一的 Pi 基线
 
 - 仓库 `vendors/pi`：Pi `0.82.1`，commit
   `cced6a21da273b26ee4a23a803680614bbe8dd1e`。
-- Herdr `pi-test` 真机：Pi `0.81.0`。
+- Herdr `w7:pD` 真机 oracle：已于 2026-08-18 退出旧常驻进程，并用
+  `vendors/pi/pi-test.sh` 重新启动为 Pi `0.82.1`。
 
-源码权威和真机 oracle 版本不一致，严格 parity 结果可能互相冲突。实施前必须完成
-P0 门禁之一：
+当前源码和真机 oracle 使用同一版本；固定提交、终端协议和三轮离线基线证据如下：
 
-1. 推荐：让真机 oracle 使用 vendored Pi `0.82.1`；或
-2. 将源码审计基线明确固定到 Pi `0.81.0` 的对应 commit。
+- `vendors/pi` HEAD 与 oracle commit 均为
+  `cced6a21da273b26ee4a23a803680614bbe8dd1e`；
+- `./vendors/pi/pi-test.sh --version` 与 Herdr pane 启动画面均为 `0.82.1`；
+- `python3 tests/e2e/lib/pi-oracle/slash-baseline.py --runs 3`：三轮语义断言
+  PASS、画面一致、退出码 0。
 
-在基线统一前，可以记录两个版本共同存在的行为缺陷，但不得用 0.81.0 真机画面证明
-0.82.1 源码 parity 已完成。
+此前 Herdr `pi-test` 0.81.0 的记录仍保留在历史章节，但不再作为当前 parity 证据。
 
 ### 2.2 权威顺序
 
@@ -55,10 +57,10 @@ P0 门禁之一：
 
 不得以“Adou 已有同名文件/命令/测试”为完成证据。
 
-### 2.3 明确排除项
+### 2.3 明确排除项与开放项
 
-现有产品范围明确排除的 TypeScript extension UI、OAuth/account 登录和交互式图片渲染
-不纳入本轮实现，但必须在矩阵中标为 `EXCLUDED`，不能计为 `PASS`。API-key 登录、
+当前唯一明确排除的是 TypeScript/QuickJS extension UI/runtime。OAuth/account 登录和
+交互式图片渲染属于全量 parity 的开放项，不能标为 `EXCLUDED`；API-key 登录、
 skills、prompt templates、slash commands、项目 trust 和核心 TUI 均在本轮范围内。
 
 ## 3. 冻结快照
@@ -243,8 +245,8 @@ test 和 Pi 同版本真机对照四层证据。
 | resize/shrink/render | Pi TUI diff renderer | 稳定性已加强；settings-driven clear-on-shrink 未实现 | PARTIAL | P1 |
 | debug/terminal lifecycle | Pi debug log + ProcessTerminal | debug 隔离/job control 已通过 | PASS（保留回归） | P1 |
 | extension UI | extension components | 产品范围排除 | EXCLUDED | — |
-| OAuth/account | login dialog OAuth flows | 产品范围排除 | EXCLUDED | — |
-| interactive images | image selectors/render | 产品范围排除 | EXCLUDED | — |
+| OAuth/account | login dialog OAuth flows | 尚未实现完整 login/refresh/logout 契约 | OPEN | P1 |
+| interactive images | image selectors/render | 已有底层编码与图片 API，读取/消息/TUI 接线未完成 | OPEN | P1 |
 
 ## 6. 实施原则
 
@@ -310,7 +312,7 @@ PASS；max=20 仍保留 upstream-equivalent 的 strict UX FAIL，详见 §12.7�
 - 优先核心可观察设置：autocomplete max、hardware cursor、editor/output padding、
   clear-on-shrink、quiet startup、double escape、tree filter、skill commands、transport、
   HTTP idle timeout、terminal progress、warnings。
-- 图片设置在当前排除范围中显示为 EXCLUDED，不做伪实现。
+- 图片设置在尚未完成时显示为 unavailable，不做伪实现；其完整运行时 effect 进入后续 parity 批次。
 - 移除或重新定位不属于 Pi settings surface 的 Auto-retry。
 
 验收：每项具备 default/load/save/project override/runtime effect/reopen 五类断言。
@@ -329,7 +331,7 @@ PASS；max=20 仍保留 upstream-equivalent 的 strict UX FAIL，详见 §12.7�
 ### Batch 5｜其余 Interactive 组件
 
 - Config：scope、search、header/item、page、toggle、Esc/Tab。
-- Auth API-key：运行时 provider 列表、搜索、取消、错误恢复；OAuth 明确 EXCLUDED。
+- Auth API-key：运行时 provider 列表、搜索、取消、错误恢复；OAuth 另列开放 parity 工作，不得视为 EXCLUDED。
 - Trust：选择、j/k、来源、保存、取消。
 - Session：scope、sort、named、path、rename、delete confirm、page、empty、cancel recovery。
 - Tree/Fork：filter modes、cycle、fold/unfold、label、timestamp、copy、page、branch summary。
@@ -643,7 +645,7 @@ settings UI。
 | B1-R2-01 | P0 | `handle_tab_completion()` 在菜单已关闭时先同步 `begin()`，随后同一次按键立即 `apply_autocomplete(false)`。Pi 0.82.1 独立真机实测：输入 `/mo`、Esc、Tab 后只是重新显示 model/scoped-models/import 三项，editor 仍为 `/mo`、cursor 仍在 column 3；并不直接补成 `/model `。 | Tab 在无 active menu 时只请求/打开候选；只有菜单原本 active 时才应用当前项。加入 Pi/Adou 同键 PTY 断言。 |
 | B1-R2-02 | P0 | 首轮验证多次使用 `make build 2>&1 \| tail ...; echo EXIT=$?` 和同形 Nature test 管道。首次 build 明确报 `global initializer cannot assign literal to type 'any'`，unit test 也明确 panic，但两次都因 shell 返回 `tail` 状态而打印 `EXIT=0`。 | 历史失败必须保留；后续命令禁止吞状态的管道，直接记录真实 exit code。任何 panic/编译错误都不得以表面 `EXIT=0` 计通过。 |
 | B1-R2-03 | P0 | `registry.find_def()` 明确规定 runtime provider 覆盖同 id builtin；`login_defs()` 却先放 builtin，发现 runtime 同 id 后丢弃 runtime，因此 `/login` 展示旧 name/metadata。Pi runtime registration 是 override。 | 按 id 合并时 runtime definition 获胜；测试 runtime provider 覆盖 builtin name 后 login 候选使用新 name，unregister 后恢复 builtin。 |
-| B1-R2-04 | P0 | `/login` 候选把所有 `registry.defs()` 都当成 API-key auth option。`openai-codex` 在 Pi 只有 OAuth，当前 Adou 却会错误显示 `OpenAI Codex · API key`；同时 `provider_def_t` 没有 auth capability，无法区分 OAuth-only 与 API-key provider。 | 在当前产品范围只列真实支持 API-key login 的 provider；OAuth-only 明确 EXCLUDED，不伪装成 API key。为 provider auth capability 建立可测试的数据源，不能以 `env_vars.len()` 粗略推断（Bedrock/Vertex 也是 API-key selector）。 |
+| B1-R2-04 | P0 | `/login` 候选把所有 `registry.defs()` 都当成 API-key auth option。`openai-codex` 在 Pi 只有 OAuth，当前 Adou 却会错误显示 `OpenAI Codex · API key`；同时 `provider_def_t` 没有 auth capability，无法区分 OAuth-only 与 API-key provider。 | API-key selector 只列真实支持 API-key login 的 provider，不能把 OAuth-only 伪装成 API key；完整 OAuth flow 另列开放 parity 工作。为 provider auth capability 建立可测试的数据源，不能以 `env_vars.len()` 粗略推断（Bedrock/Vertex 也是 API-key selector）。 |
 | B1-R2-05 | P0 | 为消除逐 model 文件 I/O 新增了进程级 `cached_auth_root`，但 `/reload` 只重建 model items，未使 auth snapshot 失效；外部合法更新 `auth.json` 后 `/reload` 仍读取旧 map。Pi 的 AuthStorage 有显式 `reload()` 并保留最后有效 snapshot。 | 提供明确 credential reload/invalidate 点；`/reload` 后 model candidates 使用新 credential snapshot，解析失败保留最后有效 snapshot。普通键入仍不得重新读文件。 |
 | B1-R2-06 | P0 | 启动层对未信任项目使用 global settings，但 `session_view.new()` 又无条件 `load_for(cwd)`，重新读取项目 `autocompleteMaxVisible`；同函数还无条件加载 project prompts。`refresh_dynamic_commands()` 的 prompt loader也不受 trust gate 约束。 | trust 决策必须贯穿 view：未信任项目不能应用 project autocomplete setting，也不能加载/广告/执行 project prompt/skill；user 资源仍可用。以 trusted/untrusted fixture 覆盖。 |
 | B1-R2-07 | P1 | 动态候选的 `enabledSkills`/`enabledPrompts` 过滤仍调用 global `config_settings.load()`，忽略 trusted cwd 的 project override；`filter_enabled_skills()`、`filter_enabled_prompts()`也相同。 | 使用同一个 trust-aware、global+project merged settings snapshot；init/reload/session rebind 时刷新，普通键入不读盘。 |
@@ -1122,11 +1124,11 @@ Adou 现状源：
 | terminal.clearOnShrink（false；PI_CLEAR_ON_SHRINK env） | g+p | 无 | 新增；renderer 收缩清理 |
 | terminal.showTerminalProgress（false） | g+p | 无 | 新增；OSC 9;4 |
 | warnings.anthropicExtraUsage（true） | g+p | 无 | 新增；子菜单；Adou 无 Anthropic 订阅鉴权路径，runtime NOP 记录 |
-| terminal.showImages/imageWidthCells、images.autoResize/blockImages | g+p | 无 | EXCLUDED：UI 显示 EXCLUDED 行，不伪实现，不落盘语义 |
+| terminal.showImages/imageWidthCells、images.autoResize/blockImages | g+p | 无 | OPEN：当前 UI 只显示 unavailable，不伪实现；完整落盘与运行时 effect 待补 |
 
 失败 baseline（Batch 3 开工时的事实）：
 
-1. /settings 仅 7 行，Pi 为 26 个可见 item（含 EXCLUDED 4 项图像设置）；
+1. /settings 仅 7 行，Pi 为 26 个可见 item（含当前尚未接线的 4 项图像设置）；
 2. 无任何 submenu 组件（除 thinking 7 选）、无 theme preview/cancel/apply；
 3. retry 落盘形状与 Pi 不同（扁平 vs 嵌套 retry 对象）；
 4. autoCompaction 落盘形状与 Pi 不同（顶层 vs compaction.enabled）；
@@ -1167,7 +1169,7 @@ Adou 现状源：
   收缩行。
 - `src/tui/term.n`：set_hardware_cursor（?25h/l）与 OSC 9;4 set_progress。
 - `src/tui/session_view.n`：Settings UI 重写为 Pi 顺序 27 行（Enter 循环
-  value 行、EXCLUDED 图像四行、Warnings/Thinking/Theme 子菜单）；Theme
+  value 行、unavailable 图像四行、Warnings/Thinking/Theme 子菜单）；Theme
   子菜单 single/automatic 双模式 + live preview/apply/cancel（Esc 恢复
   原值）；ESC ESC 按 doubleEscapeAction 分支 tree/fork/none；/tree 打开
   时以 treeFilterMode 种子 overlay.tree_filter；raw 进入时按
@@ -1180,7 +1182,7 @@ Adou 现状源：
   chat_test 13/13（outputPad/cache-miss）；renderer_test 14/14（默认 off
   + 开启清理）；agent_session_test 33/33（snapshot transport/timeout）；
   slash_commands_test 7/7（门控签名）。e2e：tui-settings.sh（Pi 顺序、
-  EXCLUDED 行、transport 循环、thinking 子菜单、settings.json 持久化）
+  unavailable 行、transport 循环、thinking 子菜单、settings.json 持久化）
   与 tui-config.sh（theme 子菜单应用 + 重启恢复）通过。
 
 ### 13.3 验收记录
@@ -1297,7 +1299,7 @@ app action ↔ Adou 映射（Pi 40 个 action）：
 | app.message.copy（ctrl+x） | 硬编码 |
 | app.message.followUp（alt+enter） | 硬编码（idle+stream 两处语义不同：idle 直接发、stream 入队） |
 | app.message.dequeue（alt+up） | 硬编码 |
-| app.clipboard.pasteImage（ctrl+v darwin） | 无（图片排除范围，UI 无此项） |
+| app.clipboard.pasteImage（ctrl+v darwin） | OPEN（当前 UI 无此项，待接入图片 parity 批次） |
 | app.session.new/tree/fork/resume | 无键（slash commands 已覆盖） |
 | app.tree.foldOrUp（alt+left）、unfoldOrDown（alt+right）、editLabel（shift+l）、toggleLabelTimestamp（shift+t） | tree overlay 硬编码 f/[/]/L，shift+t 缺失 |
 | app.session.togglePath（ctrl+p）、toggleSort（ctrl+s）、rename（ctrl+r）、delete（ctrl+d）、deleteNoninvasive（ctrl+backspace） | session overlay 硬编码 |
@@ -1391,7 +1393,8 @@ docs/pi-batch3-evidence/herdr-keybindings-parity-summary.json。
   可重新启用；项目写入 `.pi/settings.json`，全局写入用户 settings。
 - Auth API-key：provider 选择来自运行时 registry，带名称和搜索；logout
   只显示已保存的 API-key provider，并在无凭据时给出状态。空 key 提交会
-  留在 overlay 展示错误，Esc 后可重新打开；OAuth 流程明确不实现。
+  留在 overlay 展示错误，Esc 后可重新打开；OAuth 流程本批未实现，现作为
+  全量 parity 的开放工作继续实施。
 - Trust：`/trust` 无参数进入选择器，显示当前 cwd、最近保存决策来源、
   Trust/Trust parent/Do not trust 与 session-only 选项；j/k、方向键、Enter
   保存、Esc 取消均可用。持久化选择走 `set_many`，session-only 只存在于
@@ -1417,8 +1420,9 @@ docs/pi-batch3-evidence/herdr-keybindings-parity-summary.json。
   key actions、取消恢复和干净 terminal restore。
 - `git diff --check` 干净；本批没有 vendors 改动，也没有提交凭据。
 
-残余 FAIL：无。OAuth 仍按批次定义 EXCLUDED；项目资源 scope 使用 Adou
-现有 named allow-list 模型，未引入 Pi package manager 的额外三态包配置。
+本批已定义范围内残余 FAIL：无。OAuth 仍未在本批实现，但现归入开放 parity
+工作；项目资源 scope 使用 Adou 现有 named allow-list 模型，Pi package manager
+中属于 extension 的部分保持排除，其他可观察差异继续审计。
 
 ## 16. Batch 6 记录（Streaming、Resize 与稳定性组合回归，2026-08-17）
 
@@ -1482,6 +1486,12 @@ docs/pi-batch3-evidence/herdr-keybindings-parity-summary.json。
 - Herdr `pi-test`（`w7:pD`）此前已退出到 shell，本轮重新启动 Pi 0.81.0
   后，用相同的无副作用提示完成精确回复、跨轮记忆与只读工具对照；Pi 的
   model selector 也能打开。
+- 2026-08-18 Stage 0 刷新后，`w7:pD` 已改用仓库
+  `vendors/pi/pi-test.sh` 启动 Pi 0.82.1；live DeepSeek 无工具提示精确返回
+  `PI_B7_STAGE2_OK`。`w7:pE` 的当前构建（SHA-256
+  `2ce02803da1d064ad8ef0c2fb4d4cd16017c6f4979a91cd921b00e0d715c41c4`）
+  对等返回 `ADOU_B7_STAGE2_OK`。这关闭低次数 provider smoke，不代替长会话
+  或连续三轮全矩阵验收；`/usr/local/bin/adou` 仍是旧 hash，不作为当前构建证据。
 
 ### 17.3 未关闭的真机风险
 

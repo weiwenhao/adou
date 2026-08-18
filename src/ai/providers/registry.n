@@ -152,7 +152,7 @@ fn sorted_runtime_ids(): [string] {
 // The /login argument-completion candidate assembly (B1-R2-04), shared by
 // the TUI and the tests: merged builtin+runtime defs (runtime override),
 // filtered to providers whose supports_api_key_login capability is true
-// (OAuth-only providers such as openai-codex are EXCLUDED, never disguised
+// (OAuth-only providers such as openai-codex are omitted here, never disguised
 // as API-key options), then stable-sorted by provider name like Pi's
 // getLoginProviderCompletionOptions.  Description/search text mirror Pi's
 // formatLoginProviderCompletionDescription / getLoginProviderSearchText.
@@ -247,7 +247,8 @@ pub fn get_api_key_for_provider(string provider): string {
     return auth.effective(provider)
 }
 
-// Adou has no OAuth credential store; Pi's isUsingOAuth stays false.
+// OAuth credential storage is still open parity work; until it is wired no
+// provider can report an active OAuth credential.
 pub fn is_using_oauth(string provider): bool {
     return false
 }

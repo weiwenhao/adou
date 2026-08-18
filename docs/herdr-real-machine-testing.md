@@ -9,8 +9,21 @@
 > 含 negative self-tests）、三轮一致性校验与退出码 0 硬性要求，原"只比较
 > 三次一样"与 `--side adou` 等误导做法已移除。§11.9 的 UX-002/UX-004"已修复"
 > 仅代表当时的真机证据，其修复实现（如硬编码 5 行窗口）未满足该计划 §9 的
-> 完成定义，相关 IP-001/002/004 保持开放。Herdr `pi-test`（Pi 0.81.0，w7:pD）
-> 保留为历史对照，不覆盖。
+> 完成定义，相关 IP-001/002/004 保持开放。此前 Herdr `pi-test`（Pi 0.81.0，w7:pD）
+> 的输出保留为历史对照；2026-08-18 已在同一 pane 用仓库 oracle 重启为 Pi 0.82.1，
+> 当前版本证据见下方基线刷新记录。
+
+### 基线刷新记录（2026-08-18）
+
+- 旧 `pi v0.81.0` 常驻进程通过 `/quit` 正常退出，pane `w7:pD` 未关闭。
+- 在相同 cwd `/Users/liulianfuren/Code/agent-test` 中执行
+  `vendors/pi/pi-test.sh --no-env --offline --approve --no-session
+  --no-context-files --provider deepseek --model deepseek/deepseek-v4-flash
+  --thinking off`。
+- Herdr 启动画面显示 `pi v0.82.1`；该进程来自仓库提交
+  `cced6a21da273b26ee4a23a803680614bbe8dd1e`。
+- 该真机启动只用于锁定 oracle 身份；交互语义的三轮门禁使用隔离的共享 PTY
+  runner，证据位于 `docs/pi-batch0-evidence/summary-pi.json`。
 
 本文是今后可重复执行的**真机（real machine）交互式验收流程**，面向
 Herdr 终端内的真实用户操作：真实 DeepSeek、真实 TUI、真实终端渲染。

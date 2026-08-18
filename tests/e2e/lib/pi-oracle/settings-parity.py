@@ -15,7 +15,7 @@ fixtures stay untouched) and the SAME key sequence:
 Parity contract (what the comparator enforces):
   A. The shared non-image setting rows appear in the SAME order on both
      sides (image rows are excluded by design: Pi hides them without
-     terminal image support while Adou shows EXCLUDED rows).
+     terminal image support while Adou shows UNAVAILABLE rows).
   B. The Transport row shows `auto` initially and `sse` after Enter on
      both sides.
   C. Both sides persist theme light and exit 0.
@@ -50,7 +50,7 @@ ORACLE_COMMIT = "cced6a21da273b26ee4a23a803680614bbe8dd1e"
 ADOU_READY_MARKER = b"\x1b[>1u"
 
 # Pi settings-selector rows, in Pi order.  Image rows are capability-gated on
-# the Pi side and EXCLUDED rows on the Adou side, so they never join the
+# the Pi side and UNAVAILABLE rows on the Adou side, so they never join the
 # order comparison; the shared rows must appear in this exact order.
 SHARED_LABELS = [
     "Auto-compact",

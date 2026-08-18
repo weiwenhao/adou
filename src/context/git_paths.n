@@ -7,8 +7,8 @@ import syscall
 // Port of the git metadata detection from
 // vendors/pi/packages/coding-agent/src/core/footer-data-provider.ts:
 // walking up from cwd for .git directories and worktree gitdir files.
-// Watcher/change-notification behavior stays out of scope (no fs.watch in
-// Nature); the footer polls the head file.
+// Watcher/change-notification parity is not implemented because Nature has no
+// fs.watch equivalent here; the footer currently polls the head file.
 
 pub type git_paths_t = struct {
     string repo_dir

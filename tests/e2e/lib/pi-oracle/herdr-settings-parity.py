@@ -11,7 +11,7 @@ evidence under docs/pi-batch3-evidence/herdr-*/.
 Contract (same as settings-parity.py):
   A. shared non-image setting rows appear in the same Pi order on both sides
      (Pi shows real image rows when the terminal supports images; Adou shows
-     EXCLUDED rows — both are excluded from the order comparison).
+     UNAVAILABLE rows — both are omitted from the order comparison).
   B. Transport shows `auto` initially and `sse` after Enter on both sides.
   C. Both sides persist `theme: "light"` to <home>/.pi/agent/settings.json
      and exit cleanly (exit path via /quit).
@@ -44,7 +44,7 @@ ORACLE_COMMIT = "cced6a21da273b26ee4a23a803680614bbe8dd1e"
 
 # Same shared-label contract as settings-parity.py: image rows are excluded
 # from the order comparison (Pi shows them only with terminal image support,
-# Adou shows EXCLUDED rows).
+# Adou shows UNAVAILABLE rows).
 SHARED_LABELS = [
     "Auto-compact",
     "Skill commands",

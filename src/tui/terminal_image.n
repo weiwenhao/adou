@@ -9,7 +9,8 @@ import time
 
 // Port of the pure logic from vendors/pi/packages/tui/src/terminal-image.ts:
 // terminal capability detection, kitty/iTerm2 encoding and image dimension
-// parsing.  Rendering integration stays out of scope.
+// parsing. Message/component integration is not wired yet and remains open
+// parity work.
 
 pub type image_dimensions_t = struct {
     int width_px
@@ -457,4 +458,3 @@ fn read_uint32_be([u8] bytes, int offset): int {
 fn fmt_int(int value): string {
     return fmt.sprintf('%d', value)
 }
-

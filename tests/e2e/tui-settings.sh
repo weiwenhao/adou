@@ -2,7 +2,7 @@
 set -eu
 
 # PTY e2e for the Batch 3 settings selector: the Pi-ordered list shows the
-# EXCLUDED image rows, value rows cycle on Enter (transport), the thinking
+# unavailable image rows, value rows cycle on Enter (transport), the thinking
 # submenu still opens from the list, and the transport change persists to
 # settings.json.
 binary=${ADOU_BIN:-$(CDPATH= cd -- "$(dirname -- "$0")/../../build/bin" && pwd)/adou}
@@ -103,13 +103,13 @@ try:
         raise SystemExit("/settings did not open the settings selector")
     collect(timeout=0.3)
     # Pi-order list: the top of the list (visible viewport) shows the
-    # EXCLUDED image rows and the leading entries.
+    # unavailable image rows and the leading entries.
     for marker in (
         b"Auto-compact:",
-        b"Show images: EXCLUDED",
-        b"Image width: EXCLUDED",
-        b"Auto-resize images: EXCLUDED",
-        b"Block images: EXCLUDED",
+        b"Show images: UNAVAILABLE",
+        b"Image width: UNAVAILABLE",
+        b"Auto-resize images: UNAVAILABLE",
+        b"Block images: UNAVAILABLE",
         b"Skill commands:",
         b"Show hardware cursor:",
         b"Editor padding:",

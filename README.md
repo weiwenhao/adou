@@ -91,15 +91,21 @@ rendering, full coding journey, resume, evidence retention).
 - `make eval`: local deterministic eval harness (3 smoke cases against a
   local mock provider).
 
-## Explicitly not supported (current scope)
+## Current parity boundary
 
-- Pi extensions remain disabled (no extension runtime, no QuickJS/Node).
-- Linux builds and cross-compilation are deferred.
-- OAuth login flows and interactive image rendering are not claimed.
-- The chosen distribution channel is the unsigned `tar.gz`; an unsigned
-  native `.pkg` build also exists (`make pkg`) but is not the main
-  channel. Developer ID signed `.pkg` and notarization are optional
-  future enhancements.
+Adou's target is full observable Pi behavior, with one intentional product
+boundary: Pi's TypeScript/QuickJS extension runtime remains excluded. OAuth,
+image input/rendering, sharing, and other Pi capabilities are open parity work
+until their behavior is implemented and verified; they are not treated as
+permanent exclusions. Linux and cross-compilation are release-platform work,
+separate from the Pi behavior parity decision.
+
+The staged execution plan and acceptance gates live in
+[`docs/porting-plan.md`](docs/porting-plan.md#全量对齐阶段).
+
+The current distribution channel is the unsigned `tar.gz`; an unsigned native
+`.pkg` build also exists (`make pkg`). Developer ID signing and notarization
+remain release hardening work.
 
 ## License
 

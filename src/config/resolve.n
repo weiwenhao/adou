@@ -33,8 +33,8 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
     bool model_explicit = arguments.model != '' || syscall.get_env('ADOU_MODEL') != ''
     string scoped_thinking = ''
     // A stale settings file may contain a model/provider from a local mock or
-    // an extension that is outside the Nature MVP.  Pi still starts so the
-    // user can authenticate or choose another model; only use persisted
+    // an extension from the intentionally excluded extension runtime. Pi
+    // still starts so the user can authenticate or choose another model; only use persisted
     // defaults when their provider belongs to the built-in registry.
     bool stored_provider_supported = preferences.default_provider == 'deepseek' || preferences.default_provider == 'openai' || preferences.default_provider == 'anthropic'
     if requested_model == '' && arguments.scoped_models.len() > 0 {

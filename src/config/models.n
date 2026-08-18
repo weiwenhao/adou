@@ -22,7 +22,7 @@ pub type scoped_model_t = struct {
 }
 
 // The full Pi-style catalog (generated from models.dev + OpenRouter + Vercel
-// AI Gateway through scripts/generate-model-catalog.py) followed by the MVP
+// AI Gateway through scripts/generate-model-catalog.py) followed by static
 // defaults for ids the live catalog does not carry (e.g. gpt-5.1-codex).
 // User-configured <agentDir>/models.json providers/models/modelOverrides
 // compose over the built-in catalog once per process (Pi composes them at
@@ -267,7 +267,7 @@ pub fn resolve_scope([string] patterns): [scoped_model_t] {
             level = pattern.slice(base.len() + 1, pattern.len()).to_lower()
         } else if !has_glob(pattern) {
             // Pi warns for an invalid suffix but still resolves the model
-            // prefix. There is no diagnostics channel in this MVP resolver;
+            // prefix. There is no diagnostics channel in this resolver;
             // preserve the selection and leave its thinking level unset.
             int separator = pattern.rfind(':')
             if separator >= 0 {

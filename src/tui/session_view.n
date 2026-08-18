@@ -3039,8 +3039,8 @@ fn logout_provider_options(): [string] {
     [string] result = []
     for credential in auth.list_credentials() {
         if credential.credential_type != '' && credential.credential_type != 'api_key' {
-            // OAuth credentials are intentionally outside this batch; do not
-            // present an unsupported credential type as an API-key action.
+            // OAuth credentials are not implemented by this API-key overlay;
+            // do not present a different credential type as an API-key action.
             continue
         }
         string name = credential.provider_id
@@ -3083,7 +3083,8 @@ fn provider_name_from_option(string option): string {
 
 // Batch 3: Pi's settings list order (settings-selector.ts).  Value items
 // cycle on Enter (Pi SettingsList behavior); submenu items open their
-// submenu.  Image settings stay EXCLUDED rows without fake behavior.
+// submenu. Image settings stay visibly unavailable until their runtime
+// behavior is implemented; they are open parity work, not exclusions.
 pub fn view_t.show_settings_overlay(&self) {
     var s = self.settings_snapshot
     int selected = 0
@@ -3094,10 +3095,10 @@ pub fn view_t.show_settings_overlay(&self) {
     }
     [string] options = [
         'Auto-compact: ' + onoff(s.auto_compaction),
-        'Show images: EXCLUDED',
-        'Image width: EXCLUDED',
-        'Auto-resize images: EXCLUDED',
-        'Block images: EXCLUDED',
+        'Show images: UNAVAILABLE',
+        'Image width: UNAVAILABLE',
+        'Auto-resize images: UNAVAILABLE',
+        'Block images: UNAVAILABLE',
         'Skill commands: ' + onoff(s.enable_skill_commands),
         'Show hardware cursor: ' + onoff(s.show_hardware_cursor),
         'Editor padding: ' + int_string(s.editor_padding_x),
@@ -3130,11 +3131,11 @@ pub fn view_t.show_settings_overlay(&self) {
 
 // Enter on a value row cycles to the next value and applies the runtime
 // effect immediately (Pi SettingsList Enter/Space behavior); submenu rows
-// open their submenu; EXCLUDED rows are inert.
+// open their submenu; currently unavailable rows are inert.
 fn view_t.handle_settings_option(&self, ref<overlay_t> overlay, string option) {
     var s = self.settings_snapshot
     if option.starts_with('Show images:') || option.starts_with('Image width:') || option.starts_with('Auto-resize images:') || option.starts_with('Block images:') {
-        self.chat.status = 'Image settings are not supported in Adou'
+        self.chat.status = 'Image settings are not available yet'
         self.redraw()
         return
     }
@@ -5982,8 +5983,8 @@ pub fn view_t.model_argument_items(&self): [autocomplete.autocomplete_item_t] {
 
 // Pi interactive-mode.ts /login argument completion: the login provider
 // list, deduplicated by id and sorted by provider NAME, with the api_key
-// auth type (OAuth/subscription auth types stay EXCLUDED until Batch
-// 5/IP-011).  Runtime-registered providers are not silently dropped
+// auth type. OAuth/subscription auth remains open parity work and is not
+// disguised as API-key auth. Runtime-registered providers are not silently dropped
 // (B1-R1-11) and override same-id builtins (B1-R2-03).  The candidate
 // assembly (merge, capability filter, name sort, description/search text)
 // lives in registry.login_completion_options() so the tests exercise the
