@@ -58,7 +58,7 @@ extension runtime 在全程明确排除。
 | 阶段 | 范围 | 完成门槛 | 当前状态 |
 |---|---|---|---|
 | Stage 0：基线冻结 | 固定 Pi 0.82.1 source/oracle、终端尺寸、设置、cwd、fixture、按键协议和证据格式 | Pi source 与真机 oracle 版本一致；同一 case 连续 3 轮稳定；禁止用旧版本画面证明当前 parity | **已完成（2026-08-18）**：`vendors/pi` 与 Herdr `w7:pD` 均为 `0.82.1` / `cced6a21...`；Batch 0 slash 基线三轮 PASS |
-| Stage 1：核心 agent 基线 | AI provider、agent loop、工具、session、compaction、CLI、RPC/IPC、skills/context | 相关 Nature 单测、离线 e2e、eval 和已有跨模块证据在当前 HEAD 复验通过 | **基本完成**：作为后续阶段的回归基线 |
+| Stage 1：核心 agent 基线 | AI provider、agent loop、工具、session、compaction、CLI、RPC/IPC、skills/context | 相关 Nature 单测、离线 e2e、eval 和已有跨模块证据在当前 HEAD 复验通过 | **已完成（2026-08-19）**：153 个定向 Nature 用例、58/58 离线 e2e、eval 3/3 通过；见 `docs/stage1-core-baseline-evidence.md` |
 | Stage 2：Interactive/TUI | autocomplete、selector、settings、editor、keybindings、stream/resize、session/tree/fork、terminal lifecycle | 每个组件具备 state/transition/render/effect/cancel 契约；direct + slash/integration PTY；同版本 Pi 对照；Batch 7 长会话通过 | **进行中**：Batch 0–6 已验收；Batch 7 的离线组合门禁与 Pi/Adou 同版本 live smoke 已通过，长会话和三轮全矩阵待完成 |
 | Stage 3：认证与 provider lifecycle | OAuth/account、credential union、login/refresh/logout、过期刷新、bearer token、Radius OAuth、API-key 与 OAuth 混合模型选择 | provider capability、存储、CLI/TUI/RPC、刷新失败恢复和模型认证过滤全部有 unit + integration + live smoke | **开放** |
 | Stage 4：图片与多模态 | `read` imageProcessor、图片消息/session 序列化、provider 输入转换、剪贴板粘图、Kitty/iTerm2 TUI 图片组件、图片 settings effect | PNG/JPEG/GIF/WebP/BMP 边界、真实消息往返、无图片终端 fallback、settings 持久化/恢复和 PTY 证据通过 | **开放**：底层检测、模型/API 和部分编码已存在 |
