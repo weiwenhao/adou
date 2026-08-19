@@ -52,6 +52,7 @@ import adou.src.tui.clipboard_image
 import adou.src.tools.shell_tools
 import adou.src.tools.command
 import adou.src.tools.path_utils
+import adou.src.tools.temp
 import adou.src.tools.builtins
 import base64
 import co
@@ -1788,18 +1789,23 @@ pub fn view_t.create_github_share(&self) {
         self.chat.error_message = 'GitHub CLI is not logged in. Run `gh auth login` first.'
         return
     }
-    string target = self.runner.repository.get_session_file() + '.share.html'
+    string temporary_dir = temp.create_temp_dir('adou-share-') catch error {
+        self.chat.error_message = 'Failed to create a temporary share directory: ' + error.msg()
+        return
+    }
+    string target = path.join(temporary_dir, 'session.html')
     self.export_session('/export ' + target, ['/export', target])
     if !path_utils.exists(target) {
+        os.rmdir(temporary_dir, true) catch cleanup_error {}
         self.chat.error_message = 'Failed to export the session for sharing.'
         return
     }
     var result = command.argv(cwd, 'gh', ['gist', 'create', '--public=false', target]) catch error {
-        os.remove(target) catch remove_error {}
+        os.rmdir(temporary_dir, true) catch cleanup_error {}
         self.chat.error_message = 'Failed to create gist: ' + error.msg()
         return
     }
-    os.remove(target) catch remove_error {}
+    os.rmdir(temporary_dir, true) catch cleanup_error {}
     if result.exit_code != 0 {
         string detail = result.stderr.trim([' ', '\t', '\n', '\r'])
         self.chat.error_message = detail == '' ? 'Failed to create gist' : 'Failed to create gist: ' + detail

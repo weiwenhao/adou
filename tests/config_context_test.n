@@ -263,7 +263,7 @@ test 'project context loads global then root-to-leaf with Pi candidate precedenc
     assert(prompt_tools.contains('- read: Read file contents'))
     assert(prompt_tools.contains('Use read to examine files instead of cat or sed.'))
     assert(prompt_tools.contains('Use write only for new files or complete rewrites.'))
-    assert(prompt_tools.contains('Inspect PI_* environment variables for current model and session details.'))
+    assert(prompt_tools.contains('Inspect ADOU_* environment variables for current model and session details.'))
     os.rmdir(root, true)
 }
 

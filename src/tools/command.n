@@ -321,7 +321,10 @@ pub fn shell_abortable_stream(string cwd, string command, int timeout_ms, ref<ab
 
 pub fn argv(string cwd, string name, [string] args): result_t! {
     string script = environment_prefix() + 'exec ' + quote(name) + ' "$@"'
-    [string] process_args = ['-lc', script, 'adou-tool']
+    // Explicit argv execution must preserve the process PATH.  A login shell
+    // runs profile scripts that can replace PATH, making the selected binary
+    // differ from the environment that launched Adou.
+    [string] process_args = ['-c', script, 'adou-tool']
     for arg in args {
         process_args.push(arg)
     }

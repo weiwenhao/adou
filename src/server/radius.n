@@ -1,8 +1,8 @@
 import adou.src.config.auth
-import adou.src.config.paths
 import adou.src.json_util
 import adou.src.server.storage
 import co
+import co.mutex
 import fs
 import http.client as client
 import json
@@ -11,10 +11,30 @@ import path
 import syscall
 import time
 
+const NOT_FOUND_RETRY_THRESHOLD = 3
+const HEARTBEAT_BACKOFF_BASE_MS = 1000
+const HEARTBEAT_BACKOFF_MAX_MS = 30000
+
+pub type pi_presence_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    string instance_id
+    string radius_pi_id
+    string label
+    string cwd
+    string session_id
+    int heartbeat_ms = 30000
+    int heartbeat_failures
+    int not_found_count
+    bool running = true
+    fn(string radius_id) update_radius_id
+}
+
 // Radius presence integration for the standalone server.  It is opt-in by
 // credentials (or ADOU_RADIUS_ENABLED=1), never blocks normal IPC startup when
 // disabled, and keeps machine/Pi registration separate from local instances.
 pub type presence_t = struct {
+    ref<mutex.mutex_t> pi_lock = mutex.mutex_t.new()
+    [ref<pi_presence_t>] pis
     string base_url
     string access_token
     string machine_id
@@ -26,12 +46,18 @@ pub type presence_t = struct {
 
 pub fn new(): ref<presence_t> {
     string base = syscall.get_env('ADOU_RADIUS_SERVER_URL')
-    if base == '' {base = syscall.get_env('ADOU_RADIUS_URL')}
-    if base == '' {base = 'https://radius.pi.dev/v1'}
+    if base == '' {
+        base = syscall.get_env('ADOU_RADIUS_URL')
+        if base == '' {base = 'https://radius.pi.dev'}
+        for base.len() > 0 && base[base.len() - 1] == '/'.char() {
+            base = base.slice(0, base.len() - 1)
+        }
+        if !base.ends_with('/v1') {base += '/v1'}
+    }
     for base.len() > 0 && base[base.len() - 1] == '/'.char() {
         base = base.slice(0, base.len() - 1)
     }
-    return new presence_t(base_url = base, access_token = auth.effective('radius'))
+    return new presence_t(pis = [], base_url = base, access_token = auth.effective('radius'))
 }
 
 pub fn is_enabled(): bool {
@@ -66,30 +92,64 @@ pub fn presence_t.register_machine(&self): void! {
     save_machine_id(self.machine_id)
     self.machine_not_found_count = 0
     self.heartbeat_failures = 0
-    self.restore_instances()
+    self.reregister_pis()
 }
 
 pub fn presence_t.stop(&self) {
     self.running = false
+    self.pi_lock.lock()
+    [ref<pi_presence_t>] states = self.pis
+    self.pi_lock.unlock()
+    for state in states {
+        state.stop()
+    }
     if self.machine_id == '' || self.access_token == '' {return}
     self.post('/machines/' + self.machine_id + '/disconnect', {}) catch error {}
 }
 
-pub fn presence_t.register_pi(&self, string label, string cwd, string session_id): string! {
+pub fn presence_t.register_pi(&self, string instance_id, string label, string cwd, string session_id, fn(string radius_id) update_radius_id): string! {
     if !self.running {return ''}
-    {string:any} body = {}
-    body['machineId'] = self.machine_id
-    body['label'] = label
-    body['cwd'] = cwd
-    body['hostname'] = syscall.get_env('HOSTNAME')
-    body['transport'] = 'local-rpc'
-    body['capabilities'] = { 'rpc': true, 'relay': false, 'iroh': false }
-    body['sessionId'] = session_id
-    var result = self.post('/pis/register', body)
-    return json_util.opt_string(result, 'id')
+    var state = new pi_presence_t(instance_id = instance_id, label = label, cwd = cwd, session_id = session_id, update_radius_id = update_radius_id)
+    self.pi_lock.lock()
+    self.pis.push(state)
+    self.pi_lock.unlock()
+    string radius_id = register_pi_state(self, state) catch error {
+        state.stop()
+        throw error
+    }
+    go pi_heartbeat(self, state)
+    return radius_id
 }
 
-pub fn presence_t.disconnect_pi(&self, string radius_pi_id) {
+fn register_pi_state(ref<presence_t> presence, ref<pi_presence_t> state): string! {
+    {string:any} body = {}
+    body['machineId'] = presence.machine_id
+    body['label'] = state.label
+    body['cwd'] = state.cwd
+    body['hostname'] = syscall.get_env('HOSTNAME')
+    body['pid'] = syscall.getpid() catch error {0}
+    body['transport'] = 'local-rpc'
+    body['capabilities'] = { 'rpc': true, 'relay': false, 'iroh': false }
+    body['sessionId'] = state.session_id
+    var result = presence.post('/pis/register', body)
+    string radius_id = json_util.opt_string(result, 'id')
+    if radius_id == '' {throw errorf('Radius Pi registration response did not contain id')}
+    int interval = json_util.opt_int(result, 'heartbeatIntervalMs')
+    state.set_registration(radius_id, interval)
+    state.update_radius_id(radius_id)
+    return radius_id
+}
+
+pub fn presence_t.disconnect_pi(&self, string instance_id) {
+    var found = self.find_pi(instance_id)
+    if !(found is ref<pi_presence_t>) {return}
+    var state = found as ref<pi_presence_t>
+    string radius_pi_id = state.stop()
+    self.remove_pi(instance_id)
+    self.disconnect_remote_pi(radius_pi_id)
+}
+
+pub fn presence_t.disconnect_remote_pi(&self, string radius_pi_id) {
     if radius_pi_id == '' || self.access_token == '' {return}
     self.post('/pis/' + radius_pi_id + '/disconnect', {}) catch error {}
 }
@@ -103,14 +163,18 @@ fn machine_heartbeat(ref<presence_t> presence) {
             presence.heartbeat_failures += 1
             if error.msg().contains('(404)') {
                 presence.machine_not_found_count += 1
-                if presence.machine_not_found_count >= 1 {
-                    presence.register_machine() catch register_error {}
+                if presence.machine_not_found_count >= NOT_FOUND_RETRY_THRESHOLD {
+                    presence.register_machine() catch register_error {
+                        delay = heartbeat_backoff(presence.heartbeat_failures)
+                        continue
+                    }
                     delay = presence.heartbeat_ms
                     continue
                 }
+                delay = presence.heartbeat_ms
+                continue
             }
-            delay *= 2
-            if delay > 300000 {delay = 300000}
+            delay = heartbeat_backoff(presence.heartbeat_failures)
             continue
         }
         presence.heartbeat_failures = 0
@@ -119,21 +183,146 @@ fn machine_heartbeat(ref<presence_t> presence) {
     }
 }
 
-pub fn presence_t.restore_instances(&self) {
-    if self.machine_id == '' || !self.running {return}
-    for record in storage.load_instances() {
-        if record.status != 'online' && record.status != 'starting' {continue}
-        string radius_id = self.register_pi(record.label, record.cwd, record.session_id) catch error {''}
-        if radius_id == '' {continue}
-        record.radius_pi_id = radius_id
-        storage.upsert_instance(record) catch error {}
+fn pi_heartbeat(ref<presence_t> presence, ref<pi_presence_t> state) {
+    int delay = state.interval()
+    for presence.running && state.is_running() {
+        co.sleep(delay)
+        if !presence.running || !state.is_running() {break}
+        string radius_pi_id = state.remote_id()
+        presence.post('/pis/' + radius_pi_id + '/heartbeat', {}) catch error {
+            if error.msg().contains('(404)') {
+                int not_found = state.note_not_found()
+                if not_found >= NOT_FOUND_RETRY_THRESHOLD {
+                    register_pi_state(presence, state) catch register_error {
+                        delay = heartbeat_backoff(state.note_transient_failure())
+                        continue
+                    }
+                    delay = state.interval()
+                    continue
+                }
+                delay = state.interval()
+                continue
+            }
+            delay = heartbeat_backoff(state.note_transient_failure())
+            continue
+        }
+        state.note_success()
+        delay = state.interval()
     }
+}
+
+fn presence_t.reregister_pis(&self) {
+    if self.machine_id == '' || !self.running {return}
+    self.pi_lock.lock()
+    [ref<pi_presence_t>] states = self.pis
+    self.pi_lock.unlock()
+    for state in states {
+        if !state.is_running() {continue}
+        register_pi_state(self, state) catch error {}
+    }
+}
+
+fn presence_t.find_pi(&self, string instance_id): ref<pi_presence_t>? {
+    self.pi_lock.lock()
+    ref<pi_presence_t>? found = null
+    for state in self.pis {
+        if state.instance_id == instance_id {
+            found = state
+            break
+        }
+    }
+    self.pi_lock.unlock()
+    return found
+}
+
+fn presence_t.remove_pi(&self, string instance_id) {
+    self.pi_lock.lock()
+    [ref<pi_presence_t>] remaining = []
+    for state in self.pis {
+        if state.instance_id != instance_id {remaining.push(state)}
+    }
+    self.pis = remaining
+    self.pi_lock.unlock()
+}
+
+fn pi_presence_t.set_registration(&self, string radius_pi_id, int heartbeat_ms) {
+    self.lock.lock()
+    self.radius_pi_id = radius_pi_id
+    if heartbeat_ms > 0 {self.heartbeat_ms = heartbeat_ms}
+    self.heartbeat_failures = 0
+    self.not_found_count = 0
+    self.lock.unlock()
+}
+
+fn pi_presence_t.remote_id(&self): string {
+    self.lock.lock()
+    string result = self.radius_pi_id
+    self.lock.unlock()
+    return result
+}
+
+fn pi_presence_t.interval(&self): int {
+    self.lock.lock()
+    int result = self.heartbeat_ms
+    self.lock.unlock()
+    return result
+}
+
+fn pi_presence_t.is_running(&self): bool {
+    self.lock.lock()
+    bool result = self.running
+    self.lock.unlock()
+    return result
+}
+
+fn pi_presence_t.stop(&self): string {
+    self.lock.lock()
+    self.running = false
+    string result = self.radius_pi_id
+    self.lock.unlock()
+    return result
+}
+
+fn pi_presence_t.note_not_found(&self): int {
+    self.lock.lock()
+    self.heartbeat_failures = 0
+    self.not_found_count += 1
+    int result = self.not_found_count
+    self.lock.unlock()
+    return result
+}
+
+fn pi_presence_t.note_transient_failure(&self): int {
+    self.lock.lock()
+    self.not_found_count = 0
+    self.heartbeat_failures += 1
+    int result = self.heartbeat_failures
+    self.lock.unlock()
+    return result
+}
+
+fn pi_presence_t.note_success(&self) {
+    self.lock.lock()
+    self.not_found_count = 0
+    self.heartbeat_failures = 0
+    self.lock.unlock()
+}
+
+fn heartbeat_backoff(int failures): int {
+    int delay = HEARTBEAT_BACKOFF_BASE_MS
+    int count = failures - 1
+    for count > 0 && delay < HEARTBEAT_BACKOFF_MAX_MS {
+        delay *= 2
+        count -= 1
+    }
+    if delay > HEARTBEAT_BACKOFF_MAX_MS {return HEARTBEAT_BACKOFF_MAX_MS}
+    return delay
 }
 
 fn self_heartbeat(ref<presence_t> presence): void! {
     {string:any} body = {}
-    body['cwd'] = path.dir(paths.agent_dir())
-    body['socketPath'] = path.join(path.dir(paths.agent_dir()), 'server.sock')
+    body['cwd'] = storage.server_dir()
+    body['socketPath'] = path.join(storage.server_dir(), 'server.sock')
     presence.post('/machines/' + presence.machine_id + '/heartbeat', body)
 }
 
@@ -153,7 +342,7 @@ fn presence_t.post(&self, string endpoint, {string:any} body): {string:any}! {
 }
 
 fn machine_path(): string {
-    return path.join(path.dir(paths.agent_dir()), 'server/machine.json')
+    return path.join(storage.server_dir(), 'machine.json')
 }
 
 fn load_machine_id(): string {

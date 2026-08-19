@@ -73,8 +73,8 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
 }
 
 // Pi's buildSystemPrompt: a text block plus a cache point for Claude models
-// when prompt caching is enabled (short retention or the PI_CACHE_RETENTION
-// long mode).
+// when prompt caching is enabled (short retention or the configured long
+// retention mode).
 fn convert_system_prompt(string system_prompt, ref<types.model_t> model, ref<types.stream_options_t> options): [any] {
     [any] blocks = []
     {string:any} text = {}

@@ -1,6 +1,6 @@
 # Adou 全量移植计划（Pi 0.82.1，扩展机制暂缓）
 
-状态：当前目标为 Pi `0.82.1` 的全量可观察行为对齐，唯一明确排除是 TypeScript/QuickJS extension runtime。2026-08-19 当前 HEAD 已通过干净构建、OAuth/auth/models/radius 定向 Nature 测试、全量离线 `make e2e` 和 `make eval`；Interactive/TUI 离线 Batch 0–7 组合门禁及 slash/menu 三轮稳定性已通过。真实 provider/live smoke 因未设置显式开关和测试 key 跳过；图片处理尾项、远程 viewer 契约、长会话 allocator 风险和真实 provider recovery 仍开放。
+状态：当前目标为 Pi `0.82.1` 的全量可观察行为对齐，唯一明确排除是 TypeScript/QuickJS extension runtime。2026-08-20 当前 HEAD 已通过串行构建、Radius 定向 Nature/e2e、fake/live `/share` 和真实 `pi.dev` viewer 渲染验证；真实 provider/live recovery 以及跨终端完整图片 UI 仍开放。
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
 release hardening：macOS 主线进行中（Batch 1、Batch 2A、native `.pkg` installer 已完成；Batch 2B 真实签名/公证需新权限；Linux 暂缓，见 `docs/release-hardening-plan.md`、`docs/macos-signing.md` 与 `docs/macos-installer.md`）
 RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make release-check`、`make signing-check` 证据见下）；历史 runtime blocker `nature#302` 已由上游 PR #303 修复并用专用 toolchain 验证，后续 PTY 冷启动失败也已定位为测试在 raw mode 前过早发键的同步缺陷并修复
@@ -24,7 +24,7 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 | Phase 4：TUI 基础 | 部分完成 | editor/autocomplete/keybindings/cursor、renderer、terminal recovery、fuzzy、路径补全、markdown 已由全量单测/e2e 验证；完整真机长会话仍待 live 证据 |
 | Phase 5：Interactive UI | 部分完成 | Batch 0–7 离线组合门禁、settings/auth/session/tree/resize/cancel/job-control 和 slash/menu 三轮已通过；真实 provider 长会话与交互式图片尾项仍开放 |
 | Phase 6：CLI | 已完成 | 9 个上游模块逐项对照；空 stdin 挂起、credential 输出隔离、help/参数矩阵、启动边界均通过（help-matrix/cli-startup-boundaries/auth-print/rpc-shape-parity 等 45 个 e2e） |
-| Phase 7：storage + server | 部分完成 | SQLite/JSONL/memory、IPC/rpc_stream、实例表、opt-in Radius presence、Radius OAuth/discovery、机器 404 重注册与实例恢复、最小 SDK 和 `gh gist` share 路径已落地；远程 viewer 契约仍开放 |
+| Phase 7：storage + server | 部分完成 | SQLite/JSONL/memory、IPC/rpc_stream、实例表、旧远端 Pi 断开、machine/Pi heartbeat、3 次 404 重注册、Radius OAuth/discovery、`session.html` Gist share 和真实 fragment viewer 已落地；真实 Radius 网页互操作仍受浏览器拦截限制 |
 | Phase 8：evals | 已完成 | pi-harness/smoke.eval 已移植（本地脚本化 HTTP mock），`make eval` 3/3 绿；extensions.eval 明确排除；见 `docs/evals-design.md` |
 
 阶段完成度按行为验收判断，不用 Pi TypeScript 文件数推算百分比。Phase 6–8 保持关闭（3/8）；Phase 4 的 Interactive/TUI 交互子项与 Phase 5 重新打开等待按批实施。当前不能宣称全量 parity 已完成，未完成项必须继续进入实施批次，而不是改写为永久排除。
@@ -36,7 +36,7 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 当前明确排除与开放项：
 
 - **明确排除**：Pi extension ABI、动态 TypeScript/ESM 加载、npm/git 扩展包管理、扩展工具/命令/UI/provider。
-- **开放 parity 工作**：真实 provider/live recovery 证据、图片 BMP 转换/自动 resize/剪贴板/完整交互 UI、远程 viewer 契约、长会话 allocator 风险及 Pi 其他未覆盖非 extension 能力。当前 API-key、OAuth bearer/refresh、图片附件/渲染、gist share 和 server persistence 均为部分实现，不能算全量完成。
+- **开放 parity 工作**：真实 provider/live recovery 证据、跨终端完整交互式图片 UI 及 Pi 其他未覆盖非 extension 能力。当前 API-key、OAuth bearer/refresh、图片附件/渲染、gist share 和 server persistence 已有实现与测试，但不能据此宣称全量 parity 完成。
 - **平台工作**：Linux 构建、交叉编译、签名/公证属于发布工程，不改变 Pi 行为 parity 的目标。
 
 `.pi/skills`、`.pi/prompts`、slash commands、项目上下文和信任门控属于核心功能，已经实现，不在排除范围。
@@ -45,9 +45,9 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 
 1. OAuth/account：真实 provider/live recovery 与异常重试证据；credential union、provider-owned login/refresh/logout、过期刷新、`/login`/`/logout`、bearer token CLI、loopback callback、device/browser 选择和 Radius OAuth 行为已实现。
 2. 图片与多模态：`read` image processor、消息/session 序列化、provider 输入转换、剪贴板粘图、终端图片组件和四项图片设置的运行时 effect。
-3. 分享与 server：Pi `/share` 的远程 artifact/viewer 契约、Radius presence 和实例表持久化。
+3. 分享与 server：Radius 真实网页互操作和剩余 server/API surface。
 4. 其他非 extension 表面：SDK/API surface、交互式导出模板、全局 HTTP 行为以及同版本 Pi oracle 的逐项差分。
-5. 稳定性：Batch 7 真机长会话与 RM-TUI-005 allocator 风险；Linux、签名和公证继续作为独立平台门禁，不混入功能 parity 完成度。
+5. 稳定性：Batch 7 真机长会话与重复交互压力；Linux、签名和公证继续作为独立平台门禁，不混入功能 parity 完成度。
 
 ## 全量对齐阶段
 
@@ -62,8 +62,8 @@ extension runtime 在全程明确排除。
 | Stage 2：Interactive/TUI | autocomplete、selector、settings、editor、keybindings、stream/resize、session/tree/fork、terminal lifecycle | 每个组件具备 state/transition/render/effect/cancel 契约；direct + slash/integration PTY；同版本 Pi 对照；Batch 7 长会话通过 | **部分完成**：Batch 0–7 离线组合门禁和三轮稳定性通过；live provider 长会话与 allocator 采样待完成 |
 | Stage 3：认证与 provider lifecycle | OAuth/account、credential union、login/refresh/logout、过期刷新、bearer token、Radius OAuth、API-key 与 OAuth 混合模型选择 | provider capability、存储、CLI/TUI/RPC、刷新失败恢复和模型认证过滤全部有 unit + integration + live smoke | **部分完成**：provider-specific credential/PKCE/device-code/browser callback/bearer/refresh/login logout、Radius discovery 和动态模型已落地；真实 live smoke/recovery 证据待完成 |
 | Stage 4：图片与多模态 | `read` imageProcessor、图片消息/session 序列化、provider 输入转换、剪贴板粘图、Kitty/iTerm2 TUI 图片组件、图片 settings effect | PNG/JPEG/GIF/WebP/BMP 边界、真实消息往返、无图片终端 fallback、settings 持久化/恢复和 PTY 证据通过 | **部分完成**：BMP 转 PNG、BMP/JPEG 自动 resize、`images.autoResize` runtime effect、macOS PNG/TIFF clipboard capture、Ctrl+V 路径插入和既有终端 fallback 已实现；真实图片 provider 往返、跨终端 clipboard/完整 UI PTY 证据待完成 |
-| Stage 5：server/share 与剩余非 extension 表面 | `/share` 远程 artifact/viewer、Radius presence、实例表持久化、SDK/API surface、交互式导出模板、全局 HTTP 行为 | 与 Pi server/coding-agent 契约逐项对照；多实例重启/恢复、远程分享和导出结果可验证 | **部分完成**：IPC、storage、presence、Radius discovery/OAuth、404 重注册/实例恢复、SDK 最小 surface、`gh gist` share 和 fragment viewer URL 契约已实现；真实远程 viewer/Radius 互操作待完成 |
-| Stage 6：runtime 稳定性 | RM-TUI-005 Nature allocator、长会话/重复 `/model`、取消/resize/job-control 压力 | OOM 根因有可复现证据或 Nature 侧修复；长会话内存采样稳定；取消、resize、job-control 压力矩阵通过 | **进行中**：OOM 根因未关闭 |
+| Stage 5：server/share 与剩余非 extension 表面 | `/share` 远程 artifact/viewer、Radius presence、实例表持久化、SDK/API surface、交互式导出模板、全局 HTTP 行为 | 与 Pi server/coding-agent 契约逐项对照；多实例重启/恢复、远程分享和导出结果可验证 | **部分完成**：IPC、storage、旧远端 Pi 断开、machine/Pi heartbeat、404 重注册、SDK 最小 surface、`session.html` Gist share 和真实 fragment viewer 已实现；Radius 网页互操作和剩余 API surface 待完成 |
+| Stage 6：runtime 稳定性 | 长会话/重复 `/model`、取消/resize/job-control 压力 | 长会话采样稳定；取消、resize、job-control 压力矩阵通过 | **进行中**：需要更多长会话与重复交互采样 |
 | Stage 7：全量收口验收 | 完整功能矩阵、Pi 0.82.1 真机 3 轮、真实 provider smoke、离线回归、凭据/产物审计 | 所有非 extension 项为 PASS；未完成项为零；最终报告明确 extension 的唯一 EXCLUDED 差异 | **进行中**：离线 `make test/e2e/eval` 和三轮稳定性通过；live smoke、长会话、OAuth/图片/server 尾项尚未闭合 |
 
 Linux、交叉编译、Developer ID 签名和公证继续走独立 release track。它们可以与

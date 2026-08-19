@@ -55,7 +55,7 @@ fn prompt_guidelines([string] tool_names): string {
         if name == 'read' {
             values.push('Use read to examine files instead of cat or sed.')
         } else if name == 'bash' {
-            values.push('Inspect PI_* environment variables for current model and session details.')
+            values.push('Inspect ADOU_* environment variables for current model and session details.')
         } else if name == 'edit' {
             values.push('Use edit for precise changes (edits[].oldText must match exactly)')
             values.push('When changing multiple separate locations in one file, use one edit call with multiple entries in edits[] instead of multiple edit calls')

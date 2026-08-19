@@ -31,7 +31,7 @@ E2E_SOURCES := $(sort $(wildcard tests/e2e/*.sh))
 # registered here to join make e2e-live.  Each live script self-gates
 # behind an ADOU_LIVE_* switch, so this target is safe to invoke without
 # any switch set.
-E2E_LIVE_SOURCES := tests/e2e/live/live-smoke.sh tests/e2e/live/live-coding-journey.sh tests/e2e/live/live-tui-coding-journey.sh
+E2E_LIVE_SOURCES := tests/e2e/live/live-smoke.sh tests/e2e/live/live-coding-journey.sh tests/e2e/live/live-tui-coding-journey.sh tests/e2e/live/share-github.sh
 EVAL_ENTRY := tests/evals/smoke_evals.n
 EVAL_BIN := $(BIN_DIR)/adou-evals
 ADOU_VERSION := $(shell sed -n "s/^pub const VERSION = '\([^']*\)'.*/\1/p" $(CURDIR)/src/app.n)

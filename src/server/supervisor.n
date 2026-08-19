@@ -71,6 +71,14 @@ pub fn supervisor_t.spawn(&self, string cwd, string label): protocol.instance_su
 }
 
 pub fn supervisor_t.start_presence(&self) {
+    self.lock.lock()
+    [ref<instance_t>] recovered = self.instances
+    self.lock.unlock()
+    for instance in recovered {
+        if instance.radius_pi_id != '' {
+            self.presence.disconnect_remote_pi(instance.radius_pi_id)
+        }
+    }
     self.presence.start() catch error {}
 }
 
@@ -103,10 +111,9 @@ fn finish_spawn(ref<supervisor_t> supervisor, ref<instance_t> instance, string c
     }
     if instance.state_status() == INSTANCE_STARTING {
         instance.set_state(INSTANCE_ONLINE, '')
-        string radius_id = supervisor.presence.register_pi(instance.summary.label, instance.summary.cwd, instance.summary.session_id) catch error {''}
-        if radius_id != '' {
+        supervisor.presence.register_pi(instance.summary.id, instance.summary.label, instance.summary.cwd, instance.summary.session_id, fn(string radius_id) {
             instance.set_radius_pi_id(radius_id)
-        }
+        }) catch error {}
     }
 }
 
@@ -234,9 +241,7 @@ pub fn supervisor_t.stop(&self, string instance_id): bool {
     if child is ref<rpc_process.rpc_process_t> process_value {
         process_value.dispose()
     }
-    if live.radius_pi_id != '' {
-        self.presence.disconnect_pi(live.radius_pi_id)
-    }
+    self.presence.disconnect_pi(live.summary.id)
     return true
 }
 
@@ -283,9 +288,7 @@ pub fn supervisor_t.shutdown(&self) {
         if child is ref<rpc_process.rpc_process_t> process_value {
             process_value.dispose()
         }
-        if instance.radius_pi_id != '' {
-            self.presence.disconnect_pi(instance.radius_pi_id)
-        }
+        self.presence.disconnect_pi(instance.summary.id)
     }
     self.presence.stop()
 }
