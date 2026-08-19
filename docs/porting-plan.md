@@ -14,8 +14,8 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 - 证据：`make build` 通过；`tests/startup_migrations_test.n` 4/4 通过。工具下载 fixture/e2e 仍需在本阶段最终关闭前补齐。
 - **阶段 2 已完成（提交 `2337559`，watcher native 补丁待提交）**：Codex `websocket-cached` 已增加连接缓存、TTL、`previous_response_id` 和增量 input；TUI 支持 JSON 主题加载/reload，`ADOU_THEME_FILE` 主题文件和 git HEAD 通过 native kqueue/inotify 事件监听；grep/find 现在优先经 managed-tools 解析 `rg`。
 - 阶段 2 证据：`make build`、`tests/theme_test.n` 4/4、`tests/startup_migrations_test.n` 4/4；watcher 不依赖外部 `fswatch` 命令。
-- **阶段 3 已完成（待提交）**：新增 `src/server/client.n` 与 `adou server list|spawn|status|stop|rpc|rpc-stream` 命令入口；新增 `src/sdk_harness.n`、`src/sdk_node.n`、`src/sdk_proxy.n`，补齐公共 Harness、Node execution environment、SSE streamProxy surface。
-- 阶段 3 证据：`make build`、`tests/server_client_test.n` 1/1、`tests/sdk_surface_test.n` 1/1；server live 多进程握手仍需在最终验收批次补跑。
+- **阶段 3 已完成（提交 `3855050`）**：新增 `src/server/client.n` 与 `adou server list|spawn|status|stop|rpc|rpc-stream` 命令入口；新增 `src/sdk_harness.n`、`src/sdk_node.n`、`src/sdk_proxy.n`，补齐公共 Harness、Node execution environment、SSE streamProxy surface。
+- 阶段 3 证据：`make build`、`tests/server_client_test.n` 1/1、`tests/sdk_surface_test.n` 1/1、`tests/e2e/rpc-over-ipc.sh` 通过；server live 多进程 list/spawn/status/stop 已实测。
 
 ## 当前进度快照
 
