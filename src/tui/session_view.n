@@ -338,6 +338,7 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     view.chat.configure(runner.agent_config.model.context_window, thinking)
     view.chat.set_auto_compaction(runner.compaction_settings.enabled)
     view.chat.git_branch = detect_git_branch(cwd)
+    start_file_watchers(view, cwd)
     view.chat.load_messages(runner.active_messages)
     // Single trust-aware snapshot pass at init (B1-R2-06/08): trust-aware
     // settings, filtered prompt/skill resources, dynamic menu, autocomplete
@@ -347,6 +348,8 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     view.refresh_resource_snapshot(cwd, false)
     var stored_settings = view.settings_snapshot
     theme.set_variant(active_theme_variant(stored_settings.theme))
+    string theme_file = syscall.get_env('ADOU_THEME_FILE')
+    if theme_file != '' {theme.load_json(theme_file)}
     // Pi quietStartup suppresses the startup status lines; Adou's startup
     // surface is the recovery warning and the model/thinking status.
     if !stored_settings.quiet_startup && runner.repository.get_warnings().len() > 0 {
@@ -1290,6 +1293,9 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
     if command == '/reload' {
         string cwd = self.runner.repository.cwd
         bool trusted = self.trusted_for(cwd)
+        if theme.loaded_path() != '' {theme.reload()}
+        string theme_file = syscall.get_env('ADOU_THEME_FILE')
+        if theme_file != '' && theme.loaded_path() == '' {theme.load_json(theme_file)}
         // B1-R2-08: one trust-aware snapshot pass BEFORE the system prompt
         // is rebuilt — trust-aware settings, filtered prompt execution
         // list, dynamic command menu, filtered skills, autocomplete max and
@@ -2422,6 +2428,33 @@ fn detect_git_branch(string cwd): string {
         return ''
     }
     return result.stdout.trim([' ', '\t', '\n', '\r'])
+}
+
+fn start_file_watchers(ref<view_t> view, string cwd) {
+    var found = git_paths.find_git_paths(cwd)
+    if found is ref<git_paths.git_paths_t> paths && git_paths.watcher_available() {
+        go fn() {
+            for !view.quitting {
+                if git_paths.wait_for_change(paths.head_path, 1500) {
+                    string branch = git_paths.read_head_branch(paths.head_path)
+                    if branch == '' {branch = detect_git_branch(cwd)}
+                    view.chat.git_branch = branch
+                    view.redraw()
+                }
+            }
+        }()
+    }
+    if theme.loaded_path() != '' && git_paths.watcher_available() {
+        string theme_path = theme.loaded_path()
+        go fn() {
+            for !view.quitting {
+                if git_paths.wait_for_change(theme_path, 1500) {
+                    theme.reload()
+                    view.redraw()
+                }
+            }
+        }()
+    }
 }
 
 pub fn view_t.redraw(&self) {

@@ -1,4 +1,8 @@
 import adou.src.tui.theme
+import fs
+import os
+import path
+import syscall
 
 test 'foreground styles preserve an enclosing background' {
     string line = theme.background_line(theme.USER_BG, theme.fg(theme.TEXT, 'hello') + '   ', 8)
@@ -22,4 +26,22 @@ test 'theme variants switch the readability colors like Pi' {
     theme.set_variant('light')
     assert(theme.border() != '\x1b[38;2;95;135;255m')
     theme.set_variant('dark')
+}
+
+test 'custom JSON theme loads ANSI colors and reloads' {
+    string file_path = '/tmp/adou-theme-test.json'
+    os.remove(file_path) catch error {}
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    file.write('{"colors":{"accent":"#010203","text":"#aabbcc","user_bg":"#040506"}}' as [u8])
+    file.close()
+    assert(theme.load_json(file_path))
+    assert(theme.accent() == '\x1b[38;2;1;2;3m')
+    assert(theme.text() == '\x1b[38;2;170;187;204m')
+    assert(theme.user_bg() == '\x1b[48;2;4;5;6m')
+    var changed = fs.open(file_path, syscall.O_WRONLY | syscall.O_TRUNC, 0o600)
+    changed.write('{"accent":"#0a0b0c"}' as [u8])
+    changed.close()
+    assert(theme.reload())
+    assert(theme.accent() == '\x1b[38;2;10;11;12m')
+    os.remove(file_path) catch error {}
 }

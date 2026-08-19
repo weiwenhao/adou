@@ -4,6 +4,7 @@ import adou.src.ai.abort
 import adou.src.ai.types as ai_types
 import adou.src.session.identity
 import adou.src.tools.command
+import adou.src.tools.managed_tools
 import adou.src.tools.path_utils
 import adou.src.tools.truncate
 import adou.src.tools.types as tool_types
@@ -1012,8 +1013,8 @@ fn parse_edits({string:any} object): [edit_t]! {
 }
 
 fn run_grep(string cwd, string pattern, string path, string glob, bool ignore_case, bool literal, int context, int limit): command.result_t! {
-    var available = command.shell(cwd, 'command -v rg >/dev/null 2>&1')
-    if available.exit_code == 0 {
+    string rg = managed_tools.ensure('rg') catch error {''}
+    if rg != '' {
         [string] args = ['--color=never', '--line-number', '--hidden', '--no-heading', '--with-filename']
         if ignore_case {args.push('--ignore-case')}
         if literal {args.push('--fixed-strings')}
@@ -1023,7 +1024,7 @@ fn run_grep(string cwd, string pattern, string path, string glob, bool ignore_ca
         args.push('--')
         args.push(pattern)
         args.push(path)
-        return command.argv(cwd, 'rg', args)
+        return command.argv(cwd, rg, args)
     }
     [string] fallback = ['-R', '-n', '-H', '-I']
     if ignore_case {fallback.push('-i')}
@@ -1037,8 +1038,8 @@ fn run_grep(string cwd, string pattern, string path, string glob, bool ignore_ca
 }
 
 fn run_find(string cwd, string search_path, string pattern): command.result_t! {
-    var available = command.shell(cwd, 'command -v rg >/dev/null 2>&1')
-    if available.exit_code == 0 {
+    string rg = managed_tools.ensure('rg') catch error {''}
+    if rg != '' {
         string effective_pattern = pattern
         if pattern.contains('/') && !pattern.starts_with('/') && !pattern.starts_with('**/') && pattern != '**' {
             effective_pattern = '**/' + pattern
@@ -1048,12 +1049,12 @@ fn run_find(string cwd, string search_path, string pattern): command.result_t! {
             // user glob directly to rg always overrides .gitignore rules, so
             // the real file listing only receives it when no ignore file is
             // present; Nature still applies the final Pi-compatible matcher.
-            var validation = command.argv(cwd, 'rg', ['--files', '--color=never', '--glob', effective_pattern, '--', '/dev/null'])
+            var validation = command.argv(cwd, rg, ['--files', '--color=never', '--glob', effective_pattern, '--', '/dev/null'])
             if validation.exit_code != 0 && validation.stderr.trim([' ', '\t', '\n', '\r']) != '' {
                 return validation
             }
         }
-        var ignore_probe = command.argv(cwd, 'rg', ['--files', '--color=never', '--hidden', '--no-ignore', '--glob', '**/.gitignore', '--', search_path])
+        var ignore_probe = command.argv(cwd, rg, ['--files', '--color=never', '--hidden', '--no-ignore', '--glob', '**/.gitignore', '--', search_path])
         bool has_ignore_files = ignore_probe.stdout.trim([' ', '\t', '\n', '\r']) != ''
         [string] args = ['--files', '--color=never', '--hidden']
         if !inside_git_repo(search_path) {
@@ -1072,7 +1073,7 @@ fn run_find(string cwd, string search_path, string pattern): command.result_t! {
         }
         args.push('--')
         args.push(search_path)
-        return command.argv(cwd, 'rg', args)
+        return command.argv(cwd, rg, args)
     }
     [string] args = [search_path, '-type', 'f', '-not', '-path', '*/.git/*', '-not', '-path', '*/node_modules/*']
     if pattern.contains('/') {

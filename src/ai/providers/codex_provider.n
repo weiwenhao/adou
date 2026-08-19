@@ -25,6 +25,15 @@ pub type codex_websocket_stats_t = struct {
     int fallbacks
 }
 
+pub type cached_websocket_entry_t = struct {
+    ref<codex_websocket.conn_t> conn
+    bool busy
+    i64 created_at
+    string last_response_id
+    [any] last_input = []
+    [any] last_response_items = []
+}
+
 // Sessions whose WebSocket attempt failed; they skip the WebSocket transport
 // and go straight to SSE, mirroring Pi's websocketSseFallbackSessions.
 // Module-level state is shared by the provider coroutines; the map operations
@@ -33,24 +42,33 @@ pub type codex_websocket_stats_t = struct {
 {string:bool} fallback_sessions = {}
 var websocket_requests = 0
 var websocket_connections_created = 0
+var websocket_connections_reused = 0
 var websocket_fallbacks = 0
+{string:ref<cached_websocket_entry_t>} websocket_cache = {}
 
 pub fn get_codex_websocket_debug_stats(): codex_websocket_stats_t {
-    return codex_websocket_stats_t {requests: websocket_requests, connections_created: websocket_connections_created, connections_reused: 0, fallbacks: websocket_fallbacks,}
+    return codex_websocket_stats_t {requests: websocket_requests, connections_created: websocket_connections_created, connections_reused: websocket_connections_reused, fallbacks: websocket_fallbacks,}
 }
 
 pub fn reset_codex_websocket_debug_stats() {
     websocket_requests = 0
     websocket_connections_created = 0
+    websocket_connections_reused = 0
     websocket_fallbacks = 0
     fallback_sessions = {}
+    close_codex_websocket_sessions()
 }
 
 pub fn close_codex_websocket_sessions() {
-    // No connection pool exists: connection reuse and previous_response_id
-    // continuation are not implemented, so there is nothing to close.  Kept
-    // for parity with Pi's closeOpenAICodexWebSocketSessions.
-    debug.log('provider', 'codex websocket sessions: no pooled connections to close')
+    [string] sessions = []
+    for session_id, entry in websocket_cache {
+        entry.conn.close()
+        sessions.push(session_id)
+    }
+    for session_id in sessions {
+        websocket_cache.del(session_id)
+    }
+    debug.log('provider', 'codex websocket sessions closed')
 }
 
 pub type run_state_t = struct {
@@ -60,6 +78,7 @@ pub type run_state_t = struct {
     ref<types.stream_options_t> options
     ref<openai_responses.processor_t> processor
     string body
+    string request_body
     string account_id
     ref<client.response_t>? response = null
     ref<codex_websocket.conn_t>? ws_conn = null
@@ -96,9 +115,6 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     }
     if transport != 'sse' {
         if transport == 'websocket' || transport == 'websocket-cached' {
-            // 'websocket-cached' only adds connection reuse and
-            // previous_response_id continuation, which are not implemented;
-            // both take the plain WebSocket path.
             run_websocket(stream, state)
             return
         }
@@ -204,13 +220,37 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
         throw errorf('Request aborted')
     }
     debug.log('provider', 'codex websocket request start')
-    string ws_url = codex_websocket.websocket_url(codex_messages.endpoint(state.model))
-    var conn = codex_websocket.connect(ws_url, websocket_headers(state), state.options.timeout_ms) catch error {
-        debug.log('provider', 'codex websocket connect failed: ' + error.msg())
-        throw error
+    bool cached = state.options.transport == 'websocket-cached' || state.options.transport == 'auto'
+    string session_key = codex_session_key(state)
+    ref<cached_websocket_entry_t>? cache_entry = null
+    ref<codex_websocket.conn_t>? conn_ref = null
+    bool reused_connection = false
+    if cached && session_key != '' {
+        cache_entry = acquire_cached_connection(session_key, state)
     }
+    if cache_entry is ref<cached_websocket_entry_t> entry {
+        conn_ref = entry.conn
+        entry.busy = true
+        websocket_connections_reused += 1
+        reused_connection = true
+    } else {
+        string ws_url = codex_websocket.websocket_url(codex_messages.endpoint(state.model))
+        var conn = codex_websocket.connect(ws_url, websocket_headers(state), state.options.timeout_ms) catch error {
+            debug.log('provider', 'codex websocket connect failed: ' + error.msg())
+            throw error
+        }
+        conn_ref = conn
+        if cached && session_key != '' {
+            var created = new cached_websocket_entry_t(conn = conn, busy = true, created_at = time.now().ms_timestamp())
+            websocket_cache[session_key] = created
+            cache_entry = created
+        }
+    }
+    var conn = conn_ref as ref<codex_websocket.conn_t>
     websocket_requests += 1
-    websocket_connections_created += 1
+    if !reused_connection {
+        websocket_connections_created += 1
+    }
     state.ws_conn = conn
     conn.set_read_timeout(state.options.timeout_ms)
     abort.abort_callback_t close_ws = fn () {
@@ -221,7 +261,8 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     // Pi sends JSON.stringify({type: 'response.create', ...requestBody}).
     // The request body is already serialized JSON, so splice the type field
     // into the leading brace instead of re-serializing.
-    conn.send_text('{"type":"response.create",' + state.body.slice(1, state.body.len()))
+    state.request_body = build_cached_request_body(state, cache_entry)
+    conn.send_text('{"type":"response.create",' + state.request_body.slice(1, state.request_body.len()))
     bool terminal = false
     bool first = true
     for !terminal {
@@ -261,9 +302,101 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     state.processor.finish() catch error {
         throw errorf('Codex WebSocket stream closed before a terminal response event')
     }
-    conn.close()
+    if cache_entry is ref<cached_websocket_entry_t> entry {
+        var parsed = json_util.parse(state.body) catch error {'{}'}
+        if json_util.is_obj(parsed) {
+            var body = parsed as {string:any}
+            if body.contains('input') && body['input'] is [any] {
+                entry.last_input = body['input'] as [any]
+            }
+        }
+        entry.last_response_id = state.processor.output.response_id
+        entry.last_response_items = assistant_response_items(state.processor.output)
+        entry.busy = false
+        entry.created_at = time.now().ms_timestamp()
+    } else {
+        conn.close()
+    }
     stream.end()
     debug.log('provider', 'codex websocket stream end')
+}
+
+fn acquire_cached_connection(string session_key, ref<run_state_t> state): ref<cached_websocket_entry_t>? {
+    if !websocket_cache.contains(session_key) {
+        return null
+    }
+    var entry = websocket_cache[session_key]
+    if entry.busy || entry.conn.closed || time.now().ms_timestamp() - entry.created_at > 300000 {
+        if entry.conn.closed || time.now().ms_timestamp() - entry.created_at > 300000 {
+            entry.conn.close()
+            websocket_cache.del(session_key)
+        }
+        return null
+    }
+    return entry
+}
+
+fn build_cached_request_body(ref<run_state_t> state, ref<cached_websocket_entry_t>? entry): string! {
+    any parsed = json_util.parse(state.body)
+    if !(parsed is {string:any}) {
+        return state.body
+    }
+    var body = parsed as {string:any}
+    if entry is ref<cached_websocket_entry_t> cached {
+        if cached.last_response_id != '' && body.contains('input') && body['input'] is [any] {
+            var current = body['input'] as [any]
+            int baseline = cached.last_input.len() + cached.last_response_items.len()
+            if current.len() >= baseline && array_prefix_matches(current, cached.last_input, cached.last_response_items) {
+                body['previous_response_id'] = cached.last_response_id
+                body['input'] = current.slice(baseline, current.len())
+            }
+        }
+    }
+    return json.serialize(body)
+}
+
+fn array_prefix_matches([any] current, [any] input, [any] response_items): bool {
+    int index = 0
+    for expected in input {
+        if !json_equal(current[index], expected) {return false}
+        index += 1
+    }
+    for expected in response_items {
+        if !json_equal(current[index], expected) {return false}
+        index += 1
+    }
+    return true
+}
+
+fn json_equal(any left, any right): bool {
+    string a = json.serialize(left) catch error {''}
+    string b = json.serialize(right) catch error {''}
+    return a != '' && a == b
+}
+
+fn assistant_response_items(ref<types.assistant_message_t> message): [any] {
+    string text = ''
+    [any] calls = []
+    for block in message.content {
+        if block is ref<types.text_content_t> text_block {
+            text += text_block.text
+        } else if block is ref<types.tool_call_t> tool_call {
+            {string:any} function = {}
+            function['name'] = tool_call.name
+            function['arguments'] = json.serialize(tool_call.arguments) catch error {'{}'}
+            {string:any} call = {}
+            call['id'] = tool_call.id
+            call['type'] = 'function'
+            call['function'] = function
+            calls.push(call)
+        }
+    }
+    if text == '' && calls.len() == 0 {return []}
+    {string:any} item = {}
+    item['role'] = 'assistant'
+    if text != '' {item['content'] = text} else {item['content'] = null}
+    if calls.len() > 0 {item['tool_calls'] = calls}
+    return [item]
 }
 
 // Pi's mapCodexEvents treats response.done as response.completed; the
