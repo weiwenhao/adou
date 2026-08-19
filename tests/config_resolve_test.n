@@ -121,6 +121,16 @@ test 'B3 transport and httpIdleTimeoutMs flow into the runtime config' {
     assert(explicit_config.stream_options.timeout_ms == 90000)
 }
 
+test 'images autoResize flows into the runtime tool configuration' {
+    string agent_dir = isolate_env()
+    os.mkdirs(agent_dir, 0o755) catch error {}
+    var file = fs.open(path.join(agent_dir, 'settings.json'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    file.write('{"images":{"autoResize":false}}' as [u8])
+    file.close()
+    var config = resolve.resolve(args.parse(['adou']), '/tmp')
+    assert(!config.auto_resize_images)
+}
+
 test 'B3 defaultProjectTrust decides projects without stored decisions' {
     string agent_dir = isolate_env()
     os.mkdirs(agent_dir, 0o755) catch error {}

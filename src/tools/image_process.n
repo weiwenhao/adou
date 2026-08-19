@@ -1,0 +1,260 @@
+import adou.src.tools.command
+import base64
+import fmt
+import fs
+import libc
+import os
+import syscall
+import time
+
+// Image processing is intentionally kept behind one small boundary. The
+// default macOS build uses sips for decoding/encoding/resizing; callers still
+// receive the original supported image when optional resizing is unavailable.
+pub type processed_image_t = struct {
+    string data
+    string mime_type
+    [string] hints = []
+}
+
+pub fn process([u8] bytes, string mime_type, bool auto_resize): processed_image_t? {
+    string normalized = normalize_mime(mime_type)
+    if normalized == '' {
+        return null
+    }
+
+    var original = dimensions(bytes, normalized)
+    bool needs_resize = auto_resize && exceeds_limit(original)
+    bool needs_conversion = normalized == 'image/bmp'
+    if !needs_conversion && !needs_resize {
+        return processed_image_t {data: base64.encode(bytes) as string, mime_type: normalized,}
+    }
+
+    string suffix = extension(normalized)
+    string root = temp_root()
+    string input_path = root + '.input.' + suffix
+    string output_path = root + '.output.' + (needs_conversion ? 'png' : suffix)
+    write_bytes(input_path, bytes) catch error {
+        return null
+    }
+
+    [string] args = []
+    if needs_conversion {
+        args.push('-s')
+        args.push('format')
+        args.push('png')
+    }
+    if needs_resize {
+        args.push('-Z')
+        args.push('2000')
+    }
+    args.push(input_path)
+    args.push('--out')
+    args.push(output_path)
+    var result = command.argv('/', 'sips', args) catch error {
+        os.remove(input_path) catch cleanup_error {}
+        if needs_conversion {return null}
+        return processed_image_t {data: base64.encode(bytes) as string, mime_type: normalized,}
+    }
+    if result.exit_code != 0 || !file_exists(output_path) {
+        os.remove(input_path) catch cleanup_error {}
+        if needs_conversion {return null}
+        return processed_image_t {data: base64.encode(bytes) as string, mime_type: normalized,}
+    }
+
+    [u8] output = read_bytes(output_path) catch error {
+        os.remove(input_path) catch cleanup_error {}
+        os.remove(output_path) catch cleanup_error2 {}
+        return null
+    }
+    os.remove(input_path) catch cleanup_error3 {}
+    os.remove(output_path) catch cleanup_error4 {}
+    string output_mime = needs_conversion ? 'image/png' : normalized
+    var result_image = processed_image_t {data: base64.encode(output) as string, mime_type: output_mime,}
+    if needs_conversion {
+        result_image.hints.push('[Image converted from ' + normalized + ' to image/png.]')
+    }
+    var resized = dimensions(output, output_mime)
+    return append_resize_hint(result_image, original, resized)
+}
+
+fn file_exists(string file_path): bool {
+    var file = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        return false
+    }
+    file.close()
+    return true
+}
+
+pub type image_dimensions_t = struct {
+    int width
+    int height
+}
+
+fn normalize_mime(string value): string {
+    string lower = value.to_lower()
+    int separator = lower.find(';')
+    if separator >= 0 {
+        lower = lower.slice(0, separator).trim([' ', '\t'])
+    }
+    if lower == 'image/jpg' {return 'image/jpeg'}
+    return lower
+}
+
+fn extension(string mime): string {
+    if mime == 'image/jpeg' {return 'jpg'}
+    if mime == 'image/png' {return 'png'}
+    if mime == 'image/gif' {return 'gif'}
+    if mime == 'image/webp' {return 'webp'}
+    if mime == 'image/bmp' {return 'bmp'}
+    return 'bin'
+}
+
+fn exceeds_limit(image_dimensions_t? value): bool {
+    if value is image_dimensions_t known {
+        return known.width > 2000 || known.height > 2000
+    }
+    return false
+}
+
+fn append_resize_hint(processed_image_t result, image_dimensions_t? original, image_dimensions_t? resized): processed_image_t {
+    if original is image_dimensions_t before {
+        if resized is image_dimensions_t after {
+            if before.width != after.width || before.height != after.height {
+                result.hints.push(fmt.sprintf('[Image: original %dx%d, displayed at %dx%d.]', before.width, before.height, after.width, after.height))
+            }
+        }
+    }
+    return result
+}
+
+fn temp_root(): string {
+    int random = libc.rand() as int
+    if random < 0 {random = -random}
+    int pid = syscall.getpid() catch error {0}
+    return '/tmp/adou-image-' + fmt.sprintf('%d-%d-%d', pid, time.now().ms_timestamp(), random)
+}
+
+fn write_bytes(string file_path, [u8] bytes): void! {
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    file.write(bytes)
+    file.close()
+}
+
+fn read_bytes(string file_path): [u8]! {
+    var file = fs.open(file_path, syscall.O_RDONLY, 0)
+    string content = file.content() catch error {
+        file.close()
+        throw error
+    }
+    file.close()
+    return content as [u8]
+}
+
+fn dimensions([u8] bytes, string mime): image_dimensions_t? {
+    if mime == 'image/png' && bytes.len() >= 24 {
+        return image_dimensions_t {width: read_u32_be(bytes, 16), height: read_u32_be(bytes, 20),}
+    }
+    if mime == 'image/gif' && bytes.len() >= 10 {
+        return image_dimensions_t {width: read_u16_le(bytes, 6), height: read_u16_le(bytes, 8),}
+    }
+    if mime == 'image/jpeg' {
+        return jpeg_dimensions(bytes)
+    }
+    if mime == 'image/webp' {
+        return webp_dimensions(bytes)
+    }
+    if mime == 'image/bmp' && bytes.len() >= 26 {
+        int width = read_i32_le(bytes, 18)
+        int height = read_i32_le(bytes, 22)
+        if height < 0 {height = -height}
+        if width > 0 && height > 0 {return image_dimensions_t {width: width, height: height,}}
+    }
+    return null
+}
+
+fn jpeg_dimensions([u8] bytes): image_dimensions_t? {
+    if bytes.len() < 4 || bytes[0] != 0xff || bytes[1] != 0xd8 {
+        return null
+    }
+    int offset = 2
+    for offset + 1 < bytes.len() {
+        for true {
+            if offset >= bytes.len() || bytes[offset] != 0xff {break}
+            offset += 1
+        }
+        if offset >= bytes.len() {break}
+        int marker = bytes[offset] as int
+        offset += 1
+        if marker == 0xd8 || marker == 0xd9 || marker == 0x01 || (marker >= 0xd0 && marker <= 0xd7) {
+            continue
+        }
+        if offset + 2 > bytes.len() {break}
+        int section_length = read_u16_be(bytes, offset)
+        if section_length < 2 || offset + section_length > bytes.len() {break}
+        if is_jpeg_frame_marker(marker) && section_length >= 8 {
+            int height = read_u16_be(bytes, offset + 3)
+            int width = read_u16_be(bytes, offset + 5)
+            if width > 0 && height > 0 {
+                return image_dimensions_t {width: width, height: height,}
+            }
+            return null
+        }
+        offset += section_length
+    }
+    return null
+}
+
+fn is_jpeg_frame_marker(int marker): bool {
+    return (marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)
+}
+
+fn webp_dimensions([u8] bytes): image_dimensions_t? {
+    if bytes.len() < 30 || !(bytes.slice(0, 4) as string == 'RIFF') || !(bytes.slice(8, 12) as string == 'WEBP') {
+        return null
+    }
+    string format = bytes.slice(12, 16) as string
+    if format == 'VP8X' {
+        int width = 1 + read_u24_le(bytes, 24)
+        int height = 1 + read_u24_le(bytes, 27)
+        if width > 0 && height > 0 {return image_dimensions_t {width: width, height: height,}}
+        return null
+    }
+    if format == 'VP8 ' && bytes.len() >= 30 && bytes[23] == 0x9d && bytes[24] == 0x01 && bytes[25] == 0x2a {
+        int width = read_u16_le(bytes, 26) & 0x3fff
+        int height = read_u16_le(bytes, 28) & 0x3fff
+        if width > 0 && height > 0 {return image_dimensions_t {width: width, height: height,}}
+        return null
+    }
+    if format == 'VP8L' && bytes.len() >= 25 && bytes[20] == 0x2f {
+        int first = bytes[21] as int
+        int second = bytes[22] as int
+        int third = bytes[23] as int
+        int fourth = bytes[24] as int
+        int width = 1 + first + ((second & 0x3f) << 8)
+        int height = 1 + ((second >> 6) | (third << 2) | ((fourth & 0x0f) << 10))
+        if width > 0 && height > 0 {return image_dimensions_t {width: width, height: height,}}
+        return null
+    }
+    return null
+}
+
+fn read_u16_le([u8] bytes, int offset): int {
+    return (bytes[offset] as int) | ((bytes[offset + 1] as int) << 8)
+}
+
+fn read_u16_be([u8] bytes, int offset): int {
+    return ((bytes[offset] as int) << 8) | (bytes[offset + 1] as int)
+}
+
+fn read_u24_le([u8] bytes, int offset): int {
+    return (bytes[offset] as int) | ((bytes[offset + 1] as int) << 8) | ((bytes[offset + 2] as int) << 16)
+}
+
+fn read_i32_le([u8] bytes, int offset): int {
+    int value = (bytes[offset] as int) | ((bytes[offset + 1] as int) << 8) | ((bytes[offset + 2] as int) << 16) | ((bytes[offset + 3] as int) << 24)
+    return value
+}
+
+fn read_u32_be([u8] bytes, int offset): int {
+    return ((bytes[offset] as int) << 24) | ((bytes[offset + 1] as int) << 16) | ((bytes[offset + 2] as int) << 8) | (bytes[offset + 3] as int)
+}

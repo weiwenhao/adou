@@ -1,6 +1,7 @@
 import adou.src.ai.abort
 import adou.src.json_util
 import adou.src.tools.path_utils
+import adou.src.tools.image_process
 import adou.src.tools.truncate
 import adou.src.tools.types as tool_types
 import adou.src.ai.types
@@ -14,6 +15,10 @@ import strings
 import syscall
 
 pub fn execute(string cwd, string input_path, bool has_offset, float offset, bool has_limit, float limit, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
+    return execute_with_options(cwd, input_path, has_offset, offset, has_limit, limit, cancellation, true)
+}
+
+pub fn execute_with_options(string cwd, string input_path, bool has_offset, float offset, bool has_limit, float limit, ref<abort.abort_t> cancellation, bool auto_resize_images): tool_types.tool_result_t! {
     throw_if_aborted(cancellation)
     string absolute_path = path_utils.resolve_read_path(input_path, cwd)
     if !path_utils.readable(absolute_path) {
@@ -28,10 +33,14 @@ pub fn execute(string cwd, string input_path, bool has_offset, float offset, boo
     throw_if_aborted(cancellation)
     string mime = image_mime(raw as [u8])
     if mime != '' {
-        // Pi omits the image data without an imageProcessor; BMP carries an
-        // explicit configure hint.
+        var processed = image_process.process(raw as [u8], mime, auto_resize_images)
+        if processed is image_process.processed_image_t image {
+            var processed_result = tool_types.text_result('Read image file [' + image.mime_type + ']' + (image.hints.len() > 0 ? '\n' + strings.join(image.hints, '\n') : ''))
+            processed_result.images.push(new types.image_attachment_t(mime_type = image.mime_type, data = image.data))
+            return processed_result
+        }
         if mime == 'image/bmp' {
-            return tool_types.text_result('Read image file [image/bmp]\n[Image omitted: configure an imageProcessor to convert BMP images.]')
+            return tool_types.text_result('Read image file [image/bmp]\n[Image omitted: could not convert BMP to PNG.]')
         }
         var result = tool_types.text_result('Read image file [' + mime + ']')
         result.images.push(new types.image_attachment_t(mime_type = mime, data = base64.encode(raw as [u8]) as string))

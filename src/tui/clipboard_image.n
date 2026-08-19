@@ -1,0 +1,72 @@
+import adou.src.tools.command
+import fs
+import os
+import syscall
+import fmt
+import time
+
+#linkid adou_clipboard_image_write
+fn native_clipboard_image_write(anyptr path): int
+
+pub type clipboard_image_t = struct {
+    string path
+    string mime_type
+}
+
+// Read the current system clipboard as an image.  PNG is used directly;
+// macOS screenshots commonly arrive as TIFF and are normalized through sips.
+pub fn read(): clipboard_image_t? {
+    int pid = syscall.getpid() catch error {0}
+    string root = '/tmp/adou-clipboard-' + fmt.sprintf('%d-%d', pid, time.now().ms_timestamp())
+    int kind = native_clipboard_image_write(root.ref())
+    if kind <= 0 {
+        os.remove(root) catch error {}
+        return null
+    }
+    string mime = kind == 1 ? 'image/png' : 'image/tiff'
+    string source = root
+    if kind == 2 {
+        string converted = root + '.png'
+        var converted_result = command.argv('/', 'sips', ['-s', 'format', 'png', root, '--out', converted]) catch error {
+            os.remove(root) catch cleanup_error {}
+            return null
+        }
+        if converted_result.exit_code != 0 {
+            os.remove(root) catch cleanup_error2 {}
+            os.remove(converted) catch cleanup_error3 {}
+            return null
+        }
+        source = converted
+        mime = 'image/png'
+    }
+    var file = fs.open(source, syscall.O_RDONLY, 0) catch error {
+        os.remove(root) catch cleanup_error4 {}
+        if source != root {os.remove(source) catch cleanup_error5 {}}
+        return null
+    }
+    string content = file.content() catch error {
+        file.close()
+        os.remove(root) catch cleanup_error6 {}
+        if source != root {os.remove(source) catch cleanup_error7 {}}
+        return null
+    }
+    file.close()
+    // Keep the captured file available to the model: Ctrl+V inserts this path
+    // into the editor, matching Pi's read-tool workflow for local images.
+    if content.len() == 0 {
+        os.remove(root) catch cleanup_error8 {}
+        if source != root {os.remove(source) catch cleanup_error9 {}}
+        return null
+    }
+    return clipboard_image_t {path: source, mime_type: mime,}
+}
+
+pub fn read_text(): string {
+    var result = command.argv('/', 'pbpaste', []) catch error {
+        return ''
+    }
+    if result.exit_code != 0 {
+        return ''
+    }
+    return result.stdout
+}

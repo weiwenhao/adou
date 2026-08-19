@@ -249,7 +249,7 @@ test 和 Pi 同版本真机对照四层证据。
 | debug/terminal lifecycle | Pi debug log + ProcessTerminal | debug 隔离/job control 已通过 | PASS（保留回归） | P1 |
 | extension UI | extension components | 产品范围排除 | EXCLUDED | — |
 | OAuth/account | login dialog OAuth flows | provider-specific credential/PKCE/device/browser callback/bearer/refresh、login/logout、异步 TUI generation/cancel、Radius discovery 已接线；真实 live recovery 仍待完成 | PARTIAL | P1 |
-| interactive images | image selectors/render | PNG/JPEG/GIF/WebP 读取、消息/session/provider 传递、Kitty/iTerm2/fallback 已接线；BMP conversion、auto-resize、clipboard 和完整 UI 未完成 | PARTIAL | P1 |
+| interactive images | image selectors/render | PNG/JPEG/GIF/WebP/BMP 读取、消息/session/provider 传递、Kitty/iTerm2/fallback、BMP 转 PNG、BMP/JPEG resize、macOS clipboard capture 和 Ctrl+V 已接线；真实图片 provider 往返与跨终端 UI 证据待完成 | PARTIAL | P1 |
 
 ## 6. 实施原则
 
@@ -1127,7 +1127,7 @@ Adou 现状源：
 | terminal.clearOnShrink（false；ADOU_CLEAR_ON_SHRINK env） | g+p | 无 | 新增；renderer 收缩清理 |
 | terminal.showTerminalProgress（false） | g+p | 无 | 新增；OSC 9;4 |
 | warnings.anthropicExtraUsage（true） | g+p | 无 | 新增；子菜单；Adou 无 Anthropic 订阅鉴权路径，runtime NOP 记录 |
-| terminal.showImages/imageWidthCells、images.autoResize/blockImages | g+p | 已有 | PARTIAL：settings nested load/save、终端能力感知、TUI image render/fallback 和 block_images runtime 已接入；BMP conversion、auto-resize processor、clipboard 仍待补 |
+| terminal.showImages/imageWidthCells、images.autoResize/blockImages | g+p | 已有 | PARTIAL：settings nested load/save、终端能力感知、TUI image render/fallback、block_images runtime、BMP/JPEG processor resize 和 read-tool runtime rebuild 已接入；真实 provider 图片往返仍待补 |
 
 失败 baseline（Batch 3 开工时的事实）：
 
@@ -1302,7 +1302,7 @@ app action ↔ Adou 映射（Pi 40 个 action）：
 | app.message.copy（ctrl+x） | 硬编码 |
 | app.message.followUp（alt+enter） | 硬编码（idle+stream 两处语义不同：idle 直接发、stream 入队） |
 | app.message.dequeue（alt+up） | 硬编码 |
-| app.clipboard.pasteImage（ctrl+v darwin） | OPEN（当前 UI 无此项，待接入图片 parity 批次） |
+| app.clipboard.pasteImage（ctrl+v darwin） | PARTIAL（macOS image clipboard capture + editor path insertion 已接入；跨终端和真实 TUI 证据待补） |
 | app.session.new/tree/fork/resume | 无键（slash commands 已覆盖） |
 | app.tree.foldOrUp（alt+left）、unfoldOrDown（alt+right）、editLabel（shift+l）、toggleLabelTimestamp（shift+t） | tree overlay 硬编码 f/[/]/L，shift+t 缺失 |
 | app.session.togglePath（ctrl+p）、toggleSort（ctrl+s）、rename（ctrl+r）、delete（ctrl+d）、deleteNoninvasive（ctrl+backspace） | session overlay 硬编码 |

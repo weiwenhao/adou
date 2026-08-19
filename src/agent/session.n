@@ -301,6 +301,7 @@ pub fn runner_t.publish_rpc_resources(&self, ref<resource_snapshot.resource_snap
         self.retry_base_delay_ms = snapshot.settings.retry_base_delay_ms
         self.agent_config.stream_options.transport = snapshot.settings.transport
         self.agent_config.stream_options.timeout_ms = snapshot.settings.http_idle_timeout_ms
+        self.agent_config.stream_options.block_images = snapshot.settings.block_images
     }
     self.lock.unlock()
 }

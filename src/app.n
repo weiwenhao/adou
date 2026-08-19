@@ -367,7 +367,7 @@ pub fn run(): void! {
     // Extension loading is disabled: Pi's extension runtime is out of
     // scope until redesigned.  Tools are assembled from built-ins only, so
     // extension tools can never reach the model's tool surface.
-    var tools = builtins.select_tools(session_cwd, config.tool_names, config.exclude_tool_names, config.no_tools || config.no_builtin_tools)
+    var tools = builtins.select_tools_with_options(session_cwd, config.tool_names, config.exclude_tool_names, config.no_tools || config.no_builtin_tools, config.auto_resize_images)
     [string] tool_names = []
     for tool in tools {
         tool_names.push(tool.name)
@@ -1473,9 +1473,13 @@ fn rebind_rpc_context(ref<session.runner_t> runner, string cwd, bool no_context_
         var loaded = project.load(cwd, '')
         context_files = loaded.files
     }
+    bool auto_resize_images = true
+    if next_snapshot is ref<resource_snapshot.resource_snapshot_t> loaded_snapshot {
+        auto_resize_images = loaded_snapshot.settings.auto_resize_images
+    }
     [ref<agent_types.agent_tool_t>] tools = []
     if tool_names.len() > 0 {
-        tools = builtins.select_tools(cwd, tool_names, [], false)
+        tools = builtins.select_tools_with_options(cwd, tool_names, [], false, auto_resize_images)
     }
     string resolved_system_prompt = system_prompt_override
     if resolved_system_prompt == '' && trusted {

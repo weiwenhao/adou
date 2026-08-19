@@ -115,6 +115,7 @@ pub type config_t = struct {
     string default_project_trust = 'ask'
     bool enable_skill_commands = true
     bool quiet_startup
+    bool auto_resize_images = true
     string transport = 'auto'
     int http_idle_timeout_ms = 300000
 }

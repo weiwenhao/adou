@@ -11,6 +11,7 @@ import adou.src.tools.types as tool_types
 import adou.src.tools.write
 import adou.src.unicode.normalization as normalization
 import adou.src.unicode.utf8
+import base64
 import co
 import fs
 import json
@@ -30,6 +31,48 @@ pub fn write_fixture(string file_path, [u8] content): void! {
     var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
     file.write(content)
     file.close()
+}
+
+fn tiny_bmp(): [u8] {
+    // 1x1 24bpp BMP: file header + BITMAPINFOHEADER + one padded BGR row.
+    [u8] bytes = []
+    bytes.append([0x42, 0x4d, 58, 0, 0, 0, 0, 0, 0, 0, 54, 0, 0, 0])
+    bytes.append([40, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 24, 0])
+    bytes.append([0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    bytes.append([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    bytes.append([0, 0, 255, 0])
+    return bytes
+}
+
+fn wide_bmp(): [u8] {
+    // 2001x1 24bpp BMP with a 4-byte-aligned pixel row.  This exercises the
+    // automatic max-edge resize without requiring a large fixture in git.
+    int width = 2001
+    int row_size = 6004
+    int file_size = 54 + row_size
+    [u8] bytes = []
+    bytes.append([0x42, 0x4d])
+    bytes.push((file_size & 0xff) as u8)
+    bytes.push(((file_size >> 8) & 0xff) as u8)
+    bytes.push(((file_size >> 16) & 0xff) as u8)
+    bytes.push(((file_size >> 24) & 0xff) as u8)
+    bytes.append([0, 0, 0, 0, 54, 0, 0, 0])
+    bytes.append([40, 0, 0, 0])
+    bytes.push((width & 0xff) as u8)
+    bytes.push(((width >> 8) & 0xff) as u8)
+    bytes.push(((width >> 16) & 0xff) as u8)
+    bytes.push(((width >> 24) & 0xff) as u8)
+    bytes.append([1, 0, 0, 0, 1, 0, 24, 0, 0, 0, 0, 0])
+    bytes.push((row_size & 0xff) as u8)
+    bytes.push(((row_size >> 8) & 0xff) as u8)
+    bytes.push(((row_size >> 16) & 0xff) as u8)
+    bytes.push(((row_size >> 24) & 0xff) as u8)
+    bytes.append([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    bytes.append([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    for int index = 0; index < row_size; index += 1 {
+        bytes.push(0)
+    }
+    return bytes
 }
 
 test 'UTF-8 replacement and Pi UTF-16 length semantics' {
@@ -166,14 +209,55 @@ test 'read returns supported image content as a base64 attachment' {
     os.rmdir(root, true)
 }
 
-test 'read reports Pi BMP hint without an image processor' {
+test 'read converts BMP files to PNG attachments' {
     string root = '/tmp/adou-tools-test-read-bmp'
     os.rmdir(root, true) catch error {}
-    write_fixture(root + '/pic.bmp', [0x42, 0x4d, 30, 0, 0, 0, 0, 0, 0, 0, 26, 0, 0, 0, 12, 0, 0, 0, 0, 0, 0, 0, 1, 0, 24, 0])
+    write_fixture(root + '/pic.bmp', tiny_bmp())
     var result = read.execute(root, 'pic.bmp', false, 0.0, false, 0.0, abort.new())
     assert(result.content.len() == 1)
-    assert(result.content[0].text.find('image/bmp') >= 0)
-    assert(result.content[0].text.find('imageProcessor') >= 0)
+    assert(result.content[0].text.find('image/png') >= 0)
+    assert(result.content[0].text.find('converted from image/bmp') >= 0)
+    assert(result.images.len() == 1)
+    assert(result.images[0].mime_type == 'image/png')
+    var png = base64.decode(result.images[0].data as [u8]) catch error {[]}
+    assert(png.len() >= 8 && png[0] == 0x89 && png[1] == 0x50)
+    os.rmdir(root, true)
+}
+
+test 'read automatically resizes oversized BMP images' {
+    string root = '/tmp/adou-tools-test-read-bmp-resize'
+    os.rmdir(root, true) catch error {}
+    write_fixture(root + '/wide.bmp', wide_bmp())
+    var result = read.execute(root, 'wide.bmp', false, 0.0, false, 0.0, abort.new())
+    string message = result.content[0].text
+    assert(message.find('original 2001x1') >= 0)
+    assert(message.find('displayed at 2000x1') >= 0)
+    assert(result.images.len() == 1)
+    assert(result.images[0].mime_type == 'image/png')
+    os.rmdir(root, true)
+}
+
+test 'read respects disabled automatic image resizing' {
+    string root = '/tmp/adou-tools-test-read-bmp-no-resize'
+    os.rmdir(root, true) catch error {}
+    write_fixture(root + '/wide.bmp', wide_bmp())
+    var result = read.execute_with_options(root, 'wide.bmp', false, 0.0, false, 0.0, abort.new(), false)
+    assert(result.content[0].text.find('converted from image/bmp') >= 0)
+    assert(result.content[0].text.find('original 2001x1') < 0)
+    assert(result.images.len() == 1 && result.images[0].mime_type == 'image/png')
+    os.rmdir(root, true)
+}
+
+test 'read automatically resizes oversized JPEG images' {
+    string root = '/tmp/adou-tools-test-read-jpeg-resize'
+    os.rmdir(root, true) catch error {}
+    write_fixture(root + '/wide.bmp', wide_bmp())
+    var converted = command.argv(root, 'sips', ['-s', 'format', 'jpeg', root + '/wide.bmp', '--out', root + '/wide.jpg'])
+    assert(converted.exit_code == 0)
+    var result = read.execute(root, 'wide.jpg', false, 0.0, false, 0.0, abort.new())
+    assert(result.content[0].text.find('original 2001x1') >= 0)
+    assert(result.content[0].text.find('displayed at 2000x1') >= 0)
+    assert(result.images.len() == 1 && result.images[0].mime_type == 'image/jpeg')
     os.rmdir(root, true)
 }
 

@@ -9,10 +9,11 @@ import json
 
 pub type read_executor_t: agent_types.tool_executor_t = struct {
     string cwd
+    bool auto_resize_images = true
 }
 
 pub fn read_executor_t.execute(&self, string tool_call_id, any arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
-    return execute_read(self.cwd, arguments, cancellation)
+    return execute_read(self.cwd, arguments, cancellation, self.auto_resize_images)
 }
 
 pub type write_executor_t: agent_types.tool_executor_t = struct {
@@ -24,9 +25,13 @@ pub fn write_executor_t.execute(&self, string tool_call_id, any arguments, ref<a
 }
 
 pub fn read_tool(string cwd): ref<agent_types.agent_tool_t>! {
+    return read_tool_with_options(cwd, true)
+}
+
+pub fn read_tool_with_options(string cwd, bool auto_resize_images): ref<agent_types.agent_tool_t>! {
     any parameters = json_util.parse('{"type":"object","properties":{"path":{"type":"string","description":"Path to the file to read (relative or absolute)"},"offset":{"type":"number","description":"Line number to start reading from (1-indexed)"},"limit":{"type":"number","description":"Maximum number of lines to read"}},"required":["path"]}')
-    agent_types.tool_executor_t executor = read_executor_t {cwd: cwd,}
-    return new agent_types.agent_tool_t(name = 'read', label = 'read', description = 'Read the contents of a UTF-8 text file. Output is truncated to 2000 lines or 50KB, whichever is hit first. Use offset/limit for large files.', parameters = parameters, execution_mode = agent_types.EXECUTION_PARALLEL, executor = executor)
+    agent_types.tool_executor_t executor = read_executor_t {cwd: cwd, auto_resize_images: auto_resize_images,}
+    return new agent_types.agent_tool_t(name = 'read', label = 'read', description = 'Read the contents of a text file or image. Images are sent as attachments and BMP files are converted to PNG when possible. Output is truncated to 2000 lines or 50KB, whichever is hit first. Use offset/limit for large files.', parameters = parameters, execution_mode = agent_types.EXECUTION_PARALLEL, executor = executor)
 }
 
 pub fn write_tool(string cwd): ref<agent_types.agent_tool_t>! {
@@ -36,8 +41,12 @@ pub fn write_tool(string cwd): ref<agent_types.agent_tool_t>! {
 }
 
 pub fn all(string cwd): [ref<agent_types.agent_tool_t>]! {
+    return all_with_options(cwd, true)
+}
+
+pub fn all_with_options(string cwd, bool auto_resize_images): [ref<agent_types.agent_tool_t>]! {
     return [
-        read_tool(cwd),
+        read_tool_with_options(cwd, auto_resize_images),
         shell_tools.bash_tool(cwd),
         shell_tools.edit_tool(cwd),
         write_tool(cwd),
@@ -51,10 +60,14 @@ pub fn all(string cwd): [ref<agent_types.agent_tool_t>]! {
 // Unknown names are ignored here; the caller can still run with a reduced
 // set, while the system prompt only advertises tools that remain available.
 pub fn select_tools(string cwd, [string] included, [string] excluded, bool no_tools): [ref<agent_types.agent_tool_t>]! {
+    return select_tools_with_options(cwd, included, excluded, no_tools, true)
+}
+
+pub fn select_tools_with_options(string cwd, [string] included, [string] excluded, bool no_tools, bool auto_resize_images): [ref<agent_types.agent_tool_t>]! {
     if no_tools {
         return []
     }
-    var available = all(cwd)
+    var available = all_with_options(cwd, auto_resize_images)
     // Pi starts with the coding quartet enabled.  The read-only helpers are
     // still available through `--tools grep,find,ls` (and are useful for
     // review-only sessions), but they are opt-in rather than silently
@@ -83,7 +96,7 @@ fn contains_name([string] names, string value): bool {
     return false
 }
 
-fn execute_read(string cwd, any arguments, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
+fn execute_read(string cwd, any arguments, ref<abort.abort_t> cancellation, bool auto_resize_images): tool_types.tool_result_t! {
     var object = arguments as {string:any}
     string input_path = object['path'] as string
     bool has_offset = object.contains('offset')
@@ -96,7 +109,7 @@ fn execute_read(string cwd, any arguments, ref<abort.abort_t> cancellation): too
     if has_limit {
         limit = object['limit'] as f64
     }
-    return read.execute(cwd, input_path, has_offset, offset, has_limit, limit, cancellation)
+    return read.execute_with_options(cwd, input_path, has_offset, offset, has_limit, limit, cancellation, auto_resize_images)
 }
 
 fn execute_write(string cwd, any arguments, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {

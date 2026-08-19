@@ -47,6 +47,7 @@ import adou.src.tui.renderer
 import adou.src.tui.text_utils
 import adou.src.tui.theme
 import adou.src.tui.terminal_image
+import adou.src.tui.clipboard_image
 import adou.src.tools.shell_tools
 import adou.src.tools.command
 import adou.src.tools.path_utils
@@ -396,6 +397,7 @@ pub fn view_t.refresh_resource_snapshot(&self, string cwd, bool reload_auth) {
     self.renderer.set_clear_on_shrink(self.settings_snapshot.terminal_clear_on_shrink)
     theme.set_variant(active_theme_variant(self.settings_snapshot.theme))
     self.runner.apply_preferences_snapshot(self.settings_snapshot)
+    self.rebuild_read_tool_options(self.settings_snapshot.auto_resize_images)
     // B1-R3-05: the /scoped-models settings backing ALWAYS follows the
     // trust-aware enabledModels snapshot — an explicit CLI scope must not
     // wipe the settings-backed selector to an empty default.  The CLI scope
@@ -687,6 +689,10 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
         self.open_external_editor()
         return null
     }
+    if self.keybindings.matches(key, keybindings.APP_CLIPBOARD_PASTE_IMAGE) {
+        self.paste_clipboard()
+        return null
+    }
     if self.keybindings.matches(key, keybindings.APP_THINKING_CYCLE) {
         self.cycle_thinking_level()
         return null
@@ -786,6 +792,10 @@ pub fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, in
     }
     if self.keybindings.matches(key, keybindings.APP_SUSPEND) {
         self.suspend_terminal()
+        return
+    }
+    if self.keybindings.matches(key, keybindings.APP_CLIPBOARD_PASTE_IMAGE) {
+        self.paste_clipboard()
         return
     }
     if self.keybindings.matches(key, keybindings.APP_TOOLS_EXPAND) {
@@ -1675,7 +1685,7 @@ fn view_t.rebind_project_context(&self, string cwd): void! {
             resolved_append_prompts.push(append_file.content)
         }
     }
-    var tools = tool_names.len() > 0 ? builtins.select_tools(cwd, tool_names, [], false) : []
+    var tools = tool_names.len() > 0 ? builtins.select_tools_with_options(cwd, tool_names, [], false, self.settings_snapshot.auto_resize_images) : []
     self.runner.base_context.tools = tools
     string append_prompt = strings.join(resolved_append_prompts, '\n\n')
     if has_tool_name(tool_names, 'read') {
@@ -3364,6 +3374,7 @@ fn view_t.handle_settings_option(&self, ref<overlay_t> overlay, string option) {
     } else if option.starts_with('Auto-resize images:') {
         if !images_available {return}
         s.auto_resize_images = !s.auto_resize_images
+        self.rebuild_read_tool_options(s.auto_resize_images)
     } else if option.starts_with('Block images:') {
         if !images_available {return}
         s.block_images = !s.block_images
@@ -3432,6 +3443,23 @@ fn view_t.handle_settings_option(&self, ref<overlay_t> overlay, string option) {
     self.save_preferences()
     self.show_settings_overlay()
     self.redraw()
+}
+
+// `read` owns image normalization, so rebuilding the existing built-in tool
+// selection is the runtime boundary for the persisted auto-resize setting.
+fn view_t.rebuild_read_tool_options(&self, bool auto_resize_images) {
+    if self.runner.base_context.tools.len() == 0 {
+        return
+    }
+    [string] tool_names = []
+    for tool in self.runner.base_context.tools {
+        tool_names.push(tool.name)
+    }
+    var rebuilt = builtins.select_tools_with_options(self.runner.repository.cwd, tool_names, [], false, auto_resize_images) catch error {
+        self.chat.error_message = 'Could not apply image settings: ' + error.msg()
+        return
+    }
+    self.runner.base_context.tools = rebuilt
 }
 
 // Pi's Warnings submenu: one warning toggle.
@@ -5452,6 +5480,26 @@ fn view_t.copy_overlay_text(&self, string text, string status) {
     self.render_lock.unlock()
     debug.log_terminal_output(clipboard_output)
     self.chat.status = status
+    self.redraw()
+}
+
+fn view_t.paste_clipboard(&self) {
+    var image = clipboard_image.read()
+    if image is clipboard_image.clipboard_image_t captured {
+        self.autocomplete.cancel()
+        self.editor.insert_text(captured.path)
+        self.chat.status = 'Pasted clipboard image'
+        self.redraw()
+        return
+    }
+    string text = clipboard_image.read_text()
+    if text != '' {
+        self.autocomplete.cancel()
+        self.editor.handle_paste(text)
+        self.chat.status = 'Pasted clipboard text'
+    } else {
+        self.chat.status = 'Clipboard has no image or text'
+    }
     self.redraw()
 }
 

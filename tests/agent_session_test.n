@@ -200,14 +200,15 @@ test 'session forwards lifecycle and persists each completed message' {
     assert(count_kind(result[0], session_stream.EVENT_SESSION_END) == 1)
 }
 
-test 'B3 apply_preferences_snapshot applies transport and http idle timeout' {
+test 'B3 apply_preferences_snapshot applies transport, image blocking and http idle timeout' {
     var manager = repository.in_memory('/tmp')
     var fixture = new provider_fixture_t(agent_responses = [])
     var runner = make_runner(manager, fixture, 1000, 100, 20)
-    var preferences = settings.settings_t {transport: 'websocket', http_idle_timeout_ms: 60000}
+    var preferences = settings.settings_t {transport: 'websocket', block_images: true, http_idle_timeout_ms: 60000}
     runner.apply_preferences_snapshot(preferences)
     assert(runner.agent_config.stream_options.transport == 'websocket')
     assert(runner.agent_config.stream_options.timeout_ms == 60000)
+    assert(runner.agent_config.stream_options.block_images)
     runner.set_runtime_transport('sse')
     runner.set_runtime_http_idle_timeout_ms(0)
     assert(runner.agent_config.stream_options.transport == 'sse')
@@ -719,8 +720,10 @@ test 'B1-R4-10 rpc prompt expands and publishes one resource snapshot' {
     snapshot.settings.retry_enabled = false
     snapshot.settings.retry_max_attempts = 2
     snapshot.settings.retry_base_delay_ms = 17
+    snapshot.settings.block_images = true
     [ref<agent_types.agent_tool_t>] no_tools = []
     runner.publish_rpc_resources(snapshot, 'snapshot system', no_tools, true)
+    assert(runner.agent_config.stream_options.block_images)
 
     var stream = runner.prompt_rpc('/rpc-template one two')
     for true {
@@ -773,4 +776,3 @@ test 'abort_bash only cancels the active bash stream' {
     assert(bash_stream.cancellation.is_aborted())
     runner.end_operation()
 }
-
