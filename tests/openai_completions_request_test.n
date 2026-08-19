@@ -66,6 +66,17 @@ test 'encodes tool result images as OpenAI image_url content blocks' {
     assert((((blocks[1] as {string:any})['image_url'] as {string:any})['url'] as string) == 'data:image/png;base64,aW1hZ2U=')
 }
 
+test 'encodes user images as OpenAI image_url content blocks' {
+    var context = new types.context_t()
+    var image = new types.image_attachment_t(mime_type = 'image/png', data = 'aW1hZ2U=')
+    context.messages.push(new types.user_message_t(content = 'describe', images = [image,]))
+    var body = json_util.parse(openai_completions_request.build(model(), context, new types.stream_options_t(api_key = 'secret')))
+    var user = ((body as {string:any})['messages'] as [any])[0] as {string:any}
+    var blocks = user['content'] as [any]
+    assert((blocks[0] as {string:any})['type'] as string == 'text')
+    assert((blocks[1] as {string:any})['type'] as string == 'image_url')
+}
+
 test 'preserves an empty tools field when replaying tool history' {
     var context = new types.context_t()
     var call = new types.tool_call_t(id = 'call-1', name = 'read', arguments = json_util.parse('{}'))

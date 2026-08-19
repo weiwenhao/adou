@@ -79,6 +79,7 @@ pub type assistant_message_t = struct {
 pub type user_message_t = struct {
     string role = 'user'
     string content
+    [ref<image_attachment_t>] images = []
     int timestamp
 }
 pub type tool_result_message_t = struct {

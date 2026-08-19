@@ -98,6 +98,18 @@ test 'encodes tool result images as Responses input_image output blocks' {
     assert((blocks[1] as {string:any})['image_url'] as string == 'data:image/png;base64,aW1hZ2U=')
 }
 
+test 'encodes user images as Responses input_image blocks' {
+    var context = new types.context_t()
+    var image = new types.image_attachment_t(mime_type = 'image/png', data = 'aW1hZ2U=')
+    context.messages.push(new types.user_message_t(content = 'describe', images = [image,]))
+    var payload = json_util.parse(openai_request.build(fixture_model(true), context, new types.stream_options_t(api_key = 'secret')))
+    var user = ((payload as {string:any})['input'] as [any])[0] as {string:any}
+    var blocks = user['content'] as [any]
+    assert((blocks[0] as {string:any})['type'] as string == 'input_text')
+    assert((blocks[1] as {string:any})['type'] as string == 'input_image')
+    assert((blocks[1] as {string:any})['image_url'] as string == 'data:image/png;base64,aW1hZ2U=')
+}
+
 test 'rejects a missing API key' {
     var options = new types.stream_options_t()
     bool failed = false

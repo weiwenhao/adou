@@ -110,6 +110,7 @@ pub type config_t = struct {
     [string] skill_paths = []
     bool no_skills
     [string] initial_messages = []
+    [ref<ai_types.image_attachment_t>] initial_images = []
     // Pi settings keys that flow from the trust-aware settings snapshot into
     // the runtime config (Batch 3).
     string default_project_trust = 'ask'

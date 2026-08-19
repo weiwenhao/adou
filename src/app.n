@@ -34,6 +34,8 @@ import adou.src.session.message_json
 import adou.src.session.export_html as session_export
 import adou.src.tools.builtins
 import adou.src.tools.command
+import adou.src.tools.image_detect
+import adou.src.tools.image_process
 import adou.src.tools.path_utils
 import adou.src.tools.shell_tools
 import adou.src.tui.chat
@@ -58,6 +60,11 @@ pub const VERSION = '0.1.0-dev'
 pub type rpc_bash_update_state_t = struct {
     string id
     ref<rpc_sink_t> sink
+}
+
+pub type file_arguments_t = struct {
+    string text
+    [ref<ai_types.image_attachment_t>] images = []
 }
 
 // RPC output abstraction shared by --mode rpc (stdout) and the Phase 7.1
@@ -174,10 +181,11 @@ pub fn run(): void! {
         return
     }
     if arguments.file_args.len() > 0 {
-        string file_text = load_file_arguments(arguments.file_args, cwd)
-        if file_text != '' {
-            config.initial_messages = args.prepend_initial_text(config.initial_messages, file_text)
+        var files = load_file_arguments(arguments.file_args, cwd, config.auto_resize_images)
+        if files.text != '' {
+            config.initial_messages = args.prepend_initial_text(config.initial_messages, files.text)
         }
+        config.initial_images = files.images
     }
     bool stdin_tty = term.is_tty(term.STDIN)
     bool stdout_tty = term.is_tty(term.STDOUT)
@@ -425,15 +433,15 @@ pub fn run(): void! {
     // text, matching Pi's runPrintMode() behavior.  A positional prompt in a
     // non-TTY is also plain text (Pi resolves that app mode to "print").
     if config.mode == 'json' {
-        run_headless(runner, config.initial_messages, true, true)
+        run_headless(runner, config.initial_messages, config.initial_images, true, true)
         return
     }
     if config.print_mode {
-        run_headless(runner, config.initial_messages, true, false)
+        run_headless(runner, config.initial_messages, config.initial_images, true, false)
         return
     }
     if config.initial_messages.len() > 0 && !interactive {
-        run_headless(runner, config.initial_messages, true, false)
+        run_headless(runner, config.initial_messages, config.initial_images, true, false)
         return
     }
     if !interactive {
@@ -458,6 +466,7 @@ pub fn run(): void! {
     }
     if config.initial_messages.len() > 0 {
         view.pending_initial_messages = config.initial_messages
+        view.pending_initial_images = config.initial_images
         view.active_stream = view.start_next_initial_prompt()
     }
     view.run() catch error {
@@ -645,13 +654,13 @@ fn open_repository(config_types.config_t config, string cwd): ref<repository.man
 // process after the configured timeout (same approach as the TUI exit for
 // its parked terminal reader).  The guard channel is not used for a full
 // handshake; a timed-out process exits before the normal path can send.
-fn run_headless(ref<session.runner_t> runner, [string] prompts, bool plain, bool json_mode): void! {
+fn run_headless(ref<session.runner_t> runner, [string] prompts, [ref<ai_types.image_attachment_t>] initial_images, bool plain, bool json_mode): void! {
     if json_mode {
-        run_headless_with_watchdog(runner, prompts, true)
+        run_headless_with_watchdog(runner, prompts, initial_images, true)
         return
     }
     if plain {
-        run_headless_with_watchdog(runner, prompts, false)
+        run_headless_with_watchdog(runner, prompts, initial_images, false)
         return
     }
     var view = chat.new(runner.agent_config.model.id, runner.repository.cwd)
@@ -662,11 +671,13 @@ fn run_headless(ref<session.runner_t> runner, [string] prompts, bool plain, bool
         thinking = 'on'
     }
     view.configure(runner.agent_config.model.context_window, thinking)
+    bool first = true
     for prompt in prompts {
-        var stream = runner.prompt(prompt) catch error {
+        var stream = first && initial_images.len() > 0 ? runner.prompt_with_images(prompt, initial_images) : runner.prompt(prompt) catch error {
             view.error_message = error.msg()
             break
         }
+        first = false
         for true {
             var event = stream.recv() catch error {
                 break
@@ -684,7 +695,7 @@ fn run_headless(ref<session.runner_t> runner, [string] prompts, bool plain, bool
     println(strings.join(lines, '\n'))
 }
 
-fn run_headless_with_watchdog(ref<session.runner_t> runner, [string] prompts, bool json_mode): void! {
+fn run_headless_with_watchdog(ref<session.runner_t> runner, [string] prompts, [ref<ai_types.image_attachment_t>] initial_images, bool json_mode): void! {
     int budget_ms = runner.agent_config.stream_options.timeout_ms
     if budget_ms <= 0 {
         budget_ms = 120000
@@ -692,9 +703,9 @@ fn run_headless_with_watchdog(ref<session.runner_t> runner, [string] prompts, bo
     var guard = chan<int>.new(1)
     go headless_watchdog(guard, budget_ms, json_mode)
     if json_mode {
-        run_json(runner, prompts)
+        run_json(runner, prompts, initial_images)
     } else {
-        run_plain(runner, prompts)
+        run_plain(runner, prompts, initial_images)
     }
     guard.send(0) catch error {}
 }
@@ -722,13 +733,15 @@ fn headless_watchdog(chan<int> guard, int budget_ms, bool json_mode) {
 }
 
 // Plain one-shot loop extracted so the watchdog covers the whole session.
-fn run_plain(ref<session.runner_t> runner, [string] prompts): void! {
+fn run_plain(ref<session.runner_t> runner, [string] prompts, [ref<ai_types.image_attachment_t>] initial_images): void! {
     [ai_types.message_t] messages = []
+    bool first = true
     for prompt in prompts {
-        var stream = runner.prompt(prompt) catch error {
+        var stream = first && initial_images.len() > 0 ? runner.prompt_with_images(prompt, initial_images) : runner.prompt(prompt) catch error {
             println('Error: ' + error.msg())
             return
         }
+        first = false
         for true {
             var event = stream.recv() catch error {
                 break
@@ -749,15 +762,17 @@ fn run_plain(ref<session.runner_t> runner, [string] prompts): void! {
     }
 }
 
-fn run_json(ref<session.runner_t> runner, [string] prompts): void! {
+fn run_json(ref<session.runner_t> runner, [string] prompts, [ref<ai_types.image_attachment_t>] initial_images): void! {
     if runner.repository.persisted {
         println(runner.repository.header_json())
     }
+    bool first = true
     for prompt in prompts {
-        var stream = runner.prompt(prompt) catch error {
+        var stream = first && initial_images.len() > 0 ? runner.prompt_with_images(prompt, initial_images) : runner.prompt(prompt) catch error {
             println(json_error(error.msg()))
             return
         }
+        first = false
         for true {
             var event = stream.recv() catch error {break}
             println(event_json.encode(event))
@@ -1036,11 +1051,11 @@ fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, 
 fn rpc_dispatch(ref<session.runner_t> runner, {string:any} object, string command, string id, ref<rpc_sink_t> sink, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns, config_types.skills_options_t skills_options): void! {
     if command == 'prompt' {
         string prompt_behavior = rpc_string(object, 'streamingBehavior')
-        rpc_run_prompt(runner, id, rpc_string(object, 'message'), prompt_behavior, sink)
+        rpc_run_prompt(runner, id, rpc_string(object, 'message'), rpc_images(object), prompt_behavior, sink)
     } else if command == 'steer' {
-        rpc_queue_message(runner, id, rpc_string(object, 'message'), true, sink)
+        rpc_queue_message(runner, id, rpc_string(object, 'message'), rpc_images(object), true, sink)
     } else if command == 'follow_up' {
-        rpc_queue_message(runner, id, rpc_string(object, 'message'), false, sink)
+        rpc_queue_message(runner, id, rpc_string(object, 'message'), rpc_images(object), false, sink)
     } else if command == 'abort' {
         runner.abort_and_wait()
         rpc_write(sink, rpc_ok(id, 'abort'))
@@ -1196,7 +1211,7 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
     runner.wait_rpc_delivery()
 }
 
-fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string streaming_behavior, ref<rpc_sink_t> sink): void! {
+fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, [ref<ai_types.image_attachment_t>] images, string streaming_behavior, ref<rpc_sink_t> sink): void! {
     // Pi lets clients use `prompt` as a convenience queue operation while an
     // assistant turn is already running.  Keep explicit steer/follow_up
     // commands equivalent, but accept the streamingBehavior spelling too.
@@ -1205,11 +1220,12 @@ fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string
         bool active = runner.busy
         runner.lock.unlock()
         if active {
-            rpc_queue_message(runner, id, prompt, streaming_behavior == 'steer', sink)
+            rpc_queue_message(runner, id, prompt, images, streaming_behavior == 'steer', sink)
             return
         }
     }
-    var stream = runner.prompt_rpc(prompt) catch error {
+    string expanded = runner.expand_rpc_command(prompt)
+    var stream = runner.start_prompt_with_images(expanded, images, true) catch error {
         rpc_write(sink, rpc_error(id, 'prompt', error.msg()))
         return
     }
@@ -1244,12 +1260,12 @@ fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> 
     runner.finish_rpc_delivery(stream)
 }
 
-fn rpc_queue_message(ref<session.runner_t> runner, string id, string text, bool steering, ref<rpc_sink_t> sink): void! {
+fn rpc_queue_message(ref<session.runner_t> runner, string id, string text, [ref<ai_types.image_attachment_t>] images, bool steering, ref<rpc_sink_t> sink): void! {
     // Pi expands prompt templates and skill commands for prompt, steer and
     // follow-up alike.  Use the runner's already-published snapshot so queue
     // execution cannot drift from get_commands.
     string expanded = runner.expand_rpc_command(text)
-    var message = new ai_types.user_message_t(content = expanded, timestamp = time.now().ms_timestamp())
+    var message = new ai_types.user_message_t(content = expanded, images = images, timestamp = time.now().ms_timestamp())
     if steering {
         runner.queue_steering(message)
     } else {
@@ -1859,6 +1875,22 @@ fn rpc_string({string:any} object, string key): string {
     return ''
 }
 
+fn rpc_images({string:any} object): [ref<ai_types.image_attachment_t>] {
+    [ref<ai_types.image_attachment_t>] result = []
+    if !object.contains('images') || !(object['images'] is [any]) {return result}
+    for value in object['images'] as [any] {
+        if value is {string:any} image {
+            string kind = json_util.opt_string(image, 'type')
+            string mime = json_util.opt_string(image, 'mimeType')
+            string data = json_util.opt_string(image, 'data')
+            if (kind == '' || kind == 'image') && mime != '' && data != '' {
+                result.push(new ai_types.image_attachment_t(mime_type = mime, data = data))
+            }
+        }
+    }
+    return result
+}
+
 fn rpc_bool({string:any} object, string key, bool fallback): bool {
     if object.contains(key) && object[key] is bool {return object[key] as bool}
     return fallback
@@ -1882,8 +1914,8 @@ fn last_assistant_text([ai_types.message_t] messages): string {
     return ''
 }
 
-fn load_file_arguments([string] file_args, string cwd): string! {
-    string result = ''
+fn load_file_arguments([string] file_args, string cwd, bool auto_resize): file_arguments_t! {
+    var result = file_arguments_t{}
     for file_arg in file_args {
         string absolute = path_utils.resolve_to_cwd(file_arg, cwd)
         var input = fs.open(absolute, syscall.O_RDONLY, 0) catch error {
@@ -1897,7 +1929,17 @@ fn load_file_arguments([string] file_args, string cwd): string! {
         if content == '' {
             continue
         }
-        result += '<file name="' + absolute + '">\n' + content + '\n</file>\n'
+        [u8] bytes = content as [u8]
+        string mime = image_detect.detect_supported_image_mime_type(bytes)
+        if mime != '' {
+            var processed = image_process.process(bytes, mime, auto_resize)
+            if processed is image_process.processed_image_t image {
+                result.images.push(new ai_types.image_attachment_t(mime_type = image.mime_type, data = image.data))
+                result.text += '<file name="' + absolute + '">' + strings.join(image.hints, '\n') + '</file>\n'
+                continue
+            }
+        }
+        result.text += '<file name="' + absolute + '">\n' + content + '\n</file>\n'
     }
     return result
 }

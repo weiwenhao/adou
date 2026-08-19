@@ -45,6 +45,10 @@ pub fn session_t.prompt(&self, string text): ref<session_stream.stream_t>! {
     return self.runner.prompt(text)
 }
 
+pub fn session_t.prompt_with_images(&self, string text, [ref<ai_types.image_attachment_t>] images): ref<session_stream.stream_t>! {
+    return self.runner.prompt_with_images(text, images)
+}
+
 pub fn session_t.prompt_rpc(&self, string text): ref<session_stream.stream_t>! {
     return self.runner.prompt_rpc(text)
 }

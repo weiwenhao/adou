@@ -40,9 +40,9 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
     if options.session_id != '' {
         body['prompt_cache_key'] = clamp_cache_key(options.session_id)
     }
-    body['tool_choice'] = 'auto'
-    body['parallel_tool_calls'] = true
     if context.tools.len() > 0 {
+        body['tool_choice'] = 'auto'
+        body['parallel_tool_calls'] = true
         body['tools'] = convert_tools(context.tools)
     }
     // The ChatGPT Codex Responses backend rejects max_output_tokens on both
@@ -105,7 +105,7 @@ fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [an
             for missing in replay.before_other() {
                 result.push(tool_result_item(model, missing))
             }
-            result.push(message_item('user', user.content))
+            result.push(user_item(user))
         } else if message is ref<types.assistant_message_t> assistant {
             for missing in replay.before_assistant(assistant) {
                 result.push(tool_result_item(model, missing))
@@ -153,6 +153,30 @@ fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [an
 fn message_item(string role, string content): any {
     {string:any} item = {}
     item['role'] = role
+    item['content'] = content
+    return item
+}
+
+fn user_item(ref<types.user_message_t> message): any {
+    if message.images.len() == 0 {
+        return message_item('user', message.content)
+    }
+    [any] content = []
+    if message.content != '' {
+        {string:any} text = {}
+        text['type'] = 'input_text'
+        text['text'] = message.content
+        content.push(text)
+    }
+    for image in message.images {
+        {string:any} block = {}
+        block['type'] = 'input_image'
+        block['image_url'] = 'data:' + image.mime_type + ';base64,' + image.data
+        content.push(block)
+    }
+    {string:any} item = {}
+    item['type'] = 'message'
+    item['role'] = 'user'
     item['content'] = content
     return item
 }
@@ -212,14 +236,12 @@ fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_t> m
 fn convert_tools([ref<types.tool_t>] tools): [any]! {
     [any] result = []
     for tool in tools {
-        {string:any} function = {}
-        function['name'] = tool.name
-        function['description'] = tool.description
-        function['parameters'] = tool.parameters
-        function['strict'] = false
         {string:any} item = {}
         item['type'] = 'function'
-        item['function'] = function
+        item['name'] = tool.name
+        item['description'] = tool.description
+        item['parameters'] = tool.parameters
+        item['strict'] = false
         result.push(item)
     }
     return result

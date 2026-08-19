@@ -1,0 +1,76 @@
+import adou.src.ai.providers.bedrock_messages
+import adou.src.ai.providers.anthropic_request
+import adou.src.ai.providers.codex_messages
+import adou.src.ai.providers.google_messages
+import adou.src.ai.providers.mistral_messages
+import adou.src.ai.providers.openai_request
+import adou.src.ai.types
+import json
+
+fn image_context(): ref<types.context_t> {
+    var image = new types.image_attachment_t(mime_type = 'image/png', data = 'cG5n')
+    var user = new types.user_message_t(content = 'inspect', images = [image,])
+    var context = new types.context_t()
+    types.message_t message = user
+    context.messages.push(message)
+    return context
+}
+
+fn image_only_context(): ref<types.context_t> {
+    var image = new types.image_attachment_t(mime_type = 'image/png', data = 'cG5n')
+    var context = new types.context_t()
+    types.message_t message = new types.user_message_t(images = [image,])
+    context.messages.push(message)
+    return context
+}
+
+test 'google encodes user images as inline data parts' {
+    var model = new types.model_t(id = 'gemini-test', api = 'google-generative-ai', provider = 'google', base_url = 'https://example.test', max_tokens = 16)
+    string body = google_messages.build(model, image_context(), new types.stream_options_t())
+    assert(body.contains('"inlineData"'))
+    assert(body.contains('"data":"cG5n"'))
+    assert(body.contains('"mimeType":"image/png"'))
+    assert(body.contains('"text":"inspect"'))
+}
+
+test 'mistral encodes user images as data urls' {
+    string body = json.serialize(mistral_messages.convert_messages(image_context()))
+    assert(body.contains('"type":"image_url"'))
+    assert(body.contains('data:image/png;base64,cG5n'))
+}
+
+test 'codex encodes user images as responses input images' {
+    var model = new types.model_t(id = 'gpt-test', api = 'openai-codex-responses', provider = 'openai-codex', base_url = 'https://example.test', max_tokens = 16)
+    var options = new types.stream_options_t(api_key = 'eyJhbGciOiJIUzI1NiJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC0xMjMifX0.signature')
+    string body = codex_messages.build(model, image_context(), options)
+    assert(body.contains('"type":"input_image"'))
+    assert(body.contains('data:image/png;base64,cG5n'))
+}
+
+test 'bedrock encodes user images as converse image blocks' {
+    var model = new types.model_t(id = 'anthropic.claude-test', api = 'bedrock-converse-stream', provider = 'amazon-bedrock', base_url = 'https://example.test', max_tokens = 16)
+    string body = bedrock_messages.build(model, image_context(), new types.stream_options_t())
+    assert(body.contains('"image"'))
+    assert(body.contains('"format":"png"'))
+    assert(body.contains('"bytes":"cG5n"'))
+    assert(body.contains('"text":"inspect"'))
+}
+
+test 'native providers omit empty text blocks for image-only users' {
+    var google_model = new types.model_t(id = 'gemini-test', api = 'google-generative-ai', provider = 'google', base_url = 'https://example.test', max_tokens = 16)
+    assert(!google_messages.build(google_model, image_only_context(), new types.stream_options_t()).contains('"text":""'))
+    assert(!json.serialize(mistral_messages.convert_messages(image_only_context())).contains('"text":""'))
+
+    var codex_model = new types.model_t(id = 'gpt-test', api = 'openai-codex-responses', provider = 'openai-codex', base_url = 'https://example.test', max_tokens = 16)
+    var codex_options = new types.stream_options_t(api_key = 'eyJhbGciOiJIUzI1NiJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC0xMjMifX0.signature')
+    assert(!codex_messages.build(codex_model, image_only_context(), codex_options).contains('"text":""'))
+
+    var bedrock_model = new types.model_t(id = 'anthropic.claude-test', api = 'bedrock-converse-stream', provider = 'amazon-bedrock', base_url = 'https://example.test', max_tokens = 16)
+    assert(!bedrock_messages.build(bedrock_model, image_only_context(), new types.stream_options_t()).contains('"text":""'))
+
+    var openai_model = new types.model_t(id = 'gpt-test', api = 'openai-responses', provider = 'openai', base_url = 'https://example.test', max_tokens = 16)
+    assert(!openai_request.build(openai_model, image_only_context(), new types.stream_options_t()).contains('"text":""'))
+
+    var anthropic_model = new types.model_t(id = 'claude-test', api = 'anthropic-messages', provider = 'anthropic', base_url = 'https://example.test', max_tokens = 16)
+    assert(!anthropic_request.build(anthropic_model, image_only_context(), new types.stream_options_t()).contains('"text":""'))
+}

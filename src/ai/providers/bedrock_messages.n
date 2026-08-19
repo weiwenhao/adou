@@ -312,7 +312,7 @@ fn convert_messages(ref<types.model_t> model, ref<types.context_t> context, ref<
             for missing in replay.before_other() {
                 result.push(tool_result_item(model, missing))
             }
-            result.push(user_item(user.content))
+            result.push(user_message_item(user))
         } else if message is ref<types.assistant_message_t> assistant {
             for missing in replay.before_assistant(assistant) {
                 result.push(tool_result_item(model, missing))
@@ -386,6 +386,36 @@ fn user_item(string text): any {
     content.push(block)
     item['content'] = content
     return item
+}
+
+fn user_message_item(ref<types.user_message_t> message): any {
+    {string:any} item = {}
+    item['role'] = 'user'
+    [any] content = []
+    for image in message.images {
+        {string:any} source = {}
+        source['bytes'] = image.data
+        {string:any} image_value = {}
+        image_value['format'] = bedrock_image_format(image.mime_type)
+        image_value['source'] = source
+        {string:any} block = {}
+        block['image'] = image_value
+        content.push(block)
+    }
+    if message.content != '' {
+        {string:any} text = {}
+        text['text'] = message.content
+        content.push(text)
+    }
+    item['content'] = content
+    return item
+}
+
+fn bedrock_image_format(string mime_type): string {
+    if mime_type == 'image/jpeg' {return 'jpeg'}
+    if mime_type == 'image/gif' {return 'gif'}
+    if mime_type == 'image/webp' {return 'webp'}
+    return 'png'
 }
 
 fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> message): any! {

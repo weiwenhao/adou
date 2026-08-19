@@ -203,7 +203,7 @@ fn convert_contents(ref<types.context_t> context): [any] {
             for missing in replay.before_other() {
                 result.push(tool_result_content(missing))
             }
-            result.push(user_content(user.content))
+            result.push(user_message_content(user))
         } else if message is ref<types.assistant_message_t> assistant {
             for missing in replay.before_assistant(assistant) {
                 result.push(tool_result_content(missing))
@@ -255,6 +255,27 @@ fn user_content(string text): any {
     {string:any} part = {}
     part['text'] = text
     parts.push(part)
+    content['parts'] = parts
+    return content
+}
+
+fn user_message_content(ref<types.user_message_t> message): any {
+    {string:any} content = {}
+    content['role'] = 'user'
+    [any] parts = []
+    for image in message.images {
+        {string:any} inline_data = {}
+        inline_data['mimeType'] = image.mime_type
+        inline_data['data'] = image.data
+        {string:any} part = {}
+        part['inlineData'] = inline_data
+        parts.push(part)
+    }
+    if message.content != '' {
+        {string:any} text_part = {}
+        text_part['text'] = message.content
+        parts.push(text_part)
+    }
     content['parts'] = parts
     return content
 }

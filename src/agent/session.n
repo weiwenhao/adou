@@ -81,17 +81,25 @@ pub fn new(ref<repository.manager_t> session_repository, ref<agent_types.context
 }
 
 pub fn runner_t.prompt(&self, string text): ref<session_stream.stream_t>! {
-    return self.start_prompt(text, false)
+    return self.start_prompt_with_images(text, [], false)
+}
+
+pub fn runner_t.prompt_with_images(&self, string text, [ref<ai_types.image_attachment_t>] images): ref<session_stream.stream_t>! {
+    return self.start_prompt_with_images(text, images, false)
 }
 
 // RPC marks delivery before starting the coroutine.  A fast provider can
 // finish between prompt() returning and the RPC worker being registered; the
 // early mark makes terminal-event delivery deterministic.
 pub fn runner_t.prompt_rpc(&self, string text): ref<session_stream.stream_t>! {
-    return self.start_prompt(self.expand_rpc_command(text), true)
+    return self.start_prompt_with_images(self.expand_rpc_command(text), [], true)
 }
 
 pub fn runner_t.start_prompt(&self, string text, bool require_delivery): ref<session_stream.stream_t>! {
+    return self.start_prompt_with_images(text, [], require_delivery)
+}
+
+pub fn runner_t.start_prompt_with_images(&self, string text, [ref<ai_types.image_attachment_t>] images, bool require_delivery): ref<session_stream.stream_t>! {
     self.begin_prompt_operation()
     debug.log('agent', 'prompt accepted; provider=' + self.agent_config.model.provider + ' model=' + self.agent_config.model.id + ' chars=' + fmt.sprintf('%d', text.len()))
     var stream = session_stream.new()
@@ -101,7 +109,7 @@ pub fn runner_t.start_prompt(&self, string text, bool require_delivery): ref<ses
     self.lock.lock()
     self.active_stream = stream
     self.lock.unlock()
-    go run_prompt(self, stream, text)
+    go run_prompt(self, stream, text, images)
     return stream
 }
 
@@ -875,9 +883,9 @@ fn run_tree_navigation_inner(ref<runner_t> runner, ref<session_stream.stream_t> 
     output.finish(runner.copy_active_messages())
 }
 
-pub fn run_prompt(ref<runner_t> runner, ref<session_stream.stream_t> output, string text): void! {
+pub fn run_prompt(ref<runner_t> runner, ref<session_stream.stream_t> output, string text, [ref<ai_types.image_attachment_t>] images): void! {
     debug.log('agent', 'prompt coroutine started')
-    run_prompt_inner(runner, output, text) catch error {
+    run_prompt_inner(runner, output, text, images) catch error {
         debug.log('agent', 'prompt coroutine failed: ' + error.msg())
         runner.end_operation()
         output.push(session_stream.event_t {kind: session_stream.EVENT_AGENT_SETTLED,}) catch settled_error {}
@@ -888,7 +896,7 @@ pub fn run_prompt(ref<runner_t> runner, ref<session_stream.stream_t> output, str
     debug.log('agent', 'prompt coroutine ended')
 }
 
-pub fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, string text): void! {
+pub fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, string text, [ref<ai_types.image_attachment_t>] images): void! {
     debug.log('agent', 'building context and starting provider stream')
     // Pi checks the last assistant again before accepting a new prompt.  A
     // cancelled/error turn is deliberately eligible here (unlike the
@@ -911,7 +919,7 @@ pub fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> outpu
         }
     }
     var context = runner.context_from_repository()
-    ai_types.message_t prompt = new ai_types.user_message_t(content = text, timestamp = time.now().ms_timestamp())
+    ai_types.message_t prompt = new ai_types.user_message_t(content = text, images = images, timestamp = time.now().ms_timestamp())
     var current = loop.prompt([prompt], context, runner.agent_config, runner.stream_function)
     bool overflow_recovery_attempted = false
     int retry_attempt = 0

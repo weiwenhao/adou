@@ -3,6 +3,18 @@ import adou.src.ai.types
 import adou.src.json_util
 import json
 
+test 'encodes user images before text in Anthropic content blocks' {
+    var context = new types.context_t()
+    var image = new types.image_attachment_t(mime_type = 'image/png', data = 'aW1hZ2U=')
+    context.messages.push(new types.user_message_t(content = 'describe', images = [image,]))
+    var body = json_util.parse(anthropic_request.build(anthropic_model(), context, new types.stream_options_t(api_key = 'secret')))
+    var user = ((body as {string:any})['messages'] as [any])[0] as {string:any}
+    var blocks = user['content'] as [any]
+    assert((blocks[0] as {string:any})['type'] as string == 'image')
+    assert((((blocks[0] as {string:any})['source'] as {string:any})['media_type'] as string) == 'image/png')
+    assert((blocks[1] as {string:any})['text'] as string == 'describe')
+}
+
 pub fn anthropic_model(): ref<types.model_t> {
     return new types.model_t(id = 'claude-sonnet-4-5', api = 'anthropic-messages', provider = 'anthropic', base_url = 'https://api.anthropic.com/v1/', reasoning = true, max_tokens = 8192,)
 }

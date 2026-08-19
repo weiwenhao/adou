@@ -167,12 +167,24 @@ pub fn convert_messages([types.message_t] messages, any cache): [any]! {
             pending_tool_results = []
         }
         if message is ref<types.user_message_t> user {
-            if user.content != '' {
-                {string:any} text = {}
-                text['type'] = 'text'
-                text['text'] = user.content
+            if user.content != '' || user.images.len() > 0 {
                 [any] content = []
-                content.push(text)
+                for image in user.images {
+                    {string:any} source = {}
+                    source['type'] = 'base64'
+                    source['media_type'] = image.mime_type
+                    source['data'] = image.data
+                    {string:any} image_block = {}
+                    image_block['type'] = 'image'
+                    image_block['source'] = source
+                    content.push(image_block)
+                }
+                if user.content != '' {
+                    {string:any} text = {}
+                    text['type'] = 'text'
+                    text['text'] = user.content
+                    content.push(text)
+                }
                 result.push(message_item('user', content))
             }
         } else if message is ref<types.assistant_message_t> assistant {

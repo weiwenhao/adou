@@ -1,0 +1,17 @@
+import adou.src.ai.types
+import adou.src.session.export_html
+import adou.src.session.repository
+
+test 'html export preserves user and tool image attachments' {
+    var manager = repository.in_memory('/tmp/adou-export-images')
+    var user_image = new types.image_attachment_t(mime_type = 'image/png', data = 'dXNlcg==')
+    types.message_t user = new types.user_message_t(content = 'look', images = [user_image,])
+    manager.append_message(user)
+    var tool_image = new types.image_attachment_t(mime_type = 'image/jpeg', data = 'dG9vbA==')
+    types.message_t tool = new types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'read', images = [tool_image,])
+    manager.append_message(tool)
+    string html = export_html.render(manager)
+    assert(html.contains('src="data:image/png;base64,dXNlcg=="'))
+    assert(html.contains('src="data:image/jpeg;base64,dG9vbA=="'))
+    assert(html.contains('class="attachment"'))
+}

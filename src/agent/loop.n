@@ -524,7 +524,18 @@ fn provider_context(ref<agent_types.context_t> context, bool block_images): ref<
     if block_images {
         result.messages = []
         for message in context.messages {
-            if message is ref<types.tool_result_message_t> tool {
+            if message is ref<types.user_message_t> user {
+                if user.images.len() > 0 {
+                    var blocked = clone.message(message)
+                    if blocked is ref<types.user_message_t> blocked_user {
+                        blocked_user.images = []
+                        if blocked_user.content != '' {blocked_user.content += '\n\n'}
+                        blocked_user.content += 'Image reading is disabled.'
+                        result.messages.push(blocked)
+                        continue
+                    }
+                }
+            } else if message is ref<types.tool_result_message_t> tool {
                 if tool.images.len() > 0 {
                     var blocked = clone.message(message)
                     if blocked is ref<types.tool_result_message_t> blocked_tool {

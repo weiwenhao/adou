@@ -66,7 +66,7 @@ pub fn convert_messages(ref<types.context_t> context): [any] {
             for missing in replay.before_other() {
                 result.push(tool_result_item(missing))
             }
-            result.push(message_item('user', user.content))
+            result.push(user_item(user))
         } else if message is ref<types.assistant_message_t> assistant {
             for missing in replay.before_assistant(assistant) {
                 result.push(tool_result_item(missing))
@@ -114,6 +114,31 @@ pub fn convert_messages(ref<types.context_t> context): [any] {
 pub fn message_item(string role, string content): any {
     {string:any} item = {}
     item['role'] = role
+    item['content'] = content
+    return item
+}
+
+fn user_item(ref<types.user_message_t> message): any {
+    if message.images.len() == 0 {
+        return message_item('user', message.content)
+    }
+    [any] content = []
+    if message.content != '' {
+        {string:any} text = {}
+        text['type'] = 'text'
+        text['text'] = message.content
+        content.push(text)
+    }
+    for image in message.images {
+        {string:any} image_url = {}
+        image_url['url'] = 'data:' + image.mime_type + ';base64,' + image.data
+        {string:any} block = {}
+        block['type'] = 'image_url'
+        block['image_url'] = image_url
+        content.push(block)
+    }
+    {string:any} item = {}
+    item['role'] = 'user'
     item['content'] = content
     return item
 }

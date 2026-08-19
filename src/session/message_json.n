@@ -167,7 +167,25 @@ pub fn decode_text_blocks(any value): [ref<types.text_content_t>]! {
 fn encode_user(ref<types.user_message_t> message): any! {
     {string:any} object = {}
     object['role'] = 'user'
-    object['content'] = message.content
+    if message.images.len() == 0 {
+        object['content'] = message.content
+    } else {
+        [any] content = []
+        if message.content != '' {
+            {string:any} text = {}
+            text['type'] = 'text'
+            text['text'] = message.content
+            content.push(text)
+        }
+        for image in message.images {
+            {string:any} item = {}
+            item['type'] = 'image'
+            item['mimeType'] = image.mime_type
+            item['data'] = image.data
+            content.push(item)
+        }
+        object['content'] = content
+    }
     object['timestamp'] = message.timestamp
     return object
 }
@@ -260,6 +278,7 @@ fn encode_custom(ref<types.custom_message_t> message): any! {
 
 fn decode_user({string:any} object): types.message_t! {
     string content = ''
+    [ref<types.image_attachment_t>] images = []
     if object.contains('content') {
         var raw = object['content']
         if raw is string {
@@ -271,13 +290,19 @@ fn decode_user({string:any} object): types.message_t! {
                     var block = item as {string:any}
                     if json_util.opt_string(block, 'type') == 'text' {
                         texts.push(json_util.opt_string(block, 'text'))
+                    } else if json_util.opt_string(block, 'type') == 'image' {
+                        string mime = json_util.opt_string(block, 'mimeType')
+                        string data = json_util.opt_string(block, 'data')
+                        if mime != '' && data != '' {
+                            images.push(new types.image_attachment_t(mime_type = mime, data = data))
+                        }
                     }
                 }
             }
             content = join_lines(texts)
         }
     }
-    types.message_t result = new types.user_message_t(content = content, timestamp = json_util.opt_int(object, 'timestamp'))
+    types.message_t result = new types.user_message_t(content = content, images = images, timestamp = json_util.opt_int(object, 'timestamp'))
     return result
 }
 

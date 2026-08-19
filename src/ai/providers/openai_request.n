@@ -193,7 +193,16 @@ fn user_item(ref<types.user_message_t> message): any {
     text['type'] = 'input_text'
     text['text'] = sanitize_unicode.sanitize_surrogates(message.content)
     [any] content = []
-    content.push(text)
+    if message.content != '' {
+        content.push(text)
+    }
+    for image in message.images {
+        {string:any} image_item = {}
+        image_item['type'] = 'input_image'
+        image_item['detail'] = 'auto'
+        image_item['image_url'] = 'data:' + image.mime_type + ';base64,' + image.data
+        content.push(image_item)
+    }
     {string:any} item = {}
     item['role'] = 'user'
     item['content'] = content

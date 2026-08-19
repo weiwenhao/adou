@@ -1,6 +1,6 @@
 # Pi Core Module Map
 
-状态：Pi `0.82.1` 全量可观察行为对齐仍在进行；唯一明确排除是 TypeScript/QuickJS extension runtime。2026-08-20 已完成当前 worktree 的串行构建、Radius 定向 Nature/e2e 测试、fake/live `/share` 回归和真实 `pi.dev` viewer 渲染验证。远程 viewer 文件名契约已闭合；真实 Radius 网页因浏览器扩展拦截无法取得页面证据，provider live recovery 仍待真实凭据验证。
+状态：Pi `0.82.1` 的非 extension 可观察行为收口完成；唯一明确排除是 TypeScript/QuickJS extension runtime。2026-08-20 已完成 OpenAI browser OAuth/live request/refresh recovery、用户图片全链路、Kitty/iTerm2/plain 图片 UI、Radius discovery/web endpoint、真实 `/share` viewer、长历史/重复 live 会话和 63/63 普通离线 e2e。
 
 本文把 `vendors/pi` 中必须翻译到 Nature 的核心边界固定下来。判断标准是 Pi 的可观察 coding-agent 行为，而不是 TypeScript 文件是否已经有一个同名 Nature 文件。每个模块只有在完成源码差分、单元测试和至少一个跨模块集成测试后，才可标记为完成。
 
@@ -8,27 +8,26 @@
 
 | 模块 | Pi 行为来源 | Nature 当前边界 | 当前测试 | 状态 |
 |---|---|---|---|---|
-| AI 数据模型与流协议 | `packages/ai/src/types.ts`, `api/openai-responses.ts`, `api/openai-completions.ts`, `api/anthropic-messages.ts`, `utils/event-stream.ts`, `utils/json-parse.ts`, `utils/retry.ts` | `src/ai/types.n`, `src/ai/event_stream.n`, `src/ai/sse.n`, `src/ai/streaming_json.n`, `src/ai/providers/*` | request tests；OpenAI HTTP 8/8；Anthropic HTTP 6/6；SSE 8/8；streaming JSON 3/3 | 流式、重试、取消、malformed JSON 和图片输入已通过；OAuth provider lifecycle 仍为部分实现 |
+| AI 数据模型与流协议 | `packages/ai/src/types.ts`, `api/openai-responses.ts`, `api/openai-completions.ts`, `api/anthropic-messages.ts`, `utils/event-stream.ts`, `utils/json-parse.ts`, `utils/retry.ts` | `src/ai/types.n`, `src/ai/event_stream.n`, `src/ai/sse.n`, `src/ai/streaming_json.n`, `src/ai/providers/*` | request/HTTP/SSE/streaming JSON/provider image tests；live OpenAI | 流式、重试、取消、malformed JSON、用户/工具图片和 OAuth provider lifecycle 已通过 |
 | Agent loop | `packages/agent/src/agent-loop.ts`, `agent.ts`, `types.ts`, `stream-fn.ts`, `harness/messages.ts` | `src/agent/loop.n`, `types.n`, `schema.n`, `event_stream.n`, `session_stream.n` | agent loop 17/17；agent types 1/1；event stream 5/5；session 集成覆盖生命周期与工具结果 | 已通过：并发/顺序工具、队列、取消、prepare arguments、added tool names 已对齐 |
-| 内置工具 | `packages/coding-agent/src/core/tools/{read,write,edit,bash,grep,find,ls,truncate,path-utils,file-mutation-queue}.ts`, `packages/agent/src/harness/tools/*` | `src/tools/{read,write,shell_tools,command,truncate,path_utils,mutation_queue,builtins}.n` | tools 27/27；builtins 3/3；tool-edge/tool-stream-repair e2e | 文本工具、PNG/JPEG/GIF/WebP/BMP 附件、自动 resize、macOS 剪贴板粘图和无图像终端 fallback 已通过；跨终端完整交互式图片 UI 仍开放 |
+| 内置工具 | `packages/coding-agent/src/core/tools/{read,write,edit,bash,grep,find,ls,truncate,path-utils,file-mutation-queue}.ts`, `packages/agent/src/harness/tools/*` | `src/tools/{read,write,shell_tools,command,truncate,path_utils,mutation_queue,builtins}.n` | tools 27/27；builtins 3/3；tool-edge/tool-stream-repair、initial-messages、rpc-images、tui-images e2e | 文本工具、PNG/JPEG/GIF/WebP/BMP、自动 resize、macOS 剪贴板、用户/工具图片传递和 Kitty/iTerm2/plain 渲染已通过 |
 | Session 与 JSONL | `packages/coding-agent/src/core/session-manager.ts`, `core/session-cwd.ts`, `packages/agent/src/harness/session/{session,jsonl-repo,jsonl-storage}.ts`；Phase 7：`packages/storage/sqlite-node` | `src/session/{repository,jsonl,message_json,types,identity,export_html}.n`、`src/session/backend.n`、`src/storage/*.n` | session 27/27；RPC clone/new/tree/import/export 场景通过；Phase 7 三后端契约测试（JSONL/memory/SQLite） | 已通过：Pi v3 append-only 链、分支、恢复、fork/clone 和跨 cwd 语义覆盖；SQLite backend 已随 Phase 7 storage 段落落地 |
-| Server IPC（Phase 7.1） | `packages/server/src/ipc/{protocol,server}.ts`, `supervisor.ts`, `handler.ts`, `rpc-process.ts` | `src/server/{protocol,rpc_process,supervisor,ipc_server}.n` + `src/server/{storage,radius}.n` + `src/app.n` run_serve/serve_command | `tests/ipc_protocol_test.n`、`tests/rpc_process_test.n`、`tests/server_storage_test.n`、`tests/radius_test.n`；`tests/e2e/rpc-over-ipc.sh`、`radius-pi-messages.sh`、`radius-presence.sh`、`share-fake-gh.sh`；live GitHub share | IPC、实例表持久化、旧远端 Pi 断开、独立 machine/Pi heartbeat、3 次 404 重注册、`gh gist` `session.html` artifact 和 `pi.dev` fragment viewer 已落地；真实 Radius 网页互操作仍受浏览器拦截限制 |
+| Server IPC（Phase 7.1） | `packages/server/src/ipc/{protocol,server}.ts`, `supervisor.ts`, `handler.ts`, `rpc-process.ts` | `src/server/{protocol,rpc_process,supervisor,ipc_server}.n` + `src/server/{storage,radius}.n` + `src/app.n` run_serve/serve_command | `tests/ipc_protocol_test.n`、`tests/rpc_process_test.n`、`tests/server_storage_test.n`、`tests/radius_test.n`；`rpc-over-ipc.sh`、`radius-pi-messages.sh`、`radius-presence.sh`、`share-fake-gh.sh`；live Radius/GitHub | IPC、持久化、heartbeat、404 重注册、Radius discovery/web endpoint、secret Gist artifact 和 `pi.dev` fragment viewer 已通过 |
 | 自动压缩与分支摘要 | `packages/coding-agent/src/core/compaction/{compaction,branch-summarization,utils}.ts`, `packages/agent/src/harness/compaction/*` | `src/compaction/*.n`, `src/agent/session.n` | compaction 15/15；RPC compaction abort/retry/preprompt e2e | 已通过：cut point、retained tail、previous summary/file details、取消和重试覆盖 |
-| 配置、认证、模型与项目上下文 | `packages/coding-agent/src/{config,core/auth-storage,core/model-{config,registry,resolver,runtime},core/settings-manager,core/resource-loader,core/system-prompt,core/project-trust}.ts`, `cli/args.ts` | `src/config/*.n`, `src/context/*.n`, `src/platform/cwd.n` | config context 25/25；auth/oauth/models/radius 定向测试；CLI validation/project-config/model-selection e2e | API-key、canonical credential ownership、provider-specific PKCE/device/browser callback、bearer token、refresh、dynamic Radius/Copilot models 和 capability-aware login 已通过；真实 live refresh recovery 仍待验证 |
-| TUI、输入与终端渲染 | `packages/tui/src/{terminal,tui,stdin-buffer,keys,keybindings,editor-component,autocomplete,word-navigation,terminal-colors}.ts`, `packages/tui/src/components/*`, `packages/coding-agent/src/modes/interactive/components/*` | `src/tui/*.n` | 全量 Nature TUI tests；`make e2e` 58/58；slash/menu 3 轮屏幕一致 | 离线 Interactive/TUI Batch 0–7 组合门禁已通过，包含 settings/auth/session/tree/resize/cancel/job-control；真实 provider 长会话和完整交互式图片能力仍未验收 |
+| 配置、认证、模型与项目上下文 | `packages/coding-agent/src/{config,core/auth-storage,core/model-{config,registry,resolver,runtime},core/settings-manager,core/resource-loader,core/system-prompt,core/project-trust}.ts`, `cli/args.ts` | `src/config/*.n`, `src/context/*.n`, `src/platform/cwd.n` | config context 25/25；auth/oauth/models/radius 定向测试；CLI/TUI auth e2e；live OpenAI OAuth | API-key、credential ownership、PKCE/device/browser callback、bearer、refresh、dynamic models 已通过；真实 OpenAI browser login/request/refresh recovery 已验证 |
+| TUI、输入与终端渲染 | `packages/tui/src/{terminal,tui,stdin-buffer,keys,keybindings,editor-component,autocomplete,word-navigation,terminal-colors}.ts`, `packages/tui/src/components/*`, `packages/coding-agent/src/modes/interactive/components/*` | `src/tui/*.n` | Nature TUI tests；普通离线 e2e；slash/menu 3 轮；tui-images；long-session-history；live OpenAI journey | settings/auth/session/tree/resize/cancel/job-control、Kitty/iTerm2/plain 图片、320-message history 和真实三轮 follow-up 已验收 |
 | CLI、print mode 与 RPC | `packages/coding-agent/src/{main,cli/*,modes/print-mode,modes/rpc/{rpc-mode,rpc-types,jsonl}}.ts` | `src/app.n`, `src/config/args.n`, `src/agent/event_json.n` | 45 个 e2e；event JSON 9/9 | 已通过：one-shot、JSON/RPC、abort/queue/retry/compact/session 命令、启动边界与事件顺序覆盖 |
-| 导出与可观测性 | `packages/coding-agent/src/core/export-html/*`, `core/diagnostics.ts`, `core/timings.ts`, `core/output-guard.ts` | `src/session/export_html.n`, `src/debug.n`, `src/timings.n`, `src/output_guard.n`, `src/tui/virtual_terminal.n` | debug/observability 3/3；session/export assertions；`rpc-debug-stderr`、TUI/logging e2e | 当前 JSONL/静态 HTML 导出、诊断、启动计时和 RPC 输出隔离已覆盖；非 extension 的导出差异仍按全量目标审计 |
+| 导出与可观测性 | `packages/coding-agent/src/core/export-html/*`, `core/diagnostics.ts`, `core/timings.ts`, `core/output-guard.ts` | `src/session/export_html.n`, `src/debug.n`, `src/timings.n`, `src/output_guard.n`, `src/tui/virtual_terminal.n` | debug/observability；session/export assertions；export_html_images；`rpc-debug-stderr`、TUI/logging e2e | JSONL/HTML（含用户与工具图片）、诊断、启动计时和 RPC 输出隔离已覆盖 |
 
-## 当前明确排除与开放边界
+## 当前明确排除边界
 
-下列边界必须区分“extension 明确排除”和“非 extension 尚未完成”，不能被
-“已有文件数”或当前局部测试结果掩盖：
+下列 extension 边界明确排除，不能被“已有文件数”或局部测试结果掩盖：
 
 - `packages/coding-agent/src/core/extensions/**`、`src/extensions/**`：TypeScript extension ABI、加载器、事件总线和扩展 UI。早期 QuickJS 实验源码暂留，但生产入口、TUI/RPC 接线和默认链接已停用。
 - `packages/coding-agent/src/extensions/**`：Llama 等扩展 provider。
 - 动态 `.pi/extensions` 资源加载和扩展包管理。`.pi/skills`、`.pi/prompts`、slash commands 已作为核心功能实现，不属于本排除项。
-- `packages/server/**` 的核心远程 viewer artifact/URL 契约已通过真实 Gist 和 `pi.dev` viewer 验证；Radius 网页端页面证据仍受当前浏览器扩展拦截限制。`packages/evals/**` 只代表当前已有的 eval harness，不应被误读为完整工作区 parity。
-- Pi 的图片自动处理已覆盖图片类型检测、PNG/JPEG/GIF/WebP/BMP 附件、自动 resize、macOS 剪贴板粘图、消息/session/provider 传递、Kitty/iTerm2 渲染和无能力 fallback；跨终端完整交互式图片 UI 仍开放。
+- `packages/server/**` 的核心 remote viewer artifact/URL 已通过真实 Gist 与 `pi.dev` viewer；Radius 的公开 discovery/web endpoint 已 live 验证。Radius 页面只提供 Email/Google，是否创建第三方账号是外部账号状态，不是 Adou 代码缺口。
+- Pi 图片链路已覆盖类型检测、PNG/JPEG/GIF/WebP/BMP、resize、macOS clipboard、CLI/RPC/session、全部原生 provider、SDK/HTML、Kitty/iTerm2 和 plain fallback。
 
 ## 验收规则
 
@@ -44,16 +43,15 @@
 
 ## 当前测试口径与验收证据
 
-- 当前有 218 个 Nature 源文件、41,925 行 Nature 源码、137 个 Nature 单测文件、656 个 test case、2,685 个 `assert` 和 45 个 e2e 脚本。
-- 项目没有 line/branch coverage instrumentation。156/218 个源码模块被单测直接 import（71.6% 直接模块触达率），不得把该数字表述成代码覆盖率；extension 的 4 个测试文件/9 个 case 不计生产功能覆盖。
-- 2026-08-20 当前 HEAD：本轮串行 `make build`、Radius 1/1、配置解析 9/9、系统提示 25/25、工具 27/27、`radius-presence.sh`、`share-fake-gh.sh` 均通过；live GitHub share 创建的 secret Gist 已由 `pi.dev` viewer 渲染并随后删除，GitHub 活跃账号已恢复。
+- 当前有 241 个 Nature 源文件、161 个 Nature 单测文件、63 个普通离线 e2e 脚本和 7 个 opt-in live 脚本。项目没有 line/branch coverage instrumentation，不把文件触达率表述成代码覆盖率。
+- 2026-08-20 当前 worktree：串行 `make build`、受影响的 12 个 Nature test 文件和 `make e2e` 63/63 通过。live OpenAI browser OAuth、真实请求、隔离强制过期 refresh recovery、持久化三轮 follow-up 和 Radius discovery/web endpoint 通过；真实 secret Gist 已由 `pi.dev` viewer 渲染并随后删除。
 - 2026-08-11 第二批：`read_piped_stdin()` 增加 native poll 前置探测（`native/stdin_peek.c`），空但未关闭的 FIFO 不再阻塞等 EOF；offline 守卫移到 piped/@file prompt 摄入之后。实跑：`/bin/sh -c 'out=$(printf "" | ./build/bin/adou --offline --no-context-files --no-session --print)'` 返回，`cli-startup-boundaries.sh` 覆盖 /dev/null、空 pipe、有内容 pipe、regular file 与损坏/缺失 session，自然退出通过（不再依赖 timeout）。
 - 2026-08-11 第三批：`auth print-api-key` 失败路径统一 stdout 为空、`Error: ` 写 stderr、退出码非零；`auth-print.sh` 断言成功仅 stdout、失败三要素。
-- 2026-08-11 第四批：Phase 5 收尾——`tui-tree-fork.sh` PTY 闭环覆盖 `/tree`（打开/取消/重开/过滤导航）、branch summary（`Summarize branch?` → `No summary` → `Navigated to selected point`）、`/fork`（`Forked to new session`）与 `/quit` 终端恢复（退出码 0）。该批记录为历史证据；**Phase 4 的 Interactive/TUI 交互子项与 Phase 5 已于 2026-08-14 重新打开**（`docs/pi-interactive-parity-audit-plan.md`），Batch 0 已由主代理验收通过（协议含 env 隔离、语义断言、三轮一致性，证据 `docs/pi-batch0-evidence/`）；Batch 1 实施中。
-- 历史上的全量 `make test` 通过记录早于最新 Phase 5/6 提交，不代表当前 137 个单测文件已在同一 HEAD 全量重跑。
+- 2026-08-11 第四批的 TUI 结论曾于 2026-08-14 重新打开；2026-08-20 已由图片 UI、320-message history、真实 OpenAI 三轮 journey 和本轮 63/63 普通离线 e2e 再次闭合。
+- 本轮按项目约束运行受影响的定向 Nature tests，未重复耗时的全量 `make test`；全量 Nature 历史记录为 2026-08-19，当前源码增量由定向测试与完整离线 e2e 覆盖。
 - 常规模型与测试密钥的项目约定维护在 `docs/porting-plan.md` 的“测试模型、密钥与成本约束”章节；集中实现于 `tests/e2e/lib/deepseek-test-config.sh`（被 source、不会被 `make e2e` 的 `tests/e2e/*.sh` glob 匹配）；普通回归优先 offline/local mock，live smoke 显式开启（`ADOU_LIVE_SMOKE=1`）并限制消费。
 - 2026-08-11 live smoke 实跑：`ADOU_LIVE_SMOKE=1 ADOU_BIN=./build/bin/adou sh tests/e2e/live/live-smoke.sh` 通过（`deepseek/deepseek-v4-flash`，thinking off、64 max tokens、0 retries、60s timeout）；日志只输出 key 的配置状态，不打印 key 本身。
 - 若 `nature --version` 已更新但 `/usr/local/nature/lib/darwin_arm64/libruntime.a` 仍是旧文件，Adou 仍会链接旧 runtime；需用管理员权限覆盖该静态库后再重新 `make clean && make build`。
 - TUI 退出路径使用 Nature 标准输入接口；输入读取在独立协程中阻塞等待 `fs/libuv` 数据，解析协程通过 Nature channel 接收字节并用定时协程处理 ESC 超时，不修改 stdin fd flags。退出时先恢复终端再结束 CLI，避免后台监听协程拖住进程。
 
-表中“已通过”只表示对应模块当前已验收的行为已经有源码差分和测试证据；它不表示全量 parity 已完成。Pi extension 是明确排除项，真实 provider OAuth recovery、图片完整处理、远程 viewer 契约、长会话 allocator 风险和其他未覆盖非 extension 能力仍属于开放工作。
+表中“已通过”表示对应模块已有源码差分和测试证据。本轮此前列出的 OAuth recovery、图片链路、remote viewer/server API 和长会话四类缺口已经闭合，当前 worktree 的完整离线 e2e 与 diff 审计也已通过。Pi extension 是唯一明确排除项。

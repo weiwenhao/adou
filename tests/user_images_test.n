@@ -1,0 +1,39 @@
+import adou.src.ai.clone
+import adou.src.ai.types
+import adou.src.json_util
+import adou.src.session.message_json
+
+test 'user image content survives session JSON and cloning' {
+    var image = new types.image_attachment_t(mime_type = 'image/png', data = 'aW1hZ2U=')
+    types.message_t message = new types.user_message_t(content = 'describe', images = [image,], timestamp = 42)
+    any encoded = message_json.encode(message)
+    var object = encoded as {string:any}
+    var content = object['content'] as [any]
+    assert(content.len() == 2)
+    assert((content[0] as {string:any})['type'] as string == 'text')
+    assert((content[1] as {string:any})['mimeType'] as string == 'image/png')
+
+    var decoded = message_json.decode(encoded)
+    if decoded is ref<types.user_message_t> user {
+        assert(user.content == 'describe')
+        assert(user.images.len() == 1)
+        assert(user.images[0].data == 'aW1hZ2U=')
+    } else {
+        assert(false)
+    }
+
+    var copied = clone.message(message)
+    if copied is ref<types.user_message_t> user {
+        assert(user.images.len() == 1)
+        assert(user.images[0].mime_type == 'image/png')
+    } else {
+        assert(false)
+    }
+}
+
+test 'plain user session JSON keeps Pi string content shape' {
+    types.message_t message = new types.user_message_t(content = 'plain', timestamp = 1)
+    var encoded = message_json.encode(message) as {string:any}
+    assert(encoded['content'] is string)
+    assert(encoded['content'] as string == 'plain')
+}

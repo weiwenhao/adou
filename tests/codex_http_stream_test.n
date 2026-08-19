@@ -1,6 +1,7 @@
 import adou.src.ai.providers.codex_messages
 import adou.src.ai.providers.codex_provider
 import adou.src.ai.types
+import adou.src.json_util
 import co
 import fmt
 import http
@@ -27,6 +28,8 @@ fn fixture_context(): ref<types.context_t> {
     var context = new types.context_t()
     types.message_t user = new types.user_message_t(content = 'hello')
     context.messages.push(user)
+    var schema = json_util.parse('{"type":"object","properties":{"path":{"type":"string"}}}') catch error {'{}'}
+    context.tools.push(new types.tool_t(name = 'read', description = 'Read a file', parameters = schema))
     return context
 }
 
@@ -86,6 +89,12 @@ test 'streams a real Codex responses HTTP response' {
     assert(capture.session_id == 'session-1')
     assert(capture.body.find('"instructions"') >= 0)
     assert(capture.body.find('"parallel_tool_calls":true') >= 0)
+    var payload = json_util.parse(capture.body) as {string:any}
+    var tools = payload['tools'] as [any]
+    var tool = tools[0] as {string:any}
+    assert(tool['type'] as string == 'function')
+    assert(tool['name'] as string == 'read')
+    assert(!tool.contains('function'))
     assert(capture.body.find('"max_output_tokens"') < 0)
 }
 

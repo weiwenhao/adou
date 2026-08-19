@@ -19,7 +19,11 @@ pub fn assistant(ref<types.assistant_message_t> source): ref<types.assistant_mes
 
 pub fn message(types.message_t source): types.message_t {
     if source is ref<types.user_message_t> user {
-        types.message_t result = new types.user_message_t(role = user.role, content = user.content, timestamp = user.timestamp)
+        [ref<types.image_attachment_t>] images = []
+        for image in user.images {
+            images.push(new types.image_attachment_t(mime_type = image.mime_type, data = image.data))
+        }
+        types.message_t result = new types.user_message_t(role = user.role, content = user.content, images = images, timestamp = user.timestamp)
         return result
     }
     if source is ref<types.assistant_message_t> assistant_message {

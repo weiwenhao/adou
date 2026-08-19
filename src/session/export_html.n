@@ -40,7 +40,7 @@ pub fn render(ref<repository.manager_t> repository): string! {
 
 fn render_message(ai_types.message_t message): string {
     if message is ref<ai_types.user_message_t> user {
-        return '<article class="message user"><header>You</header><pre>' + escape(user.content) + '</pre></article>'
+        return '<article class="message user"><header>You</header><pre>' + escape(user.content) + '</pre>' + render_images(user.images) + '</article>'
     }
     if message is ref<ai_types.assistant_message_t> assistant {
         string content = ''
@@ -61,7 +61,7 @@ fn render_message(ai_types.message_t message): string {
         for block in tool.content {
             content += block.text + '\n'
         }
-        return '<article class="message tool-result"><header>Tool result: ' + escape(tool.tool_name) + '</header><pre>' + ansi_to_html.ansi_to_html(content) + '</pre></article>'
+        return '<article class="message tool-result"><header>Tool result: ' + escape(tool.tool_name) + '</header><pre>' + ansi_to_html.ansi_to_html(content) + '</pre>' + render_images(tool.images) + '</article>'
     }
     if message is ref<ai_types.bash_execution_message_t> bash {
         return '<article class="message bash"><header>Shell</header><pre>$ ' + escape(bash.command) + '\n' + ansi_to_html.ansi_to_html(bash.output) + '</pre></article>'
@@ -72,10 +72,18 @@ fn render_message(ai_types.message_t message): string {
     return ''
 }
 
+fn render_images([ref<ai_types.image_attachment_t>] images): string {
+    string result = ''
+    for image in images {
+        result += '<img class="attachment" alt="Image attachment" loading="lazy" src="data:' + escape(image.mime_type) + ';base64,' + escape(image.data) + '">'
+    }
+    return result
+}
+
 pub fn escape(string value): string {
     return value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;').replace("'", '&#39;')
 }
 
 fn styles(): string {
-    return 'body{margin:0;background:#111;color:#e8e8e8;font:15px ui-monospace,SFMono-Regular,Menlo,monospace}main{max-width:960px;margin:0 auto;padding:32px 20px}h1{font-size:20px;color:#9adbd2}.meta{color:#777;font-size:12px;margin-bottom:24px}.message,.event{border:1px solid #292929;border-radius:8px;padding:14px 16px;margin:12px 0;background:#171717}.message.user{border-left:3px solid #7aa2f7}.message.assistant{border-left:3px solid #9ece6a}.message.tool-result{border-left:3px solid #e0af68}.message.bash{border-left:3px solid #bb9af7}.event{border-left:3px solid #565f89}.message header,.event header{color:#aaa;margin-bottom:10px}.message header span{color:#666;font-size:12px}.message footer{color:#666;font-size:11px;margin-top:10px}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0;line-height:1.5}details{margin:8px 0;border:1px solid #303030;border-radius:5px;padding:8px}summary{cursor:pointer;color:#c0caf5}.thinking{background:#13131a}.tool{background:#151a14}'
+    return 'body{margin:0;background:#111;color:#e8e8e8;font:15px ui-monospace,SFMono-Regular,Menlo,monospace}main{max-width:960px;margin:0 auto;padding:32px 20px}h1{font-size:20px;color:#9adbd2}.meta{color:#777;font-size:12px;margin-bottom:24px}.message,.event{border:1px solid #292929;border-radius:8px;padding:14px 16px;margin:12px 0;background:#171717}.message.user{border-left:3px solid #7aa2f7}.message.assistant{border-left:3px solid #9ece6a}.message.tool-result{border-left:3px solid #e0af68}.message.bash{border-left:3px solid #bb9af7}.event{border-left:3px solid #565f89}.message header,.event header{color:#aaa;margin-bottom:10px}.message header span{color:#666;font-size:12px}.message footer{color:#666;font-size:11px;margin-top:10px}.attachment{display:block;max-width:100%;max-height:70vh;object-fit:contain;margin:10px 0}pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:8px 0;line-height:1.5}details{margin:8px 0;border:1px solid #303030;border-radius:5px;padding:8px}summary{cursor:pointer;color:#c0caf5}.thinking{background:#13131a}.tool{background:#151a14}'
 }

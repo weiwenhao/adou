@@ -7,10 +7,9 @@ import strings
 import syscall
 import time
 
-// Port of the pure logic from vendors/pi/packages/tui/src/terminal-image.ts:
-// terminal capability detection, kitty/iTerm2 encoding and image dimension
-// parsing. Message/component integration is not wired yet and remains open
-// parity work.
+// Port of vendors/pi/packages/tui/src/terminal-image.ts: terminal capability
+// detection, Kitty/iTerm2 encoding and image dimension parsing. Session view
+// integration renders attachments through this module with a text fallback.
 
 pub type image_dimensions_t = struct {
     int width_px

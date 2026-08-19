@@ -31,7 +31,7 @@ E2E_SOURCES := $(sort $(wildcard tests/e2e/*.sh))
 # registered here to join make e2e-live.  Each live script self-gates
 # behind an ADOU_LIVE_* switch, so this target is safe to invoke without
 # any switch set.
-E2E_LIVE_SOURCES := tests/e2e/live/live-smoke.sh tests/e2e/live/live-coding-journey.sh tests/e2e/live/live-tui-coding-journey.sh tests/e2e/live/share-github.sh
+E2E_LIVE_SOURCES := tests/e2e/live/live-smoke.sh tests/e2e/live/live-coding-journey.sh tests/e2e/live/live-tui-coding-journey.sh tests/e2e/live/openai-journey.sh tests/e2e/live/openai-oauth.sh tests/e2e/live/radius-web.sh tests/e2e/live/share-github.sh
 EVAL_ENTRY := tests/evals/smoke_evals.n
 EVAL_BIN := $(BIN_DIR)/adou-evals
 ADOU_VERSION := $(shell sed -n "s/^pub const VERSION = '\([^']*\)'.*/\1/p" $(CURDIR)/src/app.n)
@@ -98,10 +98,9 @@ e2e: build
 		ADOU_BIN="$(abspath $(ADOU_BIN))" ADOU_PROCESS_GROUP_HELPER="$(abspath $(PROCESS_GROUP_HELPER))" "$(CURDIR)/$$test_file"; \
 	done
 
-# Serial opt-in live suite against the real model.  Individual scripts gate
-# themselves behind ADOU_LIVE_SMOKE / ADOU_LIVE_JOURNEY so this target is
-# safe to invoke without the switch set; with the switches on it consumes
-# provider quota (see docs/e2e-journey-matrix.md).
+# Serial opt-in live suite. Individual scripts self-gate behind ADOU_LIVE_*
+# switches, so this target is safe without them; enabled provider journeys
+# consume quota and Radius/GitHub checks contact their public services.
 e2e-live: build
 	@set -e; for test_file in $(E2E_LIVE_SOURCES); do \
 		echo "==> $$test_file"; \
@@ -216,7 +215,7 @@ help:
 		'make run     Build and run Adou' \
 		'make test    Run every Nature test serially through the guard' \
 		'make e2e     Build once, then run CLI end-to-end tests (offline/mocked)' \
-		'make e2e-live Build once, then run opt-in live DeepSeek tests serially (scripts self-gate on ADOU_LIVE_SMOKE / ADOU_LIVE_JOURNEY; consumes quota)' \
+		'make e2e-live Build once, then run opt-in provider/Radius/GitHub live tests serially (ADOU_LIVE_* gated; may consume quota)' \
 		'make eval    Run the Phase 8 smoke evals against local mocks' \
 		'make check   Run unit tests followed by end-to-end tests' \
 		'make dist    Package build/dist/adou-<version>-darwin-arm64.tar.gz' \
