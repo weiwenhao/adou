@@ -31,7 +31,6 @@ pub fn build_with_tools(string cwd, [ref<project.file_t>] context_files, string 
     return prompt
 }
 
-#local
 fn tool_descriptions([string] tool_names): string {
     string result = ''
     for name in tool_names {
@@ -44,7 +43,6 @@ fn tool_descriptions([string] tool_names): string {
     return result.trim(['\n'])
 }
 
-#local
 fn prompt_guidelines([string] tool_names): string {
     [string] values = []
     if has_tool(tool_names, 'bash') && !has_tool(tool_names, 'grep') && !has_tool(tool_names, 'find') && !has_tool(tool_names, 'ls') {
@@ -76,7 +74,6 @@ fn prompt_guidelines([string] tool_names): string {
     return result.trim(['\n'])
 }
 
-#local
 fn has_tool([string] tool_names, string wanted): bool {
     for name in tool_names {
         if name == wanted {return true}
@@ -84,7 +81,6 @@ fn has_tool([string] tool_names, string wanted): bool {
     return false
 }
 
-#local
 fn tool_snippet(string name): string {
     return name == 'read' ? 'Read file contents' : name == 'write' ? 'Create or overwrite files' : name == 'edit' ? 'Make precise file edits with exact text replacement, including multiple disjoint edits in one call' : name == 'bash' ? 'Execute bash commands (ls, grep, find, etc.)' : name == 'grep' ? 'Search file contents for patterns (respects .gitignore)' : name == 'find' ? 'Find files by glob pattern (respects .gitignore)' : name == 'ls' ? 'List directory contents' : ''
 }

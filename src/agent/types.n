@@ -185,7 +185,6 @@ pub fn queue_t.pending_count(&self): int {
     return count
 }
 
-#local
 fn queue_text(types.message_t message): string {
     if message is ref<types.user_message_t> user {
         return user.content
@@ -196,7 +195,6 @@ fn queue_text(types.message_t message): string {
     return ''
 }
 
-#local
 fn remove_visible(ptr<[string]> messages, string text): bool {
     for index, pending in *messages {
         if pending == text {
@@ -209,7 +207,6 @@ fn remove_visible(ptr<[string]> messages, string text): bool {
     return false
 }
 
-#local
 fn drain(ptr<[types.message_t]> messages, string mode): [types.message_t] {
     var current = *messages
     if current.len() == 0 {

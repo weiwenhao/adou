@@ -64,13 +64,17 @@ pub type settings_t = struct {
     string double_escape_action = 'tree'
     // Pi settings.treeFilterMode: default filter when opening /tree.
     string tree_filter_mode = 'default'
-    // Pi settings.showHardwareCursor with PI_HARDWARE_CURSOR env fallback.
+    // Pi settings.showHardwareCursor with ADOU_HARDWARE_CURSOR env fallback.
     bool show_hardware_cursor
     int editor_padding_x
     int output_pad = 1
     // Pi settings.terminal.clearOnShrink / showTerminalProgress.
     bool terminal_clear_on_shrink
     bool terminal_progress
+    bool show_images = true
+    int image_width_cells = 60
+    bool auto_resize_images = true
+    bool block_images
     // Pi settings.warnings.anthropicExtraUsage.
     bool warnings_anthropic_extra_usage = true
 }
@@ -104,7 +108,6 @@ pub fn load_for(string cwd): settings_t {
     return result
 }
 
-#local
 fn load_file(string file_path, settings_t initial): settings_t {
     var result = initial
     if !path_utils.exists(file_path) {return result}
@@ -137,8 +140,8 @@ fn load_file(string file_path, settings_t initial): settings_t {
     if object.contains('showHardwareCursor') {
         result.show_hardware_cursor = bool_value(object, 'showHardwareCursor', result.show_hardware_cursor)
     } else {
-        // Pi getShowHardwareCursor: file value wins, then PI_HARDWARE_CURSOR.
-        result.show_hardware_cursor = syscall.get_env('PI_HARDWARE_CURSOR') == '1'
+        // Pi getShowHardwareCursor: file value wins, then ADOU_HARDWARE_CURSOR.
+        result.show_hardware_cursor = syscall.get_env('ADOU_HARDWARE_CURSOR') == '1'
     }
     result.http_idle_timeout_ms = http_idle_timeout(object, result.http_idle_timeout_ms)
     string theme_value = string_value(object, 'theme', result.theme)
@@ -168,6 +171,7 @@ fn load_file(string file_path, settings_t initial): settings_t {
     result = load_compaction(object, result)
     result = load_retry(object, result)
     result = load_terminal(object, result)
+    result = load_images(object, result)
     result = load_warnings(object, result)
     if object.contains('enabledModels') && object['enabledModels'] is [any] {
         // An explicitly configured project array replaces the global scope;
@@ -187,7 +191,6 @@ fn load_file(string file_path, settings_t initial): settings_t {
 
 // Pi migration behavior kept at load: a legacy flat autoCompaction key is
 // only consulted when the Pi-shaped compaction.enabled key is absent.
-#local
 fn load_compaction({string:any} object, settings_t initial): settings_t {
     var result = initial
     any compaction_value = null
@@ -217,7 +220,6 @@ fn load_compaction({string:any} object, settings_t initial): settings_t {
 
 // Legacy flat retryEnabled/retryMaxAttempts/retryBaseDelayMs keys migrate
 // into Pi's nested retry object shape; the nested shape wins when present.
-#local
 fn load_retry({string:any} object, settings_t initial): settings_t {
     var result = initial
     any retry_value = null
@@ -243,7 +245,6 @@ fn load_retry({string:any} object, settings_t initial): settings_t {
     return result
 }
 
-#local
 fn load_terminal({string:any} object, settings_t initial): settings_t {
     var result = initial
     any terminal_value = null
@@ -255,17 +256,29 @@ fn load_terminal({string:any} object, settings_t initial): settings_t {
         if terminal.contains('clearOnShrink') {
             result.terminal_clear_on_shrink = bool_value(terminal, 'clearOnShrink', result.terminal_clear_on_shrink)
         } else {
-            result.terminal_clear_on_shrink = syscall.get_env('PI_CLEAR_ON_SHRINK') == '1'
+            result.terminal_clear_on_shrink = syscall.get_env('ADOU_CLEAR_ON_SHRINK') == '1'
         }
         result.terminal_progress = bool_value(terminal, 'showTerminalProgress', result.terminal_progress)
+        result.show_images = bool_value(terminal, 'showImages', result.show_images)
+        int image_width = int_value(terminal, 'imageWidthCells', result.image_width_cells)
+        if image_width > 0 {result.image_width_cells = image_width}
         return result
     }
     // Pi: setting wins, then env, then default false.
-    result.terminal_clear_on_shrink = syscall.get_env('PI_CLEAR_ON_SHRINK') == '1'
+    result.terminal_clear_on_shrink = syscall.get_env('ADOU_CLEAR_ON_SHRINK') == '1'
     return result
 }
 
-#local
+fn load_images({string:any} object, settings_t initial): settings_t {
+    var result = initial
+    if object.contains('images') && json_util.is_obj(object['images']) {
+        var images = object['images'] as {string:any}
+        result.auto_resize_images = bool_value(images, 'autoResize', result.auto_resize_images)
+        result.block_images = bool_value(images, 'blockImages', result.block_images)
+    }
+    return result
+}
+
 fn load_warnings({string:any} object, settings_t initial): settings_t {
     var result = initial
     any warnings_value = null
@@ -278,7 +291,6 @@ fn load_warnings({string:any} object, settings_t initial): settings_t {
     return result
 }
 
-#local
 fn read_raw(string file_path): {string:any} {
     if !path_utils.exists(file_path) {return {}}
     var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return {}}
@@ -303,7 +315,6 @@ pub fn save_project(string cwd, settings_t settings): void! {
     save_to(settings, paths.project_settings_path(cwd))
 }
 
-#local
 fn save_to(settings_t settings, string file_path): void! {
     // Merge over the existing file so unknown keys (theme, packages,
     // transport, ...) survive a save; Pi's settings manager keeps the full
@@ -357,7 +368,13 @@ fn save_to(settings_t settings, string file_path): void! {
     {string:any} terminal_object = json_util.opt_obj(object, 'terminal')
     terminal_object['clearOnShrink'] = settings.terminal_clear_on_shrink
     terminal_object['showTerminalProgress'] = settings.terminal_progress
+    terminal_object['showImages'] = settings.show_images
+    terminal_object['imageWidthCells'] = settings.image_width_cells
     object['terminal'] = terminal_object
+    {string:any} images_object = json_util.opt_obj(object, 'images')
+    images_object['autoResize'] = settings.auto_resize_images
+    images_object['blockImages'] = settings.block_images
+    object['images'] = images_object
     {string:any} warnings_object = json_util.opt_obj(object, 'warnings')
     warnings_object['anthropicExtraUsage'] = settings.warnings_anthropic_extra_usage
     object['warnings'] = warnings_object
@@ -555,7 +572,6 @@ pub fn settings_path(): string {
     return paths.settings_path()
 }
 
-#local
 fn queue_mode(string value): string {
     return value == 'all' ? value : 'one-at-a-time'
 }
@@ -565,23 +581,19 @@ pub fn thinking_level(string value): string {
     return 'off'
 }
 
-#local
 fn trust_mode(string value): string {
     return value == 'always' || value == 'never' ? value : 'ask'
 }
 
-#local
 fn double_escape(string value): string {
     return value == 'tree' || value == 'fork' || value == 'none' ? value : 'tree'
 }
 
-#local
 fn tree_filter(string value): string {
     if value == 'no-tools' || value == 'user-only' || value == 'labeled-only' || value == 'all' {return value}
     return 'default'
 }
 
-#local
 fn transport_value(string value): string {
     if value == 'sse' || value == 'websocket' || value == 'websocket-cached' {return value}
     return 'auto'
@@ -590,7 +602,6 @@ fn transport_value(string value): string {
 // Pi parseHttpIdleTimeoutMs: numeric >= 0, or the string "disabled" (0);
 // anything else keeps the inherited value (Adou load stays quiet where Pi
 // records a load error).
-#local
 fn http_idle_timeout({string:any} object, int fallback): int {
     if !object.contains('httpIdleTimeoutMs') {return fallback}
     any value = object['httpIdleTimeoutMs']
@@ -604,25 +615,21 @@ fn http_idle_timeout({string:any} object, int fallback): int {
     return fallback
 }
 
-#local
 fn string_value({string:any} object, string key, string fallback): string {
     if object.contains(key) && object[key] is string {return object[key] as string}
     return fallback
 }
 
-#local
 fn bool_value({string:any} object, string key, bool fallback): bool {
     if object.contains(key) && object[key] is bool {return object[key] as bool}
     return fallback
 }
 
-#local
 fn int_value({string:any} object, string key, int fallback): int {
     if !object.contains(key) || !(object[key] is f64) {return fallback}
     return object[key] as f64 as int
 }
 
-#local
 fn positive_int({string:any} object, string key, int fallback): int {
     if !object.contains(key) || !(object[key] is f64) {return fallback}
     int value = object[key] as f64 as int
@@ -631,7 +638,6 @@ fn positive_int({string:any} object, string key, int fallback): int {
 
 // Pi editor.ts clamps present numeric autocompleteMaxVisible values to [3, 20];
 // missing or non-numeric values retain the inherited value.
-#local
 fn autocomplete_clamp(int value): int {
     if value < 3 {
         return 3
@@ -642,14 +648,12 @@ fn autocomplete_clamp(int value): int {
     return value
 }
 
-#local
 fn autocomplete_value({string:any} object, string key, int fallback): int {
     if !object.contains(key) || !(object[key] is f64) {return fallback}
     return object[key] as f64 as int
 }
 
 // Pi setEditorPaddingX clamps to [0, 3].
-#local
 fn padding_clamp(int value): int {
     if value < 0 {
         return 0

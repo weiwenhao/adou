@@ -45,13 +45,8 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
     if context.tools.len() > 0 {
         body['tools'] = convert_tools(context.tools)
     }
-    int max_tokens = options.max_tokens
-    if max_tokens <= 0 {
-        max_tokens = model.max_tokens
-    }
-    if max_tokens > 0 {
-        body['max_output_tokens'] = max_tokens
-    }
+    // The ChatGPT Codex Responses backend rejects max_output_tokens on both
+    // its SSE and WebSocket transports. Pi intentionally omits it here.
     if options.reasoning_effort != '' && options.reasoning_effort != 'off' {
         {string:any} reasoning = {}
         reasoning['effort'] = options.reasoning_effort
@@ -102,7 +97,6 @@ pub fn account_id(string token): string! {
     return claim_object['chatgpt_account_id'] as string
 }
 
-#local
 fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [any]! {
     [any] result = []
     var replay = replay.tracker()
@@ -156,7 +150,6 @@ fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [an
     return result
 }
 
-#local
 fn message_item(string role, string content): any {
     {string:any} item = {}
     item['role'] = role
@@ -164,7 +157,6 @@ fn message_item(string role, string content): any {
     return item
 }
 
-#local
 fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> message): any! {
     string text = ''
     [any] calls = []
@@ -201,7 +193,6 @@ fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> messa
     return item
 }
 
-#local
 fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_t> message): any {
     [string] lines = []
     for block in message.content {
@@ -218,7 +209,6 @@ fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_t> m
     return item
 }
 
-#local
 fn convert_tools([ref<types.tool_t>] tools): [any]! {
     [any] result = []
     for tool in tools {
@@ -235,7 +225,6 @@ fn convert_tools([ref<types.tool_t>] tools): [any]! {
     return result
 }
 
-#local
 fn clamp_cache_key(string value): string {
     if value.len() > 64 {
         return value.slice(0, 64)

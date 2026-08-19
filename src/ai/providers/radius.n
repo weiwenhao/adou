@@ -3,9 +3,11 @@
 // OAuth credential flow is out of Adou's scope, the provider authenticates
 // with an API key and keeps the dynamic gateway catalog refresh.
 import adou.src.ai.types
+import adou.src.ai.providers.radius_config
+import adou.src.config.auth
 
 pub fn def(): types.provider_def_t {
-    return types.provider_def_t {id: 'radius', name: 'Radius', api: 'pi-messages', base_url: 'https://radius.pi.dev', env_vars: ['RADIUS_API_KEY'], headers: {},}
+    return types.provider_def_t {id: 'radius', name: 'Radius', api: 'pi-messages', base_url: 'https://radius.pi.dev', env_vars: ['RADIUS_API_KEY'], headers: {}, supports_oauth: true,}
 }
 
 // Radius serves a persisted, dynamically refreshed catalog; Adou without
@@ -13,8 +15,26 @@ pub fn def(): types.provider_def_t {
 // CLI. Point it at a gateway with --base-url; radius_config loads the real
 // catalog from <gateway>/v1/config.
 pub fn models(): [ref<types.model_t>] {
+    var stored = auth.read_credential('radius')
+    if stored is ref<auth.oauth_credential_t> {
+        var oauth = stored as ref<auth.oauth_credential_t>
+        var gateway_config = radius_config.sanitize_radius_gateway_config(oauth.gateway_config)
+        if gateway_config is {string:any} config {
+            var dynamic_models = radius_config.radius_models_from_config('radius', config)
+            if dynamic_models.len() > 0 {
+                return dynamic_models
+            }
+        }
+    }
     [ref<types.model_t>] result = []
-    var model = new types.model_t(id = 'default', name = 'Radius default', api = 'pi-messages', provider = 'radius', base_url = 'https://radius.pi.dev', reasoning = true, context_window = 200000, max_tokens = 64000)
+    string base_url = 'https://radius.pi.dev'
+    if stored is ref<auth.oauth_credential_t> {
+        var oauth = stored as ref<auth.oauth_credential_t>
+        if oauth.base_url != '' {
+            base_url = oauth.base_url
+        }
+    }
+    var model = new types.model_t(id = 'default', name = 'Radius default', api = 'pi-messages', provider = 'radius', base_url = base_url, reasoning = true, context_window = 200000, max_tokens = 64000)
     result.push(model)
     return result
 }

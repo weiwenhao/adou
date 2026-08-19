@@ -59,7 +59,7 @@ Herdr 终端内的真实用户操作：真实 DeepSeek、真实 TUI、真实终�
 4. 隔离环境：为每次测试创建唯一临时目录（变量名避开系统 `TMPDIR`）：
    `ADOU_REAL_TEST_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/adou-real-test.XXXXXX")`
    （macOS mktemp 模板须以 `XXXXXX` 结尾），并设
-   `PI_CODING_AGENT_DIR`、`PI_CODING_AGENT_SESSION_DIR` 指向其子目录；
+   `ADOU_CODING_AGENT_DIR`、`ADOU_SESSION_DIR` 指向其子目录；
    结束时整目录删除（或按证据留存规则保留）。
 5. 确认无 `ADOU_PROVIDER`/`ADOU_MODEL` 覆盖：`env | rg '^ADOU_'`
    应为空；若存在，记录后按"覆盖生效"解读，不作为默认路径证据。
@@ -79,7 +79,7 @@ Herdr 终端内的真实用户操作：真实 DeepSeek、真实 TUI、真实终�
    选择 DeepSeek，再按提示粘贴 API key（**不得写入任何命令、日志、文档
    或提交**；不要在命令行参数中携带 key）。
 2. 确认 provider：`/model` 或状态区应显示 deepseek；随后
-   `ls -la "$PI_CODING_AGENT_DIR"` 确认 `auth.json` 存在（只记文件名，
+   `ls -la "$ADOU_CODING_AGENT_DIR"` 确认 `auth.json` 存在（只记文件名，
    不 cat 内容、不打印 key）。
 3. 默认模型确认：在**无** `ADOU_PROVIDER`/`ADOU_MODEL`、无持久默认
    （可先检查隔离目录 settings.json 是否含 defaultProvider）时，启动后
@@ -98,7 +98,7 @@ Herdr 终端内的真实用户操作：真实 DeepSeek、真实 TUI、真实终�
 
 ## 5. Unicode 显示与字节连续性
 
-输入并逐项确认渲染（`PI_TUI_WRITE_LOG` 开启，日志路径设在临时目录）：
+输入并逐项确认渲染（`ADOU_TUI_WRITE_LOG` 开启，日志路径设在临时目录）：
 
 1. 中文：`你好`
 2. 组合字符：`a\u0301`（a + 组合重音）
@@ -107,7 +107,7 @@ Herdr 终端内的真实用户操作：真实 DeepSeek、真实 TUI、真实终�
 
 检查：
 - 显示无乱码、无替换符 `�`；
-- 原始字节流连续性：`PI_TUI_WRITE_LOG` 中
+- 原始字节流连续性：`ADOU_TUI_WRITE_LOG` 中
   `e4 bd a0 e5 a5 bd`（你好）必须连续出现，不得出现 `e5 <ANSI> a5`
   这类 ANSI 插入 code point 的模式；ZWJ/国旗字节序列同样必须连续。
 - 光标在中文/emoji 上时，光标样式必须包住整个 grapheme，不得截半。
@@ -140,7 +140,7 @@ Herdr 终端内的真实用户操作：真实 DeepSeek、真实 TUI、真实终�
 
 每次执行保留到报告目录（可归档、可复现）：
 - 两份二进制的 `shasum -a 256` 与 mtime；
-- `PI_TUI_WRITE_LOG`（去 ANSI 后可作为渲染证据；含 key 的行禁止留存）；
+- `ADOU_TUI_WRITE_LOG`（去 ANSI 后可作为渲染证据；含 key 的行禁止留存）；
 - session JSONL 的条目顺序摘要（只记类型/顺序，不复制消息正文）；
 - 5 次延迟测量原始记录；
 - 模型/thinking 确认截图或文本；
@@ -237,7 +237,7 @@ runtime: out of memory: page allocation failed
 |---|---|---|
 | Pi，新会话，两轮 | `PI_ONLY_OK`；bash 与最终标记正确 | 正常，无乱码、无系统调用错误 |
 | Adou，首次两轮 | `PI_ONLY_OK`；bash 与最终标记正确 | bash 完成后的 thinking/redraw 帧短暂出现非 UTF-8/疑似内存字节，随后自愈；最终答复后显示 `Error: bad address in system call argument` |
-| Adou，重新编译后的严格两轮复跑 | 与 Pi 相同，全部正确 | 正常，未复现异常；`PI_TUI_WRITE_LOG` 已启用 |
+| Adou，重新编译后的严格两轮复跑 | 与 Pi 相同，全部正确 | 正常，未复现异常；`ADOU_TUI_WRITE_LOG` 已启用 |
 
 Adou 首次异常轮仍完成了 HTTPS 响应、bash toolCall/toolResult 和最终答复，
 `/quit` 退出码为 0，且没有 `adou-*.ips` crash report 或遗留进程。因此它
@@ -559,7 +559,7 @@ runtime 输入死亡"（间歇性，按需不可复现）；本项保持开放�
 Pi 源码对照（vendors/pi `packages/tui`）：editor 假光标渲染
 `\x1b[7m<grapheme>\x1b[0m`（字符上）与 `\x1b[7m \x1b[0m`（EOL），与
 Adou `theme.cursor` 完全同构；硬件光标默认隐藏（`\x1b[?25l`，
-`PI_HARDWARE_CURSOR=1` 才显示）；Pi 焦点态在假光标前发射零宽 IME 标记
+`ADOU_HARDWARE_CURSOR=1` 才显示）；Pi 焦点态在假光标前发射零宽 IME 标记
 `\x1b_pi:c\x07` 并据此定位（隐藏的）硬件光标，退出前用普通空格覆盖
 假光标格。
 

@@ -29,9 +29,9 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-debug-") as root:
     env = os.environ.copy()
     env.update(
         {
-            "PI_CODING_AGENT_DIR": os.path.join(root, "agent"),
-            "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
-            "PI_TIMING": "1",
+            "ADOU_CODING_AGENT_DIR": os.path.join(root, "agent"),
+            "ADOU_SESSION_DIR": os.path.join(root, "sessions"),
+            "ADOU_TIMING": "1",
         }
     )
     env.pop("ADOU_DEBUG_FILE", None)
@@ -62,7 +62,7 @@ stderr = result.stderr
 if "[adou debug] startup:" not in stderr or "[adou debug] mode: starting rpc loop" not in stderr:
     raise SystemExit(f"debug lifecycle logs missing from stderr: {stderr!r}")
 if "--- Startup Timings: main ---" not in stderr or "parseArgs:" not in stderr:
-    raise SystemExit(f"PI_TIMING output missing from stderr: {stderr!r}")
+    raise SystemExit(f"ADOU_TIMING output missing from stderr: {stderr!r}")
 if "[adou debug]" in result.stdout or "Startup Timings" in result.stdout:
     raise SystemExit(f"diagnostics contaminated RPC stdout: {result.stdout!r}")
 

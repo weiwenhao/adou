@@ -18,8 +18,8 @@ printf '%s\n' \
     '{"type":"get_session_stats"}' \
     '{"type":"get_last_assistant_text"}' \
     '{"id":"bash","type":"bash","command":"printf shape"}' \
-  | PI_CODING_AGENT_DIR="$tmp_dir/agent" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions" \
+  | ADOU_CODING_AGENT_DIR="$tmp_dir/agent" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions" \
     "$binary" --mode rpc --no-session --no-context-files \
       --provider deepseek --model deepseek-v4-flash --thinking off --api-key rpc-shape-key \
       > "$output"

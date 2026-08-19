@@ -1,0 +1,170 @@
+import co.mutex
+import fmt
+import net.tcp
+import net.url
+import time
+
+pub type callback_result_t = struct {
+    string code
+    string error_message
+}
+
+pub type callback_server_t = struct {
+    ref<tcp.server_t> server
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    string host
+    int port
+    string callback_path
+    string expected_state
+    bool closed
+    bool claimed
+}
+
+pub fn start(string host, int port, string callback_path, string expected_state): ref<callback_server_t>! {
+    var listener = tcp.listen(fmt.sprintf('%s:%d', host, port))
+    return new callback_server_t(server = listener, host = host, port = port, callback_path = callback_path, expected_state = expected_state)
+}
+
+// Nature does not currently expose the kernel-assigned port for a :0 listener,
+// so choose a high loopback port and retry a bounded set of candidates.
+pub fn start_ephemeral(string host, string callback_path, string expected_state): ref<callback_server_t>! {
+    int seed = time.now().ms_timestamp()
+    for int attempt = 0; attempt < 64; attempt += 1 {
+        int port = 49152 + ((seed + attempt * 7919) % 16383)
+        var listener = start(host, port, callback_path, expected_state) catch error {
+            continue
+        }
+        return listener
+    }
+    throw errorf('Could not allocate a loopback OAuth callback port')
+}
+
+pub fn callback_server_t.redirect_uri(&self): string {
+    return fmt.sprintf('http://%s:%d%s', self.host, self.port, self.callback_path)
+}
+
+pub fn callback_server_t.close(&self) {
+    self.lock.lock()
+    if self.closed {
+        self.lock.unlock()
+        return
+    }
+    self.closed = true
+    self.server.close()
+    self.lock.unlock()
+}
+
+pub fn callback_server_t.wait(&self): callback_result_t! {
+    for true {
+        var conn = self.server.accept() catch error {
+            if self.is_closed() {
+                throw errorf('OAuth callback listener was cancelled')
+            }
+            throw errorf('OAuth callback listener failed: %s', error.msg())
+        }
+        conn.set_read_timeout(30000)
+        string request = read_request(conn) catch error {
+            send_page(conn, 400, 'Invalid OAuth callback request.')
+            conn.close()
+            continue
+        }
+        var result = self.handle_request(request)
+        if result.error_message != '' {
+            send_page(conn, 400, result.error_message)
+            conn.close()
+            if result.error_message.starts_with('OAuth authorization failed:') {
+                self.close()
+                return result
+            }
+            continue
+        }
+        send_page(conn, 200, 'Authentication completed. You can close this window.')
+        conn.close()
+        self.close()
+        return result
+    }
+    throw errorf('OAuth callback listener stopped')
+}
+
+pub fn callback_server_t.handle_request(&self, string request): callback_result_t {
+    int line_end = request.find('\r\n')
+    string first_line = line_end >= 0 ? request.slice(0, line_end) : request
+    int first_space = first_line.find(' ')
+    if first_space < 0 || first_line.slice(0, first_space) != 'GET' {
+        return callback_result_t {error_message: 'OAuth callback must use GET.'}
+    }
+    string rest = first_line.slice(first_space + 1, first_line.len())
+    int second_space = rest.find(' ')
+    string target = second_space >= 0 ? rest.slice(0, second_space) : rest
+    int query_offset = target.find('?')
+    string path = query_offset >= 0 ? target.slice(0, query_offset) : target
+    if path != self.callback_path {
+        return callback_result_t {error_message: 'OAuth callback route not found.'}
+    }
+    string query = query_offset >= 0 ? target.slice(query_offset + 1, target.len()) : ''
+    string oauth_error = query_value(query, 'error')
+    if oauth_error != '' {
+        string description = query_value(query, 'error_description')
+        return callback_result_t {error_message: 'OAuth authorization failed: ' + (description != '' ? description : oauth_error)}
+    }
+    string state = query_value(query, 'state')
+    if self.expected_state != '' && state != self.expected_state {
+        return callback_result_t {error_message: 'OAuth callback state did not match the login attempt.'}
+    }
+    string code = query_value(query, 'code')
+    if code == '' {
+        return callback_result_t {error_message: 'OAuth callback did not contain an authorization code.'}
+    }
+    self.lock.lock()
+    if self.claimed {
+        self.lock.unlock()
+        return callback_result_t {error_message: 'This OAuth callback has already been used.'}
+    }
+    self.claimed = true
+    self.lock.unlock()
+    return callback_result_t {code: code}
+}
+
+pub fn callback_server_t.is_closed(&self): bool {
+    self.lock.lock()
+    bool result = self.closed
+    self.lock.unlock()
+    return result
+}
+
+pub fn query_value(string query, string wanted): string {
+    for field in query.split('&') {
+        int separator = field.find('=')
+        string name = separator >= 0 ? field.slice(0, separator) : field
+        if url.decode(name) != wanted {continue}
+        string value = separator >= 0 ? field.slice(separator + 1, field.len()) : ''
+        return url.decode(value)
+    }
+    return ''
+}
+
+pub fn read_request(ref<tcp.conn_t> conn): string! {
+    [u8] bytes = []
+    for bytes.len() < 16384 {
+        [u8] buffer = vec<u8>.new(0, 1024)
+        int count = conn.read(buffer)
+        if count <= 0 {break}
+        bytes.append(buffer.slice(0, count))
+        string text = bytes as string
+        if text.contains('\r\n\r\n') {return text}
+    }
+    if bytes.len() == 0 {throw errorf('Empty OAuth callback request')}
+    return bytes as string
+}
+
+pub fn send_page(ref<tcp.conn_t> conn, int status, string message) {
+    string title = status >= 200 && status < 300 ? 'Authentication complete' : 'Authentication error'
+    string body = '<!doctype html><html><head><meta charset="utf-8"><title>' + title + '</title></head><body><h1>' + title + '</h1><p>' + html_escape(message) + '</p></body></html>'
+    string reason = status == 200 ? 'OK' : status == 404 ? 'Not Found' : status == 409 ? 'Conflict' : 'Bad Request'
+    string response = fmt.sprintf('HTTP/1.1 %d %s\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s', status, reason, body.len(), body)
+    conn.write(response as [u8]) catch error {}
+}
+
+pub fn html_escape(string value): string {
+    return value.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
+}

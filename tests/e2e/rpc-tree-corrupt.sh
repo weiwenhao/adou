@@ -35,7 +35,7 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-tree-corrupt-") as root:
             output.write(json.dumps(entry, separators=(",", ":")) + "\n")
 
     env = os.environ.copy()
-    env.update({"PI_CODING_AGENT_DIR": os.path.join(root, "agent"), "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions")})
+    env.update({"ADOU_CODING_AGENT_DIR": os.path.join(root, "agent"), "ADOU_SESSION_DIR": os.path.join(root, "sessions")})
     proc = subprocess.Popen(
         [binary, "--mode", "rpc", "--session", session, "--no-context-files", "--provider", "deepseek", "--model", "deepseek-v4-flash", "--api-key", "tree-key"],
         stdin=subprocess.PIPE,

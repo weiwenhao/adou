@@ -163,7 +163,6 @@ pub fn visible_width(string value): int {
     }
 }
 
-#local
 fn repeat(string value, int count): string {
     string result = ''
     for int index = 0; index < count; index += 1 {

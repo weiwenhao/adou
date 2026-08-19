@@ -108,7 +108,6 @@ pub fn clean(string input): string {
     return joined
 }
 
-#local
 fn home_dir(): string {
     string result = syscall.get_env('HOME')
     if result == '' {
@@ -117,7 +116,6 @@ fn home_dir(): string {
     return result
 }
 
-#local
 fn normalize_unicode_spaces(string input): string {
     string result = input
     [string] spaces = ['\xc2\xa0', '\xe2\x80\x80', '\xe2\x80\x81', '\xe2\x80\x82', '\xe2\x80\x83', '\xe2\x80\x84', '\xe2\x80\x85', '\xe2\x80\x86', '\xe2\x80\x87', '\xe2\x80\x88', '\xe2\x80\x89', '\xe2\x80\x8a', NARROW_NO_BREAK_SPACE, '\xe2\x81\x9f', '\xe3\x80\x80']
@@ -127,7 +125,6 @@ fn normalize_unicode_spaces(string input): string {
     return result
 }
 
-#local
 fn split_path(string input): [string] {
     [string] result = []
     int start = 0
@@ -140,7 +137,6 @@ fn split_path(string input): [string] {
     return result
 }
 
-#local
 fn screenshot_am_pm_variant(string input): string {
     string result = input
     result = result.replace(' AM.', NARROW_NO_BREAK_SPACE + 'AM.')

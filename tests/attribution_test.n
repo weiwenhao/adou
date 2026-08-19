@@ -16,20 +16,20 @@ pub fn has_header([attribution.header_t] headers, string name): bool {
 }
 
 test 'telemetry env flag accepts truthy values like Pi' {
-    syscall.set_env('PI_TELEMETRY', '1')
+    syscall.set_env('ADOU_TELEMETRY', '1')
     assert(attribution.is_install_telemetry_enabled())
-    syscall.set_env('PI_TELEMETRY', 'true')
+    syscall.set_env('ADOU_TELEMETRY', 'true')
     assert(attribution.is_install_telemetry_enabled())
-    syscall.set_env('PI_TELEMETRY', 'yes')
+    syscall.set_env('ADOU_TELEMETRY', 'yes')
     assert(attribution.is_install_telemetry_enabled())
-    syscall.set_env('PI_TELEMETRY', '0')
+    syscall.set_env('ADOU_TELEMETRY', '0')
     assert(!attribution.is_install_telemetry_enabled())
-    syscall.set_env('PI_TELEMETRY', '')
+    syscall.set_env('ADOU_TELEMETRY', '')
     assert(!attribution.is_install_telemetry_enabled())
 }
 
 test 'openrouter attribution headers follow the Pi values' {
-    syscall.set_env('PI_TELEMETRY', '1')
+    syscall.set_env('ADOU_TELEMETRY', '1')
     var headers = attribution.provider_attribution_headers(model_with('openrouter', 'https://openrouter.ai/api/v1'), '')
     assert(has_header(headers, 'HTTP-Referer'))
     assert(has_header(headers, 'X-OpenRouter-Title'))
@@ -39,7 +39,7 @@ test 'openrouter attribution headers follow the Pi values' {
 }
 
 test 'nvidia and cloudflare attribution headers' {
-    syscall.set_env('PI_TELEMETRY', '1')
+    syscall.set_env('ADOU_TELEMETRY', '1')
     var nvidia = attribution.provider_attribution_headers(model_with('nvidia', 'https://integrate.api.nvidia.com/v1'), '')
     assert(has_header(nvidia, 'X-BILLING-INVOKE-ORIGIN'))
     var cloudflare = attribution.provider_attribution_headers(model_with('cloudflare-workers-ai', 'https://api.cloudflare.com/client/v4'), '')
@@ -49,13 +49,13 @@ test 'nvidia and cloudflare attribution headers' {
 }
 
 test 'attribution is gated behind telemetry like Pi' {
-    syscall.set_env('PI_TELEMETRY', '')
+    syscall.set_env('ADOU_TELEMETRY', '')
     var headers = attribution.provider_attribution_headers(model_with('openrouter', 'https://openrouter.ai/api/v1'), '')
     assert(!has_header(headers, 'HTTP-Referer'))
 }
 
 test 'opencode session headers are not telemetry-gated' {
-    syscall.set_env('PI_TELEMETRY', '')
+    syscall.set_env('ADOU_TELEMETRY', '')
     var headers = attribution.provider_attribution_headers(model_with('opencode', 'https://opencode.ai'), 'session-1')
     assert(has_header(headers, 'x-opencode-session'))
     assert(has_header(headers, 'x-opencode-client'))

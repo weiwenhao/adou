@@ -20,8 +20,8 @@ cp "$(dirname -- "$0")/../fixtures/hello_extension.js" "$agent_dir/extensions/he
 printf '%s\n' \
     '{"id":"commands","type":"get_commands"}' \
     '{"id":"run","type":"run_command","name":"hello","args":""}' \
-    | PI_CODING_AGENT_DIR="$agent_dir" \
-      PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions" \
+    | ADOU_CODING_AGENT_DIR="$agent_dir" \
+      ADOU_SESSION_DIR="$tmp_dir/sessions" \
       "$binary" --mode rpc --offline --no-session --no-context-files --debug \
         2>"$tmp_dir/stderr" >"$tmp_dir/stdout"
 

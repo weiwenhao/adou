@@ -67,7 +67,7 @@ env = os.environ.copy()
 env.update(
     {
         "HOME": home,
-        "PI_CODING_AGENT_DIR": agent,
+        "ADOU_CODING_AGENT_DIR": agent,
         "ADOU_PROCESS_GROUP_HELPER": helper,
         "DEEPSEEK_API_KEY": "redraw-storm-e2e-key",
     }

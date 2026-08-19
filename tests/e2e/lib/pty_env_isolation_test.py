@@ -3,7 +3,7 @@
 
 Env isolation: PtyCase execs with an exact allowlist env mapping. Sentinel
 credentials/proxies injected into the PARENT environment must not reach the
-child, while allowlisted entries (PATH carried, HOME/PI_CODING_AGENT_DIR/
+child, while allowlisted entries (PATH carried, HOME/ADOU_CODING_AGENT_DIR/
 TERM/locale fixed) must be present. The parent environment must not be
 mutated by PtyCase.start.
 
@@ -78,8 +78,8 @@ def test_env_isolation() -> list[str]:
                 failures.append(f"sentinel {key} reached the child")
         if child.get("HOME") != fixture_home:
             failures.append(f"HOME={child.get('HOME')!r}, want {fixture_home!r}")
-        if child.get("PI_CODING_AGENT_DIR") != fixture_agent:
-            failures.append(f"PI_CODING_AGENT_DIR={child.get('PI_CODING_AGENT_DIR')!r}, want {fixture_agent!r}")
+        if child.get("ADOU_CODING_AGENT_DIR") != fixture_agent:
+            failures.append(f"ADOU_CODING_AGENT_DIR={child.get('ADOU_CODING_AGENT_DIR')!r}, want {fixture_agent!r}")
         for key, want in (("TERM", "xterm-256color"), ("LANG", "en_US.UTF-8"), ("LC_ALL", "en_US.UTF-8")):
             if child.get(key) != want:
                 failures.append(f"{key}={child.get(key)!r}, want {want!r}")

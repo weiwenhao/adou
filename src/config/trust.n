@@ -204,7 +204,6 @@ pub fn has_trust_requiring_resources(string cwd): bool {    [string] resources =
     return false
 }
 
-#local
 fn write_object(string file_path, {string:any} object): void! {
     os.mkdirs(path.dir(file_path), 0o700)
     var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
@@ -214,14 +213,12 @@ fn write_object(string file_path, {string:any} object): void! {
     if written != content.len() {throw errorf('Could not write project trust store')}
 }
 
-#local
 fn home_dir(): string {
     return syscall.get_env('HOME')
 }
 
 pub const CONFIG_DIR_NAME = '.pi'
 
-#local
 fn read_object(string file_path): {string:any} {
     if !path_utils.exists(file_path) {return {}}
     var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return {}}

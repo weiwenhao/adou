@@ -58,6 +58,10 @@ pub type tool_call_t = struct {
     any arguments
     string partial_json
 }
+pub type image_attachment_t = struct {
+    string mime_type
+    string data
+}
 pub type content_t = ref<text_content_t>| ref<thinking_content_t>| ref<tool_call_t>
 pub type assistant_message_t = struct {
     string role = 'assistant'
@@ -82,6 +86,7 @@ pub type tool_result_message_t = struct {
     string tool_call_id
     string tool_name
     [ref<text_content_t>] content = []
+    [ref<image_attachment_t>] images = []
     any details
     usage_t usage
     [string] added_tool_names = []
@@ -142,6 +147,7 @@ pub type context_t = struct {
     string system_prompt
     [message_t] messages = []
     [ref<tool_t>] tools = []
+    bool block_images
 }
 // Pi's per-model compat flags (compat.ts OpenAICompletionsCompat family).
 // The request builders consume the fields that change request shape; the
@@ -201,6 +207,7 @@ pub type provider_def_t = struct {
     [string] env_vars = []
     {string:string} headers = {}
     bool supports_api_key_login = true
+    bool supports_oauth
 }
 pub type stream_options_t = struct {
     string api_key
@@ -217,6 +224,7 @@ pub type stream_options_t = struct {
     string cache_retention = 'short'
     float temperature = -1.0
     string tool_choice
+    bool block_images
     // Pi's transport option for the Codex Responses provider: 'auto'
     // (default), 'sse', 'websocket' or 'websocket-cached'.  'websocket-cached'
     // is treated as plain 'websocket' because connection reuse and

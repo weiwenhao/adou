@@ -1,0 +1,24 @@
+import adou.src.config.oauth_callback
+import co
+import fmt
+import net.tcp
+
+pub const OAUTH_CALLBACK_TEST_PORT = 18946
+
+pub fn send_oauth_callback(): void! {
+    co.sleep(100)
+    var conn = tcp.connect(fmt.sprintf('127.0.0.1:%d', OAUTH_CALLBACK_TEST_PORT))
+    conn.write('GET /callback?code=callback-code&state=expected HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n' as [u8])
+    var response = vec<u8>.new(0, 4096)
+    conn.read(response) catch error {}
+    conn.close()
+}
+
+test 'OAuth callback helpers validate a loopback callback' {
+    assert(oauth_callback.query_value('code=a%2Bb&state=s', 'code') == 'a+b')
+    var listener = oauth_callback.start('127.0.0.1', OAUTH_CALLBACK_TEST_PORT, '/callback', 'expected')
+    go send_oauth_callback()
+    var result = listener.wait()
+    assert(result.code == 'callback-code')
+    assert(result.error_message == '')
+}

@@ -158,8 +158,8 @@ port=$(cat "$port_file")
 
 if ! (
     cd "$work_dir"
-    PI_CODING_AGENT_DIR="$tmp_dir/agent" \
-    PI_CODING_AGENT_SESSION_DIR="$session_dir" \
+    ADOU_CODING_AGENT_DIR="$tmp_dir/agent" \
+    ADOU_SESSION_DIR="$session_dir" \
     "$binary" --provider deepseek --model deepseek-v4-flash --thinking off \
         --base-url "http://127.0.0.1:$port" --api-key e2e-journey-key \
         --mode json --no-context-files --max-tokens 1024 --max-retries 0 \
@@ -218,8 +218,8 @@ open(os.path.join(agent_dir, ".adou-setup"), "w").close()
 env = os.environ.copy()
 env.update(
     {
-        "PI_CODING_AGENT_DIR": agent_dir,
-        "PI_CODING_AGENT_SESSION_DIR": os.environ["SESSION_DIR"],
+        "ADOU_CODING_AGENT_DIR": agent_dir,
+        "ADOU_SESSION_DIR": os.environ["SESSION_DIR"],
     }
 )
 
@@ -299,8 +299,8 @@ PY
 
 if ! (
     cd "$work_dir"
-    PI_CODING_AGENT_DIR="$tmp_dir/agent" \
-    PI_CODING_AGENT_SESSION_DIR="$session_dir" \
+    ADOU_CODING_AGENT_DIR="$tmp_dir/agent" \
+    ADOU_SESSION_DIR="$session_dir" \
     "$binary" --provider deepseek --model deepseek-v4-flash --thinking off \
         --base-url "http://127.0.0.1:$port" --api-key e2e-journey-key \
         --mode json --no-context-files --max-tokens 1024 --max-retries 0 \

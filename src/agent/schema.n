@@ -12,7 +12,6 @@ pub fn validate_and_coerce(string tool_name, any schema, any arguments): any! {
     return cloned
 }
 
-#local
 fn coerce(any schema, any value): any! {
     if !json_util.is_obj(schema) {
         return value
@@ -100,7 +99,6 @@ fn coerce(any schema, any value): any! {
     return value
 }
 
-#local
 fn coerce_union([any] schemas, any value): any! {
     for schema in schemas {
         var candidate = json_util.clone(value)
@@ -112,7 +110,6 @@ fn coerce_union([any] schemas, any value): any! {
     return value
 }
 
-#local
 fn coerce_primitive(any value, string expected): any! {
     if expected == 'number' {
         if json_util.is_null(value) {
@@ -184,7 +181,6 @@ fn coerce_primitive(any value, string expected): any! {
     return value
 }
 
-#local
 fn validate(any schema, any value, string current_path): string! {
     if !json_util.is_obj(schema) {
         return ''
@@ -286,7 +282,6 @@ fn validate(any schema, any value, string current_path): string! {
     return ''
 }
 
-#local
 fn schema_types(any schema): [string] {
     [string] result = []
     if !json_util.is_obj(schema) {
@@ -309,7 +304,6 @@ fn schema_types(any schema): [string] {
     return result
 }
 
-#local
 fn matches_any_type(any value, [string] types): bool {
     for expected in types {
         if matches_type(value, expected) {
@@ -319,7 +313,6 @@ fn matches_any_type(any value, [string] types): bool {
     return false
 }
 
-#local
 fn matches_type(any value, string expected): bool {
     if expected == 'number' {
         return json_util.is_num(value)
@@ -345,14 +338,12 @@ fn matches_type(any value, string expected): bool {
     return false
 }
 
-#local
 fn number_is_integer(string token): bool {
     float value = token.to_float() catch e {return false}
     int integer = value as int
     return integer as float == value
 }
 
-#local
 fn normalized_number(string value): string {
     string token = value.trim([' ', '\t', '\n', '\r'])
     float parsed = token.to_float() catch e {
@@ -370,7 +361,6 @@ pub fn includes([string] values, string expected): bool {
     return false
 }
 
-#local
 fn child_path(string parent, string child): string {
     if parent == 'root' {
         return child

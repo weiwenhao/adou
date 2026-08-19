@@ -153,13 +153,16 @@ test 'read accepts an empty file and reports an explicit offset consistently' {
     os.rmdir(root, true)
 }
 
-test 'read rejects image content explicitly' {
+test 'read returns supported image content as a base64 attachment' {
     string root = '/tmp/adou-tools-test-image'
     os.rmdir(root, true) catch e {}
     write_fixture(root + '/value.bin', [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
     var result = read.execute(root, 'value.bin', false, 0.0, false, 0.0, abort.new())
     assert(result.content.len() == 1)
     assert(result.content[0].text == 'Read image file [image/png]')
+    assert(result.images.len() == 1)
+    assert(result.images[0].mime_type == 'image/png')
+    assert(result.images[0].data != '')
     os.rmdir(root, true)
 }
 
@@ -246,7 +249,7 @@ test 'bash timeout terminates descendants with Pi process-tree semantics' {
 
 test 'bash receives Pi session and model environment metadata' {
     command.configure_agent_environment('session-123', '/tmp/session.jsonl', 'deepseek', 'deepseek-v4-flash', 'medium')
-    var result = shell_tools.execute_bash_stream('/tmp', 'printf "$PI_SESSION_ID|$PI_SESSION_FILE|$PI_PROVIDER|$PI_MODEL|$PI_REASONING_LEVEL"', 0, abort.new(), fn(string chunk) {})
+    var result = shell_tools.execute_bash_stream('/tmp', 'printf "$ADOU_SESSION_ID|$ADOU_SESSION_FILE|$ADOU_PROVIDER|$ADOU_MODEL|$ADOU_REASONING_LEVEL"', 0, abort.new(), fn(string chunk) {})
     assert(result.output == 'session-123|/tmp/session.jsonl|deepseek|deepseek-v4-flash|medium')
 }
 

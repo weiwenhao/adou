@@ -11,8 +11,8 @@ tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/adou-cli-validation-e2e.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 
 name_output="$tmp_dir/name"
-if PI_CODING_AGENT_DIR="$tmp_dir/agent-name" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions-name" \
+if ADOU_CODING_AGENT_DIR="$tmp_dir/agent-name" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions-name" \
     "$binary" --name '   ' > "$name_output" 2>&1; then
     echo 'e2e: whitespace session name was accepted' >&2
     cat "$name_output" >&2
@@ -25,8 +25,8 @@ if ! rg -F -- '--name requires a non-empty value' "$name_output" >/dev/null; the
 fi
 
 key_output="$tmp_dir/key"
-if PI_CODING_AGENT_DIR="$tmp_dir/agent-key" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions-key" \
+if ADOU_CODING_AGENT_DIR="$tmp_dir/agent-key" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions-key" \
     "$binary" --api-key cli-e2e-key > "$key_output" 2>&1; then
     echo 'e2e: api key without an explicit model was accepted' >&2
     cat "$key_output" >&2
@@ -38,8 +38,8 @@ if ! rg -F -- '--api-key requires a model to be specified' "$key_output" >/dev/n
     exit 1
 fi
 
-if ! PI_CODING_AGENT_DIR="$tmp_dir/agent-ephemeral" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions-ephemeral" \
+if ! ADOU_CODING_AGENT_DIR="$tmp_dir/agent-ephemeral" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions-ephemeral" \
     "$binary" --no-session --session-id ephemeral-id --offline > /dev/null 2>&1; then
     echo 'e2e: Pi-compatible --no-session --session-id combination was rejected' >&2
     exit 1
@@ -47,8 +47,8 @@ fi
 
 fork_source="$tmp_dir/fork-source.jsonl"
 printf '%s\n' '{"type":"session","version":3,"id":"fork-source","timestamp":"2026-01-01T00:00:00.000Z","cwd":"'"$tmp_dir"'"}' > "$fork_source"
-if ! PI_CODING_AGENT_DIR="$tmp_dir/agent-fork" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions-fork" \
+if ! ADOU_CODING_AGENT_DIR="$tmp_dir/agent-fork" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions-fork" \
     "$binary" --fork "$fork_source" --session-id child-id --offline --no-context-files > /dev/null 2>&1; then
     echo 'e2e: Pi-compatible --fork --session-id combination was rejected' >&2
     exit 1

@@ -77,7 +77,6 @@ pub fn entry_messages(ref<session_types.entry_t> entry): [ai_types.message_t]! {
     return []
 }
 
-#local
 fn valid_cut_points([ref<session_types.entry_t>] entries, int start_index, int end_index): [int]! {
     [int] result = []
     for int index = start_index; index < end_index; index += 1 {
@@ -98,12 +97,10 @@ fn valid_cut_points([ref<session_types.entry_t>] entries, int start_index, int e
     return result
 }
 
-#local
 fn is_cut_point(ai_types.message_t message): bool {
     return !(message is ref<ai_types.tool_result_message_t>)
 }
 
-#local
 fn is_turn_start_entry(ref<session_types.entry_t> entry): bool! {
     if entry.kind == session_types.ENTRY_COMPACTION {
         return false

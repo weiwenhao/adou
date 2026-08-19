@@ -16,6 +16,7 @@ NATIVE_OBJ := native/unicode_icu.o
 TERM_OBJ := native/term.o
 REGEX_OBJ := native/regex.o
 STDIN_PEEK_OBJ := native/stdin_peek.o
+AUTH_STORE_OBJ := native/auth_store.o
 
 ICU_INCLUDE ?= $(firstword $(wildcard /opt/homebrew/opt/icu4c/include /usr/local/opt/icu4c/include))
 ICU_CFLAGS := $(if $(ICU_INCLUDE),-I$(ICU_INCLUDE),)
@@ -66,7 +67,11 @@ $(STDIN_PEEK_OBJ): native/stdin_peek.c
 	@mkdir -p "$(dir $@)"
 	@$(CC) -std=c11 -O2 -c "$<" -o "$@"
 
-$(ADOU_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(SAFE_NATURE)
+$(AUTH_STORE_OBJ): native/auth_store.c
+	@mkdir -p "$(dir $@)"
+	@$(CC) -std=c11 -O2 -c "$<" -o "$@"
+
+$(ADOU_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(SAFE_NATURE)
 	@mkdir -p "$(BIN_DIR)"
 	@NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" build -o "$(ADOU_BIN)" "$(CURDIR)/main.n"
 
@@ -76,7 +81,7 @@ run: build
 # Nature's own test runner is the test framework.  Run tests one at a time so
 # each invocation gets the same stale-compiler cleanup and no two Nature
 # processes can overlap.
-test: $(SAFE_NATURE) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(PROCESS_GROUP_HELPER)
+test: $(SAFE_NATURE) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(PROCESS_GROUP_HELPER)
 	@set -e; for test_file in $(TEST_SOURCES); do \
 		echo "==> $$test_file"; \
 		ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" test "$(CURDIR)/$$test_file"; \
@@ -103,7 +108,7 @@ e2e-live: build
 eval: build $(EVAL_BIN)
 	@"$(EVAL_BIN)"
 
-$(EVAL_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(SAFE_NATURE) $(EVAL_ENTRY)
+$(EVAL_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(SAFE_NATURE) $(EVAL_ENTRY)
 	@mkdir -p "$(BIN_DIR)"
 	@NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" build -o "$(EVAL_BIN)" "$(CURDIR)/$(EVAL_ENTRY)"
 
@@ -198,7 +203,7 @@ signing-check: dist pkg
 
 clean:
 	@rm -rf "$(BUILD_DIR)"
-	@rm -f "$(NATIVE_OBJ)" "$(TERM_OBJ)" "$(REGEX_OBJ)" "$(STDIN_PEEK_OBJ)"
+	@rm -f "$(NATIVE_OBJ)" "$(TERM_OBJ)" "$(REGEX_OBJ)" "$(STDIN_PEEK_OBJ)" "$(AUTH_STORE_OBJ)"
 
 help:
 	@printf '%s\n' \

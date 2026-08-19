@@ -375,7 +375,6 @@ fn walk_fuzzy(string directory, string base_path, string query, int depth): [fuz
 }
 
 // The display path of `name` inside `directory`, relative to `base_path`.
-#local
 fn relative_to(string directory, string base_path, string name): string {
     if directory == base_path {
         return name

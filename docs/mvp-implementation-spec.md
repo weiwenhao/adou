@@ -525,7 +525,7 @@ MVP 写入 Pi v3 的 parent 链，并维护当前 active leaf；reader 不得因
 - compaction 后重建 LLM context 为 `compactionSummary + firstKeptEntryId 之后的消息`；
 - 原始消息仍保留在 JSONL；
 - API key、Authorization header、完整请求 header 不得写入 session；
-- 默认目录为 `~/.pi/agent/sessions/`；可通过 `PI_CODING_AGENT_SESSION_DIR` 覆盖，旧版 Adou 的 `ADOU_SESSION_DIR` 仍作为兼容别名。
+- 默认目录为 `~/.adou/agent/sessions/`；可通过 `ADOU_SESSION_DIR` 覆盖。
 
 MVP 提供最近 session 恢复、树状 active path 选择以及从当前 leaf fork/clone 的能力；远程分享仍不在范围内。
 
@@ -685,7 +685,7 @@ adou [--provider deepseek|openai|anthropic]
      [--no-session]
 ```
 
-默认模型为 `deepseek/deepseek-v4-flash`，密钥按已保存的 `~/.pi/agent/auth.json`、环境变量 `DEEPSEEK_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 解析。全局设置位于 `~/.pi/agent/settings.json`；启动时还会读取当前 session cwd 下的 `.pi/settings.json`，项目字段覆盖全局字段，未出现的字段继续继承全局值。项目 `.pi/SYSTEM.md` 覆盖 `~/.pi/agent/SYSTEM.md`，`.pi/APPEND_SYSTEM.md` 覆盖全局追加提示。`PI_CODING_AGENT_DIR` 可覆盖 `~/.pi/agent`（`ADOU_CODING_AGENT_DIR` 为兼容别名）。MVP 不加载 `.pi/extensions`、`.pi/skills` 和 `.pi/prompts` 动态扩展资源。`--debug` 或 `ADOU_DEBUG=1` 将启动、session、TUI、agent、provider 和 event-stream 生命周期日志写到 stderr；交互 TUI 改写到显式 `ADOU_DEBUG_FILE`，未指定时默认为 `<agentDir>/adou-debug.log`。每行保留 `[adou debug] component:` 前缀并追加时间戳/PID，便于捕获崩溃前最后一步，日志不包含 API key 或请求正文。交互模式的 `/debug` 按 Pi 格式覆盖写入 `$PI_CODING_AGENT_DIR/pi-debug.log`（默认 `~/.pi/agent/pi-debug.log`），包括终端尺寸、所有渲染行的可见宽度和当前 agent 消息 JSONL。`PI_TUI_WRITE_LOG` 可指定原始终端输出文件或目录；`PI_DEBUG_REDRAW=1` 将差分重绘原因追加到 `pi-debug.log`；`PI_TUI_DEBUG=1` 将帧快照写入 `/tmp/tui/`；超宽渲染行会在抛错前写入 `pi-crash.log`。这些调试产物均为显式 opt-in。`--api-key` MAY 支持，但帮助文本必须提示命令行参数可能进入 shell history。
+默认模型为 `deepseek/deepseek-v4-flash`，密钥按已保存的 `~/.adou/agent/auth.json`、环境变量 `DEEPSEEK_API_KEY`/`OPENAI_API_KEY`/`ANTHROPIC_API_KEY` 解析。全局设置位于 `~/.adou/agent/settings.json`；启动时还会读取当前 session cwd 下的 `.pi/settings.json`，项目字段覆盖全局字段，未出现的字段继续继承全局值。项目 `.pi/SYSTEM.md` 覆盖 `~/.adou/agent/SYSTEM.md`，`.pi/APPEND_SYSTEM.md` 覆盖全局追加提示。`ADOU_CODING_AGENT_DIR` 可覆盖 `~/.adou/agent`。MVP 不加载 `.pi/extensions`、`.pi/skills` 和 `.pi/prompts` 动态扩展资源。`--debug` 或 `ADOU_DEBUG=1` 将启动、session、TUI、agent、provider 和 event-stream 生命周期日志写到 stderr；交互 TUI 改写到显式 `ADOU_DEBUG_FILE`，未指定时默认为 `<agentDir>/adou-debug.log`。每行保留 `[adou debug] component:` 前缀并追加时间戳/PID，便于捕获崩溃前最后一步，日志不包含 API key 或请求正文。交互模式的 `/debug` 按 Pi 格式覆盖写入 `$ADOU_CODING_AGENT_DIR/adou-debug.log`（默认 `~/.adou/agent/adou-debug.log`），包括终端尺寸、所有渲染行的可见宽度和当前 agent 消息 JSONL。`ADOU_TUI_WRITE_LOG` 可指定原始终端输出文件或目录；`ADOU_DEBUG_REDRAW=1` 将差分重绘原因追加到 `adou-debug.log`；`ADOU_TUI_DEBUG=1` 将帧快照写入 `/tmp/tui/`；超宽渲染行会在抛错前写入 `adou-crash.log`。这些调试产物均为显式 opt-in。`--api-key` MAY 支持，但帮助文本必须提示命令行参数可能进入 shell history。
 
 配置必须包含模型 `contextWindow` 和 `maxTokens`。未知 context window 时不得凭空触发 threshold compaction；overflow error recovery 仍可依据 provider error pattern 执行。
 
@@ -714,7 +714,7 @@ MVP 内置 TUI 命令：
 
 `!` bash 复用模型 bash 的同一个 Nature process 执行器：stdout/stderr 按 chunk 增量显示，运行中显示可取消 Loader，结束时保留截断详情、退出码、超时和 full-output 路径。`/model` 的非精确参数打开带搜索词的选择器；`Ctrl+P`/`Ctrl+Shift+P` 只在已认证模型之间循环。
 
-`/share` 在没有远程凭据时生成与当前 Pi v3 记录对应的本地 `.share.jsonl` artifact，并明确提示远程 GitHub gist 尚未配置；`/trust` 写入 `$HOME/.pi/agent/trust.json`（或 `PI_CODING_AGENT_DIR` 指定的位置），不把 trust 误当成已完成的完整策略执行。其余 session 管理命令直接操作 Pi v3 JSONL：`/resume`、`/import` 打开已有记录，`/export` 输出 JSONL/HTML，`/name` 写入 session info，`/tree` 选择 active leaf，`/fork` 从历史 user message 分支，`/clone` 创建带 `parentSession` 的新记录。
+`/share` 在没有远程凭据时生成与当前 Pi v3 记录对应的本地 `.share.jsonl` artifact，并明确提示远程 GitHub gist 尚未配置；`/trust` 写入 `$HOME/.adou/agent/trust.json`（或 `ADOU_CODING_AGENT_DIR` 指定的位置），不把 trust 误当成已完成的完整策略执行。其余 session 管理命令直接操作 Pi v3 JSONL：`/resume`、`/import` 打开已有记录，`/export` 输出 JSONL/HTML，`/name` 写入 session info，`/tree` 选择 active leaf，`/fork` 从历史 user message 分支，`/clone` 创建带 `parentSession` 的新记录。
 
 无扩展 RPC 的响应结构遵循 Pi `rpc-types.ts`：模型和统计使用嵌套对象，`get_entries` 支持 `since` 游标，`get_tree` 返回递归节点，`get_fork_messages` 返回可分叉的 user message；stdin 为管道时必须保留 JSONL 命令，不得先被普通 prompt 读取。`get_commands` 只报告 Pi 的扩展、prompt template、skill 注册；由于 MVP 不加载这些动态资源，返回空 `commands`，内置 slash command 仍由 TUI completion/help 提供。prompt、compact 和 bash 在后台协程中运行，主循环可继续接收 `steer`、`follow_up`、`abort`、`abort_retry`、`abort_bash` 与状态查询；队列入队和交付通过 `queue_update` 事件暴露完整 `steering`/`followUp` 快照，空字符串也是合法的 prompt/steer/follow_up 消息；prompt 生命周期在 `agent_end` 后以 `agent_settled` 收束，再发出 `session_end`。prompt 的 RPC 成功响应必须等认证和模型预检通过后再发出；忙碌时未指定 `streamingBehavior` 必须返回 Pi 的 steer/followUp 提示，而不是提前确认。`new_session` 接受可选 `parentSession`，并把它写入新 session header，同时刷新 session id、文件路径和运行时环境；新建 session 还必须追加当前 model 和 thinking level 元数据，供后续 resume 恢复。`set_auto_compaction`、`set_auto_retry`、`set_steering_mode` 和 `set_follow_up_mode` 必须立即写入 settings，并在新进程的 `get_state` 中恢复；`get_available_thinking_levels` 按当前 model 能力返回（DeepSeek V4 为 `off/high/max`）。响应和事件通过单一输出锁保持 JSONL 行完整。`--models` 必须先按用户 pattern 顺序解析为去重的 scoped model 列表；RPC `cycle_model` 和 TUI Ctrl+P 按该列表循环，条目上的 `:thinking-level` 只覆盖该条目，未命中或无有效 scope 时回退到全部可用模型。由于 Nature 运行时没有 Pi 的扩展事件总线，文档只承诺无扩展核心命令，不承诺扩展 UI 请求或 SDK 回调。
 

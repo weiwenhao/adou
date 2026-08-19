@@ -44,7 +44,6 @@ pub fn load_extensions_from_dir(string dir): extensions.load_extensions_result_t
     return result
 }
 
-#local
 fn source_info_for(string dir): skills.source_info_t {
     string scope = 'project'
     string agent_dir = config_paths.agent_dir()

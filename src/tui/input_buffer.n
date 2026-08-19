@@ -158,7 +158,6 @@ pub fn buffer_t.emit_sequence(&self, string sequence): emission_t {
     return emission_t {emit: true, sequence: sequence,}
 }
 
-#local
 fn extract([u8] buffer): extract_result_t {
     var result = extract_result_t {sequences: vec<string>.cap_of(16), remainder: vec<u8>.cap_of(8),}
     int position = 0
@@ -223,12 +222,10 @@ fn extract([u8] buffer): extract_result_t {
     return result
 }
 
-#local
 fn empty_process_result(): process_result_t {
     return process_result_t {sequences: vec<string>.cap_of(16), pastes: vec<string>.cap_of(2),}
 }
 
-#local
 fn complete_status([u8] data): int {
     if data.len() == 0 || data[0] != ESC {
         return STATUS_NOT_ESCAPE
@@ -255,7 +252,6 @@ fn complete_status([u8] data): int {
     return data.len() >= 2 ? STATUS_COMPLETE : STATUS_INCOMPLETE
 }
 
-#local
 fn complete_csi([u8] data): int {
     if data.len() < 3 {
         return STATUS_INCOMPLETE
@@ -289,17 +285,14 @@ fn complete_csi([u8] data): int {
     return semicolons == 2 && has_digit ? STATUS_COMPLETE : STATUS_INCOMPLETE
 }
 
-#local
 fn ends_string([u8] data): bool {
     return data.len() >= 2 && data[data.len() - 2] == ESC && data[data.len() - 1] == '\\'.char()
 }
 
-#local
 fn starts_escape_family(u8 value): bool {
     return value == '['.char() || value == ']'.char() || value == 'O'.char() || value == 'P'.char() || value == '_'.char()
 }
 
-#local
 fn find_bytes([u8] value, [u8] needle): int {
     if needle.len() == 0 {
         return 0
@@ -319,7 +312,6 @@ fn find_bytes([u8] value, [u8] needle): int {
     return -1
 }
 
-#local
 fn kitty_printable_codepoint(string sequence): int {
     var bytes = sequence as [u8]
     if bytes.len() < 4 || bytes[0] != ESC || bytes[1] != '['.char() || bytes[bytes.len() - 1] != 'u'.char() {
@@ -344,7 +336,6 @@ fn kitty_printable_codepoint(string sequence): int {
     return codepoint >= 32 ? codepoint : -1
 }
 
-#local
 fn single_codepoint([u8] value): int {
     if value.len() == 0 {
         return -1
@@ -366,7 +357,6 @@ fn single_codepoint([u8] value): int {
     return codepoint
 }
 
-#local
 fn utf8_sequence_length(u8 first): int {
     if first < 0x80 {
         return 1

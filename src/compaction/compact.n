@@ -68,7 +68,6 @@ pub fn run_with_policy(ref<types.preparation_t> preparation, ref<ai_types.model_
     return types.summary_result_t {summary: summary, first_kept_entry_id: preparation.first_kept_entry_id, tokens_before: preparation.tokens_before, usage: usage, retained_tail: preparation.retained_tail, read_files: read_files, modified_files: modified_files,}
 }
 
-#local
 fn generate_with_policy([ai_types.message_t] messages, ref<ai_types.model_t> model, ref<ai_types.stream_options_t> base_options, stream_fn stream_function, ref<abort.abort_t> cancellation, string custom_instructions, bool has_previous_summary, string previous_summary, string thinking_level, int reserve_tokens, bool turn_prefix, retry_policy_t policy, retry_callback_t callback, string source, string reason): (string, ai_types.usage_t)! {
     string conversation_text = serialize.conversation(messages)
     string base_prompt = SUMMARIZATION_PROMPT
@@ -215,7 +214,6 @@ pub fn content_text(ref<ai_types.assistant_message_t> message): string {
     return strings.join(text, '')
 }
 
-#local
 fn combine_usage(ai_types.usage_t first, ai_types.usage_t second): ai_types.usage_t {
     ai_types.cost_t cost = ai_types.cost_t {input: first.cost.input + second.cost.input, output: first.cost.output + second.cost.output, cache_read: first.cost.cache_read + second.cost.cache_read, cache_write: first.cost.cache_write + second.cost.cache_write, total: first.cost.total + second.cost.total,}
     return ai_types.usage_t {input: first.input + second.input, output: first.output + second.output, cache_read: first.cache_read + second.cache_read, cache_write: first.cache_write + second.cache_write, cache_write_1h: first.cache_write_1h + second.cache_write_1h, reasoning: first.reasoning + second.reasoning, total_tokens: first.total_tokens + second.total_tokens, cost: cost,}

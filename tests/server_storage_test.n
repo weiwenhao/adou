@@ -1,0 +1,20 @@
+import adou.src.server.storage
+import os
+import syscall
+
+test 'server instance records persist and normalize live statuses on reload' {
+    string saved = syscall.get_env('ADOU_SERVER_DIR')
+    string root = '/tmp/adou-server-storage-test'
+    os.rmdir(root, true) catch error {}
+    syscall.set_env('ADOU_SERVER_DIR', root)
+    storage.save_instances([storage.instance_record_t {id: 'one', status: 'online', cwd: '/tmp/project', label: 'demo', session_id: 'sess', session_file: '/tmp/sess.jsonl', created_ms: 10, last_seen_ms: 20}])
+    var records = storage.load_instances()
+    assert(records.len() == 1)
+    assert(records[0].id == 'one')
+    assert(records[0].status == 'stopped')
+    assert(records[0].session_id == 'sess')
+    storage.upsert_instance(storage.instance_record_t {id: 'two', status: 'stopped', cwd: '/tmp/other', created_ms: 30, last_seen_ms: 40})
+    assert(storage.load_instances().len() == 2)
+    os.rmdir(root, true) catch error {}
+    syscall.set_env('ADOU_SERVER_DIR', saved)
+}

@@ -96,7 +96,6 @@ pub fn parse_git_source(string source): string {
 // halves leave the repo unchanged (no ref).  Returns (repo, ref).  For
 // protocol URLs the path is the URL pathname: query/fragment are stripped
 // before the ref split.
-#local
 fn split_ref(string url): (string, string) {
     if url.starts_with('git@') {
         int colon = url.find(':')
@@ -152,7 +151,6 @@ fn split_ref(string url): (string, string) {
 }
 
 // Pi buildGitSource + hasUnsafeGitInstallPart.
-#local
 fn build_git_tag(string host, string path, string ref): string {
     if path.starts_with('/') {
         return ''
@@ -177,7 +175,6 @@ fn build_git_tag(string host, string path, string ref): string {
     return result
 }
 
-#local
 fn segment_count(string value): int {
     int count = 1
     for int index = 0; index < value.len(); index += 1 {
@@ -189,7 +186,6 @@ fn segment_count(string value): int {
 }
 
 // URL userinfo/host normalization (Pi URL.hostname semantics).
-#local
 fn strip_userinfo(string host): string {
     int at = -1
     for int index = 0; index < host.len(); index += 1 {
@@ -203,7 +199,6 @@ fn strip_userinfo(string host): string {
     return host
 }
 
-#local
 fn strip_port(string host): string {
     int colon = host.find(':')
     if colon >= 0 {
@@ -214,7 +209,6 @@ fn strip_port(string host): string {
 
 // Cut the first query ('?') or fragment ('#') separator and everything
 // after it (URL pathname semantics).
-#local
 fn strip_query_fragment(string value): string {
     int cut = -1
     for int index = 0; index < value.len(); index += 1 {
@@ -232,7 +226,6 @@ fn strip_query_fragment(string value): string {
 // Percent-decoding mirroring decodeURIComponent: malformed %XX sequences or
 // decoded bytes that are not valid UTF-8 report failure (Pi rejects them as
 // unsafe).  Valid decoded content is returned for the traversal check.
-#local
 fn decode_percent(string value): (string, bool) {
     string result = ''
     int cursor = 0
@@ -258,7 +251,6 @@ fn decode_percent(string value): (string, bool) {
 
 // Strict UTF-8 well-formedness: continuation structure, overlong forms,
 // surrogates and out-of-range code points are rejected.
-#local
 fn is_valid_utf8(string value): bool {
     int cursor = 0
     for cursor < value.len() {
@@ -313,12 +305,10 @@ fn is_valid_utf8(string value): bool {
     return true
 }
 
-#local
 fn is_continuation(u8 byte): bool {
     return byte >= 0x80 && byte <= 0xbf
 }
 
-#local
 fn hex_digit(u8 value): int {
     if value >= '0'.char() && value <= '9'.char() {
         return value as int - '0'.char() as int
@@ -333,13 +323,11 @@ fn hex_digit(u8 value): int {
 }
 
 // Pi's protocol regex is case-insensitive (/^(https?|ssh|git):\/\//i).
-#local
 fn starts_with_protocol(string value): bool {
     string lower = value.to_lower()
     return lower.starts_with('https://') || lower.starts_with('http://') || lower.starts_with('ssh://') || lower.starts_with('git://')
 }
 
-#local
 fn has_unsafe_part(string value, bool allow_slash): bool {
     // Pi checks the raw value AND its URL-decoded form against the same
     // predicates; decodeURIComponent failure (malformed percent or invalid
@@ -357,7 +345,6 @@ fn has_unsafe_part(string value, bool allow_slash): bool {
     return false
 }
 
-#local
 fn unsafe_candidate(string value, bool allow_slash): bool {
     if contains_byte(value, 0x00) || contains_byte(value, '\\'.char()) || value.starts_with('/') {
         return true
@@ -371,7 +358,6 @@ fn unsafe_candidate(string value, bool allow_slash): bool {
     return false
 }
 
-#local
 fn contains_byte(string value, u8 wanted): bool {
     for byte in value as [u8] {
         if byte == wanted {
@@ -381,7 +367,6 @@ fn contains_byte(string value, u8 wanted): bool {
     return false
 }
 
-#local
 fn has_parent_segment(string value): bool {
     int index = 0
     for index <= value.len() {

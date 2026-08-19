@@ -1,0 +1,889 @@
+import adou.src.ai.providers.codex_messages
+import adou.src.ai.providers.radius_config
+import adou.src.config.auth
+import adou.src.config.oauth_callback
+import adou.src.json_util
+import adou.src.session.identity
+import base64
+import co
+import crypto.sha256
+import http.client as client
+import json
+import net.url
+import syscall
+import time
+
+pub const FLOW_BROWSER = 'browser'
+pub const FLOW_DEVICE = 'device'
+pub const FLOW_DEVICE_OR_BROWSER = 'device_or_browser'
+
+pub type oauth_config_t = struct {
+    string id
+    string name
+    string authorize_url
+    string token_url
+    string client_id
+    string redirect_uri
+    string scope
+    string flow
+    string device_code_url
+    string device_token_url
+    string device_verification_uri
+    string gateway
+}
+
+pub type oauth_token_t = struct {
+    string access
+    string refresh
+    int expires
+    string account_id
+    string enterprise_domain
+    string base_url
+    string gateway
+    string scope
+    [string] available_model_ids = []
+    any gateway_config = null
+}
+
+pub type model_auth_t = struct {
+    string api_key
+    string base_url
+    {string:string} headers = {}
+}
+
+pub type browser_auth_t = struct {
+    string provider
+    string verifier
+    string state
+    string authorize_url
+    string redirect_uri
+    string gateway
+    ref<oauth_callback.callback_server_t>? callback = null
+}
+
+pub type device_auth_t = struct {
+    string device_code
+    string user_code
+    string verification_uri
+    int interval_seconds
+    int expires_seconds
+    string enterprise_domain
+    string gateway
+}
+
+pub type http_json_t = struct {
+    int status
+    string raw
+    {string:any} body = {}
+}
+
+pub type cancel_fn = fn(): bool
+
+pub fn config(string provider): oauth_config_t {
+    return provider_config(provider)
+}
+
+pub fn provider_config(string provider): oauth_config_t {
+    string test_base = test_base_url()
+    if provider == 'anthropic' {
+        return oauth_config_t {
+            id: provider,
+            name: 'Anthropic (Claude Pro/Max)',
+            authorize_url: endpoint(test_base, 'https://claude.ai/oauth/authorize', '/oauth/authorize'),
+            token_url: endpoint(test_base, 'https://platform.claude.com/v1/oauth/token', '/v1/oauth/token'),
+            client_id: '9d1c250a-e61b-4d49-88ed-594d1f962f5e',
+            redirect_uri: 'http://localhost:53692/callback',
+            scope: 'org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload',
+            flow: FLOW_BROWSER,
+        }
+    }
+    if provider == 'openai-codex' {
+        return oauth_config_t {
+            id: provider,
+            name: 'OpenAI (ChatGPT Plus/Pro)',
+            authorize_url: endpoint(test_base, 'https://auth.openai.com/oauth/authorize', '/oauth/authorize'),
+            token_url: endpoint(test_base, 'https://auth.openai.com/oauth/token', '/oauth/token'),
+            client_id: 'app_EMoamEEZ73f0CkXaXp7hrann',
+            redirect_uri: 'http://localhost:1455/auth/callback',
+            scope: 'openid profile email offline_access',
+            flow: FLOW_DEVICE_OR_BROWSER,
+            device_code_url: endpoint(test_base, 'https://auth.openai.com/api/accounts/deviceauth/usercode', '/api/accounts/deviceauth/usercode'),
+            device_token_url: endpoint(test_base, 'https://auth.openai.com/api/accounts/deviceauth/token', '/api/accounts/deviceauth/token'),
+            device_verification_uri: endpoint(test_base, 'https://auth.openai.com/codex/device', '/codex/device'),
+        }
+    }
+    if provider == 'github-copilot' {
+        return github_config('')
+    }
+    if provider == 'openrouter' {
+        return oauth_config_t {
+            id: provider,
+            name: 'OpenRouter OAuth',
+            authorize_url: endpoint(test_base, 'https://openrouter.ai/auth', '/auth'),
+            token_url: endpoint(test_base, 'https://openrouter.ai/api/v1/auth/keys', '/api/v1/auth/keys'),
+            client_id: 'openrouter',
+            flow: FLOW_BROWSER,
+        }
+    }
+    if provider == 'kimi-coding' {
+        string host = syscall.get_env('KIMI_CODE_OAUTH_HOST')
+        if host == '' {host = syscall.get_env('KIMI_OAUTH_HOST')}
+        if host == '' {host = 'https://auth.kimi.com'}
+        if test_base != '' {host = test_base}
+        host = trim_slashes(host)
+        return oauth_config_t {
+            id: provider,
+            name: 'Kimi Code (subscription)',
+            client_id: '17e5f671-d194-4dfb-9706-5516cb48c098',
+            flow: FLOW_DEVICE,
+            device_code_url: host + '/api/oauth/device_authorization',
+            device_token_url: host + '/api/oauth/token',
+            token_url: host + '/api/oauth/token',
+            device_verification_uri: host + '/oauth/device',
+        }
+    }
+    if provider == 'xai' {
+        return oauth_config_t {
+            id: provider,
+            name: 'xAI (Grok/X subscription)',
+            client_id: 'b1a00492-073a-47ea-816f-4c329264a828',
+            scope: 'openid profile email offline_access grok-cli:access api:access',
+            flow: FLOW_DEVICE,
+            device_code_url: endpoint(test_base, 'https://auth.x.ai/oauth2/device/code', '/oauth2/device/code'),
+            device_token_url: endpoint(test_base, 'https://auth.x.ai/oauth2/token', '/oauth2/token'),
+            token_url: endpoint(test_base, 'https://auth.x.ai/oauth2/token', '/oauth2/token'),
+            device_verification_uri: endpoint(test_base, 'https://auth.x.ai/activate', '/activate'),
+        }
+    }
+    if provider == 'radius' {
+        string gateway = radius_gateway('')
+        return radius_provider_config(provider, 'Radius', gateway)
+    }
+    return oauth_config_t{}
+}
+
+pub fn radius_provider_config(string provider, string name, string gateway): oauth_config_t {
+    string normalized = radius_config.normalize_radius_gateway_url(gateway)
+    return oauth_config_t {
+        id: provider,
+        name: name,
+        authorize_url: normalized + '/v1/oauth/authorize',
+        token_url: normalized + '/v1/oauth/token',
+        client_id: 'pi-gateway',
+        redirect_uri: 'http://127.0.0.1:1456/oauth/callback',
+        scope: 'gateway offline_access',
+        flow: FLOW_DEVICE_OR_BROWSER,
+        device_code_url: normalized + '/v1/oauth/device',
+        device_token_url: normalized + '/v1/oauth/token',
+        device_verification_uri: normalized,
+        gateway: normalized,
+    }
+}
+
+pub fn github_config(string enterprise_domain): oauth_config_t {
+    string domain = enterprise_domain == '' ? 'github.com' : enterprise_domain
+    string web = 'https://' + domain
+    string api = 'https://api.' + domain
+    string test_base = test_base_url()
+    if test_base != '' {
+        web = test_base
+        api = test_base
+    }
+    return oauth_config_t {
+        id: 'github-copilot',
+        name: 'GitHub Copilot',
+        client_id: 'Iv1.b507a08c87ecfe98',
+        scope: 'read:user',
+        flow: FLOW_DEVICE,
+        device_code_url: web + '/login/device/code',
+        device_token_url: web + '/login/oauth/access_token',
+        token_url: api + '/copilot_internal/v2/token',
+        device_verification_uri: web + '/login/device',
+    }
+}
+
+pub fn supports(string provider): bool {
+    return config(provider).id != ''
+}
+
+pub fn is_device_flow(string provider): bool {
+    string flow = config(provider).flow
+    return flow == FLOW_DEVICE || flow == FLOW_DEVICE_OR_BROWSER
+}
+
+pub fn login_methods(string provider): [string] {
+    if provider == 'openai-codex' || provider == 'radius' {
+        return ['browser', 'device_code']
+    }
+    if config(provider).flow == FLOW_DEVICE {return ['device_code']}
+    return ['browser']
+}
+
+pub fn verifier(): string! {
+    string first = identity.uuid_v7()
+    string second = identity.uuid_v7()
+    return base64url(base64.encode((first + second) as [u8]) as string)
+}
+
+pub fn challenge(string value): string! {
+    var digest = sha256.new().update(value as [u8]).finish()
+    return base64url(base64.encode(digest) as string)
+}
+
+pub fn start_browser(string provider): ref<browser_auth_t>! {
+    return start_browser_for(provider, '')
+}
+
+pub fn start_browser_for(string provider, string configured_gateway): ref<browser_auth_t>! {
+    var cfg = provider == 'radius' && configured_gateway != '' ? radius_provider_config(provider, 'Radius', configured_gateway) : config(provider)
+    if cfg.id == '' || cfg.flow == FLOW_DEVICE {
+        throw errorf('Provider does not support browser OAuth: %s', provider)
+    }
+    string verifier_value = verifier()
+    string state = provider == 'anthropic' ? verifier_value : identity.uuid_v7()
+    string callback_host = syscall.get_env('ADOU_OAUTH_CALLBACK_HOST')
+    if callback_host == '' {callback_host = '127.0.0.1'}
+    ref<oauth_callback.callback_server_t>? listener = null
+    string redirect_uri = cfg.redirect_uri
+    if provider == 'openrouter' {
+        string callback_path = '/oauth/callback/' + identity.uuid_v7()
+        var opened = oauth_callback.start_ephemeral(callback_host, callback_path, '')
+        listener = opened
+        redirect_uri = opened.redirect_uri()
+    } else if provider == 'anthropic' {
+        listener = oauth_callback.start(callback_host, 53692, '/callback', state)
+    } else if provider == 'openai-codex' {
+        listener = oauth_callback.start(callback_host, 1455, '/auth/callback', state)
+    } else if provider == 'radius' {
+        listener = oauth_callback.start('127.0.0.1', 1456, '/oauth/callback', state)
+    } else {
+        throw errorf('Provider browser callback is not implemented: %s', provider)
+    }
+    string authorize_endpoint = cfg.authorize_url
+    if provider == 'radius' {
+        authorize_endpoint = discover_radius_authorization(cfg.gateway)
+    }
+    string authorize = authorize_url_for(provider, state, challenge(verifier_value), redirect_uri, authorize_endpoint)
+    return new browser_auth_t(provider = provider, verifier = verifier_value, state = state, authorize_url = authorize, redirect_uri = redirect_uri, gateway = cfg.gateway, callback = listener)
+}
+
+pub fn authorize_url(string provider, string state, string code_challenge): string! {
+    var cfg = config(provider)
+    return authorize_url_for(provider, state, code_challenge, cfg.redirect_uri, cfg.authorize_url)
+}
+
+pub fn authorize_url_for(string provider, string state, string code_challenge, string redirect_uri, string authorize_endpoint): string! {
+    var cfg = config(provider)
+    if provider == 'radius' && authorize_endpoint != '' {
+        cfg = radius_provider_config('radius', 'Radius', radius_gateway(''))
+    }
+    if cfg.id == '' {throw errorf('Provider does not support OAuth: %s', provider)}
+    string result = authorize_endpoint
+    string separator = result.contains('?') ? '&' : '?'
+    if provider == 'openrouter' {
+        return result + separator + 'callback_url=' + url.encode(redirect_uri) + '&code_challenge=' + url.encode(code_challenge) + '&code_challenge_method=S256'
+    }
+    if provider == 'anthropic' {result += separator + 'code=true&'} else {result += separator}
+    result += 'client_id=' + url.encode(cfg.client_id)
+    if redirect_uri != '' {result += '&redirect_uri=' + url.encode(redirect_uri)}
+    result += '&response_type=code&state=' + url.encode(state)
+    if cfg.scope != '' {result += '&scope=' + url.encode(cfg.scope)}
+    if code_challenge != '' {result += '&code_challenge=' + url.encode(code_challenge) + '&code_challenge_method=S256'}
+    if provider == 'openai-codex' {
+        result += '&id_token_add_organizations=true&codex_cli_simplified_flow=true&originator=pi'
+    }
+    if provider == 'radius' {result += '&handoff=url'}
+    return result
+}
+
+pub fn discover_radius_authorization(string gateway): string! {
+    string normalized = radius_config.normalize_radius_gateway_url(gateway)
+    var response = client.new().get(normalized + '/v1/oauth').timeout(30000).header('Accept', 'application/json').send()
+    int status = response.status
+    string raw = response.text() catch error {
+        response.close()
+        throw error
+    }
+    response.close()
+    if status < 200 || status >= 300 {
+        throw errorf('Could not load Radius OAuth config from %s: %d %s', normalized, status, truncate(raw))
+    }
+    any parsed = json_util.parse(raw) catch error {throw errorf('Invalid Radius OAuth config from %s', normalized)}
+    if !json_util.is_obj(parsed) {throw errorf('Invalid Radius OAuth config from %s', normalized)}
+    string endpoint_value = json_util.opt_string(parsed as {string:any}, 'authorizationEndpoint')
+    if endpoint_value == '' {throw errorf('Invalid Radius OAuth config from %s', normalized)}
+    return endpoint_value
+}
+
+pub fn exchange(string provider, string code, string verifier_value, string state): oauth_token_t! {
+    var cfg = config(provider)
+    return exchange_for(provider, code, verifier_value, state, cfg.redirect_uri, cfg.gateway)
+}
+
+pub fn exchange_browser(ref<browser_auth_t> attempt, string input): oauth_token_t! {
+    string code = authorization_code(input, attempt.state)
+    return exchange_for(attempt.provider, code, attempt.verifier, attempt.state, attempt.redirect_uri, attempt.gateway)
+}
+
+pub fn exchange_for(string provider, string code, string verifier_value, string state, string redirect_uri, string gateway): oauth_token_t! {
+    var cfg = provider == 'radius' && gateway != '' ? radius_provider_config(provider, 'Radius', gateway) : config(provider)
+    {string:string} fields = {}
+    fields['grant_type'] = 'authorization_code'
+    fields['client_id'] = cfg.client_id
+    fields['code'] = code
+    fields['code_verifier'] = verifier_value
+    if redirect_uri != '' {fields['redirect_uri'] = redirect_uri}
+    if provider == 'anthropic' {fields['state'] = state}
+    http_json_t result = http_json_t {}
+    if provider == 'anthropic' {
+        result = post_json(cfg.token_url, string_map_object(fields))
+    } else if provider == 'openrouter' {
+        {string:any} object = {}
+        object['code'] = code
+        object['code_verifier'] = verifier_value
+        object['code_challenge_method'] = 'S256'
+        result = post_json(cfg.token_url, object)
+    } else {
+        result = post_form(cfg.token_url, fields)
+    }
+    oauth_token_t token = parse_token_response(provider, result, '', gateway)
+    return complete_provider_token(provider, token)
+}
+
+pub fn start_device(string provider): device_auth_t! {
+    return start_device_for(provider, '')
+}
+
+pub fn start_device_for(string provider, string option): device_auth_t! {
+    var cfg = provider == 'github-copilot' ? github_config(normalize_github_domain(option)) : provider == 'radius' && option != '' ? radius_provider_config(provider, 'Radius', option) : config(provider)
+    if cfg.device_code_url == '' {throw errorf('Provider does not support device authorization: %s', provider)}
+    http_json_t result = http_json_t {}
+    if provider == 'openai-codex' {
+        {string:any} object = {}
+        object['client_id'] = cfg.client_id
+        result = post_json(cfg.device_code_url, object)
+    } else {
+        {string:string} fields = {}
+        fields['client_id'] = cfg.client_id
+        if provider == 'github-copilot' {fields['scope'] = cfg.scope}
+        if provider == 'xai' {
+            fields['scope'] = cfg.scope
+            fields['referrer'] = 'pi'
+        }
+        if provider == 'radius' {fields['scope'] = cfg.scope}
+        result = post_form(cfg.device_code_url, fields)
+    }
+    if result.status < 200 || result.status >= 300 {
+        throw errorf('%s device authorization failed (%d): %s', cfg.name, result.status, truncate(result.raw))
+    }
+    string device_code = provider == 'openai-codex' ? json_util.opt_string(result.body, 'device_auth_id') : json_util.opt_string(result.body, 'device_code')
+    string user_code = json_util.opt_string(result.body, 'user_code')
+    string verification = json_util.opt_string(result.body, 'verification_uri_complete')
+    string plain_verification = json_util.opt_string(result.body, 'verification_uri')
+    if verification == '' {verification = plain_verification}
+    if (provider == 'github-copilot' || provider == 'kimi-coding' || provider == 'xai') && (verification == '' || plain_verification == '') {
+        throw errorf('%s device authorization response missing verification URI', cfg.name)
+    }
+    if verification == '' {verification = cfg.device_verification_uri}
+    int interval = json_util.opt_int(result.body, 'interval')
+    int expires = json_util.opt_int(result.body, 'expires_in')
+    if interval <= 0 {interval = 5}
+    if expires <= 0 {
+        if provider == 'github-copilot' || provider == 'kimi-coding' || provider == 'xai' {
+            throw errorf('%s device authorization response missing expires_in', cfg.name)
+        }
+        expires = 900
+    }
+    if device_code == '' || user_code == '' {
+        throw errorf('%s device authorization response missing required fields', cfg.name)
+    }
+    if provider == 'xai' && !trusted_verification_uri(verification, true) {
+        throw errorf('Untrusted verification URI in xAI OAuth response')
+    }
+    if (provider == 'kimi-coding' && !trusted_verification_uri(plain_verification, false)) {
+        throw errorf('Untrusted verification URI in Kimi Code OAuth response')
+    }
+    if (provider == 'github-copilot' && !trusted_verification_uri(plain_verification, false)) {
+        throw errorf('Untrusted verification URI in GitHub Copilot OAuth response')
+    }
+    if (provider == 'kimi-coding' && !trusted_verification_uri(verification, false)) {
+        throw errorf('Untrusted verification URI in Kimi Code OAuth response')
+    }
+    if (provider == 'github-copilot' && !trusted_verification_uri(verification, false)) {
+        throw errorf('Untrusted verification URI in %s OAuth response', cfg.name)
+    }
+    return device_auth_t {
+        device_code: device_code,
+        user_code: user_code,
+        verification_uri: verification,
+        interval_seconds: interval,
+        expires_seconds: expires,
+        enterprise_domain: provider == 'github-copilot' ? normalize_github_domain(option) : '',
+        gateway: provider == 'radius' ? cfg.gateway : '',
+    }
+}
+
+pub fn poll_device(string provider, device_auth_t device): oauth_token_t! {
+    cancel_fn never = fn(): bool {return false}
+    return poll_device_with_cancel(provider, device, never)
+}
+
+pub fn poll_device_with_cancel(string provider, device_auth_t device, cancel_fn cancelled): oauth_token_t! {
+    var cfg = provider == 'github-copilot' ? github_config(device.enterprise_domain) : provider == 'radius' && device.gateway != '' ? radius_provider_config(provider, 'Radius', device.gateway) : config(provider)
+    int deadline = time.now().ms_timestamp() + device.expires_seconds * 1000
+    int interval = device.interval_seconds > 0 ? device.interval_seconds : 5
+    bool wait_first = provider == 'github-copilot' || provider == 'kimi-coding' || provider == 'xai'
+    if wait_first && !sleep_cancelled(interval * 1000, cancelled) {throw errorf('Login cancelled')}
+    int slow_down_count = 0
+    for time.now().ms_timestamp() < deadline {
+        if cancelled() {throw errorf('Login cancelled')}
+        http_json_t result = poll_device_once(provider, cfg, device)
+        if provider == 'openai-codex' && result.status >= 200 && result.status < 300 {
+            string code = json_util.opt_string(result.body, 'authorization_code')
+            string code_verifier = json_util.opt_string(result.body, 'code_verifier')
+            if code == '' || code_verifier == '' {throw errorf('Invalid OpenAI Codex device auth token response')}
+            return exchange_for(provider, code, code_verifier, '', 'https://auth.openai.com/deviceauth/callback', '')
+        }
+        if result.status >= 200 && result.status < 300 {
+            oauth_token_t token = parse_token_response(provider, result, '', device.gateway)
+            if provider == 'github-copilot' {
+                token.refresh = token.access
+                token.enterprise_domain = device.enterprise_domain
+                return refresh_copilot_token(token.refresh, device.enterprise_domain)
+            }
+            return complete_provider_token(provider, token)
+        }
+        string oauth_error = json_util.opt_string(result.body, 'error')
+        if provider == 'openai-codex' && (result.status == 403 || result.status == 404 || oauth_error == 'deviceauth_authorization_pending') {
+            oauth_error = 'authorization_pending'
+        }
+        if oauth_error == 'authorization_pending' {
+            if !sleep_cancelled(interval * 1000, cancelled) {throw errorf('Login cancelled')}
+            continue
+        }
+        if oauth_error == 'slow_down' {
+            slow_down_count += 1
+            int server_interval = json_util.opt_int(result.body, 'interval')
+            interval = server_interval > 0 ? server_interval : interval + 5
+            if !sleep_cancelled(interval * 1000, cancelled) {throw errorf('Login cancelled')}
+            continue
+        }
+        if oauth_error == 'expired_token' {throw errorf('%s device authorization expired', cfg.name)}
+        if oauth_error == 'access_denied' || oauth_error == 'authorization_denied' {throw errorf('%s device authorization was denied', cfg.name)}
+        throw errorf('%s device token request failed (%d): %s', cfg.name, result.status, truncate(result.raw))
+    }
+    if slow_down_count > 0 {throw errorf('Device flow timed out after slow_down responses')}
+    throw errorf('Device flow timed out')
+}
+
+pub fn poll_device_once(string provider, oauth_config_t cfg, device_auth_t device): http_json_t! {
+    if provider == 'openai-codex' {
+        {string:any} body = {}
+        body['device_auth_id'] = device.device_code
+        body['user_code'] = device.user_code
+        return post_json(cfg.device_token_url, body)
+    }
+    {string:string} fields = {}
+    fields['client_id'] = cfg.client_id
+    fields['device_code'] = device.device_code
+    fields['grant_type'] = 'urn:ietf:params:oauth:grant-type:device_code'
+    return post_form(cfg.device_token_url, fields)
+}
+
+pub fn authorization_code(string input, string expected_state): string! {
+    string value = input.trim([' ', '\t', '\n', '\r'])
+    if value == '' {throw errorf('OAuth authorization code is required')}
+    int marker = value.find('code=')
+    if marker < 0 {
+        if value.find('://') >= 0 || value.starts_with('code:') {
+            throw errorf('OAuth callback did not contain a code parameter')
+        }
+        // Anthropic's manual fallback accepts code#state.
+        int hash = value.find('#')
+        if hash >= 0 {
+            string code = value.slice(0, hash)
+            string actual_state = value.slice(hash + 1, value.len())
+            if expected_state != '' && actual_state != expected_state {throw errorf('OAuth callback state did not match the login attempt')}
+            return code
+        }
+        return value
+    }
+    string query = value
+    int question = query.find('?')
+    if question >= 0 {query = query.slice(question + 1, query.len())}
+    int hash = query.find('#')
+    if hash >= 0 {query = query.slice(hash + 1, query.len())}
+    string code = oauth_callback.query_value(query, 'code')
+    if code == '' {throw errorf('OAuth callback code is empty')}
+    if expected_state != '' {
+        string actual_state = oauth_callback.query_value(query, 'state')
+        if actual_state != '' && actual_state != expected_state {throw errorf('OAuth callback state did not match the login attempt')}
+    }
+    return code
+}
+
+pub fn refresh(string provider, string refresh_token): oauth_token_t! {
+    var current = new auth.credential_edit_t(credential_type = 'oauth', refresh = refresh_token)
+    return refresh_credential(provider, current)
+}
+
+pub fn refresh_credential(string provider, ref<auth.credential_edit_t> current): oauth_token_t! {
+    if current.refresh == '' && provider != 'openrouter' {throw errorf('OAuth refresh token is missing for %s', provider)}
+    if provider == 'openrouter' {return token_from_edit(current)}
+    if provider == 'github-copilot' {return refresh_copilot_token(current.refresh, current.enterprise_domain)}
+    var cfg = provider == 'radius' && current.gateway != '' ? radius_provider_config(provider, 'Radius', current.gateway) : config(provider)
+    {string:string} fields = {}
+    fields['grant_type'] = 'refresh_token'
+    fields['client_id'] = cfg.client_id
+    fields['refresh_token'] = current.refresh
+    int max_attempts = provider == 'kimi-coding' ? 4 : 1
+    for int attempt = 0; attempt < max_attempts; attempt += 1 {
+        if attempt > 0 {
+            int delay = attempt == 1 ? 1000 : attempt == 2 ? 2000 : 4000
+            co.sleep(delay)
+        }
+        http_json_t result = http_json_t {}
+        if provider == 'anthropic' {
+            result = post_json(cfg.token_url, string_map_object(fields)) catch error {
+                if attempt + 1 < max_attempts {continue}
+                throw error
+            }
+        } else {
+            result = post_form(cfg.token_url, fields) catch error {
+                if attempt + 1 < max_attempts {continue}
+                throw error
+            }
+        }
+        if result.status >= 200 && result.status < 300 {
+            var token = parse_token_response(provider, result, current.refresh, current.gateway)
+            return complete_provider_token(provider, token)
+        }
+        string oauth_error = json_util.opt_string(result.body, 'error')
+        if provider == 'kimi-coding' && (result.status == 401 || result.status == 403 || oauth_error == 'invalid_grant') {
+            throw errorf('Kimi Code token refresh unauthorized (status %d): %s', result.status, truncate(result.raw))
+        }
+        if provider == 'kimi-coding' && (result.status == 429 || result.status >= 500) && attempt + 1 < max_attempts {
+            continue
+        }
+        throw errorf('%s token refresh failed (%d): %s', cfg.name, result.status, truncate(result.raw))
+    }
+    throw errorf('OAuth token refresh failed for %s', provider)
+}
+
+pub fn save_token(string provider, oauth_token_t token): void! {
+    if token.access == '' {throw errorf('OAuth response did not contain an access token')}
+    auth.credential_modify_fn update = fn(ref<auth.credential_edit_t>? current): ref<auth.credential_edit_t>? {
+        return new auth.credential_edit_t(credential_type = 'oauth', refresh = token.refresh, access = token.access, expires = token.expires, account_id = token.account_id, enterprise_domain = token.enterprise_domain, base_url = token.base_url, gateway = token.gateway, scope = token.scope, available_model_ids = token.available_model_ids, gateway_config = token.gateway_config)
+    }
+    auth.modify_credential(provider, update)
+}
+
+pub fn refresh_if_needed(string provider): bool! {
+    var credential = auth.read_credential(provider)
+    if !(credential is ref<auth.oauth_credential_t>) {return false}
+    var stored = credential as ref<auth.oauth_credential_t>
+    if stored.access != '' && stored.expires > time.now().ms_timestamp() + 300000 {return false}
+    if stored.refresh == '' {return false}
+    var current = new auth.credential_edit_t(
+        credential_type = 'oauth',
+        refresh = stored.refresh,
+        access = stored.access,
+        expires = stored.expires,
+        account_id = stored.account_id,
+        enterprise_domain = stored.enterprise_domain,
+        base_url = stored.base_url,
+        gateway = stored.gateway,
+        scope = stored.scope,
+        available_model_ids = stored.available_model_ids,
+        gateway_config = stored.gateway_config,
+    )
+    var token = refresh_credential(provider, current)
+    save_refreshed_token(provider, stored.access, token)
+    return true
+}
+
+pub fn save_refreshed_token(string provider, string previous_access, oauth_token_t token): void! {
+    if token.access == '' {throw errorf('OAuth response did not contain an access token')}
+    auth.credential_modify_fn update = fn(ref<auth.credential_edit_t>? current): ref<auth.credential_edit_t>? {
+        if current is ref<auth.credential_edit_t> existing {
+            if existing.credential_type == 'oauth' && existing.access != previous_access && existing.expires > time.now().ms_timestamp() + 300000 {
+                return null
+            }
+        }
+        return new auth.credential_edit_t(credential_type = 'oauth', refresh = token.refresh, access = token.access, expires = token.expires, account_id = token.account_id, enterprise_domain = token.enterprise_domain, base_url = token.base_url, gateway = token.gateway, scope = token.scope, available_model_ids = token.available_model_ids, gateway_config = token.gateway_config)
+    }
+    auth.modify_credential(provider, update)
+}
+
+pub fn to_auth(string provider, ref<auth.oauth_credential_t> credential): model_auth_t {
+    model_auth_t result = model_auth_t {api_key: credential.access, base_url: credential.base_url}
+    if provider == 'kimi-coding' || provider == 'anthropic' {
+        result.headers['Authorization'] = 'Bearer ' + credential.access
+    }
+    if provider == 'openai-codex' && credential.account_id != '' {
+        result.headers['chatgpt-account-id'] = credential.account_id
+    }
+    return result
+}
+
+pub fn refresh_copilot_token(string github_token, string enterprise_domain): oauth_token_t! {
+    var cfg = github_config(enterprise_domain)
+    var request = client.new().get(cfg.token_url).timeout(30000)
+    add_copilot_headers(request, github_token)
+    var response = request.send()
+    int status = response.status
+    string raw = response.text() catch error {
+        response.close()
+        throw error
+    }
+    response.close()
+    if status < 200 || status >= 300 {throw errorf('GitHub Copilot token endpoint returned %d: %s', status, truncate(raw))}
+    any parsed = json_util.parse(raw) catch error {throw errorf('GitHub Copilot token response was not JSON')}
+    if !json_util.is_obj(parsed) {throw errorf('GitHub Copilot token response was not an object')}
+    var body = parsed as {string:any}
+    string access = json_util.opt_string(body, 'token')
+    int expires_at = json_util.opt_int(body, 'expires_at')
+    if access == '' || expires_at <= 0 {throw errorf('GitHub Copilot token response missing required fields')}
+    string base_url = copilot_base_url(access, enterprise_domain)
+    [string] model_ids = fetch_copilot_model_ids(access, enterprise_domain, base_url)
+    int refresh_skew_ms = 300000
+    return oauth_token_t {
+        access: access,
+        refresh: github_token,
+        expires: expires_at * 1000 - refresh_skew_ms,
+        enterprise_domain: enterprise_domain,
+        base_url: base_url,
+        available_model_ids: model_ids,
+    }
+}
+
+pub fn copilot_base_url(string token, string enterprise_domain): string {
+    int marker = token.find('proxy-ep=')
+    if marker >= 0 {
+        string tail = token.slice(marker + 9, token.len())
+        int end = tail.find(';')
+        string host = end >= 0 ? tail.slice(0, end) : tail
+        if host.starts_with('proxy.') {host = 'api.' + host.slice(6, host.len())}
+        if host != '' {return 'https://' + host}
+    }
+    if enterprise_domain != '' {return 'https://copilot-api.' + enterprise_domain}
+    return 'https://api.individual.githubcopilot.com'
+}
+
+pub fn fetch_copilot_model_ids(string token, string enterprise_domain, string base_url): [string]! {
+    string endpoint_value = test_base_url() != '' ? test_base_url() + '/models' : trim_slashes(base_url) + '/models'
+    var request = client.new().get(endpoint_value).timeout(5000)
+    add_copilot_headers(request, token)
+    var response = request.send()
+    int status = response.status
+    string raw = response.text() catch error {
+        response.close()
+        throw error
+    }
+    response.close()
+    if status < 200 || status >= 300 {throw errorf('GitHub Copilot models endpoint returned %d: %s', status, truncate(raw))}
+    any parsed = json_util.parse(raw) catch error {throw errorf('Invalid Copilot models response')}
+    if !json_util.is_obj(parsed) {throw errorf('Invalid Copilot models response')}
+    var object = parsed as {string:any}
+    if !object.contains('data') || !(object['data'] is [any]) {throw errorf('Invalid Copilot models response')}
+    [string] result = []
+    for raw_model in object['data'] as [any] {
+        if !json_util.is_obj(raw_model) {continue}
+        var model = raw_model as {string:any}
+        string id = json_util.opt_string(model, 'id')
+        if id == '' || !json_util.opt_bool(model, 'model_picker_enabled') {continue}
+        var policy = json_util.opt_obj(model, 'policy')
+        if json_util.opt_string(policy, 'state') == 'disabled' {continue}
+        var capabilities = json_util.opt_obj(model, 'capabilities')
+        var supports = json_util.opt_obj(capabilities, 'supports')
+        if supports.contains('tool_calls') && supports['tool_calls'] is bool && !(supports['tool_calls'] as bool) {continue}
+        result.push(id)
+    }
+    return result
+}
+
+pub fn normalize_github_domain(string input): string {
+    string value = input.trim([' ', '\t', '\n', '\r'])
+    if value == '' || value == 'github.com' {return ''}
+    if value.starts_with('https://') {value = value.slice(8, value.len())}
+    if value.starts_with('http://') {value = value.slice(7, value.len())}
+    int slash = value.find('/')
+    if slash >= 0 {value = value.slice(0, slash)}
+    if value == '' || value.contains(' ') || !value.contains('.') {return ''}
+    return value
+}
+
+pub fn trusted_verification_uri(string value, bool https_only): bool {
+    var parsed = url.parse(value) catch error {return false}
+    if parsed.hostname == '' {return false}
+    if https_only {return parsed.scheme == 'https'}
+    return parsed.scheme == 'https' || parsed.scheme == 'http'
+}
+
+pub fn complete_provider_token(string provider, oauth_token_t token): oauth_token_t! {
+    if provider == 'openai-codex' {
+        token.account_id = codex_messages.account_id(token.access)
+    }
+    if provider == 'radius' {
+        string gateway = token.gateway != '' ? token.gateway : radius_gateway('')
+        token.gateway = gateway
+        token.gateway_config = radius_config.load_radius_gateway_config(gateway, token.access)
+    }
+    return token
+}
+
+pub fn parse_token_response(string provider, http_json_t result, string previous_refresh, string gateway): oauth_token_t! {
+    if result.status < 200 || result.status >= 300 {
+        throw errorf('%s OAuth token request failed (%d): %s', provider, result.status, truncate(result.raw))
+    }
+    string access = provider == 'openrouter' ? json_util.opt_string(result.body, 'key') : json_util.opt_string(result.body, 'access_token')
+    string refresh_value = json_util.opt_string(result.body, 'refresh_token')
+    if refresh_value == '' {refresh_value = previous_refresh}
+    int expires_in = json_util.opt_int(result.body, 'expires_in')
+    int skew = provider == 'radius' ? 60000 : provider == 'kimi-coding' ? 0 : 300000
+    int expires = 0
+    if provider == 'openrouter' {
+        // OpenRouter keys do not expire; a far-future millisecond timestamp
+        // avoids a Nature arm64 backend issue with Number.MAX_SAFE_INTEGER.
+        expires = 4102444800000
+        refresh_value = ''
+    } else {
+        if expires_in <= 0 {expires_in = 3600}
+        expires = time.now().ms_timestamp() + expires_in * 1000 - skew
+    }
+    if access == '' {throw errorf('%s OAuth token response did not contain an access token', provider)}
+    return oauth_token_t {
+        access: access,
+        refresh: refresh_value,
+        expires: expires,
+        gateway: gateway,
+        scope: json_util.opt_string(result.body, 'scope'),
+    }
+}
+
+pub fn edit_from_token(oauth_token_t token): ref<auth.credential_edit_t> {
+    return new auth.credential_edit_t(
+        credential_type = 'oauth',
+        refresh = token.refresh,
+        access = token.access,
+        expires = token.expires,
+        account_id = token.account_id,
+        enterprise_domain = token.enterprise_domain,
+        base_url = token.base_url,
+        gateway = token.gateway,
+        scope = token.scope,
+        available_model_ids = token.available_model_ids,
+        gateway_config = token.gateway_config,
+    )
+}
+
+pub fn token_from_edit(ref<auth.credential_edit_t> edit): oauth_token_t {
+    return oauth_token_t {
+        access: edit.access,
+        refresh: edit.refresh,
+        expires: edit.expires,
+        account_id: edit.account_id,
+        enterprise_domain: edit.enterprise_domain,
+        base_url: edit.base_url,
+        gateway: edit.gateway,
+        scope: edit.scope,
+        available_model_ids: edit.available_model_ids,
+        gateway_config: edit.gateway_config,
+    }
+}
+
+pub fn post_form(string endpoint_value, {string:string} fields): http_json_t! {
+    var request = client.new().post(endpoint_value).timeout(30000).header('Accept', 'application/json')
+    request.form(fields)
+    return read_json_response(request.send())
+}
+
+pub fn post_json(string endpoint_value, {string:any} body): http_json_t! {
+    var request = client.new().post(endpoint_value).timeout(30000).header('Accept', 'application/json').header('Content-Type', 'application/json').content(json.serialize(body))
+    return read_json_response(request.send())
+}
+
+pub fn read_json_response(ref<client.response_t> response): http_json_t! {
+    int status = response.status
+    string raw = response.text() catch error {
+        response.close()
+        throw error
+    }
+    response.close()
+    {string:any} body = {}
+    if raw != '' {
+        any parsed = json_util.parse(raw) catch error {
+            return http_json_t {status: status, raw: raw, body: body}
+        }
+        if json_util.is_obj(parsed) {body = parsed as {string:any}}
+    }
+    return http_json_t {status: status, raw: raw, body: body}
+}
+
+pub fn add_copilot_headers(ref<client.request_t> request, string token) {
+    request.header('Accept', 'application/json')
+    request.header('Authorization', 'Bearer ' + token)
+    request.header('User-Agent', 'GitHubCopilotChat/0.35.0')
+    request.header('Editor-Version', 'vscode/1.107.0')
+    request.header('Editor-Plugin-Version', 'copilot-chat/0.35.0')
+    request.header('Copilot-Integration-Id', 'vscode-chat')
+    request.header('X-GitHub-Api-Version', '2026-06-01')
+}
+
+pub fn string_map_object({string:string} fields): {string:any} {
+    {string:any} result = {}
+    for key, value in fields {
+        result[key] = value
+    }
+    return result
+}
+
+pub fn sleep_cancelled(int duration_ms, cancel_fn cancelled): bool {
+    int remaining = duration_ms
+    for remaining > 0 {
+        if cancelled() {return false}
+        int step = remaining > 100 ? 100 : remaining
+        co.sleep(step)
+        remaining -= step
+    }
+    return !cancelled()
+}
+
+pub fn radius_gateway(string configured): string {
+    string gateway = configured
+    if gateway == '' {gateway = syscall.get_env('RADIUS_GATEWAY')}
+    if gateway == '' {gateway = syscall.get_env('ADOU_RADIUS_URL')}
+    if gateway == '' {gateway = 'https://radius.pi.dev'}
+    string test_base = test_base_url()
+    if test_base != '' {gateway = test_base}
+    return radius_config.normalize_radius_gateway_url(gateway)
+}
+
+pub fn test_base_url(): string {
+    return trim_slashes(syscall.get_env('ADOU_OAUTH_TEST_BASE_URL'))
+}
+
+pub fn endpoint(string test_base, string production, string test_path): string {
+    return test_base == '' ? production : test_base + test_path
+}
+
+pub fn trim_slashes(string value): string {
+    string result = value
+    for result.ends_with('/') {
+        result = result.slice(0, result.len() - 1)
+    }
+    return result
+}
+
+pub fn truncate(string value): string {
+    string trimmed = value.trim([' ', '\t', '\n', '\r'])
+    return trimmed.len() > 512 ? trimmed.slice(0, 512) : trimmed
+}
+
+pub fn base64url(string value): string {
+    string result = value.replace('+', '-').replace('/', '_')
+    for result.ends_with('=') {
+        result = result.slice(0, result.len() - 1)
+    }
+    return result
+}

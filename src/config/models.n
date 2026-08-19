@@ -1,7 +1,9 @@
 import adou.src.ai.providers.registry
+import adou.src.ai.providers.radius_config
 import adou.src.ai.models_store
 import adou.src.ai.remote_catalog
 import adou.src.ai.types as ai_types
+import adou.src.config.auth
 import adou.src.config.models_json
 import adou.src.config.resolve_config_value
 import adou.src.config.paths as config_paths
@@ -52,6 +54,16 @@ pub fn all(): [ref<ai_types.model_t>] {
         for model in catalog {
             if model.provider == provider_id {
                 base.push(model)
+            }
+        }
+        if cfg.oauth == 'radius' {
+            var stored = auth.read_credential('radius')
+            if stored is ref<auth.oauth_credential_t> {
+                var oauth = stored as ref<auth.oauth_credential_t>
+                var gateway_config = radius_config.sanitize_radius_gateway_config(oauth.gateway_config)
+                if gateway_config is {string:any} dynamic_config {
+                    base = radius_config.radius_models_from_config(provider_id, dynamic_config)
+                }
             }
         }
         var composed = models_json.compose_provider_models(provider_id, base, cfg) catch error {
@@ -335,7 +347,7 @@ pub fn thinking_for(string reference, [string] patterns): string {
 // Header values go through config-value resolution ("!cmd", "$VAR") like
 // Pi's resolveHeaders; unresolvable values are dropped.
 fn copy_provider(models_json.models_json_provider_t source): ref<models_json.models_json_provider_t> {
-    var copy = new models_json.models_json_provider_t(name = source.name, base_url = source.base_url, api_key = source.api_key, api = source.api, auth_header = source.auth_header)
+    var copy = new models_json.models_json_provider_t(name = source.name, base_url = source.base_url, api_key = source.api_key, api = source.api, oauth = source.oauth, auth_header = source.auth_header)
     var resolved_headers = resolve_config_value.resolve_headers(source.headers)
     for name, value in resolved_headers {
         copy.headers[name] = value
@@ -349,7 +361,6 @@ fn copy_provider(models_json.models_json_provider_t source): ref<models_json.mod
     return copy
 }
 
-#local
 fn ensure_models_json() {
     if models_json_loaded {
         return
@@ -388,7 +399,7 @@ pub fn load_remote_overlays() {
 }
 
 // Pi's ModelRuntime.create refreshes the remote catalogs when networking is
-// allowed (PI_OFFLINE unset) and the host opts in.  Adou mirrors that with
+// allowed (ADOU_OFFLINE unset) and the host opts in. Adou mirrors that with
 // the ADOU_CATALOG_NETWORK=1 opt-in; failures are silent and keep the
 // stored overlay.
 pub fn refresh_remote_catalogs() {
@@ -400,7 +411,7 @@ pub fn refresh_remote_catalogs() {
 // onto the input loop. ADOU_CATALOG_BASE_URL supports self-hosted catalogs
 // and deterministic local fixtures; the default remains pi.dev.
 pub fn refresh_remote_catalogs_with_status(): int {
-    bool offline_env = syscall.get_env('PI_OFFLINE') != ''
+    bool offline_env = syscall.get_env('ADOU_OFFLINE') != ''
     bool network_opt_in = syscall.get_env('ADOU_CATALOG_NETWORK') != ''
     if offline_env || !network_opt_in {
         debug.log('models', 'remote catalog refresh skipped offline_env=' + (offline_env ? 'true' : 'false') + ' network_opt_in=' + (network_opt_in ? 'true' : 'false'))
@@ -455,7 +466,6 @@ bool remote_overlays_loaded = false
 {string:models_json.models_json_provider_t} models_json_providers = {}
 bool models_json_loaded = false
 
-#local
 fn scope_contains([scoped_model_t] values, ref<ai_types.model_t> candidate): bool {
     for value in values {
         if value.model.provider.to_lower() == candidate.provider.to_lower() && value.model.id.to_lower() == candidate.id.to_lower() {
@@ -465,7 +475,6 @@ fn scope_contains([scoped_model_t] values, ref<ai_types.model_t> candidate): boo
     return false
 }
 
-#local
 fn deepseek_v4_flash(): ref<ai_types.model_t> {
     var model = new ai_types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = 'https://api.deepseek.com', reasoning = true, context_window = 1000000, max_tokens = 384000)
     model.cost.input = 0.14
@@ -487,12 +496,10 @@ fn deepseek_v4_flash(): ref<ai_types.model_t> {
     return model
 }
 
-#local
 fn openai_default(): ref<ai_types.model_t> {
     return new ai_types.model_t(id = 'gpt-5.1-codex', api = 'openai-responses', provider = 'openai', base_url = 'https://api.openai.com/v1', reasoning = true, context_window = 400000, max_tokens = 128000)
 }
 
-#local
 fn anthropic_default(): ref<ai_types.model_t> {
     return new ai_types.model_t(id = 'claude-sonnet-4-5', api = 'anthropic-messages', provider = 'anthropic', base_url = 'https://api.anthropic.com', reasoning = true, adaptive_thinking = true, context_window = 200000, max_tokens = 64000)
 }
@@ -501,7 +508,6 @@ pub fn valid_thinking(string value): bool {
     return value == 'off' || value == 'minimal' || value == 'low' || value == 'medium' || value == 'high' || value == 'xhigh' || value == 'max'
 }
 
-#local
 fn catalog_contains([ref<ai_types.model_t>] values, ref<ai_types.model_t> candidate): bool {
     for value in values {
         if value.provider.to_lower() == candidate.provider.to_lower() && value.id.to_lower() == candidate.id.to_lower() {
@@ -511,7 +517,6 @@ fn catalog_contains([ref<ai_types.model_t>] values, ref<ai_types.model_t> candid
     return false
 }
 
-#local
 fn known_provider(string value): bool {
     var def = registry.find_def(value)
     if def is ai_types.provider_def_t {
@@ -520,7 +525,6 @@ fn known_provider(string value): bool {
     return false
 }
 
-#local
 fn strip_thinking_suffix(string value): string {
     int separator = value.rfind(':')
     if separator < 0 {
@@ -533,12 +537,10 @@ fn strip_thinking_suffix(string value): string {
     return value
 }
 
-#local
 fn has_glob(string value): bool {
     return value.contains('*') || value.contains('?') || value.contains('[')
 }
 
-#local
 fn matches_model_pattern(ref<ai_types.model_t> model, string pattern): bool {
     string reference = model.provider + '/' + model.id
     if matches_value_pattern(reference, pattern) {
@@ -552,7 +554,6 @@ fn matches_model_pattern(ref<ai_types.model_t> model, string pattern): bool {
     return false
 }
 
-#local
 fn matches_reference_pattern(string reference, string pattern): bool {
     if matches_value_pattern(reference, pattern) {
         return true
@@ -565,7 +566,6 @@ fn matches_reference_pattern(string reference, string pattern): bool {
     return false
 }
 
-#local
 fn matches_value_pattern(string value, string pattern): bool {
     string lower_value = value.to_lower()
     string lower_pattern = strip_thinking_suffix(pattern.trim([' ', '\t'])).to_lower()

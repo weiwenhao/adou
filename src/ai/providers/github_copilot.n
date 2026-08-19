@@ -2,11 +2,30 @@
 // Metadata follows vendors/pi/packages/ai/src/providers/github-copilot.ts.
 import adou.src.ai.providers.github_copilot_models
 import adou.src.ai.types
+import adou.src.config.auth
 
 pub fn def(): types.provider_def_t {
-    return types.provider_def_t {id: 'github-copilot', name: 'GitHub Copilot', api: 'openai-completions', base_url: 'https://api.individual.githubcopilot.com', env_vars: ['COPILOT_GITHUB_TOKEN'], headers: {},}
+    return types.provider_def_t {id: 'github-copilot', name: 'GitHub Copilot', api: 'openai-completions', base_url: 'https://api.individual.githubcopilot.com', env_vars: ['COPILOT_GITHUB_TOKEN'], headers: {}, supports_oauth: true,}
 }
 
 pub fn models(): [ref<types.model_t>] {
-    return github_copilot_models.models()
+    var available = github_copilot_models.models()
+    var stored = auth.read_credential('github-copilot')
+    if !(stored is ref<auth.oauth_credential_t>) {
+        return available
+    }
+    var oauth = stored as ref<auth.oauth_credential_t>
+    if oauth.available_model_ids.len() == 0 {
+        return available
+    }
+    [ref<types.model_t>] filtered = []
+    for model in available {
+        for id in oauth.available_model_ids {
+            if model.id == id {
+                filtered.push(model)
+                break
+            }
+        }
+    }
+    return filtered.len() > 0 ? filtered : available
 }

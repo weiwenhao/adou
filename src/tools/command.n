@@ -328,7 +328,6 @@ pub fn argv(string cwd, string name, [string] args): result_t! {
     return run_captured(cwd, '/bin/bash', process_args)
 }
 
-#local
 fn run_captured(string cwd, string executable, [string] args): result_t! {
     var stdout_buffer = io.buffer.new()
     var stderr_buffer = io.buffer.new()
@@ -347,28 +346,25 @@ pub fn quote(string value): string {
     return "'" + value.replace("'", "'\"'\"'") + "'"
 }
 
-#local
 fn environment_prefix(): string {
-    string prefix = 'unset PI_SESSION_ID PI_SESSION_FILE PI_PROVIDER PI_MODEL PI_REASONING_LEVEL'
+    string prefix = 'unset ADOU_SESSION_ID ADOU_SESSION_FILE ADOU_PROVIDER ADOU_MODEL ADOU_REASONING_LEVEL'
     if global_agent_env == 0 {
         return prefix + ' && '
     }
     var env = global_agent_env as ref<agent_env_t>
-    if env.session_id != '' {prefix += ' && export PI_SESSION_ID=' + quote(env.session_id)}
-    if env.session_file != '' {prefix += ' && export PI_SESSION_FILE=' + quote(env.session_file)}
-    if env.provider != '' {prefix += ' && export PI_PROVIDER=' + quote(env.provider)}
-    if env.model != '' {prefix += ' && export PI_MODEL=' + quote(env.model)}
-    if env.reasoning_level != '' {prefix += ' && export PI_REASONING_LEVEL=' + quote(env.reasoning_level)}
+    if env.session_id != '' {prefix += ' && export ADOU_SESSION_ID=' + quote(env.session_id)}
+    if env.session_file != '' {prefix += ' && export ADOU_SESSION_FILE=' + quote(env.session_file)}
+    if env.provider != '' {prefix += ' && export ADOU_PROVIDER=' + quote(env.provider)}
+    if env.model != '' {prefix += ' && export ADOU_MODEL=' + quote(env.model)}
+    if env.reasoning_level != '' {prefix += ' && export ADOU_REASONING_LEVEL=' + quote(env.reasoning_level)}
     return prefix + ' && '
 }
 
-#local
 fn wait_for_process(ref<process.process_t> child, chan<u8> finished): void! {
     child.wait()
     finished.send(1)
 }
 
-#local
 fn process_group_helper(): string {
     string configured = syscall.get_env('ADOU_PROCESS_GROUP_HELPER')
     if configured != '' && libc.access(configured.to_cstr(), libc.F_OK) == 0 {
@@ -393,7 +389,6 @@ fn process_group_helper(): string {
     return ''
 }
 
-#local
 fn isolate_process_group(ref<process.process_t> child): bool {
     // Nature's process wrapper does not expose libuv's detached flag.  The
     // parent can still move the freshly spawned child into a new process
@@ -401,7 +396,6 @@ fn isolate_process_group(ref<process.process_t> child): bool {
     return libc.setpgid(child.pid as i32, child.pid as i32) == 0
 }
 
-#local
 fn terminate_process(ref<process.process_t> child, bool grouped): void {
     int pid = child.pid
     if grouped {
@@ -413,7 +407,6 @@ fn terminate_process(ref<process.process_t> child, bool grouped): void {
     syscall.kill(pid, syscall.SIGKILL) catch error {}
 }
 
-#local
 fn timeout_after(int timeout_ms, chan<u8> timed): void! {
     co.sleep(timeout_ms)
     timed.send(1)

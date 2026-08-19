@@ -1,0 +1,14 @@
+import adou.src.server.radius
+import syscall
+
+test 'Radius presence is opt-in and normalizes its server base URL' {
+    string saved_url = syscall.get_env('ADOU_RADIUS_SERVER_URL')
+    string saved_enabled = syscall.get_env('ADOU_RADIUS_ENABLED')
+    syscall.set_env('ADOU_RADIUS_SERVER_URL', 'http://127.0.0.1:9/v1///')
+    syscall.set_env('ADOU_RADIUS_ENABLED', '')
+    var presence = radius.new()
+    assert(presence.base_url == 'http://127.0.0.1:9/v1')
+    assert(radius.is_enabled() == false)
+    syscall.set_env('ADOU_RADIUS_SERVER_URL', saved_url)
+    syscall.set_env('ADOU_RADIUS_ENABLED', saved_enabled)
+}

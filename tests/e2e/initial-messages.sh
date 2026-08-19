@@ -87,8 +87,8 @@ if [ ! -s "$port_file" ]; then
 fi
 port=$(cat "$port_file")
 
-if ! PI_CODING_AGENT_DIR="$tmp_dir/agent-file" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions-file" \
+if ! ADOU_CODING_AGENT_DIR="$tmp_dir/agent-file" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions-file" \
     "$binary" --provider deepseek --model deepseek-v4-flash --thinking off \
     --base-url "http://127.0.0.1:$port/v1" --api-key e2e-key \
     -p --no-context-files --no-session "@$file_path" first second > "$output_file" 2>&1; then
@@ -104,8 +104,8 @@ fi
 
 stdin_output="$tmp_dir/stdin-output"
 if ! printf '%b' '  STDIN_CONTENT  \n' | \
-    PI_CODING_AGENT_DIR="$tmp_dir/agent-stdin" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions-stdin" \
+    ADOU_CODING_AGENT_DIR="$tmp_dir/agent-stdin" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions-stdin" \
     "$binary" --provider deepseek --model deepseek-v4-flash --thinking off \
     --base-url "http://127.0.0.1:$port/v1" --api-key e2e-key \
     --print --no-context-files --no-session first second > "$stdin_output" 2>&1; then
@@ -123,8 +123,8 @@ fi
 # even without an explicit -p.  The output must be the final assistant text,
 # not Adou's static TUI transcript.
 direct_output="$tmp_dir/direct-output"
-if ! PI_CODING_AGENT_DIR="$tmp_dir/agent-direct" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions-direct" \
+if ! ADOU_CODING_AGENT_DIR="$tmp_dir/agent-direct" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions-direct" \
     "$binary" --provider deepseek --model deepseek-v4-flash --thinking off \
     --base-url "http://127.0.0.1:$port/v1" --api-key e2e-key \
     --no-context-files --no-session direct-prompt > "$direct_output" 2>&1; then
@@ -172,8 +172,8 @@ if not direct or direct[-1] != "direct-prompt":
 PY
 
 rpc_error="$tmp_dir/rpc-error"
-if PI_CODING_AGENT_DIR="$tmp_dir/agent-rpc" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions-rpc" \
+if ADOU_CODING_AGENT_DIR="$tmp_dir/agent-rpc" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions-rpc" \
     "$binary" --mode rpc --no-session "@$file_path" > "$rpc_error" 2>&1; then
     echo 'e2e: RPC accepted an @file argument' >&2
     cat "$rpc_error" >&2

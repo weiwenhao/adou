@@ -22,7 +22,7 @@ pub type timing_namespace_t = struct {
 [ref<timing_namespace_t>] timing_namespaces = []
 
 pub fn enabled(): bool {
-    return syscall.get_env('PI_TIMING') == '1'
+    return syscall.get_env('ADOU_TIMING') == '1'
 }
 
 // Reset the default (main) startup timing group.
@@ -119,7 +119,6 @@ pub fn printTimings() {
     print_timings()
 }
 
-#local
 fn find_namespace(string namespace): ref<timing_namespace_t>? {
     for value in timing_namespaces {
         if value.name == namespace {
@@ -129,7 +128,6 @@ fn find_namespace(string namespace): ref<timing_namespace_t>? {
     return null
 }
 
-#local
 fn format_group(ref<timing_namespace_t> namespace): string {
     string title = 'Startup Timings: ' + namespace.name
     string output = '\n--- ' + title + ' ---\n'

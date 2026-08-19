@@ -55,8 +55,8 @@ port = server.server_address[1]
 with tempfile.TemporaryDirectory(prefix="adou-rpc-abort-") as root:
     env = os.environ.copy()
     env.update({
-        "PI_CODING_AGENT_DIR": os.path.join(root, "agent"),
-        "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
+        "ADOU_CODING_AGENT_DIR": os.path.join(root, "agent"),
+        "ADOU_SESSION_DIR": os.path.join(root, "sessions"),
     })
     command = [
         binary, "--mode", "rpc", "--no-session", "--no-context-files",

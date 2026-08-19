@@ -2,8 +2,11 @@ import adou.src.agent.event_json
 import adou.src.agent.session_stream
 import adou.src.server.protocol
 import adou.src.server.rpc_process
+import adou.src.server.storage
+import adou.src.server.radius
 import adou.src.session.identity
 import co.mutex
+import time
 
 // Multi-instance supervisor backed by one real `adou --mode rpc` child per
 // instance, matching Pi server's RpcProcessInstance isolation boundary.
@@ -27,6 +30,9 @@ pub type instance_t = struct {
     ref<mutex.mutex_t> state_lock = mutex.mutex_t.new()
     string status = INSTANCE_STARTING
     string exit_reason
+    string radius_pi_id = ''
+    int created_ms
+    int last_seen_ms
 }
 
 pub type supervisor_t = struct {
@@ -34,10 +40,16 @@ pub type supervisor_t = struct {
     [ref<instance_t>] instances
     string executable
     bool offline
+    ref<radius.presence_t> presence
 }
 
 pub fn new(string executable, bool offline): ref<supervisor_t> {
-    return new supervisor_t(instances = [], executable = executable, offline = offline)
+    var supervisor = new supervisor_t(instances = [], executable = executable, offline = offline, presence = radius.new())
+    for record in storage.load_instances() {
+        var summary = protocol.instance_summary_t {id: record.id, status: record.status, cwd: record.cwd, label: record.label, session_id: record.session_id, session_file: record.session_file}
+        supervisor.instances.push(new instance_t(summary = summary, subscribers = [], status = record.status, radius_pi_id = record.radius_pi_id, created_ms = record.created_ms, last_seen_ms = record.last_seen_ms))
+    }
+    return supervisor
 }
 
 // Preserve Adou's observable starting->online transition while changing the
@@ -48,15 +60,24 @@ pub fn supervisor_t.spawn(&self, string cwd, string label): protocol.instance_su
         throw error
     }
     var summary = protocol.instance_summary_t {id: instance_id, status: INSTANCE_STARTING, cwd: cwd, label: label, session_id: '', session_file: ''}
-    var instance = new instance_t(summary = summary, subscribers = [], status = INSTANCE_STARTING)
+    int now = time.now().ms_timestamp()
+    var instance = new instance_t(summary = summary, subscribers = [], status = INSTANCE_STARTING, created_ms = now, last_seen_ms = now)
     self.lock.lock()
     self.instances.push(instance)
     self.lock.unlock()
+    persist_instance(instance)
     go finish_spawn(self, instance, cwd)
     return summary
 }
 
-#local
+pub fn supervisor_t.start_presence(&self) {
+    self.presence.start() catch error {}
+}
+
+pub fn supervisor_t.stop_presence(&self) {
+    self.presence.stop()
+}
+
 fn finish_spawn(ref<supervisor_t> supervisor, ref<instance_t> instance, string cwd) {
     var child = rpc_process.start(supervisor.executable, cwd, fn(string line) {
         instance.emit_line(line)
@@ -82,6 +103,10 @@ fn finish_spawn(ref<supervisor_t> supervisor, ref<instance_t> instance, string c
     }
     if instance.state_status() == INSTANCE_STARTING {
         instance.set_state(INSTANCE_ONLINE, '')
+        string radius_id = supervisor.presence.register_pi(instance.summary.label, instance.summary.cwd, instance.summary.session_id) catch error {''}
+        if radius_id != '' {
+            instance.set_radius_pi_id(radius_id)
+        }
     }
 }
 
@@ -146,10 +171,12 @@ pub fn instance_t.set_state(&self, string next_status, string reason) {
         return
     }
     self.status = next_status
+    self.last_seen_ms = time.now().ms_timestamp()
     if reason != '' {
         self.exit_reason = reason
     }
     self.state_lock.unlock()
+    persist_instance(self)
     var event = session_stream.event_t {kind: session_stream.EVENT_INSTANCE_STATUS, instance_id: self.summary.id, instance_status: next_status, instance_exit_reason: reason}
     string line = event_json.encode(event) catch error {
         return
@@ -161,7 +188,24 @@ pub fn instance_t.update_summary(&self, string session_id, string session_file) 
     self.state_lock.lock()
     self.summary.session_id = session_id
     self.summary.session_file = session_file
+    self.last_seen_ms = time.now().ms_timestamp()
     self.state_lock.unlock()
+    persist_instance(self)
+}
+
+pub fn instance_t.set_radius_pi_id(&self, string radius_id) {
+    self.state_lock.lock()
+    self.radius_pi_id = radius_id
+    self.last_seen_ms = time.now().ms_timestamp()
+    self.state_lock.unlock()
+    persist_instance(self)
+}
+
+fn persist_instance(ref<instance_t> instance) {
+    instance.state_lock.lock()
+    var record = storage.instance_record_t {id: instance.summary.id, status: instance.status, cwd: instance.summary.cwd, label: instance.summary.label, session_id: instance.summary.session_id, session_file: instance.summary.session_file, radius_pi_id: instance.radius_pi_id, created_ms: instance.created_ms, last_seen_ms: instance.last_seen_ms}
+    instance.state_lock.unlock()
+    storage.upsert_instance(record) catch error {}
 }
 
 // Send one command to the child and refresh persisted session identity after
@@ -189,6 +233,9 @@ pub fn supervisor_t.stop(&self, string instance_id): bool {
     var child = live.get_process()
     if child is ref<rpc_process.rpc_process_t> process_value {
         process_value.dispose()
+    }
+    if live.radius_pi_id != '' {
+        self.presence.disconnect_pi(live.radius_pi_id)
     }
     return true
 }
@@ -236,10 +283,13 @@ pub fn supervisor_t.shutdown(&self) {
         if child is ref<rpc_process.rpc_process_t> process_value {
             process_value.dispose()
         }
+        if instance.radius_pi_id != '' {
+            self.presence.disconnect_pi(instance.radius_pi_id)
+        }
     }
+    self.presence.stop()
 }
 
-#local
 fn sync_summary(ref<instance_t> instance, ref<rpc_process.rpc_process_t> child): void! {
     {string:any} command = {}
     command['type'] = 'get_state'
@@ -258,12 +308,10 @@ fn sync_summary(ref<instance_t> instance, ref<rpc_process.rpc_process_t> child):
     instance.update_summary(session_id, field_string(data, 'sessionFile'))
 }
 
-#local
 fn refreshes_session(string command): bool {
     return command == 'new_session' || command == 'switch_session' || command == 'fork' || command == 'clone' || command == 'set_session_name' || command == 'prompt'
 }
 
-#local
 fn field_string({string:any} object, string key): string {
     if object.contains(key) && object[key] is string {
         return object[key] as string
@@ -271,7 +319,6 @@ fn field_string({string:any} object, string key): string {
     return ''
 }
 
-#local
 fn field_bool({string:any} object, string key): bool {
     if object.contains(key) && object[key] is bool {
         return object[key] as bool

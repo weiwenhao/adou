@@ -1,0 +1,182 @@
+import adou.src.config.auth
+import adou.src.config.paths
+import adou.src.json_util
+import adou.src.server.storage
+import co
+import fs
+import http.client as client
+import json
+import os
+import path
+import syscall
+import time
+
+// Radius presence integration for the standalone server.  It is opt-in by
+// credentials (or ADOU_RADIUS_ENABLED=1), never blocks normal IPC startup when
+// disabled, and keeps machine/Pi registration separate from local instances.
+pub type presence_t = struct {
+    string base_url
+    string access_token
+    string machine_id
+    int heartbeat_ms = 30000
+    int heartbeat_failures
+    int machine_not_found_count
+    bool running
+}
+
+pub fn new(): ref<presence_t> {
+    string base = syscall.get_env('ADOU_RADIUS_SERVER_URL')
+    if base == '' {base = syscall.get_env('ADOU_RADIUS_URL')}
+    if base == '' {base = 'https://radius.pi.dev/v1'}
+    for base.len() > 0 && base[base.len() - 1] == '/'.char() {
+        base = base.slice(0, base.len() - 1)
+    }
+    return new presence_t(base_url = base, access_token = auth.effective('radius'))
+}
+
+pub fn is_enabled(): bool {
+    return syscall.get_env('ADOU_RADIUS_ENABLED') == '1' || auth.effective('radius') != ''
+}
+
+pub fn presence_t.start(&self): bool! {
+    if !is_enabled() || self.access_token == '' {return false}
+    self.running = true
+    self.register_machine() catch error {
+        self.running = false
+        throw error
+    }
+    go machine_heartbeat(self)
+    return true
+}
+
+pub fn presence_t.register_machine(&self): void! {
+    {string:any} body = {}
+    body['machineId'] = load_machine_id()
+    body['label'] = syscall.get_env('ADOU_SERVER_LABEL')
+    body['hostname'] = syscall.get_env('HOSTNAME')
+    body['platform'] = syscall.get_env('OSTYPE')
+    body['arch'] = syscall.get_env('PROCESSOR_ARCHITECTURE')
+    body['version'] = syscall.get_env('ADOU_VERSION')
+    body['capabilities'] = { 'spawn': true, 'relay': false, 'iroh': false }
+    var result = self.post('/machines/register', body)
+    self.machine_id = json_util.opt_string(result, 'id')
+    if self.machine_id == '' {throw errorf('Radius registration response did not contain machine id')}
+    int interval = json_util.opt_int(result, 'heartbeatIntervalMs')
+    if interval > 0 {self.heartbeat_ms = interval}
+    save_machine_id(self.machine_id)
+    self.machine_not_found_count = 0
+    self.heartbeat_failures = 0
+    self.restore_instances()
+}
+
+pub fn presence_t.stop(&self) {
+    self.running = false
+    if self.machine_id == '' || self.access_token == '' {return}
+    self.post('/machines/' + self.machine_id + '/disconnect', {}) catch error {}
+}
+
+pub fn presence_t.register_pi(&self, string label, string cwd, string session_id): string! {
+    if !self.running {return ''}
+    {string:any} body = {}
+    body['machineId'] = self.machine_id
+    body['label'] = label
+    body['cwd'] = cwd
+    body['hostname'] = syscall.get_env('HOSTNAME')
+    body['transport'] = 'local-rpc'
+    body['capabilities'] = { 'rpc': true, 'relay': false, 'iroh': false }
+    body['sessionId'] = session_id
+    var result = self.post('/pis/register', body)
+    return json_util.opt_string(result, 'id')
+}
+
+pub fn presence_t.disconnect_pi(&self, string radius_pi_id) {
+    if radius_pi_id == '' || self.access_token == '' {return}
+    self.post('/pis/' + radius_pi_id + '/disconnect', {}) catch error {}
+}
+
+fn machine_heartbeat(ref<presence_t> presence) {
+    int delay = presence.heartbeat_ms
+    for presence.running {
+        co.sleep(delay)
+        if !presence.running {break}
+        self_heartbeat(presence) catch error {
+            presence.heartbeat_failures += 1
+            if error.msg().contains('(404)') {
+                presence.machine_not_found_count += 1
+                if presence.machine_not_found_count >= 1 {
+                    presence.register_machine() catch register_error {}
+                    delay = presence.heartbeat_ms
+                    continue
+                }
+            }
+            delay *= 2
+            if delay > 300000 {delay = 300000}
+            continue
+        }
+        presence.heartbeat_failures = 0
+        presence.machine_not_found_count = 0
+        delay = presence.heartbeat_ms
+    }
+}
+
+pub fn presence_t.restore_instances(&self) {
+    if self.machine_id == '' || !self.running {return}
+    for record in storage.load_instances() {
+        if record.status != 'online' && record.status != 'starting' {continue}
+        string radius_id = self.register_pi(record.label, record.cwd, record.session_id) catch error {''}
+        if radius_id == '' {continue}
+        record.radius_pi_id = radius_id
+        storage.upsert_instance(record) catch error {}
+    }
+}
+
+fn self_heartbeat(ref<presence_t> presence): void! {
+    {string:any} body = {}
+    body['cwd'] = path.dir(paths.agent_dir())
+    body['socketPath'] = path.join(path.dir(paths.agent_dir()), 'server.sock')
+    presence.post('/machines/' + presence.machine_id + '/heartbeat', body)
+}
+
+fn presence_t.post(&self, string endpoint, {string:any} body): {string:any}! {
+    var request = client.new().post(self.base_url + endpoint).timeout(5000).header('Accept', 'application/json').header('Content-Type', 'application/json').header('Authorization', 'Bearer ' + self.access_token).content(json.serialize(body))
+    var response = request.send()
+    int status = response.status
+    string content = response.text() catch error {
+        response.close()
+        throw error
+    }
+    response.close()
+    if status < 200 || status >= 300 {throw errorf('Radius request failed (%d): %s', status, content)}
+    any parsed = json_util.parse(content) catch error {throw errorf('Radius response was not JSON: %s', error.msg())}
+    if !json_util.is_obj(parsed) {throw errorf('Radius response was not an object')}
+    return parsed as {string:any}
+}
+
+fn machine_path(): string {
+    return path.join(path.dir(paths.agent_dir()), 'server/machine.json')
+}
+
+fn load_machine_id(): string {
+    string file_path = machine_path()
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return ''}
+    string content = input.content() catch error {
+        input.close()
+        return ''
+    }
+    input.close()
+    any parsed = json_util.parse(content) catch error {return ''}
+    if !json_util.is_obj(parsed) {return ''}
+    return json_util.opt_string(parsed as {string:any}, 'id')
+}
+
+fn save_machine_id(string id): void! {
+    string file_path = machine_path()
+    os.mkdirs(path.dir(file_path), 0o700)
+    {string:any} object = {}
+    object['id'] = id
+    object['lastSeenAt'] = time.now().ms_timestamp()
+    string content = json.serialize(object)
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600) catch error {return}
+    output.write(content as [u8]) catch error {}
+    output.close()
+}

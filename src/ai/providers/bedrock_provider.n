@@ -189,7 +189,6 @@ pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.
     return result
 }
 
-#local
 fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
     debug.log('provider', 'bedrock stream start model=' + model.id)
     var processor = processor(model, time.now().ms_timestamp())
@@ -200,7 +199,6 @@ fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, re
     }
 }
 
-#local
 fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
     if stream.is_aborted() {
         throw errorf('Operation aborted')
@@ -237,7 +235,6 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     debug.log('provider', 'bedrock stream end')
 }
 
-#local
 fn decode_frames(ref<processor_t> processor, [u8] accumulator): [types.assistant_event_t]! {
     [types.assistant_event_t] events = []
     var decoded = bedrock_messages.decode_event_stream(accumulator)
@@ -250,7 +247,6 @@ fn decode_frames(ref<processor_t> processor, [u8] accumulator): [types.assistant
     return events
 }
 
-#local
 fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response_t>! {
     var stream = state.stream
     if stream.is_aborted() {
@@ -290,7 +286,6 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
     return send_with_retry(state, retry_index + 1)
 }
 
-#local
 fn send_once(ref<run_state_t> state): ref<client.response_t>! {
     debug.log('provider', 'bedrock sending request')
     string amz_date = bedrock_messages.amz_date_now()
@@ -302,7 +297,6 @@ fn send_once(ref<run_state_t> state): ref<client.response_t>! {
     return request.send()
 }
 
-#local
 fn response_headers(ref<client.response_t> response): [provider_retry.header_t] {
     [provider_retry.header_t] result = []
     for name, value in response.headers {
@@ -311,7 +305,6 @@ fn response_headers(ref<client.response_t> response): [provider_retry.header_t] 
     return result
 }
 
-#local
 fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
     debug.log('provider', 'bedrock terminal failure: ' + message)
     state.processor.output.stop_reason = stream.is_aborted() ? types.STOP_ABORTED : types.STOP_ERROR
@@ -321,7 +314,6 @@ fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, str
     stream.end() catch error {}
 }
 
-#local
 fn read_error_body(ref<client.response_t> response): string! {
     [u8] result = []
     [u8] scratch = vec<u8>.new(0, 4096)
@@ -342,7 +334,6 @@ fn read_error_body(ref<client.response_t> response): string! {
     return result as string
 }
 
-#local
 fn processor_t.append_text(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
     ref<types.text_content_t>? text = null
     for block in self.output.content {
@@ -367,7 +358,6 @@ fn processor_t.append_text(&self, string value, [types.assistant_event_t] events
     return events
 }
 
-#local
 fn processor_t.append_thinking(&self, string value, [types.assistant_event_t] events): [types.assistant_event_t] {
     ref<types.thinking_content_t>? thinking = null
     for block in self.output.content {
@@ -392,7 +382,6 @@ fn processor_t.append_thinking(&self, string value, [types.assistant_event_t] ev
     return events
 }
 
-#local
 fn processor_t.append_thinking_signature(&self, string signature, [types.assistant_event_t] events): [types.assistant_event_t] {
     for block in self.output.content {
         if block is ref<types.thinking_content_t> existing {
@@ -403,7 +392,6 @@ fn processor_t.append_thinking_signature(&self, string signature, [types.assista
     return events
 }
 
-#local
 fn processor_t.has_tool_call(&self): bool {
     for block in self.output.content {
         if block is ref<types.tool_call_t> {
@@ -413,7 +401,6 @@ fn processor_t.has_tool_call(&self): bool {
     return false
 }
 
-#local
 fn merge_json(any base, any extra): any {
     if base is {string:any} {
         if extra is {string:any} {
@@ -428,7 +415,6 @@ fn merge_json(any base, any extra): any {
     return extra
 }
 
-#local
 fn optional_int({string:any} object, string key, int fallback): int {
     if !object.contains(key) || json_util.is_null(object[key]) {
         return fallback
@@ -439,7 +425,6 @@ fn optional_int({string:any} object, string key, int fallback): int {
     return (object[key] as f64) as int
 }
 
-#local
 fn opt_string({string:any} object, string key): string {
     if object.contains(key) && object[key] is string {
         return object[key] as string
@@ -447,7 +432,6 @@ fn opt_string({string:any} object, string key): string {
     return ''
 }
 
-#local
 fn update_event(string kind, int content_index, string delta, string content, ref<types.assistant_message_t> partial): types.assistant_event_t {
     return types.assistant_event_t {kind: kind, content_index: content_index, delta: delta, content: content, partial: partial,}
 }

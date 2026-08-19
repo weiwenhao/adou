@@ -101,7 +101,6 @@ pub fn header([header_t] headers, string name): string {
     }
     return ''
 }
-#local
 fn parse_milliseconds(string value): int! {
     float parsed = value.to_float()
     if parsed < 0 {
@@ -109,7 +108,6 @@ fn parse_milliseconds(string value): int! {
     }
     return parsed as int
 }
-#local
 fn parse_retry_after(string value): int {
     float seconds = value.to_float() catch e {
         return parse_http_date(value)
@@ -119,7 +117,6 @@ fn parse_retry_after(string value): int {
     }
     return (seconds * 1000.0) as int
 }
-#local
 fn parse_http_date(string value): int {
     var parsed = libc.tm {}
     var rest = libc.strptime(value.to_cstr(), '%a, %d %b %Y %H:%M:%S GMT'.to_cstr(), &parsed)
@@ -132,7 +129,6 @@ fn parse_http_date(string value): int {
     }
     return delay as int
 }
-#local
 fn validate_delay(int delay, int configured_max_delay_ms, string provider_error): int! {
     int maximum = configured_max_delay_ms
     if maximum < 0 {

@@ -36,8 +36,8 @@ with open(settings_path, "w", encoding="utf-8") as handle:
 env = fixed_oracle_env(home, agent_dir=agent)
 env.update(
     {
-        "PI_CODING_AGENT_SESSION_DIR": sessions,
-        "PI_OFFLINE": "1",
+        "ADOU_SESSION_DIR": sessions,
+        "ADOU_OFFLINE": "1",
         "DEEPSEEK_API_KEY": "test-key",
     }
 )

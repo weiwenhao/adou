@@ -3,13 +3,13 @@ import adou.src.timings
 import syscall
 
 test 'Pi startup timings are opt-in and preserve main/extensions groups' {
-    string previous = syscall.get_env('PI_TIMING')
-    syscall.set_env('PI_TIMING', '0')
+    string previous = syscall.get_env('ADOU_TIMING')
+    syscall.set_env('ADOU_TIMING', '0')
     timings.reset_timings()
     timings.time('disabled')
     assert(timings.format_timings() == '')
 
-    syscall.set_env('PI_TIMING', '1')
+    syscall.set_env('ADOU_TIMING', '1')
     timings.reset_timings()
     timings.time('parseArgs')
     timings.reset_namespace(timings.EXTENSIONS_NAMESPACE)
@@ -22,7 +22,7 @@ test 'Pi startup timings are opt-in and preserve main/extensions groups' {
     assert(timings.namespace_timings(timings.MAIN_NAMESPACE).len() == 1)
     assert(timings.namespace_timings(timings.EXTENSIONS_NAMESPACE).len() == 1)
 
-    syscall.set_env('PI_TIMING', previous)
+    syscall.set_env('ADOU_TIMING', previous)
 }
 
 test 'stdout takeover remains explicit and idempotent' {

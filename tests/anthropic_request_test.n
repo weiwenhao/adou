@@ -85,6 +85,18 @@ test 'maps branch summaries into Pi user context' {
     assert((((((body as {string:any})['messages'] as [any])[0] as {string:any})['content'] as [any])[0] as {string:any})['text'] as string == 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\nabandoned work</summary>')
 }
 
+test 'encodes tool result images as Anthropic base64 blocks' {
+    var context = new types.context_t()
+    var image = new types.image_attachment_t(mime_type = 'image/png', data = 'aW1hZ2U=')
+    context.messages.push(new types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'read', images = [image,]))
+    var body = json_util.parse(anthropic_request.build(anthropic_model(), context, new types.stream_options_t(api_key = 'key')))
+    var tool_user = ((body as {string:any})['messages'] as [any])[0] as {string:any}
+    var result = (tool_user['content'] as [any])[0] as {string:any}
+    var image_block = (result['content'] as [any])[1] as {string:any}
+    assert(image_block['type'] as string == 'image')
+    assert(((image_block['source'] as {string:any})['media_type'] as string) == 'image/png')
+}
+
 test 'does not replay an errored assistant turn' {
     var context = new types.context_t()
     var assistant = new types.assistant_message_t(content = [new types.text_content_t(text = 'failed'),], stop_reason = types.STOP_ERROR, error_message = 'overloaded')

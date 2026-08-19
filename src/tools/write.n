@@ -22,7 +22,6 @@ pub fn execute(string cwd, string input_path, string content, ref<abort.abort_t>
     return result
 }
 
-#local
 fn execute_locked(string absolute_path, string input_path, string content, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
     throw_if_aborted(cancellation)
     os.mkdirs(path.dir(absolute_path), 0o755)

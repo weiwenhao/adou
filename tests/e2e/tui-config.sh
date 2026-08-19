@@ -42,8 +42,8 @@ env = os.environ.copy()
 env.update(
     {
         "HOME": home,
-        "PI_CODING_AGENT_DIR": agent,
-        "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
+        "ADOU_CODING_AGENT_DIR": agent,
+        "ADOU_SESSION_DIR": os.path.join(root, "sessions"),
     }
 )
 

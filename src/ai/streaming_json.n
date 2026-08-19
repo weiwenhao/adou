@@ -35,7 +35,6 @@ pub fn parse_with_repair(string source): any! {
     return value
 }
 
-#local
 fn repair_json(string source): string {
     [u8] bytes = source as [u8]
     [u8] result = []
@@ -98,7 +97,6 @@ fn repair_json(string source): string {
     return result as string
 }
 
-#local
 fn close_json(string source): string {
     string trimmed = source.trim([' ', '\t', '\n', '\r'])
     [u8] bytes = trimmed as [u8]
@@ -165,7 +163,6 @@ fn close_json(string source): string {
     return result as string
 }
 
-#local
 fn append_incomplete_token([u8] result): [u8] {
     if result.len() == 0 {
         return result
@@ -191,22 +188,18 @@ fn append_incomplete_token([u8] result): [u8] {
     return result
 }
 
-#local
 fn is_token_delimiter(u8 byte): bool {
     return is_space(byte) || byte == '{'.char() || byte == '['.char() || byte == ','.char() || byte == ':'.char() || byte == '}'.char() || byte == ']'.char()
 }
 
-#local
 fn is_space(u8 byte): bool {
     return byte == ' '.char() || byte == '\t'.char() || byte == '\n'.char() || byte == '\r'.char()
 }
 
-#local
 fn valid_escape(u8 byte): bool {
     return byte == '"'.char() || byte == '\\'.char() || byte == '/'.char() || byte == 'b'.char() || byte == 'f'.char() || byte == 'n'.char() || byte == 'r'.char() || byte == 't'.char() || byte == 'u'.char()
 }
 
-#local
 fn append_control([u8] result, u8 byte): [u8] {
     if byte == 0x08 {
         result.append('\\b' as [u8])

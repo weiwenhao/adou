@@ -179,8 +179,8 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-compaction-retry-") as root:
     env = os.environ.copy()
     env.update(
         {
-            "PI_CODING_AGENT_DIR": agent_dir,
-            "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
+            "ADOU_CODING_AGENT_DIR": agent_dir,
+            "ADOU_SESSION_DIR": os.path.join(root, "sessions"),
         }
     )
     command = [

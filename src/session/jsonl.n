@@ -102,7 +102,6 @@ pub fn parse_header(any value): ref<types.header_t>! {
     return new types.header_t(version = version, id = required_string(object, 'id'), timestamp = required_string(object, 'timestamp'), cwd = required_string(object, 'cwd'), parent_session = optional_string(object, 'parentSession'), raw = value)
 }
 
-#local
 fn migrate_v1_to_v2([any] entries): void! {
     string previous_id = ''
     {string:bool} used = {}
@@ -139,7 +138,6 @@ fn migrate_v1_to_v2([any] entries): void! {
     }
 }
 
-#local
 fn migrate_v2_to_v3([any] entries): void! {
     for index, value in entries {
         var object = value as {string:any}

@@ -23,8 +23,8 @@ project_dir="$tmp_dir/project"
 run_rpc() {
     output=$1
     shift
-    PI_CODING_AGENT_DIR="$agent_dir" \
-    PI_CODING_AGENT_SESSION_DIR="$session_dir" \
+    ADOU_CODING_AGENT_DIR="$agent_dir" \
+    ADOU_SESSION_DIR="$session_dir" \
     "$binary" --mode rpc --no-context-files \
         --provider deepseek --model deepseek-v4-flash --api-key rpc-e2e-key \
         --session-dir "$session_dir" --approve "$@" > "$output"

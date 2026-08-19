@@ -71,7 +71,6 @@ pub fn truncate_tool_result(string text): string {
     return utf8.utf16_prefix(text, TOOL_RESULT_MAX_CHARS) + fmt.sprintf('\n\n[... %d more characters truncated]', length - TOOL_RESULT_MAX_CHARS)
 }
 
-#local
 fn format_tool_call(ref<types.tool_call_t> call): string! {
     if !json_util.is_obj(call.arguments) {
         return call.name + '(' + json_util.stringify(call.arguments) + ')'

@@ -116,7 +116,6 @@ pub fn utf16_prefix(string input, int maximum): string {
     return output as string
 }
 
-#local
 fn sequence_length(u8 first): int {
     if first >= 0xc2 && first <= 0xdf {
         return 2
@@ -130,12 +129,10 @@ fn sequence_length(u8 first): int {
     return 0
 }
 
-#local
 fn is_continuation(u8 value): bool {
     return value >= 0x80 && value <= 0xbf
 }
 
-#local
 fn valid_second(u8 first, u8 second): bool {
     if first == 0xe0 && second < 0xa0 {
         return false

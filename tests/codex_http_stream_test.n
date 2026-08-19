@@ -67,7 +67,7 @@ test 'streams a real Codex responses HTTP response' {
     server.post('/codex/responses', handler)
     go serve_fixture(server)
     co.sleep(500)
-    var options = new types.stream_options_t(api_key = test_token(), timeout_ms = 5000, max_retries = 0, session_id = 'session-1',)
+    var options = new types.stream_options_t(api_key = test_token(), timeout_ms = 5000, max_tokens = 16, max_retries = 0, session_id = 'session-1',)
     var stream = codex_provider.stream(fixture_model(CODEX_PORT), fixture_context(), options)
     co.sleep(800)
     [string] kinds = []
@@ -86,6 +86,7 @@ test 'streams a real Codex responses HTTP response' {
     assert(capture.session_id == 'session-1')
     assert(capture.body.find('"instructions"') >= 0)
     assert(capture.body.find('"parallel_tool_calls":true') >= 0)
+    assert(capture.body.find('"max_output_tokens"') < 0)
 }
 
 fn kinds_has([string] kinds, string kind): bool {

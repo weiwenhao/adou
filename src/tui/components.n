@@ -109,7 +109,6 @@ pub fn node_t.render(&self, int width): [string]! {
     return []
 }
 
-#local
 fn render_children([ref<node_t>] children, int width): [string]! {
     [string] result = vec<string>.cap_of(16)
     for child in children {
@@ -121,7 +120,6 @@ fn render_children([ref<node_t>] children, int width): [string]! {
     return result
 }
 
-#local
 fn render_text(string value, int width, int padding_x, int padding_y): [string]! {
     if value.trim([' ', '\t', '\n', '\r']) == '' {
         return []
@@ -148,7 +146,6 @@ fn render_text(string value, int width, int padding_x, int padding_y): [string]!
     return result.len() > 0 ? result : ['']
 }
 
-#local
 fn render_truncated(string value, int width, int padding_x, int padding_y): [string]! {
     [string] result = vec<string>.cap_of(1 + padding_y * 2)
     string empty = spaces(width)
@@ -171,7 +168,6 @@ fn render_truncated(string value, int width, int padding_x, int padding_y): [str
     return result
 }
 
-#local
 fn render_box([ref<node_t>] children, int width, int padding_x, int padding_y): [string]! {
     if children.len() == 0 {
         return []

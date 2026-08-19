@@ -611,7 +611,6 @@ pub type edit_group_t = struct {
     [edit_t] edits = []
 }
 
-#local
 fn match_edits(string content, [edit_t] edits, string input_path): (string, [edit_t], bool)! {
     bool used_fuzzy = false
     string fuzzy_content = ''
@@ -652,7 +651,6 @@ fn match_edits(string content, [edit_t] edits, string input_path): (string, [edi
     return (base, edits, used_fuzzy)
 }
 
-#local
 fn normalize_for_fuzzy_match(string text): string! {
     string result = normalization.nfkc(text)
     result = trim_trailing_whitespace_per_line(result)
@@ -675,7 +673,6 @@ fn normalize_for_fuzzy_match(string text): string! {
     return result
 }
 
-#local
 fn trim_trailing_whitespace_per_line(string text): string {
     string result = ''
     int start = 0
@@ -691,7 +688,6 @@ fn trim_trailing_whitespace_per_line(string text): string {
     return result
 }
 
-#local
 fn trim_line_end(string line): string {
     int end = line.len()
     for end > 0 {
@@ -704,7 +700,6 @@ fn trim_line_end(string line): string {
     return line.slice(0, end)
 }
 
-#local
 fn count_occurrences(string content, string needle): int {
     int count = 0
     int cursor = 0
@@ -717,7 +712,6 @@ fn count_occurrences(string content, string needle): int {
     return count
 }
 
-#local
 fn sort_edits([edit_t] edits) {
     for int index = 0; index < edits.len(); index += 1 {
         for int next = index + 1; next < edits.len(); next += 1 {
@@ -730,7 +724,6 @@ fn sort_edits([edit_t] edits) {
     }
 }
 
-#local
 fn apply_matched_edits(string content, [edit_t] edits, int offset): string {
     string result = content
     for int index = edits.len() - 1; index >= 0; index -= 1 {
@@ -741,7 +734,6 @@ fn apply_matched_edits(string content, [edit_t] edits, int offset): string {
     return result
 }
 
-#local
 fn apply_fuzzy_edits(string original, string normalized, [edit_t] edits): string! {
     [string] original_lines = split_lines_with_endings(original)
     [line_span_t] normalized_lines = line_spans(normalized)
@@ -776,7 +768,6 @@ fn apply_fuzzy_edits(string original, string normalized, [edit_t] edits): string
     return result
 }
 
-#local
 fn split_lines_with_endings(string content): [string] {
     [string] result = []
     int start = 0
@@ -790,7 +781,6 @@ fn split_lines_with_endings(string content): [string] {
     return result
 }
 
-#local
 fn line_spans(string content): [line_span_t] {
     [line_span_t] result = []
     int start = 0
@@ -804,7 +794,6 @@ fn line_spans(string content): [line_span_t] {
     return result
 }
 
-#local
 fn replacement_line_range([line_span_t] lines, edit_t edit): (int, int)! {
     int start_line = -1
     for index, line in lines {
@@ -833,7 +822,6 @@ pub const DIFF_ADD = 1
 pub const DIFF_REMOVE = 2
 
 
-#local
 fn edit_details(string input_path, string old_content, string new_content): any! {
     var old_lines = diff_lines(old_content)
     var new_lines = diff_lines(new_content)
@@ -854,7 +842,6 @@ fn edit_details(string input_path, string old_content, string new_content): any!
     return object
 }
 
-#local
 fn diff_lines(string content): [string] {
     if content == '' {return []}
     [string] lines = content.split('\n')
@@ -864,7 +851,6 @@ fn diff_lines(string content): [string] {
     return lines
 }
 
-#local
 fn line_diff([string] old_lines, [string] new_lines): [diff_op_t] {
     int old_count = old_lines.len()
     int new_count = new_lines.len()
@@ -904,7 +890,6 @@ fn line_diff([string] old_lines, [string] new_lines): [diff_op_t] {
     return result
 }
 
-#local
 fn display_diff([diff_op_t] operations, [string] old_lines, [string] new_lines, int context): string {
     int max_line = old_lines.len() > new_lines.len() ? old_lines.len() : new_lines.len()
     int width = fmt.sprintf('%d', max_line).len()
@@ -941,7 +926,6 @@ fn display_diff([diff_op_t] operations, [string] old_lines, [string] new_lines, 
     return strings.join(output, '\n')
 }
 
-#local
 fn unified_patch(string input_path, [diff_op_t] operations, [string] old_lines, [string] new_lines, int context): string {
     [string] output = ['--- ' + input_path, '+++ ' + input_path]
     [bool] include = []
@@ -990,7 +974,6 @@ fn unified_patch(string input_path, [diff_op_t] operations, [string] old_lines, 
     return strings.join(output, '\n')
 }
 
-#local
 fn pad_number(string value, int width): string {
     string result = value
     for result.len() < width {
@@ -999,7 +982,6 @@ fn pad_number(string value, int width): string {
     return result
 }
 
-#local
 fn parse_edits({string:any} object): [edit_t]! {
     [edit_t] result = []
     if object.contains('edits') {
@@ -1029,7 +1011,6 @@ fn parse_edits({string:any} object): [edit_t]! {
     return result
 }
 
-#local
 fn run_grep(string cwd, string pattern, string path, string glob, bool ignore_case, bool literal, int context, int limit): command.result_t! {
     var available = command.shell(cwd, 'command -v rg >/dev/null 2>&1')
     if available.exit_code == 0 {
@@ -1055,7 +1036,6 @@ fn run_grep(string cwd, string pattern, string path, string glob, bool ignore_ca
     return command.argv(cwd, '/usr/bin/grep', fallback)
 }
 
-#local
 fn run_find(string cwd, string search_path, string pattern): command.result_t! {
     var available = command.shell(cwd, 'command -v rg >/dev/null 2>&1')
     if available.exit_code == 0 {
@@ -1165,7 +1145,6 @@ pub fn glob_match_at(string pattern, string value, int pattern_index, int value_
     return matched
 }
 
-#local
 fn inside_git_repo(string search_path): bool {
     string current = search_path
     for true {
@@ -1181,7 +1160,6 @@ fn inside_git_repo(string search_path): bool {
     return false
 }
 
-#local
 fn combine_output(string stdout, string stderr): string {
     string result = stdout
     if stderr != '' {
@@ -1191,12 +1169,10 @@ fn combine_output(string stdout, string stderr): string {
     return result.trim(['\n', '\r'])
 }
 
-#local
 fn append_command_status(string output, string status): string {
     return output == '' ? status : output + '\n\n' + status
 }
 
-#local
 fn truncate_grep_lines(string output): (string, bool) {
     [string] lines = []
     bool truncated = false
@@ -1210,7 +1186,6 @@ fn truncate_grep_lines(string output): (string, bool) {
     return (strings.join(lines, '\n'), truncated)
 }
 
-#local
 fn format_grep_paths(string output, string search_path): string {
     [string] lines = []
     string file_prefix = search_path + ':'
@@ -1237,7 +1212,6 @@ fn format_grep_paths(string output, string search_path): string {
     return strings.join(lines, '\n')
 }
 
-#local
 fn limit_grep_matches(string output, int limit): (string, bool) {
     [string] lines = []
     int matches = 0
@@ -1255,7 +1229,6 @@ fn limit_grep_matches(string output, int limit): (string, bool) {
     return (strings.join(lines, '\n'), limited)
 }
 
-#local
 fn is_grep_match_line(string line): bool {
     int first = line.find(':')
     if first < 0 {
@@ -1272,14 +1245,12 @@ fn is_grep_match_line(string line): bool {
     return true
 }
 
-#local
 fn grep_limit_details(int limit): any! {
     {string:any} object = {}
     object['matchLimit'] = limit
     return object
 }
 
-#local
 fn sort_ls_entries([string] entries) {
     for int i = 0; i < entries.len(); i += 1 {
         for int j = i + 1; j < entries.len(); j += 1 {
@@ -1311,7 +1282,6 @@ pub fn optional_int({string:any} object, string key, int fallback): int! {
     return object[key] as f64 as int
 }
 
-#local
 fn optional_bool({string:any} object, string key, bool fallback): bool! {
     if !object.contains(key) || !(object[key] is bool) {return fallback}
     return object[key] as bool
@@ -1329,7 +1299,6 @@ pub fn truncation_details(truncate.result_t truncated): any! {
     wrapper['truncation'] = object
     return wrapper
 }
-#local
 fn truncation_details_with_path(truncate.result_t truncated, string full_output_path): any! {
     {string:any} object = {}
     object['truncated'] = truncated.truncated
@@ -1342,7 +1311,6 @@ fn truncation_details_with_path(truncate.result_t truncated, string full_output_
     return object
 }
 
-#local
 fn bash_truncation_footer(truncate.result_t truncated, string full_output_path): string {
     int start_line = truncated.total_lines - truncated.output_lines + 1
     int end_line = truncated.total_lines
@@ -1355,7 +1323,6 @@ fn bash_truncation_footer(truncate.result_t truncated, string full_output_path):
     return fmt.sprintf('\n\n[Showing lines %d-%d of %d (%s limit). Full output: %s]', start_line, end_line, truncated.total_lines, truncate.format_size(truncate.DEFAULT_MAX_BYTES), full_output_path)
 }
 
-#local
 fn persist_bash_output(string content): string! {
     string file_path = '/tmp/adou-bash-' + identity.uuid_v7() + '.log'
     var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_EXCL, 0o600)

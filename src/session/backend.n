@@ -132,13 +132,11 @@ pub fn fork_to(backend_t b, string requested_id): backend_t! {
     return backend_t {kind: b.kind, manager: forked, session_dir: b.session_dir, sqlite_db: null,}
 }
 
-#local
 fn persist_created(backend_t b, ref<session_types.header_t> header): void! {
     sqlite_repo.create_session(b.sqlite_db as ref<sqlite_repo.db_t>, header.id, header.timestamp, header.cwd, '')
     mgr(b).persisted = true
 }
 
-#local
 fn persist_entry(backend_t b, string entry_id): void! {
     var entry = mgr(b).get_entry(entry_id)
     if entry is ref<session_types.entry_t> entry_ref {
@@ -195,7 +193,6 @@ pub fn delete_session_file(string file_path, string cwd): (bool, string) {
     return (true, 'Session deleted')
 }
 
-#local
 fn sort_by_mtime([string] values): [string] {
     [string] remaining = values.slice(0, values.len())
     [string] result = vec<string>.cap_of(values.len())

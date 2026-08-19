@@ -16,7 +16,7 @@ pub fn isolate_trust_store() {
     trust_store_sequence += 1
     string dir = path.join('/tmp', 'adou-trust-test-' + suffix() + '-' + fmt.sprintf('%d', trust_store_sequence))
     os.mkdirs(dir, 0o700) catch error {}
-    syscall.set_env('PI_CODING_AGENT_DIR', dir) catch error {}
+    syscall.set_env('ADOU_CODING_AGENT_DIR', dir) catch error {}
 }
 
 test 'decision resolves the nearest ancestor like Pi' {

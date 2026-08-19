@@ -164,7 +164,6 @@ pub fn decode_text_blocks(any value): [ref<types.text_content_t>]! {
     return result
 }
 
-#local
 fn encode_user(ref<types.user_message_t> message): any! {
     {string:any} object = {}
     object['role'] = 'user'
@@ -173,7 +172,6 @@ fn encode_user(ref<types.user_message_t> message): any! {
     return object
 }
 
-#local
 fn encode_assistant(ref<types.assistant_message_t> message): any! {
     {string:any} object = {}
     object['role'] = 'assistant'
@@ -199,6 +197,16 @@ pub fn encode_tool_result(ref<types.tool_result_message_t> message): any! {
     object['toolCallId'] = message.tool_call_id
     object['toolName'] = message.tool_name
     object['content'] = encode_text_blocks(message.content)
+    if message.images.len() > 0 {
+        [any] images = []
+        for image in message.images {
+            {string:any} item = {}
+            item['mimeType'] = image.mime_type
+            item['data'] = image.data
+            images.push(item)
+        }
+        object['images'] = images
+    }
     if !json_util.is_null(message.details) {
         object['details'] = message.details
     }
@@ -217,7 +225,6 @@ pub fn encode_tool_result(ref<types.tool_result_message_t> message): any! {
     return object
 }
 
-#local
 fn encode_bash_execution(ref<types.bash_execution_message_t> message): any! {
     {string:any} object = {}
     object['role'] = 'bashExecution'
@@ -238,7 +245,6 @@ fn encode_bash_execution(ref<types.bash_execution_message_t> message): any! {
     return object
 }
 
-#local
 fn encode_custom(ref<types.custom_message_t> message): any! {
     {string:any} object = {}
     object['role'] = 'custom'
@@ -252,7 +258,6 @@ fn encode_custom(ref<types.custom_message_t> message): any! {
     return object
 }
 
-#local
 fn decode_user({string:any} object): types.message_t! {
     string content = ''
     if object.contains('content') {
@@ -276,7 +281,6 @@ fn decode_user({string:any} object): types.message_t! {
     return result
 }
 
-#local
 fn decode_assistant({string:any} object): types.message_t! {
     [types.content_t] content = []
     if object.contains('content') && object['content'] is [any] {
@@ -290,11 +294,22 @@ fn decode_assistant({string:any} object): types.message_t! {
     return result
 }
 
-#local
 fn decode_tool_result({string:any} object): types.message_t! {
     [ref<types.text_content_t>] content = []
     if object.contains('content') && object['content'] is [any] {
         content = decode_text_blocks(object['content'])
+    }
+    [ref<types.image_attachment_t>] images = []
+    if object.contains('images') && object['images'] is [any] {
+        for raw_image in object['images'] as [any] {
+            if raw_image is {string:any} image {
+                string mime = json_util.opt_string(image, 'mimeType')
+                string data = json_util.opt_string(image, 'data')
+                if mime != '' && data != '' {
+                    images.push(new types.image_attachment_t(mime_type = mime, data = data))
+                }
+            }
+        }
     }
     any details = null
     if object.contains('details') {
@@ -312,17 +327,15 @@ fn decode_tool_result({string:any} object): types.message_t! {
             }
         }
     }
-    types.message_t result = new types.tool_result_message_t(tool_call_id = json_util.opt_string(object, 'toolCallId'), tool_name = json_util.opt_string(object, 'toolName'), content = content, details = details, usage = usage, added_tool_names = added, is_error = json_util.opt_bool(object, 'isError'), timestamp = json_util.opt_int(object, 'timestamp'))
+    types.message_t result = new types.tool_result_message_t(tool_call_id = json_util.opt_string(object, 'toolCallId'), tool_name = json_util.opt_string(object, 'toolName'), content = content, images = images, details = details, usage = usage, added_tool_names = added, is_error = json_util.opt_bool(object, 'isError'), timestamp = json_util.opt_int(object, 'timestamp'))
     return result
 }
 
-#local
 fn decode_bash_execution({string:any} object): types.message_t! {
     types.message_t result = new types.bash_execution_message_t(command = json_util.opt_string(object, 'command'), output = json_util.opt_string(object, 'output'), exit_code = object.contains('exitCode') ? json_util.opt_int(object, 'exitCode') : -1, cancelled = json_util.opt_bool(object, 'cancelled'), truncated = json_util.opt_bool(object, 'truncated'), full_output_path = json_util.opt_string(object, 'fullOutputPath'), exclude_from_context = json_util.opt_bool(object, 'excludeFromContext'), timestamp = json_util.opt_int(object, 'timestamp'))
     return result
 }
 
-#local
 fn decode_custom({string:any} object): types.message_t! {
     string content = ''
     if object.contains('content') {
@@ -357,7 +370,6 @@ pub fn required_string({string:any} object, string key): string! {
     return json_util.required_string(object, key)
 }
 
-#local
 fn optional_string_default({string:any} object, string key, string fallback): string {
     string value = json_util.opt_string(object, key)
     if value == '' {
@@ -366,7 +378,6 @@ fn optional_string_default({string:any} object, string key, string fallback): st
     return value
 }
 
-#local
 fn join_lines([string] values): string {
     string result = ''
     for index, value in values {

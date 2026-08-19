@@ -7,7 +7,7 @@ import adou.src.ai.providers.openai_codex_models
 import adou.src.ai.types
 
 pub fn def(): types.provider_def_t {
-    return types.provider_def_t {id: 'openai-codex', name: 'OpenAI Codex', api: 'openai-codex-responses', base_url: 'https://chatgpt.com/backend-api', env_vars: [], headers: {}, supports_api_key_login: false,}
+    return types.provider_def_t {id: 'openai-codex', name: 'OpenAI Codex', api: 'openai-codex-responses', base_url: 'https://chatgpt.com/backend-api', env_vars: [], headers: {}, supports_api_key_login: false, supports_oauth: true,}
 }
 
 pub fn models(): [ref<types.model_t>] {

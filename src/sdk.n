@@ -1,0 +1,54 @@
+// Nature-native core SDK for embedding Adou's non-extension agent runtime.
+// The API deliberately exposes the same session/runner primitives used by
+// the CLI and RPC modes, while leaving terminal UI concerns to the caller.
+import adou.src.agent.session
+import adou.src.agent.session_stream as session_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.event_stream as ai_event_stream
+import adou.src.ai.provider
+import adou.src.ai.types as ai_types
+import adou.src.compaction.types as compaction_types
+import adou.src.session.repository
+
+pub type options_t = struct {
+    string cwd = ''
+    string session_dir = ''
+    bool persisted
+    ref<ai_types.model_t> model
+    string api_key
+    string system_prompt
+    bool auto_compaction = true
+    int reserve_tokens = 16384
+    int keep_recent_tokens = 20000
+}
+
+pub type session_t = struct {
+    ref<session.runner_t> runner
+    ref<repository.manager_t> repository
+}
+
+pub fn create(options_t options): ref<session_t>! {
+    if options.cwd == '' {throw errorf('SDK session cwd is required')}
+    var repository = options.persisted ? repository.create(options.cwd, options.session_dir) : repository.in_memory(options.cwd)
+    ref<ai_types.model_t> model = options.model
+    ref<ai_types.stream_options_t> stream_options = new ai_types.stream_options_t(api_key = options.api_key, max_tokens = model.max_tokens)
+    var config = new agent_types.config_t(model = model, stream_options = stream_options)
+    var context = new agent_types.context_t(system_prompt = options.system_prompt)
+    var compaction = compaction_types.settings_t {enabled: options.auto_compaction, reserve_tokens: options.reserve_tokens, keep_recent_tokens: options.keep_recent_tokens,}
+    var runner = session.new(repository, context, config, fn(ref<ai_types.model_t> request_model, ref<ai_types.context_t> request_context, ref<ai_types.stream_options_t> request_options): ref<ai_event_stream.assistant_stream_t> {
+        return provider.stream(request_model, request_context, request_options)
+    }, compaction)
+    return new session_t(runner = runner, repository = repository)
+}
+
+pub fn session_t.prompt(&self, string text): ref<session_stream.stream_t>! {
+    return self.runner.prompt(text)
+}
+
+pub fn session_t.prompt_rpc(&self, string text): ref<session_stream.stream_t>! {
+    return self.runner.prompt_rpc(text)
+}
+
+pub fn session_t.messages(&self): [ai_types.message_t] {
+    return self.runner.copy_active_messages()
+}

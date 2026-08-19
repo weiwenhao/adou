@@ -1,0 +1,105 @@
+import adou.src.config.paths
+import adou.src.json_util
+import adou.src.tools.path_utils
+import fs
+import json
+import os
+import path
+import syscall
+
+// Persistent server records mirror Pi's ~/.pi/server/instances.json.  The
+// records are intentionally separate from the live child-process table: a
+// restart can report stopped historical instances without pretending their
+// PIDs are still attached.
+pub type instance_record_t = struct {
+    string id
+    string status
+    string cwd
+    string label
+    string session_id
+    string session_file
+    string radius_pi_id
+    int created_ms
+    int last_seen_ms
+}
+
+pub fn server_dir(): string {
+    string configured = syscall.get_env('ADOU_SERVER_DIR')
+    if configured != '' {return configured}
+    return path.join(path.dir(paths.agent_dir()), 'server')
+}
+
+pub fn instances_path(): string {
+    return path.join(server_dir(), 'instances.json')
+}
+
+pub fn load_instances(): [instance_record_t] {
+    string file_path = instances_path()
+    if !path_exists(file_path) {return []}
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return []}
+    string content = input.content() catch error {
+        input.close()
+        return []
+    }
+    input.close()
+    any parsed = json_util.parse(content) catch error {return []}
+    if !(parsed is [any]) {return []}
+    [instance_record_t] result = []
+    for raw in parsed as [any] {
+        if !json_util.is_obj(raw) {continue}
+        var object = raw as {string:any}
+        string id = json_util.opt_string(object, 'id')
+        string cwd = json_util.opt_string(object, 'cwd')
+        if id == '' || cwd == '' {continue}
+        string status = json_util.opt_string(object, 'status')
+        if status == 'online' || status == 'starting' || status == '' {status = 'stopped'}
+        result.push(instance_record_t {id: id, status: status, cwd: cwd, label: json_util.opt_string(object, 'label'), session_id: json_util.opt_string(object, 'sessionId'), session_file: json_util.opt_string(object, 'sessionFile'), radius_pi_id: json_util.opt_string(object, 'radiusPiId'), created_ms: json_util.opt_int(object, 'createdAt'), last_seen_ms: json_util.opt_int(object, 'lastSeenAt'),})
+    }
+    return result
+}
+
+pub fn save_instances([instance_record_t] records): void! {
+    string file_path = instances_path()
+    os.mkdirs(server_dir(), 0o700)
+    [any] values = []
+    for record in records {
+        {string:any} object = {}
+        object['id'] = record.id
+        object['status'] = record.status
+        object['cwd'] = record.cwd
+        if record.label != '' {object['label'] = record.label}
+        if record.session_id != '' {object['sessionId'] = record.session_id}
+        if record.session_file != '' {object['sessionFile'] = record.session_file}
+        if record.radius_pi_id != '' {object['radiusPiId'] = record.radius_pi_id}
+        object['createdAt'] = record.created_ms
+        object['lastSeenAt'] = record.last_seen_ms
+        values.push(object)
+    }
+    string content = json.serialize(values)
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600) catch error {
+        throw error
+    }
+    output.write(content as [u8]) catch error {
+        output.close()
+        throw error
+    }
+    output.close()
+}
+
+pub fn upsert_instance(instance_record_t record): void! {
+    [instance_record_t] records = load_instances()
+    bool replaced = false
+    for index, existing in records {
+        if existing.id == record.id {
+            records[index] = record
+            replaced = true
+            break
+        }
+    }
+    if !replaced {records.push(record)}
+    save_instances(records)
+}
+
+fn path_exists(string value): bool {
+    return path_utils.exists(value)
+}

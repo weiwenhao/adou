@@ -131,7 +131,6 @@ pub fn login_defs(): [types.provider_def_t] {
 }
 
 // Lexically sorted runtime ids so merged lists are reproducible.
-#local
 fn sorted_runtime_ids(): [string] {
     [string] ids = []
     for id, def in runtime_defs {
@@ -201,6 +200,33 @@ pub fn supports_api_key_login(string provider): bool {
     return false
 }
 
+pub fn supports_oauth(string provider): bool {
+    var found = find_def(provider)
+    if found is types.provider_def_t def {
+        return def.supports_oauth
+    }
+    return false
+}
+
+pub fn oauth_login_options(): [login_completion_option_t] {
+    [login_completion_option_t] result = []
+    for def in login_defs() {
+        if !def.supports_oauth {continue}
+        string description = def.name == def.id ? 'Account' : def.name + ' · Account'
+        result.push(login_completion_option_t {id: def.id, name: def.name, description: description, search_text: def.id + ' ' + def.name + ' account oauth',})
+    }
+    for int index = 1; index < result.len(); index += 1 {
+        var current = result[index]
+        int cursor = index - 1
+        for cursor >= 0 && result[cursor].name > current.name {
+            result[cursor + 1] = result[cursor]
+            cursor -= 1
+        }
+        result[cursor + 1] = current
+    }
+    return result
+}
+
 // Pi ModelRegistry registration surface: extensions register providers at
 // runtime with a name/baseUrl/api/apiKey shape.
 pub fn register_provider(types.provider_def_t def) {
@@ -233,7 +259,7 @@ pub fn get_provider_auth_status(string provider): auth_status_t {
     if auth.has_runtime_api_key(provider) {
         return auth_status_t {status: 'runtime', provider: provider}
     }
-    if auth.read(provider) != '' || auth.environment(provider) != '' {
+    if auth.effective(provider) != '' {
         return auth_status_t {status: 'configured', provider: provider}
     }
     return auth_status_t {status: 'unconfigured', provider: provider}
@@ -247,10 +273,8 @@ pub fn get_api_key_for_provider(string provider): string {
     return auth.effective(provider)
 }
 
-// OAuth credential storage is still open parity work; until it is wired no
-// provider can report an active OAuth credential.
 pub fn is_using_oauth(string provider): bool {
-    return false
+    return auth.is_using_oauth(provider)
 }
 
 {string:types.provider_def_t} runtime_defs = {}

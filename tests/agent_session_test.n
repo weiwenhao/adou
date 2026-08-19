@@ -119,12 +119,11 @@ pub fn make_runner(ref<repository.manager_t> manager, ref<provider_fixture_t> fi
 
 // Guard against persisting test fixtures into the real user agent
 // directory: every test that calls a settings-persisting runner method
-// (set_model, set_thinking_level, ...) must run with PI_CODING_AGENT_DIR
+// (set_model, set_thinking_level, ...) must run with ADOU_CODING_AGENT_DIR
 // redirected to a throwaway directory.
-#local
 fn isolate_agent_dir(): void {
     string root = path.join('/tmp', 'adou-agent-session-isolated-' + fmt.sprintf('%d', time.now().ms_timestamp()))
-    syscall.set_env('PI_CODING_AGENT_DIR', path.join(root, 'agent')) catch error {}
+    syscall.set_env('ADOU_CODING_AGENT_DIR', path.join(root, 'agent')) catch error {}
 }
 
 pub fn write_settings_file(string file_path, string content): void! {
@@ -277,8 +276,8 @@ test 'busy prompt reports the Pi queue guidance' {
 test 'B1-R3-04 replace_repository leaves preferences untouched; the boundary applies trust-aware snapshots' {
     string root = '/tmp/adou-session-project-settings-test'
     os.rmdir(root, true) catch error {}
-    string previous_agent_dir = syscall.get_env('PI_CODING_AGENT_DIR')
-    syscall.set_env('PI_CODING_AGENT_DIR', path.join(root, 'agent'))
+    string previous_agent_dir = syscall.get_env('ADOU_CODING_AGENT_DIR')
+    syscall.set_env('ADOU_CODING_AGENT_DIR', path.join(root, 'agent'))
     write_settings_file(path.join(root, 'agent/settings.json'), '{"autoCompaction":false,"steeringMode":"one-at-a-time","followUpMode":"one-at-a-time","retryEnabled":true,"retryMaxAttempts":8,"retryBaseDelayMs":4000}')
     string project = path.join(root, 'project')
     write_settings_file(path.join(project, '.pi/settings.json'), '{"autoCompaction":true,"steeringMode":"all","followUpMode":"all","retryEnabled":false,"retryMaxAttempts":2,"retryBaseDelayMs":17}')
@@ -316,7 +315,7 @@ test 'B1-R3-04 replace_repository leaves preferences untouched; the boundary app
     assert(runner.agent_config.queues.steering_mode == 'one-at-a-time' && runner.agent_config.queues.follow_up_mode == 'one-at-a-time')
     assert(!runner.compaction_settings.enabled && runner.retry_enabled)
     assert(runner.retry_max_attempts == 8 && runner.retry_base_delay_ms == 4000)
-    syscall.set_env('PI_CODING_AGENT_DIR', previous_agent_dir)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', previous_agent_dir)
     os.rmdir(root, true)
 }
 
@@ -608,7 +607,7 @@ test 'model selection preserves an explicit in-memory API key' {
     assert(runner.agent_config.stream_options.api_key == 'runtime-key')
     // set_model persists a default model: it must land in the isolated
     // agent dir, never in the real user configuration.
-    string agent_dir = syscall.get_env('PI_CODING_AGENT_DIR')
+    string agent_dir = syscall.get_env('ADOU_CODING_AGENT_DIR')
     var stored = settings.load()
     assert(stored.default_model == 'mock-next')
     assert(agent_dir.starts_with('/tmp/adou-agent-session-isolated-'))

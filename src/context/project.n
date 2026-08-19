@@ -101,7 +101,6 @@ pub fn append_system_prompt_file(string cwd, string agent_dir): ref<file_t>? {
     return read_named_file(path.join(resolved_agent_dir, 'APPEND_SYSTEM.md'))
 }
 
-#local
 fn load_from_dir(string directory): file_load_t {
     [string] candidates = ['AGENTS.md', 'AGENTS.MD', 'CLAUDE.md', 'CLAUDE.MD']
     for candidate in candidates {
@@ -122,7 +121,6 @@ fn load_from_dir(string directory): file_load_t {
     return file_load_t{}
 }
 
-#local
 fn read_named_file(string file_path): ref<file_t>? {
     if !path_utils.exists(file_path) {
         return null
@@ -138,7 +136,6 @@ fn read_named_file(string file_path): ref<file_t>? {
     return new file_t(path = file_path, content = content)
 }
 
-#local
 fn contains_path([ref<file_t>] files, string value): bool {
     for file in files {
         if file.path == value {

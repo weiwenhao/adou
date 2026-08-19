@@ -3,17 +3,12 @@ import syscall
 
 // Adou keeps its own user-level agent state below ~/.adou/agent, isolated
 // from Pi's ~/.pi/agent so neither tool can clobber the other's credentials,
-// sessions, or extension data.  An explicit PI_CODING_AGENT_DIR (or the
-// ADOU_CODING_AGENT_DIR compatibility alias) still opts into sharing Pi's
-// directory.  Keep path resolution in one module so auth, settings, trust,
+// sessions, or extension data. An explicit ADOU_CODING_AGENT_DIR selects the
+// agent state directory. Keep path resolution in one module so auth, settings, trust,
 // sessions, and global context files cannot silently drift apart.
 
 pub fn agent_dir(): string {
-    string configured = syscall.get_env('PI_CODING_AGENT_DIR')
-    if configured == '' {
-        // Compatibility alias for early Adou snapshots.
-        configured = syscall.get_env('ADOU_CODING_AGENT_DIR')
-    }
+    string configured = syscall.get_env('ADOU_CODING_AGENT_DIR')
     if configured != '' {
         return expand_home(configured)
     }
@@ -23,10 +18,7 @@ pub fn agent_dir(): string {
 }
 
 pub fn sessions_dir(): string {
-    string configured = syscall.get_env('PI_CODING_AGENT_SESSION_DIR')
-    if configured == '' {
-        configured = syscall.get_env('ADOU_SESSION_DIR')
-    }
+    string configured = syscall.get_env('ADOU_SESSION_DIR')
     if configured != '' {
         return expand_home(configured)
     }
@@ -40,7 +32,6 @@ pub fn debug_log_path(): string {return path.join(agent_dir(), 'adou-debug.log')
 pub fn crash_log_path(): string {return path.join(agent_dir(), 'adou-crash.log')}
 pub fn project_settings_path(string cwd): string {return path.join(cwd, '.pi/settings.json')}
 
-#local
 fn expand_home(string value): string {
     if value == '~' {
         string home = syscall.get_env('HOME')

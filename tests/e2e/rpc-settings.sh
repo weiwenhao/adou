@@ -20,8 +20,8 @@ run_rpc() {
     output=$1
     shift
     HOME="$home_dir" \
-    PI_CODING_AGENT_DIR="$agent_dir" \
-    PI_CODING_AGENT_SESSION_DIR="$session_dir" \
+    ADOU_CODING_AGENT_DIR="$agent_dir" \
+    ADOU_SESSION_DIR="$session_dir" \
     "$binary" --mode rpc --no-session --no-context-files \
         --provider deepseek --model deepseek-v4-flash --thinking off --api-key rpc-e2e-key \
         "$@" > "$output"

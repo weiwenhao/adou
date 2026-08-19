@@ -1,5 +1,6 @@
 import adou.src.ai.abort
 import adou.src.ai.attribution
+import adou.src.ai.auth as provider_auth
 import adou.src.ai.diagnostics
 import adou.src.ai.event_stream
 import adou.src.ai.provider_retry
@@ -132,8 +133,24 @@ pub fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.resp
 
 pub fn send_once(ref<run_state_t> state): ref<client.response_t>! {
     debug.log('provider', 'anthropic sending request')
-    var request = client.new().post(anthropic_request.endpoint(state.model)).timeout(state.options.timeout_ms).header('x-api-key', anthropic_request.api_key(state.options)).header('anthropic-version', anthropic_request.ANTHROPIC_VERSION).header('Content-Type', 'application/json').header('Accept', 'text/event-stream').content(state.body)
+    var request = client.new().post(anthropic_request.endpoint(state.model)).timeout(state.options.timeout_ms).header('anthropic-version', anthropic_request.ANTHROPIC_VERSION).header('Content-Type', 'application/json').header('Accept', 'text/event-stream').content(state.body)
+    bool oauth_token = provider_auth.uses_bearer_token(state.model.provider) || state.options.api_key.contains('sk-ant-oat')
+    if oauth_token {
+        request.header('Authorization', 'Bearer ' + state.options.api_key)
+        // Claude OAuth tokens are accepted only with Claude Code identity and
+        // browser-safety headers, matching Pi's anthropic OAuth client.
+        if state.model.provider == 'anthropic' {
+            request.header('anthropic-dangerous-direct-browser-access', 'true')
+            request.header('user-agent', 'claude-cli/2.1.75')
+            request.header('x-app', 'cli')
+        }
+    } else {
+        request.header('x-api-key', anthropic_request.api_key(state.options))
+    }
     string beta = anthropic_request.beta_header(state.model, state.context)
+    if oauth_token && state.model.provider == 'anthropic' {
+        beta = 'claude-code-20250219,oauth-2025-04-20' + (beta != '' ? ',' + beta : '')
+    }
     if beta != '' {
         request.header('anthropic-beta', beta)
     }

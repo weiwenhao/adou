@@ -3,6 +3,7 @@ import json
 
 pub type tool_result_t = struct {
     [ref<types.text_content_t>] content = []
+    [ref<types.image_attachment_t>] images = []
     any details
     types.usage_t usage
     [string] added_tool_names = []

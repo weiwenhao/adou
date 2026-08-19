@@ -21,7 +21,7 @@ set -eu
 #
 # Assertion authority is split deliberately: the session JSONL is the
 # tool-order authority (toolCall/toolResult pairing, isError, final
-# assistant text, usage/cost), while PI_TUI_WRITE_LOG provides the
+# assistant text, usage/cost), while ADOU_TUI_WRITE_LOG provides the
 # TUI-visible evidence (user request echo, tool rows, final answers) so the
 # suite never infers UI success from the session file alone.  Provider
 # non-compliance (wrong tool order, tool errors, missing completion marker,
@@ -272,9 +272,9 @@ class TuiProcess:
         env = os.environ.copy()
         env.update(
             {
-                "PI_CODING_AGENT_DIR": agent_dir,
-                "PI_CODING_AGENT_SESSION_DIR": session_dir,
-                "PI_TUI_WRITE_LOG": write_log,
+                "ADOU_CODING_AGENT_DIR": agent_dir,
+                "ADOU_SESSION_DIR": session_dir,
+                "ADOU_TUI_WRITE_LOG": write_log,
             }
         )
         self.pid = os.fork()

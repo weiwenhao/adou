@@ -9,7 +9,7 @@ set -eu
 #     porting-plan, JSONL or auth material) and SHA256SUMS verifies
 #   - --version/--help exit 0 with non-empty stdout, version matches the
 #     tarball name
-#   - PI_CODING_AGENT_DIR / PI_CODING_AGENT_SESSION_DIR point into the temp
+#   - ADOU_CODING_AGENT_DIR / ADOU_SESSION_DIR point into the temp
 #     dir; no network; no API keys are printed or packaged
 #   - the adjacent adou-process-group exists, is executable, and is found by
 #     runtime discovery (ADOU_PROCESS_GROUP_HELPER unset; adjacent path)
@@ -133,9 +133,9 @@ fi
 
 # --- isolated environment --------------------------------------------------
 
-export PI_CODING_AGENT_DIR="$tmp/agent"
-export PI_CODING_AGENT_SESSION_DIR="$tmp/sessions"
-mkdir -p "$PI_CODING_AGENT_DIR" "$PI_CODING_AGENT_SESSION_DIR"
+export ADOU_CODING_AGENT_DIR="$tmp/agent"
+export ADOU_SESSION_DIR="$tmp/sessions"
+mkdir -p "$ADOU_CODING_AGENT_DIR" "$ADOU_SESSION_DIR"
 
 # --- CLI smoke outside the repo cwd ---------------------------------------
 
@@ -222,7 +222,7 @@ import sys
 import time
 
 binary = sys.argv[1]
-root = os.environ["PI_CODING_AGENT_SESSION_DIR"]
+root = os.environ["ADOU_SESSION_DIR"]
 port = 18952
 proj = os.path.join(root, "proj-artifact")
 os.makedirs(proj, exist_ok=True)

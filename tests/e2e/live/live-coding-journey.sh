@@ -68,8 +68,8 @@ export DEEPSEEK_API_KEY="${DEEPSEEK_TEST_API_KEY}"
 
 if ! (
     cd "$work_dir"
-    PI_CODING_AGENT_DIR="$tmp_dir/agent" \
-    PI_CODING_AGENT_SESSION_DIR="$session_dir" \
+    ADOU_CODING_AGENT_DIR="$tmp_dir/agent" \
+    ADOU_SESSION_DIR="$session_dir" \
     "$binary" --provider deepseek --model "${DEEPSEEK_TEST_MODEL}" --thinking off \
         --mode json --no-context-files --max-tokens 4096 --max-retries 1 \
         --timeout-ms 180000 --session-dir "$session_dir" \
@@ -158,8 +158,8 @@ open(os.path.join(agent_dir, ".adou-setup"), "w").close()
 env = os.environ.copy()
 env.update(
     {
-        "PI_CODING_AGENT_DIR": agent_dir,
-        "PI_CODING_AGENT_SESSION_DIR": os.environ["SESSION_DIR"],
+        "ADOU_CODING_AGENT_DIR": agent_dir,
+        "ADOU_SESSION_DIR": os.environ["SESSION_DIR"],
     }
 )
 
@@ -237,8 +237,8 @@ PY
 
 if ! (
     cd "$work_dir"
-    PI_CODING_AGENT_DIR="$tmp_dir/agent" \
-    PI_CODING_AGENT_SESSION_DIR="$session_dir" \
+    ADOU_CODING_AGENT_DIR="$tmp_dir/agent" \
+    ADOU_SESSION_DIR="$session_dir" \
     "$binary" --provider deepseek --model "${DEEPSEEK_TEST_MODEL}" --thinking off \
         --mode json --no-context-files --max-tokens 4096 --max-retries 1 \
         --timeout-ms 180000 --session "$session_file" \

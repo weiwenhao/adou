@@ -57,8 +57,8 @@ with open(os.path.join(sessions, "2026-01-01T00-00-00_seed-root.jsonl"), "w", en
 env = os.environ.copy()
 env.update(
     {
-        "PI_CODING_AGENT_DIR": os.path.join(root, "agent"),
-        "PI_CODING_AGENT_SESSION_DIR": sessions,
+        "ADOU_CODING_AGENT_DIR": os.path.join(root, "agent"),
+        "ADOU_SESSION_DIR": sessions,
     }
 )
 os.makedirs(os.path.join(root, "agent"), exist_ok=True)

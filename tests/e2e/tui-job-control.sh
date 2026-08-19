@@ -54,7 +54,7 @@ env = os.environ.copy()
 env.update(
     {
         "HOME": home,
-        "PI_CODING_AGENT_DIR": agent,
+        "ADOU_CODING_AGENT_DIR": agent,
         "ADOU_PROCESS_GROUP_HELPER": helper,
         "DEEPSEEK_API_KEY": "job-control-e2e-key",
         "ADOU_DEBUG": "1",

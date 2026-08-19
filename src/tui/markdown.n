@@ -75,7 +75,6 @@ pub fn render(string markdown, int width): [string]! {
 }
 
 // True when the next line is a table delimiter row (| --- | --- |).
-#local
 fn table_delimiter_next([string] lines, int index): bool {
     if index + 1 >= lines.len() {
         return false
@@ -112,7 +111,6 @@ fn table_delimiter_next([string] lines, int index): bool {
     return true
 }
 
-#local
 fn table_block_height([string] lines, int index): int {
     int height = 0
     for int cursor = index; cursor < lines.len(); cursor += 1 {
@@ -125,7 +123,6 @@ fn table_block_height([string] lines, int index): int {
     return height
 }
 
-#local
 fn split_cells(string line): [string] {
     string value = line.trim([' ', '\t'])
     if value.starts_with('|') {
@@ -153,7 +150,6 @@ fn split_cells(string line): [string] {
 
 // Render a markdown table with aligned columns; the header row is bold and
 // a divider line separates it from the body.
-#local
 fn render_table([string] lines, int index, int width): [string]! {
     var header_cells = split_cells(lines[index])
     [any] body = []
@@ -214,7 +210,6 @@ fn render_table([string] lines, int index, int width): [string]! {
     return result
 }
 
-#local
 fn table_row([string] cells, [int] widths, bool header): string! {
     string line = '│ '
     for int column = 0; column < widths.len(); column += 1 {
@@ -234,7 +229,6 @@ fn table_row([string] cells, [int] widths, bool header): string! {
     return line
 }
 
-#local
 fn table_divider([int] widths): string {
     string line = '├'
     for index, column_width in widths {
@@ -245,7 +239,6 @@ fn table_divider([int] widths): string {
     return theme.fg(theme.muted_color(), line)
 }
 
-#local
 fn quote_depth(string content): int {
     int depth = 0
     for depth < content.len() && content[depth] == '>'.char() {
@@ -254,7 +247,6 @@ fn quote_depth(string content): int {
     return depth
 }
 
-#local
 fn strip_quote_prefix(string content, int depth): string {
     int cursor = depth
     for cursor < content.len() && content[cursor] == ' '.char() {
@@ -272,7 +264,6 @@ fn strip_quote_prefix(string content, int depth): string {
 // whole line for each underscore would turn long identifiers into O(n^2)
 // ICU walks (a 4k-byte line of intraword underscores costs ~1ms per
 // segment call instead of one shared pass).
-#local
 fn word_at([unicode.segment_t] segments, int pos): bool {
     if pos < 0 {
         return false
@@ -285,7 +276,6 @@ fn word_at([unicode.segment_t] segments, int pos): bool {
     return false
 }
 
-#local
 fn inline(string text): string {
     // Most streamed assistant/tool rows are ordinary text.  Returning the
     // original slice avoids rebuilding a growing line one byte at a time on
@@ -406,12 +396,10 @@ fn inline(string text): string {
     return strings.join(parts, '')
 }
 
-#local
 fn is_inline_marker(u8 value): bool {
     return value == '*'.char() || value == '_'.char() || value == '~'.char() || value == '`'.char() || value == '['.char()
 }
 
-#local
 fn ordered_prefix_end(string text): int {
     int cursor = 0
     for cursor < text.len() && text[cursor] >= '0'.char() && text[cursor] <= '9'.char() {
@@ -420,12 +408,10 @@ fn ordered_prefix_end(string text): int {
     return cursor > 0 && cursor + 1 < text.len() && text[cursor] == '.'.char() && text[cursor + 1] == ' '.char() ? cursor + 2 : 0
 }
 
-#local
 fn unordered_prefix_end(string text): int {
     return text.len() >= 2 && (text[0] == '-'.char() || text[0] == '*'.char() || text[0] == '+'.char()) && text[1] == ' '.char() ? 2 : 0
 }
 
-#local
 fn heading_prefix_end(string text): int {
     int cursor = 0
     for cursor < text.len() && text[cursor] == '#'.char() && cursor < 6 {
@@ -434,7 +420,6 @@ fn heading_prefix_end(string text): int {
     return cursor > 0 && cursor < text.len() && text[cursor] == ' '.char() ? cursor + 1 : 0
 }
 
-#local
 fn leading_spaces(string text): int {
     int count = 0
     for count < text.len() && text[count] == ' '.char() {
@@ -443,7 +428,6 @@ fn leading_spaces(string text): int {
     return count
 }
 
-#local
 fn is_horizontal_rule(string text): bool {
     string value = text.trim([' ', '\t'])
     if value.len() < 3 {
@@ -476,7 +460,6 @@ pub fn split_lines(string text): [string] {
     return result
 }
 
-#local
 fn repeat_string(string value, int count): string {
     string result = ''
     for int index = 0; index < count; index += 1 {

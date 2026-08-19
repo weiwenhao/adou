@@ -273,6 +273,7 @@ pub fn runner_t.apply_preferences_snapshot(&self, settings.settings_t preference
     self.retry_base_delay_ms = preferences.retry_base_delay_ms
     self.agent_config.stream_options.transport = preferences.transport
     self.agent_config.stream_options.timeout_ms = preferences.http_idle_timeout_ms
+    self.agent_config.stream_options.block_images = preferences.block_images
     self.lock.unlock()
 }
 
@@ -830,7 +831,6 @@ pub fn runner_t.restore_repository_context(&self): void! {
     self.sync_agent_environment()
 }
 
-#local
 fn run_tree_navigation(ref<runner_t> runner, ref<session_stream.stream_t> output, tree_target_t target, string instructions): void! {
     run_tree_navigation_inner(runner, output, target, instructions) catch error {
         output.fail(error.msg()) catch stream_error {}
@@ -838,7 +838,6 @@ fn run_tree_navigation(ref<runner_t> runner, ref<session_stream.stream_t> output
     runner.end_operation()
 }
 
-#local
 fn run_tree_navigation_inner(ref<runner_t> runner, ref<session_stream.stream_t> output, tree_target_t target, string instructions): void! {
     if target.current {
         output.finish(runner.copy_active_messages())
@@ -1012,7 +1011,6 @@ pub fn retry_delay_ms(int base_delay_ms, int attempt): int {
     return delay
 }
 
-#local
 fn wait_retry(ref<session_stream.stream_t> output, ref<abort.abort_t> retry_cancellation, int milliseconds): bool! {
     int remaining = milliseconds
     for remaining > 0 {
@@ -1024,7 +1022,6 @@ fn wait_retry(ref<session_stream.stream_t> output, ref<abort.abort_t> retry_canc
     return !output.cancellation.is_aborted() && !retry_cancellation.is_aborted()
 }
 
-#local
 fn run_manual_compaction(ref<runner_t> runner, ref<session_stream.stream_t> output, string instructions): void! {
     runner.run_compaction(output, 'manual', false, instructions) catch error {
         // A manual compaction runs in the same session operation state as a
@@ -1077,7 +1074,6 @@ pub fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output,
     return last_assistant
 }
 
-#local
 fn will_retry_after_agent_end(ref<runner_t> runner, agent_types.agent_event_t agent_event, int retry_attempt): bool {
     if !runner.retry_enabled || retry_attempt >= runner.retry_max_attempts {
         return false
@@ -1229,7 +1225,6 @@ pub fn runner_t.run_compaction(&self, ref<session_stream.stream_t> output, strin
     return true
 }
 
-#local
 fn details_json([string] read_files, [string] modified_files): {string:any} {
     [any] read_values = []
     for file in read_files {

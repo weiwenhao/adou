@@ -41,7 +41,7 @@ test 'runtime providers do not shadow built-ins unless registered' {
 }
 
 test 'provider auth status surface mirrors the credential sources' {
-    // Isolate from the real agent dir: without PI_CODING_AGENT_DIR the
+    // Isolate from the real agent dir: without ADOU_CODING_AGENT_DIR the
     // credential path falls back to $HOME/.adou/agent/auth.json, and a
     // developer's real auth.json (e.g. a stored deepseek key) would make
     // has_configured_auth('deepseek') true no matter what the env says.

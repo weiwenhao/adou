@@ -80,8 +80,8 @@ if [ ! -s "$port_file" ]; then
 fi
 port=$(cat "$port_file")
 
-if ! PI_CODING_AGENT_DIR="$tmp_dir/agent" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions" \
+if ! ADOU_CODING_AGENT_DIR="$tmp_dir/agent" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions" \
     "$binary" --provider openai --model gpt-5.1-codex --thinking off \
     --base-url "http://127.0.0.1:$port/v1" --api-key e2e-key \
     --mode json --no-context-files --session "$session_file" \

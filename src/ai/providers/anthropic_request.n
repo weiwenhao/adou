@@ -117,7 +117,6 @@ fn parse_tool_choice(string value): any {
     return auto
 }
 
-#local
 fn thinking_budget(ref<types.stream_options_t> options): int {
     if options.thinking_budget_tokens > 0 {
         return options.thinking_budget_tokens
@@ -125,7 +124,6 @@ fn thinking_budget(ref<types.stream_options_t> options): int {
     return 1024
 }
 
-#local
 fn cache_control(ref<types.model_t> model, ref<types.stream_options_t> options): any {
     if options.cache_retention == 'none' {
         return null
@@ -138,7 +136,6 @@ fn cache_control(ref<types.model_t> model, ref<types.stream_options_t> options):
     return cache
 }
 
-#local
 fn attach_cache({string:any} target, any cache): {string:any} {
     if !json_util.is_null(cache) {
         target['cache_control'] = cache
@@ -231,7 +228,6 @@ pub fn convert_messages([types.message_t] messages, any cache): [any]! {
     return result
 }
 
-#local
 fn assistant_blocks(ref<types.assistant_message_t> message): [any]! {
     [any] result = []
     for content in message.content {
@@ -272,7 +268,6 @@ fn assistant_blocks(ref<types.assistant_message_t> message): [any]! {
     return result
 }
 
-#local
 fn tool_result_block(ref<types.tool_result_message_t> message): any {
     [string] text = []
     for block in message.content {
@@ -285,7 +280,28 @@ fn tool_result_block(ref<types.tool_result_message_t> message): any {
     {string:any} block = {}
     block['type'] = 'tool_result'
     block['tool_use_id'] = normalize_tool_id(message.tool_call_id)
-    block['content'] = output
+    if message.images.len() == 0 {
+        block['content'] = output
+    } else {
+        [any] content = []
+        if output != '' {
+            {string:any} text = {}
+            text['type'] = 'text'
+            text['text'] = output
+            content.push(text)
+        }
+        for image in message.images {
+            {string:any} source = {}
+            source['type'] = 'base64'
+            source['media_type'] = image.mime_type
+            source['data'] = image.data
+            {string:any} image_block = {}
+            image_block['type'] = 'image'
+            image_block['source'] = source
+            content.push(image_block)
+        }
+        block['content'] = content
+    }
     block['is_error'] = message.is_error
     return block
 }
@@ -297,7 +313,6 @@ pub fn message_item(string role, [any] content): any {
     return item
 }
 
-#local
 fn attach_cache_to_last_user([any] messages, any cache): void! {
     if messages.len() == 0 || json_util.is_null(cache) {
         return

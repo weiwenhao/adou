@@ -319,7 +319,7 @@ def fixed_oracle_env(base_home: str, *, agent_dir: str | None = None) -> dict[st
 
     Credentials, proxies, tokens and anything else not in the allowlist are
     excluded by construction (never read, printed or persisted). HOME and
-    PI_CODING_AGENT_DIR are pinned to the fixture paths; TERM and locale are
+    ADOU_CODING_AGENT_DIR are pinned to the fixture paths; TERM and locale are
     fixed so screens are host-independent; PATH and TMPDIR are carried from
     the parent for Node/Pi subprocesses (tsx, git, bash).
     """
@@ -329,5 +329,5 @@ def fixed_oracle_env(base_home: str, *, agent_dir: str | None = None) -> dict[st
             env[key] = os.environ[key]
     env["HOME"] = base_home
     if agent_dir is not None:
-        env["PI_CODING_AGENT_DIR"] = agent_dir
+        env["ADOU_CODING_AGENT_DIR"] = agent_dir
     return env

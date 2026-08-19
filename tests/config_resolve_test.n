@@ -1,5 +1,6 @@
 import adou.src.config.args
 import adou.src.config.models as config_models
+import adou.src.config.paths as config_paths
 import adou.src.config.resolve
 import fmt
 import fs
@@ -8,12 +9,28 @@ import path
 import syscall
 import time
 
-#local
 fn isolate_env(): string! {
-    string previous = syscall.get_env('PI_CODING_AGENT_DIR')
+    string previous = syscall.get_env('ADOU_CODING_AGENT_DIR')
     string root = path.join('/tmp', 'adou-resolver-isolated-' + fmt.sprintf('%d', time.now().ms_timestamp()))
-    syscall.set_env('PI_CODING_AGENT_DIR', path.join(root, 'agent'))
+    syscall.set_env('ADOU_CODING_AGENT_DIR', path.join(root, 'agent'))
     return path.join(root, 'agent')
+}
+
+test 'legacy PI agent directory variables are ignored' {
+    string previous_adou_dir = syscall.get_env('ADOU_CODING_AGENT_DIR')
+    string previous_adou_sessions = syscall.get_env('ADOU_SESSION_DIR')
+    string previous_pi_dir = syscall.get_env('PI_CODING_AGENT_DIR')
+    string previous_pi_sessions = syscall.get_env('PI_CODING_AGENT_SESSION_DIR')
+    syscall.set_env('ADOU_CODING_AGENT_DIR', '')
+    syscall.set_env('ADOU_SESSION_DIR', '')
+    syscall.set_env('PI_CODING_AGENT_DIR', '/tmp/legacy-pi-agent')
+    syscall.set_env('PI_CODING_AGENT_SESSION_DIR', '/tmp/legacy-pi-sessions')
+    assert(!config_paths.agent_dir().contains('/tmp/legacy-pi-agent'))
+    assert(!config_paths.sessions_dir().contains('/tmp/legacy-pi-sessions'))
+    syscall.set_env('ADOU_CODING_AGENT_DIR', previous_adou_dir)
+    syscall.set_env('ADOU_SESSION_DIR', previous_adou_sessions)
+    syscall.set_env('PI_CODING_AGENT_DIR', previous_pi_dir)
+    syscall.set_env('PI_CODING_AGENT_SESSION_DIR', previous_pi_sessions)
 }
 
 test 'no explicit selection and no valid persisted default falls back to deepseek-v4-flash' {
@@ -35,8 +52,8 @@ test 'stale mock persisted default with OpenAI credentials still falls back to d
     file.close()
     var previous_openai = syscall.get_env('OPENAI_API_KEY')
     syscall.set_env('OPENAI_API_KEY', 'sk-stray-openai') catch error {}
-    var previous_pi = syscall.get_env('PI_CODING_AGENT_DIR')
-    syscall.set_env('PI_CODING_AGENT_DIR', agent_dir) catch error {}
+    var previous_pi = syscall.get_env('ADOU_CODING_AGENT_DIR')
+    syscall.set_env('ADOU_CODING_AGENT_DIR', agent_dir) catch error {}
     var arguments = args.parse(['adou'])
     var config = resolve.resolve(arguments, '/tmp')
     assert(config.provider == 'deepseek')
@@ -46,7 +63,7 @@ test 'stale mock persisted default with OpenAI credentials still falls back to d
     } else {
         syscall.set_env('OPENAI_API_KEY', previous_openai) catch error {}
     }
-    syscall.set_env('PI_CODING_AGENT_DIR', previous_pi) catch error {}
+    syscall.set_env('ADOU_CODING_AGENT_DIR', previous_pi) catch error {}
 }
 
 test 'explicit --thinking max survives resolution with catalog capability metadata' {

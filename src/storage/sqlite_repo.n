@@ -169,7 +169,6 @@ pub fn load_manager(ref<db_t> handle, string session_id, string cwd): ref<reposi
     return manager
 }
 
-#local
 fn load_entries(ref<db_t> handle, string session_id): [ref<session_types.entry_t>]! {
     [ref<session_types.entry_t>] result = []
     string sql_text = 'SELECT id, parent_id, type, timestamp, payload FROM session_entries WHERE session_id = ? ORDER BY entry_seq'
@@ -271,7 +270,6 @@ pub fn record_branch_entry(ref<db_t> handle, string session_id, string branch_id
 // append (upstream storage/entry-materialized.ts and
 // session-materialized.ts).  The session payload records the latest leaf
 // id so branch queries can resolve the active entry without scanning.
-#local
 fn materialize_entry(ref<db_t> handle, string session_id, sqlite.sqlite3_int64_t entry_seq, string kind, string payload, string entry_id): void! {
     var sql_text = 'INSERT INTO entry_materialized (session_id, entry_seq, type, payload) VALUES (?, ?, ?, ?)'
 
@@ -309,7 +307,6 @@ fn materialize_entry(ref<db_t> handle, string session_id, sqlite.sqlite3_int64_t
 
 // Advance the per-session sequence after a successful append (upstream
 // storage/session-sequences.ts): next_seq starts at 0 for a missing row.
-#local
 fn bump_sequence(ref<db_t> handle, string session_id, sqlite.sqlite3_int64_t next_seq): void! {
     var sql_text = 'INSERT INTO session_sequences (session_id, next_seq) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET next_seq = excluded.next_seq'
 
@@ -327,7 +324,6 @@ fn bump_sequence(ref<db_t> handle, string session_id, sqlite.sqlite3_int64_t nex
     }
 }
 
-#local
 fn column_text(ptr<sqlite.sqlite3_stmt_t> statement, i32 index): string {
     var text = sqlite.sqlite3_column_text(statement, index)
     if text == null {

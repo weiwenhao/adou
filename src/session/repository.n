@@ -76,7 +76,6 @@ pub fn valid_session_id(string value): bool {
     return true
 }
 
-#local
 fn is_session_id_char(u8 value): bool {
     return (value >= 'a'.char() && value <= 'z'.char()) || (value >= 'A'.char() && value <= 'Z'.char()) || (value >= '0'.char() && value <= '9'.char()) || value == '-'.char() || value == '_'.char() || value == '.'.char()
 }
@@ -296,7 +295,6 @@ pub fn open_reference(string cwd, string session_dir, string reference): ref<man
 // when the reference is not found in the current project.  A custom
 // --session-dir is a flat lookup root; the default store is grouped by
 // encoded cwd, so scan one directory level below ~/.pi/agent/sessions.
-#local
 fn find_global_reference(string session_dir, string reference): [string] {
     [string] matches = []
     if session_dir != '' {
@@ -316,7 +314,6 @@ fn find_global_reference(string session_dir, string reference): [string] {
     return matches
 }
 
-#local
 fn append_reference_matches(ptr<[string]> matches, string directory, string reference) {
     var names = os.listdir(directory) catch error {return}
     for name in names {
@@ -326,7 +323,6 @@ fn append_reference_matches(ptr<[string]> matches, string directory, string refe
     }
 }
 
-#local
 fn append_reference_file(ptr<[string]> matches, string file_path, string reference) {
     var loaded = try_load(file_path)
     if loaded is ref<types.load_result_t> found {
@@ -1219,7 +1215,6 @@ pub fn timestamp_ms(string value): int {
     return iso_to_ms(value)
 }
 
-#local
 fn add_usage(ptr<ai_types.usage_t> total, ai_types.usage_t value) {
     total.input += value.input
     total.output += value.output
@@ -1289,7 +1284,6 @@ pub fn manager_t.persist_line(&self, string line): void! {
     file.close()
 }
 
-#local
 fn write_new_file(string file_path, string content): void! {
     var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_EXCL, 0o600)
     write_all(file, content as [u8])
@@ -1301,7 +1295,6 @@ fn write_new_file(string file_path, string content): void! {
     file.close()
 }
 
-#local
 fn rewrite_file(string file_path, string content): void! {
     var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_TRUNC, 0o600)
     write_all(file, content as [u8])
@@ -1313,7 +1306,6 @@ fn rewrite_file(string file_path, string content): void! {
     file.close()
 }
 
-#local
 fn write_all(ref<fs.file_t> file, [u8] content): void! {
     int offset = 0
     for offset < content.len() {
@@ -1325,7 +1317,6 @@ fn write_all(ref<fs.file_t> file, [u8] content): void! {
     }
 }
 
-#local
 fn find_entry_index([ref<types.entry_t>] entries, string id): int {
     for index, entry in entries {
         if entry.id == id {
@@ -1335,7 +1326,6 @@ fn find_entry_index([ref<types.entry_t>] entries, string id): int {
     return -1
 }
 
-#local
 fn iso_to_ms(string value): int {
     libc.tm parsed = libc.tm{}
     libc.cstr rest = libc.strptime(value.to_cstr(), '%Y-%m-%dT%H:%M:%S'.to_cstr(), &parsed)
@@ -1349,7 +1339,6 @@ pub fn has_usage(ai_types.usage_t usage): bool {
     return usage.input != 0 || usage.output != 0 || usage.cache_read != 0 || usage.cache_write != 0 || usage.total_tokens != 0 || usage.cost.total != 0.0
 }
 
-#local
 fn try_load(string file_path): ref<types.load_result_t>? {
     var result = jsonl.load(file_path) catch error {
         return null

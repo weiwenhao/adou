@@ -134,7 +134,6 @@ pub fn terminal_t.move_down(&self, int count) {
     }
 }
 
-#local
 fn positive_number(string parameters): int {
     if parameters == '' || parameters[0] == '?'.char() {
         return 1

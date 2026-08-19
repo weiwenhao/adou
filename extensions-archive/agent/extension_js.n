@@ -107,7 +107,6 @@ pub fn extension_js_t.load(&self, string file_path, skills.source_info_t source_
 // Read every registration the JS registry accumulated since the last load()
 // and materialize it into the extension_t.  The consumed watermark lives in
 // JS, so the extension_js_t itself stays stateless.
-#local
 fn read_new_registrations(ref<extension_js_t> js, ref<extensions.extension_t> extension): void! {
     var snapshot = eval_json_value(js.ctx, registry_snapshot_script()) catch error {
         throw errorf('adou extension registry read failed: %s', error.msg())
@@ -181,7 +180,6 @@ fn read_new_registrations(ref<extension_js_t> js, ref<extensions.extension_t> ex
 // handed to the JS handler as a single string argument; the handler's return
 // value is converted to a JSON string by the __adou_call_tool wrapper and
 // parsed into a tool_result_t on this side.
-#local
 fn tool_execute_fn(anyptr ctx, string name, quickjs_ffi.JSValue handler): extensions.extension_tool_execute_fn {
     var handler_dup = quickjs_ffi.dup_value(ctx, handler)
     var captured_ctx = ctx
@@ -234,7 +232,6 @@ fn tool_execute_fn(anyptr ctx, string name, quickjs_ffi.JSValue handler): extens
 // the JS handler as a single string argument; the handler's return value is
 // converted to a JSON string by the __adou_call_command wrapper and unwrapped
 // into the result string on this side.
-#local
 fn command_execute_fn(anyptr ctx, string name, quickjs_ffi.JSValue handler): extensions.extension_command_execute_fn {
     var handler_dup = quickjs_ffi.dup_value(ctx, handler)
     var captured_ctx = ctx
@@ -298,7 +295,6 @@ pub fn call_command_handler(ref<extensions.extension_t> extension, string name, 
 // passes the raw event value; it is stringified and handed to the JS handler.
 // Handler errors are isolated per handler (logged, never propagated), matching
 // the runner's per-extension error isolation.
-#local
 fn event_handler_fn(anyptr ctx, quickjs_ffi.JSValue handler): extensions.extension_handler_fn {
     var handler_dup = quickjs_ffi.dup_value(ctx, handler)
     var captured_ctx = ctx
@@ -339,7 +335,6 @@ fn event_handler_fn(anyptr ctx, quickjs_ffi.JSValue handler): extensions.extensi
 // Convert a parsed JSON value into the tool result shapes the agent loop
 // consumes: a bare string, a {text: ...} object, or a Pi-style
 // {content: [{type: 'text', text: ...}]} object.
-#local
 fn parse_tool_result(any value): tool_types.tool_result_t {
     if value is string {
         return tool_types.text_result(value as string)
@@ -379,7 +374,6 @@ fn parse_tool_result(any value): tool_types.tool_result_t {
     return tool_types.text_result(json_text)
 }
 
-#local
 fn to_json_string(any value): string {
     if json_util.is_null(value) {
         return 'null'
@@ -389,7 +383,6 @@ fn to_json_string(any value): string {
     }
 }
 
-#local
 fn registry_value(anyptr ctx): quickjs_ffi.JSValue {
     var global = quickjs_ffi.get_global_object(ctx)
     var registry = quickjs_ffi.get_property_str(ctx, global, '__adou_registry'.to_cstr() as anyptr)
@@ -397,7 +390,6 @@ fn registry_value(anyptr ctx): quickjs_ffi.JSValue {
     return registry
 }
 
-#local
 fn wrapper_value(anyptr ctx, string name): quickjs_ffi.JSValue {
     var global = quickjs_ffi.get_global_object(ctx)
     var wrapper = quickjs_ffi.get_property_str(ctx, global, name.to_cstr() as anyptr)
@@ -405,7 +397,6 @@ fn wrapper_value(anyptr ctx, string name): quickjs_ffi.JSValue {
     return wrapper
 }
 
-#local
 fn entry_handler_value(anyptr ctx, quickjs_ffi.JSValue registry, string category, int index): quickjs_ffi.JSValue {
     var category_value = quickjs_ffi.get_property_str(ctx, registry, category.to_cstr() as anyptr)
     var index_cstr = fmt.sprintf('%d', index)
@@ -416,7 +407,6 @@ fn entry_handler_value(anyptr ctx, quickjs_ffi.JSValue registry, string category
     return handler
 }
 
-#local
 fn handler_is_function(anyptr ctx, string category, int index): bool {
     string script = 'typeof globalThis.__adou_registry.' + category + '[' + fmt.sprintf('%d', index) + '].handler'
     string type_name = eval_raw_string(ctx, script) catch error {
@@ -426,7 +416,6 @@ fn handler_is_function(anyptr ctx, string category, int index): bool {
 }
 
 // Evaluate a script that must produce a JSON value and parse it.
-#local
 fn eval_json_value(anyptr ctx, string script): any! {
     string text = eval_raw_string(ctx, script) catch error {
         throw error
@@ -437,7 +426,6 @@ fn eval_json_value(anyptr ctx, string script): any! {
 }
 
 // Evaluate a script and return its raw string form.
-#local
 fn eval_raw_string(anyptr ctx, string script): string! {
     var script_cstr = script.to_cstr()
     var result = quickjs_ffi.eval_raw(ctx, script_cstr as anyptr, script.len(), 'adou-internal'.to_cstr() as anyptr, 0)
@@ -455,7 +443,6 @@ fn eval_raw_string(anyptr ctx, string script): string! {
 
 // Format a JS exception value through the prelude's __adou_format_error so
 // the diagnostic carries both the message and the stack.
-#local
 fn exception_message(anyptr ctx, quickjs_ffi.JSValue exception): string {
     var wrapper = wrapper_value(ctx, '__adou_format_error')
     if quickjs_ffi.is_exception(wrapper) != 0 {
@@ -481,7 +468,6 @@ fn exception_message(anyptr ctx, quickjs_ffi.JSValue exception): string {
     return message
 }
 
-#local
 fn js_value_to_string(anyptr ctx, quickjs_ffi.JSValue value): string {
     libc.cstr raw = quickjs_ffi.to_c_string_len2(ctx, 0, value, 0) as libc.cstr
     if raw == 0 {
@@ -496,7 +482,6 @@ fn js_value_to_string(anyptr ctx, quickjs_ffi.JSValue value): string {
 // __adou_registry staging object (with the consumed watermark), and the
 // JSON-bridge wrappers.  Extension scripts just call the globals; the host
 // reads the registry back after each script.
-#local
 fn prelude_script(): string {
     [string] lines = [
         '(function () {',
@@ -603,7 +588,6 @@ fn prelude_script(): string {
 // Serialize the complete registry state: counts, the consumed watermark, and
 // the registration metadata lists (handlers stay in JS and are read
 // individually by index).
-#local
 fn registry_snapshot_script(): string {
     [string] lines = [
         'JSON.stringify((function () {',

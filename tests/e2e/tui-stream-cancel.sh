@@ -109,7 +109,7 @@ open(os.path.join(agent, ".adou-setup"), "w").close()
 env = os.environ.copy()
 env.update({
     "HOME": home,
-    "PI_CODING_AGENT_DIR": agent,
+    "ADOU_CODING_AGENT_DIR": agent,
     "ADOU_PROCESS_GROUP_HELPER": helper,
     "DEEPSEEK_API_KEY": "stream-cancel-e2e-key",
 })

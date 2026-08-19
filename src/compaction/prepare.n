@@ -155,7 +155,6 @@ pub fn collect_previous_file_ops(ref<session_types.entry_t> entry, ptr<types.fil
     }
 }
 
-#local
 fn find_entry([ref<session_types.entry_t>] entries, string id): int {
     for index, entry in entries {
         if entry.id == id {
@@ -165,7 +164,6 @@ fn find_entry([ref<session_types.entry_t>] entries, string id): int {
     return -1
 }
 
-#local
 fn add_unique([string] values, string value): [string] {
     if !contains(values, value) {
         values.push(value)

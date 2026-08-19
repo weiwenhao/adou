@@ -85,6 +85,19 @@ test 'maps branch summaries into Pi user context' {
     assert(text == 'The following is a summary of a branch that this conversation came back from:\n\n<summary>\nabandoned work</summary>')
 }
 
+test 'encodes tool result images as Responses input_image output blocks' {
+    var context = new types.context_t()
+    var image = new types.image_attachment_t(mime_type = 'image/png', data = 'aW1hZ2U=')
+    var tool = new types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'read', images = [image,])
+    types.message_t tool_message = tool
+    context.messages.push(tool_message)
+    var payload = json_util.parse(openai_request.build(fixture_model(true), context, new types.stream_options_t(api_key = 'secret')))
+    var output = ((payload as {string:any})['input'] as [any])[0] as {string:any}
+    var blocks = output['output'] as [any]
+    assert((blocks[1] as {string:any})['type'] as string == 'input_image')
+    assert((blocks[1] as {string:any})['image_url'] as string == 'data:image/png;base64,aW1hZ2U=')
+}
+
 test 'rejects a missing API key' {
     var options = new types.stream_options_t()
     bool failed = false

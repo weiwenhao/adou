@@ -1,6 +1,6 @@
 # Adou 全量移植计划（Pi 0.82.1，扩展机制暂缓）
 
-状态：当前目标为 Pi `0.82.1` 的全量可观察行为对齐，唯一明确排除是 TypeScript/QuickJS extension runtime。Phase 6、Phase 7、Phase 8 已完成 — 2026-08-12；**Phase 4（Interactive/TUI 交互子项）与 Phase 5（Interactive UI）已于 2026-08-14 重新打开（reopened）**，见 `docs/pi-interactive-parity-audit-plan.md`（Batch 0 至 Batch 6 已由主代理验收通过；下一批为 Batch 7）；Skills parity foundation 增量批次已关闭（2026-08-13 复核收口并验证）
+状态：当前目标为 Pi `0.82.1` 的全量可观察行为对齐，唯一明确排除是 TypeScript/QuickJS extension runtime。2026-08-19 当前 HEAD 已通过干净构建、OAuth/auth/models/radius 定向 Nature 测试、全量离线 `make e2e` 和 `make eval`；Interactive/TUI 离线 Batch 0–7 组合门禁及 slash/menu 三轮稳定性已通过。真实 provider/live smoke 因未设置显式开关和测试 key 跳过；图片处理尾项、远程 viewer 契约、长会话 allocator 风险和真实 provider recovery 仍开放。
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
 release hardening：macOS 主线进行中（Batch 1、Batch 2A、native `.pkg` installer 已完成；Batch 2B 真实签名/公证需新权限；Linux 暂缓，见 `docs/release-hardening-plan.md`、`docs/macos-signing.md` 与 `docs/macos-installer.md`）
 RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make release-check`、`make signing-check` 证据见下）；历史 runtime blocker `nature#302` 已由上游 PR #303 修复并用专用 toolchain 验证，后续 PTY 冷启动失败也已定位为测试在 raw mode 前过早发键的同步缺陷并修复
@@ -12,19 +12,19 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 - Phase 7（storage + server）已完成：storage 已完成（JSONL/memory/SQLite 三后端契约测试 + migrations + materialized 表），server supervisor/protocol/rpc_stream 已验收（Phase 7.1 于 2026-08-12 关闭）。
 - 历史失败记录（cli-startup-boundaries 挂起、auth stdout 泄漏、ESC 10ms、deepseek fixture、全量 7 文件 OOM）均已由后续修复或重跑覆盖，见各批实跑证据。
 - Phase 8（evals harness）已完成：`make eval` 3/3 绿（2026-08-12），见 `docs/evals-design.md`。
-- 2026-08-18 当前 worktree 复验：受影响 Nature 单测全部通过；完整 `make e2e` 58/58 通过；`make eval` 3/3、`make pkg-check`、`make signing-check` 和 `make release-check` 均通过。Herdr 已带内存采样复现旧安装版 RM-TUI-005；当前构建完成 100 轮同等 `/model` 操作仍存活，最小用例定位到 provider registry 重建热点。`tests/e2e/rpc-over-ipc.sh` 同时修复了相对二进制路径导致的 macOS 子进程探测误判。
+- 2026-08-19 当前 worktree 复验：全量 `make test`、`make e2e`、`make eval` 通过；slash/menu 三轮屏幕一致、IPC/Radius/TUI OAuth/settings/local journey 定向门禁通过。`make pkg-check`、签名/发布门禁不属于本轮功能变更的必要门禁，未重复运行。长会话 allocator 风险仍需真实 provider/长时采样闭合。
 - Skills parity foundation 增量批次已关闭（2026-08-13）：`--skill`/`--no-skills`、发现优先级、trust 重解析、`/reload`、RPC `get_commands` 与 Markdown 单次分词已落地并验证（见下文 Skills parity foundation 节）。
 - Pi extension 已在生产入口停用：不扫描扩展目录、不初始化 QuickJS、不注册扩展工具/命令、不派发生命周期事件；默认构建不再链接 QuickJS。相关源码暂留作未来重新设计的参考。
 
 | 阶段 | 状态 | 当前结论 |
 |---|---|---|
-| Phase 1：AI 层 | 已完成（当前基线） | 39 个 provider、请求/流协议、模型兼容、图片 API、重试与 API-key 认证主链已覆盖；OAuth parity 仍开放 |
+| Phase 1：AI 层 | 部分完成 | 39 个 provider、请求/流协议、模型兼容、图片 API、重试、provider-specific OAuth bearer/refresh 和动态模型元数据已覆盖；真实 provider recovery 仍待 live 验收 |
 | Phase 2：Agent harness | 已完成（当前基线） | agent loop、工具、memory repo、shell 捕获、取消和 tool context 已覆盖 |
 | Phase 3：coding-agent core | 已完成（extension 除外） | session、compaction、配置、skills、prompts、模型目录、诊断与导出已覆盖；Pi 的非 extension 边界继续按全量目标补齐 |
-| Phase 4：TUI 基础 | **reopened（2026-08-14，Interactive/TUI 交互子项）** | editor/autocomplete/keybindings/cursor 等交互子项（IP-006/008、Batch 1/4）按 `docs/pi-interactive-parity-audit-plan.md` 重新验收；renderer 差分渲染、terminal recovery、fuzzy、路径补全、markdown 等已验证子项保留原结论 |
-| Phase 5：Interactive UI | **reopened（2026-08-14）** | 原"已完成"结论被 `docs/pi-interactive-parity-audit-plan.md` 撤销（IP-001..012）；按该计划 Batch 0→7 重新验收，Batch 0 至 Batch 6 已由主代理验收通过；离线稳定性与发布门禁已复验，RM-TUI-005 的 Adou 热点已定位并通过 100 轮 Herdr 复验，Batch 7 仍等待真实 provider smoke、长会话及 Nature allocator 次级风险裁决 |
+| Phase 4：TUI 基础 | 部分完成 | editor/autocomplete/keybindings/cursor、renderer、terminal recovery、fuzzy、路径补全、markdown 已由全量单测/e2e 验证；完整真机长会话仍待 live 证据 |
+| Phase 5：Interactive UI | 部分完成 | Batch 0–7 离线组合门禁、settings/auth/session/tree/resize/cancel/job-control 和 slash/menu 三轮已通过；真实 provider 长会话与交互式图片尾项仍开放 |
 | Phase 6：CLI | 已完成 | 9 个上游模块逐项对照；空 stdin 挂起、credential 输出隔离、help/参数矩阵、启动边界均通过（help-matrix/cli-startup-boundaries/auth-print/rpc-shape-parity 等 45 个 e2e） |
-| Phase 7：storage + server | 已完成 | SQLite backend 已落地（nature-sqlite 绑定 + migrations/repo + 三后端契约测试 5/5）；server supervisor/协议/rpc_stream 已按上游 ipc/protocol.ts 重写，多实例生命周期与 rpc_stream e2e 通过（Phase 7.1 于 2026-08-12 关闭） |
+| Phase 7：storage + server | 部分完成 | SQLite/JSONL/memory、IPC/rpc_stream、实例表、opt-in Radius presence、Radius OAuth/discovery、机器 404 重注册与实例恢复、最小 SDK 和 `gh gist` share 路径已落地；远程 viewer 契约仍开放 |
 | Phase 8：evals | 已完成 | pi-harness/smoke.eval 已移植（本地脚本化 HTTP mock），`make eval` 3/3 绿；extensions.eval 明确排除；见 `docs/evals-design.md` |
 
 阶段完成度按行为验收判断，不用 Pi TypeScript 文件数推算百分比。Phase 6–8 保持关闭（3/8）；Phase 4 的 Interactive/TUI 交互子项与 Phase 5 重新打开等待按批实施。当前不能宣称全量 parity 已完成，未完成项必须继续进入实施批次，而不是改写为永久排除。
@@ -36,14 +36,14 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 当前明确排除与开放项：
 
 - **明确排除**：Pi extension ABI、动态 TypeScript/ESM 加载、npm/git 扩展包管理、扩展工具/命令/UI/provider。
-- **开放 parity 工作**：OAuth/account 登录、OAuth token refresh、图片读取/交互式图片渲染、远程分享及 Pi 其他非 extension 能力。当前已有的 API-key、图片 API、终端图片编码和本地分享 artifact 只能算部分实现，不能算完成。
+- **开放 parity 工作**：真实 provider/live recovery 证据、图片 BMP 转换/自动 resize/剪贴板/完整交互 UI、远程 viewer 契约、长会话 allocator 风险及 Pi 其他未覆盖非 extension 能力。当前 API-key、OAuth bearer/refresh、图片附件/渲染、gist share 和 server persistence 均为部分实现，不能算全量完成。
 - **平台工作**：Linux 构建、交叉编译、签名/公证属于发布工程，不改变 Pi 行为 parity 的目标。
 
 `.pi/skills`、`.pi/prompts`、slash commands、项目上下文和信任门控属于核心功能，已经实现，不在排除范围。
 
 全量 parity 的后续开放批次至少包括：
 
-1. OAuth/account：credential union 与存储、provider-owned login/refresh/logout、过期刷新、`/login`/`/logout`、bearer token CLI 和 Radius OAuth 行为。
+1. OAuth/account：真实 provider/live recovery 与异常重试证据；credential union、provider-owned login/refresh/logout、过期刷新、`/login`/`/logout`、bearer token CLI、loopback callback、device/browser 选择和 Radius OAuth 行为已实现。
 2. 图片与多模态：`read` image processor、消息/session 序列化、provider 输入转换、剪贴板粘图、终端图片组件和四项图片设置的运行时 effect。
 3. 分享与 server：Pi `/share` 的远程 artifact/viewer 契约、Radius presence 和实例表持久化。
 4. 其他非 extension 表面：SDK/API surface、交互式导出模板、全局 HTTP 行为以及同版本 Pi oracle 的逐项差分。
@@ -59,12 +59,12 @@ extension runtime 在全程明确排除。
 |---|---|---|---|
 | Stage 0：基线冻结 | 固定 Pi 0.82.1 source/oracle、终端尺寸、设置、cwd、fixture、按键协议和证据格式 | Pi source 与真机 oracle 版本一致；同一 case 连续 3 轮稳定；禁止用旧版本画面证明当前 parity | **已完成（2026-08-18）**：`vendors/pi` 与 Herdr `w7:pD` 均为 `0.82.1` / `cced6a21...`；Batch 0 slash 基线三轮 PASS |
 | Stage 1：核心 agent 基线 | AI provider、agent loop、工具、session、compaction、CLI、RPC/IPC、skills/context | 相关 Nature 单测、离线 e2e、eval 和已有跨模块证据在当前 HEAD 复验通过 | **已完成（2026-08-19）**：153 个定向 Nature 用例、58/58 离线 e2e、eval 3/3 通过；见 `docs/stage1-core-baseline-evidence.md` |
-| Stage 2：Interactive/TUI | autocomplete、selector、settings、editor、keybindings、stream/resize、session/tree/fork、terminal lifecycle | 每个组件具备 state/transition/render/effect/cancel 契约；direct + slash/integration PTY；同版本 Pi 对照；Batch 7 长会话通过 | **进行中**：Batch 0–6 已验收；Batch 7 的离线组合门禁与 Pi/Adou 同版本 live smoke 已通过，长会话和三轮全矩阵待完成 |
-| Stage 3：认证与 provider lifecycle | OAuth/account、credential union、login/refresh/logout、过期刷新、bearer token、Radius OAuth、API-key 与 OAuth 混合模型选择 | provider capability、存储、CLI/TUI/RPC、刷新失败恢复和模型认证过滤全部有 unit + integration + live smoke | **开放** |
-| Stage 4：图片与多模态 | `read` imageProcessor、图片消息/session 序列化、provider 输入转换、剪贴板粘图、Kitty/iTerm2 TUI 图片组件、图片 settings effect | PNG/JPEG/GIF/WebP/BMP 边界、真实消息往返、无图片终端 fallback、settings 持久化/恢复和 PTY 证据通过 | **开放**：底层检测、模型/API 和部分编码已存在 |
-| Stage 5：server/share 与剩余非 extension 表面 | `/share` 远程 artifact/viewer、Radius presence、实例表持久化、SDK/API surface、交互式导出模板、全局 HTTP 行为 | 与 Pi server/coding-agent 契约逐项对照；多实例重启/恢复、远程分享和导出结果可验证 | **部分完成**：IPC/rpc_stream 已完成，其余开放 |
+| Stage 2：Interactive/TUI | autocomplete、selector、settings、editor、keybindings、stream/resize、session/tree/fork、terminal lifecycle | 每个组件具备 state/transition/render/effect/cancel 契约；direct + slash/integration PTY；同版本 Pi 对照；Batch 7 长会话通过 | **部分完成**：Batch 0–7 离线组合门禁和三轮稳定性通过；live provider 长会话与 allocator 采样待完成 |
+| Stage 3：认证与 provider lifecycle | OAuth/account、credential union、login/refresh/logout、过期刷新、bearer token、Radius OAuth、API-key 与 OAuth 混合模型选择 | provider capability、存储、CLI/TUI/RPC、刷新失败恢复和模型认证过滤全部有 unit + integration + live smoke | **部分完成**：provider-specific credential/PKCE/device-code/browser callback/bearer/refresh/login logout、Radius discovery 和动态模型已落地；真实 live smoke/recovery 证据待完成 |
+| Stage 4：图片与多模态 | `read` imageProcessor、图片消息/session 序列化、provider 输入转换、剪贴板粘图、Kitty/iTerm2 TUI 图片组件、图片 settings effect | PNG/JPEG/GIF/WebP/BMP 边界、真实消息往返、无图片终端 fallback、settings 持久化/恢复和 PTY 证据通过 | **部分完成**：PNG/JPEG/GIF/WebP 数据链路、provider 输入、终端渲染/fallback 和 settings 已验证；BMP 转换、resize、clipboard、完整 UI 待完成 |
+| Stage 5：server/share 与剩余非 extension 表面 | `/share` 远程 artifact/viewer、Radius presence、实例表持久化、SDK/API surface、交互式导出模板、全局 HTTP 行为 | 与 Pi server/coding-agent 契约逐项对照；多实例重启/恢复、远程分享和导出结果可验证 | **部分完成**：IPC、storage、presence、Radius discovery/OAuth、404 重注册/实例恢复、SDK 最小 surface、`gh gist` share 已实现；viewer 契约待完成 |
 | Stage 6：runtime 稳定性 | RM-TUI-005 Nature allocator、长会话/重复 `/model`、取消/resize/job-control 压力 | OOM 根因有可复现证据或 Nature 侧修复；长会话内存采样稳定；取消、resize、job-control 压力矩阵通过 | **进行中**：OOM 根因未关闭 |
-| Stage 7：全量收口验收 | 完整功能矩阵、Pi 0.82.1 真机 3 轮、真实 provider smoke、离线回归、凭据/产物审计 | 所有非 extension 项为 PASS；未完成项为零；最终报告明确 extension 的唯一 EXCLUDED 差异 | **未开始**：依赖 Stage 0、2–6 |
+| Stage 7：全量收口验收 | 完整功能矩阵、Pi 0.82.1 真机 3 轮、真实 provider smoke、离线回归、凭据/产物审计 | 所有非 extension 项为 PASS；未完成项为零；最终报告明确 extension 的唯一 EXCLUDED 差异 | **进行中**：离线 `make test/e2e/eval` 和三轮稳定性通过；live smoke、长会话、OAuth/图片/server 尾项尚未闭合 |
 
 Linux、交叉编译、Developer ID 签名和公证继续走独立 release track。它们可以与
 Stage 2–6 并行推进，但不改变功能 parity 的 PASS/FAIL 判定。
@@ -253,7 +253,7 @@ Phase 8 验收结果（2026-08-12 关闭）：`make build` 退出 0；`make eval
 
 ## 2026-08-11 第三批实跑证据（剩余风险收口）
 
-- 风险 1（无凭据快速失败 + 网络挂死）：完全无凭据（`PI_CODING_AGENT_DIR` 隔离 + env 清空）时 piped prompt 0.03s 内 `Error: No API key found for deepseek.` 退出——preflight 已存在。真正的挂死根因是 Nature TLS runtime：TCP 连接成功后停止超时 timer，mbedtls 握手阶段无超时（坏代理下永久挂）。应用层 watchdog（headless print/json，超时后 stderr 报错并 exit 1）作为兜底已实现；**根因已修复并发布**：issue `nature-lang/nature#300` → PR #301 `fix(runtime): time out stalled TLS handshakes` 已合并，系统 `libruntime.a` 已更新（2026-08-11 15:55）。验证：黑洞代理 + `--timeout-ms 8000` 默认构建 8s 有限退出；`api.deepseek.com` 正常握手 ~330-450ms；baidu 200。RPC 模式（watchdog 不覆盖）在黑洞下 46s 有限退出（DNS 解析亦慢），此前永久挂；watchdog 现为纯兜底。
+- 风险 1（无凭据快速失败 + 网络挂死）：完全无凭据（`ADOU_CODING_AGENT_DIR` 隔离 + env 清空）时 piped prompt 0.03s 内 `Error: No API key found for deepseek.` 退出——preflight 已存在。真正的挂死根因是 Nature TLS runtime：TCP 连接成功后停止超时 timer，mbedtls 握手阶段无超时（坏代理下永久挂）。应用层 watchdog（headless print/json，超时后 stderr 报错并 exit 1）作为兜底已实现；**根因已修复并发布**：issue `nature-lang/nature#300` → PR #301 `fix(runtime): time out stalled TLS handshakes` 已合并，系统 `libruntime.a` 已更新（2026-08-11 15:55）。验证：黑洞代理 + `--timeout-ms 8000` 默认构建 8s 有限退出；`api.deepseek.com` 正常握手 ~330-450ms；baidu 200。RPC 模式（watchdog 不覆盖）在黑洞下 46s 有限退出（DNS 解析亦慢），此前永久挂；watchdog 现为纯兜底。
 - 风险 2（help 文本核对）：adou HELP 覆盖解析器全部参数（此前 `--debug` 已解析但未列出，已补行）；extension/skill/prompt-template/theme 参数按排除/等价（/config 资源启停）记录。9 个 CLI 上游模块对照：args.ts → `src/config/args.n`（含 help-matrix.sh 参数矩阵 e2e）；config-selector.ts → /config 资源启停（tui-config.sh）；credential-print.ts → `run_auth_print_api_key`（auth-print.sh，本批 stderr 隔离）；file-processor.ts → `load_file_arguments`（initial-messages.sh）；initial-message.ts → 启动消息合并；list-models.ts → `models.list_filtered`（model-selection.sh）；project-trust.ts → `--approve/--no-approve`（project-config.sh）；session-picker.ts → `--resume` picker（tui-session-selector.sh）；startup-ui.ts → setup overlay（tui-setup.sh）。`help-matrix.sh` 断言 HELP 含全部 35 个参数与 13 个短别名、--help/--version 退出 0 且 stderr 干净。
 - 风险 3（PTY ESC 输入）：`ESCAPE_SEQUENCE_TIMEOUT_MS` 10ms → 50ms（xterm 惯例）；PTY 拆包的 `\x1b[A` 不再塌缩为 escape。`tui-tree-fork.sh` 改用真实上方向键导航 tree（移除 f 过滤绕行），全流程通过。
 - 风险 4（全量回归）：137 个单测文件串行全量实跑（`tests/*.n` 逐个 guarded 调用，约 2 小时，16GB 机器满内存下 7 个文件编译器 OOM abort，单独重跑全部通过；1 个真实回归 `deepseek_http_stream_test.n` 已修复——fixture 需显式声明 `compat.thinking_format = 'deepseek'`（595f4de 起为运行时检测））。结论：137/137 通过（130 直接 + 7 重跑）。

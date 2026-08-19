@@ -7,7 +7,6 @@ import json
 // ResponseBase {ok:bool, error?:string}; optional InstanceSummary fields
 // (label/sessionId/sessionFile) are omitted when empty, never null.
 
-#local
 fn summary(string id, string cwd, string label): protocol.instance_summary_t {
     return protocol.instance_summary_t {id: id, status: 'online', cwd: cwd, label: label, session_id: 'sess-' + id, session_file: '/tmp/sessions/sess-' + id + '.jsonl',}
 }

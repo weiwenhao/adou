@@ -30,8 +30,8 @@ agent = os.path.join(root, "agent")
 env = os.environ.copy()
 env.update(
     {
-        "PI_CODING_AGENT_DIR": agent,
-        "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
+        "ADOU_CODING_AGENT_DIR": agent,
+        "ADOU_SESSION_DIR": os.path.join(root, "sessions"),
         # Fixture key so the seeded catalog models authenticate for cycling.
         "DEEPSEEK_API_KEY": "test-key",
     }

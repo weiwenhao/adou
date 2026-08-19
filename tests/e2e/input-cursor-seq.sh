@@ -41,7 +41,7 @@ env = os.environ.copy()
 env.update(
     {
         "HOME": home,
-        "PI_CODING_AGENT_DIR": agent,
+        "ADOU_CODING_AGENT_DIR": agent,
         "DEEPSEEK_API_KEY": "cursor-seq-e2e-key",
     }
 )

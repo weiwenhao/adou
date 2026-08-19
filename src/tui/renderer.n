@@ -51,7 +51,6 @@ pub fn renderer_t.render_transient_frame(&self, [string] input_lines, int width,
     return self.render_frame(input_lines, width, height, true)
 }
 
-#local
 fn renderer_t.render_frame(&self, [string] input_lines, int width, int height, bool clear_on_shrink): result_t! {
     if width <= 0 || height <= 0 {
         throw errorf('terminal dimensions must be positive')
@@ -183,13 +182,11 @@ pub fn renderer_t.invalidate(&self) {
     self.force_full = true
 }
 
-#local
 fn viewport_top(int line_count, int height): int {
     int buffer_height = line_count > height ? line_count : height
     return buffer_height > height ? buffer_height - height : 0
 }
 
-#local
 fn full_output([string] lines, bool clear): string {
     string output = SYNC_START
     if clear {
@@ -199,7 +196,6 @@ fn full_output([string] lines, bool clear): string {
     return output + SYNC_END
 }
 
-#local
 fn differential_output([string] previous, [string] lines, int hardware_cursor_row, int previous_viewport_top, int height, int first_changed, int last_changed, bool clear_on_shrink): string {
     string output = SYNC_START
     // When every changed line was deleted, there is no replacement line to
@@ -278,12 +274,10 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
     return output + SYNC_END
 }
 
-#local
 fn csi_move(int count, string direction): string {
     return count > 0 ? '\x1b[' + int_string(count) + direction : ''
 }
 
-#local
 fn repeat_newlines(int count): string {
     string result = ''
     for int index = 0; index < count; index += 1 {
@@ -292,7 +286,6 @@ fn repeat_newlines(int count): string {
     return result
 }
 
-#local
 fn int_string(int value): string {
     if value == 0 {
         return '0'

@@ -90,8 +90,8 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-clone-") as root:
     env = os.environ.copy()
     env.update(
         {
-            "PI_CODING_AGENT_DIR": os.path.join(root, "agent"),
-            "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
+            "ADOU_CODING_AGENT_DIR": os.path.join(root, "agent"),
+            "ADOU_SESSION_DIR": os.path.join(root, "sessions"),
         }
     )
     proc = subprocess.Popen(

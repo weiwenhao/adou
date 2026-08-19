@@ -248,7 +248,6 @@ pub fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> m
     return item
 }
 
-#local
 fn tool_call_item(ref<types.model_t> model, ref<types.tool_call_t> call): any! {
     {string:any} function = {}
     function['name'] = call.name
@@ -272,7 +271,26 @@ pub fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_
     {string:any} item = {}
     item['role'] = 'tool'
     item['tool_call_id'] = normalize_tool_id(model, message.tool_call_id)
-    item['content'] = content
+    if message.images.len() == 0 {
+        item['content'] = content
+    } else {
+        [any] blocks = []
+        if content != '' {
+            {string:any} text_block = {}
+            text_block['type'] = 'text'
+            text_block['text'] = content
+            blocks.push(text_block)
+        }
+        for image in message.images {
+            {string:any} image_url = {}
+            image_url['url'] = 'data:' + image.mime_type + ';base64,' + image.data
+            {string:any} image_block = {}
+            image_block['type'] = 'image_url'
+            image_block['image_url'] = image_url
+            blocks.push(image_block)
+        }
+        item['content'] = blocks
+    }
     return item
 }
 
@@ -292,7 +310,6 @@ pub fn convert_tools([ref<types.tool_t>] tools): [any]! {
     return result
 }
 
-#local
 fn has_tool_history(ref<types.context_t> context): bool {
     for message in context.messages {
         if message is ref<types.tool_result_message_t> {
@@ -353,7 +370,6 @@ pub fn normalize_tool_id(ref<types.model_t> model, string id): string {
     return result as string
 }
 
-#local
 fn sanitize_tool_id(string id): string {
     [u8] result = []
     for byte in id as [u8] {

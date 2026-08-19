@@ -344,7 +344,6 @@ pub fn processor_t.content_index_thinking(&self, ref<types.thinking_content_t> t
     return -1
 }
 
-#local
 fn extract_thinking({string:any} block): string {
     if !block.contains('thinking') || json_util.is_null(block['thinking']) {
         return ''

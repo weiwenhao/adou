@@ -88,7 +88,6 @@ pub fn decode_printable(string data): string {
     return encode_codepoint(codepoint)
 }
 
-#local
 fn parse_kitty(string data): parsed_t {
     var invalid = parsed_t {}
     if data.len() < 4 || data[0] != 0x1b || data[1] != '['.char() {
@@ -132,7 +131,6 @@ fn parse_kitty(string data): parsed_t {
     return parsed_t {valid: true, codepoint: codepoint, modifier: modifier,}
 }
 
-#local
 fn parse_modify_other_keys(string data): parsed_t {
     var invalid = parsed_t {}
     if data.len() < 8 || data[0] != 0x1b || data[1] != '['.char() || data[data.len() - 1] != '~'.char() {
@@ -154,7 +152,6 @@ fn parse_modify_other_keys(string data): parsed_t {
     return parsed_t {valid: true, codepoint: codepoint, modifier: modifier_value - 1,}
 }
 
-#local
 fn parse_legacy(string data): string {
     if data == '\x1b' {return 'escape'}
     if data == '\x1b[A' || data == '\x1bOA' {return 'up'}
@@ -228,7 +225,6 @@ fn parse_legacy(string data): string {
     return ''
 }
 
-#local
 fn canonical_key(string key_id): string {
     string key = key_id.to_lower()
     if key == 'esc' {return 'escape'}
@@ -256,7 +252,6 @@ fn canonical_key(string key_id): string {
     return key
 }
 
-#local
 fn separator_at(string data, int start, int end): int {
     for int index = start; index < end; index += 1 {
         if data[index] == ';'.char() || data[index] == ':'.char() {
@@ -266,7 +261,6 @@ fn separator_at(string data, int start, int end): int {
     return -1
 }
 
-#local
 fn modifier_from_body(string data, int start, int end): int {
     int separator = -1
     for int index = start; index < end; index += 1 {
@@ -289,7 +283,6 @@ fn modifier_from_body(string data, int start, int end): int {
     return value > 0 ? value - 1 : 0
 }
 
-#local
 fn parse_number(string data, int start, int end): int {
     if start >= end {
         return -1
@@ -306,7 +299,6 @@ fn parse_number(string data, int start, int end): int {
     return value
 }
 
-#local
 fn functional_codepoint(int value): int {
     if value == 2 {return CODE_INSERT}
     if value == 3 {return CODE_DELETE}
@@ -317,7 +309,6 @@ fn functional_codepoint(int value): int {
     return 0
 }
 
-#local
 fn format_codepoint(int codepoint, int modifier): string {
     int effective = codepoint
     int locks_removed = modifier & ~LOCK_MASK
@@ -337,7 +328,6 @@ fn format_codepoint(int codepoint, int modifier): string {
     return result + key
 }
 
-#local
 fn plain_printable(string data): string {
     if data == '' || data[0] == 0x1b {
         return ''
@@ -348,14 +338,12 @@ fn plain_printable(string data): string {
     return ''
 }
 
-#local
 fn ascii_char(int value): string {
     [u8] bytes = vec<u8>.cap_of(1)
     bytes.push(value as u8)
     return bytes as string
 }
 
-#local
 fn encode_codepoint(int codepoint): string {
     [u8] result = vec<u8>.cap_of(4)
     if codepoint <= 0x7f {

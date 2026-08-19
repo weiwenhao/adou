@@ -129,7 +129,6 @@ pub fn assistant_stream_t.is_aborted(&self): bool {
     return result || self.cancellation.is_aborted()
 }
 
-#local
 fn snapshot_event(types.assistant_event_t source): types.assistant_event_t {
     var result = types.assistant_event_t {kind: source.kind, content_index: source.content_index, delta: source.delta, content: source.content, reason: source.reason,}
     if source.partial is ref<types.assistant_message_t> partial {

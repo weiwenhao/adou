@@ -27,7 +27,7 @@
 | --- | --- | --- | --- | --- |
 | 本地确定性编码旅程（`tests/e2e/local-coding-journey.sh`） | headless `--mode json` 双轮 + 最小 PTY 恢复桥接 | 内嵌 python mock（OpenAI-completions SSE，无外部网络） | 轮 1：read → edit → bash → 最终答复；PTY 离线重开同 session 断言历史渲染；轮 2：`--session <file>` 续跑 follow-up | 磁盘文件真实被 edit 修改；mock 第二次请求正文含首轮工具结果与文件内容（`history-check`）；session JSONL 的 user/assistant/toolCall/toolResult 顺序 |
 | 真实 DeepSeek 编码旅程（`tests/e2e/live/live-coding-journey.sh`） | headless `--mode json` 双轮 + 最小 PTY 恢复桥接 | 真实 deepseek-v4-flash（`ADOU_LIVE_JOURNEY=1`） | 轮 1：隔离工作区 seeded fib.py，模型实际调用 read/edit/bash 后答复；PTY 离线重开同 session；轮 2：`--session <file>`"改为递归"，模型基于首轮修改作答 | 文件结果（TODO 消除、第二轮递归实现）；session JSONL 工具链顺序（toolCall→toolResult 配对、无 isError、末条为最终答复文本）；usage/cost 从 session 汇总打印（不打印密钥） |
-| 真实在线 TUI 双轮编码旅程（`tests/e2e/live/live-tui-coding-journey.sh`） | 同一 TUI 进程内双轮（Python 标准库 PTY）+ 离线恢复 TUI | 真实 deepseek-v4-flash（`ADOU_LIVE_TUI_JOURNEY=1`） | 轮 1：PTY 向编辑器提交编码请求，模型在 TUI 内实际 read→edit→bash 并以 `ROUND1DONE` 收尾（标记为 markdown 安全字面量，避免 `_` 被强调语法消费）；轮 2：同进程 follow-up（要求基于首轮修改再次 edit+bash，`ROUND2DONE`）；`/quit` 后离线 `--session` 重开断言两轮历史渲染 | 磁盘结果（第二轮可执行验证 63）；session JSONL 为工具顺序权威（toolCall→toolResult 配对、无 isError、最终答复含完成标记、usage/cost 汇总）；`PI_TUI_WRITE_LOG` 提供 TUI 可见证据（用户请求回显、`✓ read/edit/bash` 工具行、完成标记渲染）；退出码 0、termios 恢复、无遗留进程；离线恢复不改写 session 文件 |
+| 真实在线 TUI 双轮编码旅程（`tests/e2e/live/live-tui-coding-journey.sh`） | 同一 TUI 进程内双轮（Python 标准库 PTY）+ 离线恢复 TUI | 真实 deepseek-v4-flash（`ADOU_LIVE_TUI_JOURNEY=1`） | 轮 1：PTY 向编辑器提交编码请求，模型在 TUI 内实际 read→edit→bash 并以 `ROUND1DONE` 收尾（标记为 markdown 安全字面量，避免 `_` 被强调语法消费）；轮 2：同进程 follow-up（要求基于首轮修改再次 edit+bash，`ROUND2DONE`）；`/quit` 后离线 `--session` 重开断言两轮历史渲染 | 磁盘结果（第二轮可执行验证 63）；session JSONL 为工具顺序权威（toolCall→toolResult 配对、无 isError、最终答复含完成标记、usage/cost 汇总）；`ADOU_TUI_WRITE_LOG` 提供 TUI 可见证据（用户请求回显、`✓ read/edit/bash` 工具行、完成标记渲染）；退出码 0、termios 恢复、无遗留进程；离线恢复不改写 session 文件 |
 | 单请求 live smoke（`tests/e2e/live/live-smoke.sh`） | headless `--print` | 真实 deepseek-v4-flash（`ADOU_LIVE_SMOKE=1`） | 单请求、thinking off、64 max tokens、0 retries | 回复含 "ok"；日志只输出 key 配置状态 |
 | TUI/PTY（`tests/e2e/tui-*.sh`） | PTY 交互 | offline（--offline 或本地 fixture） | 会话选择/模型选择/设置/树/fork 等 UI 流程 | 渲染、导航、退出码 0 |
 | RPC/组件（`tests/e2e/rpc-*.sh`） | headless stdin 协议 / python 客户端 | offline | 会话生命周期、重试、compaction、工具结果形状等 | 响应形状与 Pi JSON 序列化对齐 |
@@ -49,7 +49,7 @@ request/session 顺序，因此这两层里 PTY 只承担**持久化/恢复桥�
 干净退出）。**真实在线 TUI 双轮旅程**（`live-tui-coding-journey.sh`）
 弥补了这一边界：同一 TUI 进程内、经 PTY 编辑器提交真实模型轮，证明 TUI
 能在线完成工具轮、follow-up 与干净退出。该层的断言分工：session JSONL
-是工具顺序的权威（不依赖 UI 字节），`PI_TUI_WRITE_LOG` 只断言稳定的
+是工具顺序的权威（不依赖 UI 字节），`ADOU_TUI_WRITE_LOG` 只断言稳定的
 用户可见信号（请求回显、工具行、完成标记），不做脆弱字节级快照；
 `/quit` 用 termios 对比与恢复转义序列验证终端还原。因成本与脆弱性，
 该真实 TUI 轮为 opt-in（`ADOU_LIVE_TUI_JOURNEY=1`），普通 `make e2e`

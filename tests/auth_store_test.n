@@ -1,5 +1,4 @@
 import adou.src.config.auth
-import adou.src.config.paths
 import fmt
 import fs
 import os
@@ -7,84 +6,142 @@ import path
 import syscall
 import time
 
-pub fn isolated_auth_path(): string {
-    string dir = '/tmp/adou-auth-store-' + suffix()
-    os.mkdirs(dir, 0o700) catch error {}
-    return path.join(dir, 'auth.json')
+fn isolated_home(string name): string {
+    string home = '/tmp/adou-auth-store-' + name + '-' + fmt.sprintf('%d', time.now().ms_timestamp())
+    os.rmdir(home, true) catch error {}
+    return home
 }
 
-test 'read_credential returns type-tagged credentials like Pi' {
-    auth.save('deepseek', 'secret-key') catch error {}
+fn enter_home(string home): string {
+    string saved_home = syscall.get_env('HOME')
+    auth.reload()
+    syscall.set_env('HOME', home) catch error {assert(false)}
+    auth.reload()
+    return saved_home
+}
+
+fn leave_home(string home, string saved_home) {
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', saved_home) catch error {assert(false)}
+    auth.reload()
+}
+
+test 'read_credential returns the canonical API key variant' {
+    string home = isolated_home('api-key')
+    string saved_home = enter_home(home)
+    auth.save('deepseek', 'secret-key') catch error {assert(false)}
     var credential = auth.read_credential('deepseek')
-    assert(credential is ref<auth.credential_t>)
-    if credential is ref<auth.credential_t> stored {
+    assert(credential is ref<auth.api_key_credential_t>)
+    if credential is ref<auth.api_key_credential_t> stored {
         assert(stored.credential_type == 'api_key')
         assert(stored.key == 'secret-key')
     }
     assert(auth.read_credential('nope-provider') is null)
+    assert((syscall.stat(auth.auth_path()).mode & 0o777) == 0o600)
+    leave_home(home, saved_home)
 }
 
 test 'credential env values restore like Pi' {
-    auth.save('deepseek', 'key-x') catch error {}
-    // Store an ambient value alongside the credential.
-    auth.credential_modify_fn add_env = fn(ref<auth.credential_t>? current): ref<auth.credential_t>? {
-        if current is ref<auth.credential_t> existing {
-            existing.env['CLOUDFLARE_ACCOUNT_ID'] = 'acct-1'
-            return existing
+    string home = isolated_home('env')
+    string saved_home = enter_home(home)
+    auth.save('deepseek', 'key-x') catch error {assert(false)}
+    auth.credential_modify_fn add_env = fn(ref<auth.credential_edit_t>? current): ref<auth.credential_edit_t>? {
+        if current is ref<auth.credential_edit_t> existing {
+            {string:string} env = {}
+            env['CLOUDFLARE_ACCOUNT_ID'] = 'acct-1'
+            var replacement = new auth.credential_edit_t(credential_type = 'api_key', key = existing.key, env = env)
+            return replacement
         }
-        return new auth.credential_t(credential_type = 'api_key', key = 'key-x')
+        return new auth.credential_edit_t(credential_type = 'api_key', key = 'key-x')
     }
-    var updated = auth.modify_credential('deepseek', add_env)
-    var restored = auth.read_credential('deepseek')
-    if restored is ref<auth.credential_t> restored_value {
-        assert(restored_value.env['CLOUDFLARE_ACCOUNT_ID'] == 'acct-1')
-    } else {
-        assert(false)
+    auth.modify_credential('deepseek', add_env)
+    var restored = auth.read_credential_env('deepseek')
+    assert(restored['CLOUDFLARE_ACCOUNT_ID'] == 'acct-1')
+    leave_home(home, saved_home)
+}
+
+test 'OAuth credentials round trip without appearing as API keys' {
+    string home = isolated_home('oauth')
+    string saved_home = enter_home(home)
+    auth.credential_modify_fn login = fn(ref<auth.credential_edit_t>? current): ref<auth.credential_edit_t>? {
+        return new auth.credential_edit_t(credential_type = 'oauth', refresh = 'refresh-1', access = 'access-1', expires = 2000000000000)
     }
+    auth.modify_credential('openai-codex', login)
+    var restored = auth.read_credential('openai-codex')
+    assert(restored is ref<auth.oauth_credential_t>)
+    if restored is ref<auth.oauth_credential_t> oauth {
+        assert(oauth.credential_type == 'oauth')
+        assert(oauth.refresh == 'refresh-1')
+        assert(oauth.access == 'access-1')
+        assert(oauth.expires == 2000000000000)
+    }
+    assert(auth.read('openai-codex') == '')
+    leave_home(home, saved_home)
+}
+
+test 'legacy and untagged credentials are rejected' {
+    string home = isolated_home('legacy')
+    string saved_home = enter_home(home)
+    auth.write_file(auth.auth_path(), '{"legacy": {"apiKey": "old"}, "untagged": {"key": "old"}, "unknown": {"type": "token", "key": "old"}}') catch error {assert(false)}
+    auth.reload()
+    assert(auth.read('legacy') == '')
+    assert(auth.read('untagged') == '')
+    assert(auth.read_credential('legacy') is null)
+    assert(auth.read_credential('untagged') is null)
+    assert(auth.read_credential('unknown') is null)
+    assert(auth.list_credentials().len() == 0)
+    leave_home(home, saved_home)
 }
 
 test 'list_credentials exposes metadata without secrets' {
-    auth.save('deepseek', 'key-1') catch error {}
-    auth.save('openai', 'key-2') catch error {}
+    string home = isolated_home('list')
+    string saved_home = enter_home(home)
+    auth.save('deepseek', 'key-1') catch error {assert(false)}
+    auth.credential_modify_fn login = fn(ref<auth.credential_edit_t>? current): ref<auth.credential_edit_t>? {
+        return new auth.credential_edit_t(credential_type = 'oauth', refresh = 'refresh-2', access = 'access-2', expires = 2000000000000)
+    }
+    auth.modify_credential('openai-codex', login)
     var listed = auth.list_credentials()
     bool has_deepseek = false
-    bool has_openai = false
+    bool has_codex = false
     for info in listed {
         if info.provider_id == 'deepseek' {
             has_deepseek = true
             assert(info.credential_type == 'api_key')
         }
-        if info.provider_id == 'openai' {
-            has_openai = true
+        if info.provider_id == 'openai-codex' {
+            has_codex = true
+            assert(info.credential_type == 'oauth')
         }
     }
-    assert(has_deepseek && has_openai)
+    assert(has_deepseek && has_codex)
+    leave_home(home, saved_home)
 }
 
-test 'modify_credential serializes read-modify-write like Pi' {
-    auth.save('deepseek', 'old-key') catch error {}
-    auth.credential_modify_fn rotate = fn(ref<auth.credential_t>? current): ref<auth.credential_t>? {
-        if current is ref<auth.credential_t> existing {
-            return new auth.credential_t(credential_type = 'api_key', key = 'new-key')
+test 'modify_credential reads the current disk value under its lock' {
+    string home = isolated_home('modify')
+    string saved_home = enter_home(home)
+    auth.save('deepseek', 'old-key') catch error {assert(false)}
+    auth.credential_modify_fn rotate = fn(ref<auth.credential_edit_t>? current): ref<auth.credential_edit_t>? {
+        if current is ref<auth.credential_edit_t> existing {
+            assert(existing.key == 'old-key')
+            return new auth.credential_edit_t(credential_type = 'api_key', key = 'new-key')
         }
-        return new auth.credential_t(credential_type = 'api_key', key = 'fresh-key')
+        return new auth.credential_edit_t(credential_type = 'api_key', key = 'fresh-key')
     }
-    ref<auth.credential_t>? updated = null
-    bool modify_failed = false
-    try {
-        updated = auth.modify_credential('deepseek', rotate)
-    } catch e {
-        modify_failed = true
-    }
-    assert(!modify_failed)
-    if updated is ref<auth.credential_t> stored {
-        assert(stored.key == 'new-key')
-    } else {
-        assert(false)
-    }
+    auth.modify_credential('deepseek', rotate)
     assert(auth.read('deepseek') == 'new-key')
+    var entries = os.listdir(path.dir(auth.auth_path())) catch error {[]}
+    for entry in entries {
+        assert(!entry.contains('.tmp.'))
+    }
+    leave_home(home, saved_home)
 }
 
-fn suffix(): string {
-    return fmt.sprintf('%d', time.now().ms_timestamp())
+test 'remove is idempotent before the auth directory exists' {
+    string home = isolated_home('remove')
+    string saved_home = enter_home(home)
+    auth.remove('deepseek') catch error {assert(false)}
+    assert(auth.read_credential('deepseek') is null)
+    leave_home(home, saved_home)
 }

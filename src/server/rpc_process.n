@@ -232,7 +232,6 @@ pub fn rpc_process_t.dispose(&self) {
     wait_done(self.done, 3000)
 }
 
-#local
 fn pump_output(ref<rpc_process_t> rpc) {
     for true {
         string line = rpc.output.lines.recv() catch error {
@@ -243,7 +242,6 @@ fn pump_output(ref<rpc_process_t> rpc) {
     rpc.output_done.close() catch error {}
 }
 
-#local
 fn dispatch_line(ref<rpc_process_t> rpc, string line) {
     var parsed = json_util.parse(line) catch error {
         rpc.on_event(line)
@@ -273,7 +271,6 @@ fn dispatch_line(ref<rpc_process_t> rpc, string line) {
     rpc.on_event(line)
 }
 
-#local
 fn watch_exit(ref<rpc_process_t> rpc) {
     string wait_error = ''
     rpc.child.wait() catch error {
@@ -301,7 +298,6 @@ fn watch_exit(ref<rpc_process_t> rpc) {
     rpc.on_exit(reason)
 }
 
-#local
 fn remove_pending(ref<rpc_process_t> rpc, string id) {
     rpc.state_lock.lock()
     [pending_request_t] remaining = []
@@ -314,7 +310,6 @@ fn remove_pending(ref<rpc_process_t> rpc, string id) {
     rpc.state_lock.unlock()
 }
 
-#local
 fn wait_done(chan<u8> done, int timeout_ms): bool {
     var timeout = chan<u8>.new(1)
     go fn() {
@@ -332,7 +327,6 @@ fn wait_done(chan<u8> done, int timeout_ms): bool {
     return false
 }
 
-#local
 fn field_string({string:any} object, string key): string {
     if object.contains(key) && object[key] is string {
         return object[key] as string

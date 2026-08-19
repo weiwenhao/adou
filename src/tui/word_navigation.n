@@ -90,7 +90,6 @@ pub fn forward(string text, int cursor, option_t options): int! {
     return result
 }
 
-#local
 fn is_atomic(string value, option_t options): bool {
     for atomic in options.atomic_segments {
         if value == atomic {
@@ -100,7 +99,6 @@ fn is_atomic(string value, option_t options): bool {
     return false
 }
 
-#local
 fn atomic_ending_at(string text, int cursor, option_t options): int {
     for atomic in options.atomic_segments {
         if atomic.len() <= cursor && text.slice(cursor - atomic.len(), cursor) == atomic {
@@ -110,7 +108,6 @@ fn atomic_ending_at(string text, int cursor, option_t options): int {
     return -1
 }
 
-#local
 fn atomic_starting_at(string text, int cursor, option_t options): int {
     for atomic in options.atomic_segments {
         if cursor + atomic.len() <= text.len() && text.slice(cursor, cursor + atomic.len()) == atomic {
@@ -132,7 +129,6 @@ pub fn is_whitespace(string value): bool {
     return true
 }
 
-#local
 fn first_punctuation(string value): int {
     for int index = 0; index < value.len(); index += 1 {
         if PUNCTUATION.find(value.slice(index, index + 1)) >= 0 {
@@ -142,7 +138,6 @@ fn first_punctuation(string value): int {
     return -1
 }
 
-#local
 fn last_punctuation(string value): int {
     for int index = value.len() - 1; index >= 0; index -= 1 {
         if PUNCTUATION.find(value.slice(index, index + 1)) >= 0 {

@@ -1,4 +1,5 @@
 import adou.src.ai.types
+import adou.src.config.auth
 import syscall
 
 // Provider-specific request decoration shared by the completions, responses
@@ -15,6 +16,15 @@ pub type header_t = struct {
 // provider environment before dispatch.
 pub fn resolve_base_url(ref<types.model_t> model): string {
     string base = model.base_url
+    if model.provider == 'github-copilot' {
+        var stored = auth.read_credential('github-copilot')
+        if stored is ref<auth.oauth_credential_t> {
+            var oauth = stored as ref<auth.oauth_credential_t>
+            if oauth.base_url != '' {
+                base = oauth.base_url
+            }
+        }
+    }
     base = base.replace('{CLOUDFLARE_ACCOUNT_ID}', syscall.get_env('CLOUDFLARE_ACCOUNT_ID'))
     base = base.replace('{CLOUDFLARE_GATEWAY_ID}', syscall.get_env('CLOUDFLARE_GATEWAY_ID'))
     return base

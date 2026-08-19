@@ -38,7 +38,6 @@ pub fn is_context_overflow(ref<types.assistant_message_t> message, int context_w
     return false
 }
 
-#local
 fn contains_any(string value, [string] patterns): bool {
     for pattern in patterns {
         if value.contains(pattern) {

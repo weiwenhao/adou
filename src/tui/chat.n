@@ -5,6 +5,7 @@ import adou.src.compaction.token_estimate
 import adou.src.session.cache_stats
 import adou.src.tools.types as tool_types
 import adou.src.tui.markdown
+import adou.src.tui.terminal_image
 import adou.src.tui.text_utils
 import adou.src.tui.theme
 import fmt
@@ -56,6 +57,9 @@ pub type chat_t = struct {
     // Pi settings.outputPad: horizontal padding for user messages, assistant
     // messages and thinking (0 or 1, default 1).
     int output_pad = 1
+    bool show_images = true
+    int image_width_cells = 60
+    bool auto_resize_images = true
     // Pi settings.showCacheMissNotices: emit a transcript notice for
     // significant prompt-cache misses after a response.
     bool show_cache_miss_notices
@@ -112,6 +116,12 @@ pub fn chat_t.set_provider_visibility(&self, bool visible) {
 
 pub fn chat_t.set_output_pad(&self, int pad) {
     self.output_pad = pad == 0 ? 0 : 1
+}
+
+pub fn chat_t.set_image_preferences(&self, bool show, int width_cells, bool auto_resize) {
+    self.show_images = show
+    self.image_width_cells = width_cells > 0 ? width_cells : 60
+    self.auto_resize_images = auto_resize
 }
 
 pub fn chat_t.set_show_cache_miss_notices(&self, bool enabled) {
@@ -331,7 +341,7 @@ pub fn chat_t.render(&self, int width): [string]! {
     }
     [string] result = vec<string>.cap_of(64)
     for message in self.messages {
-        result.append(render_message_lines(message, width, self.tool_output_expanded, self.thinking_visible, self.output_pad))
+        result.append(render_message_lines(message, width, self.tool_output_expanded, self.thinking_visible, self.output_pad, self.show_images, self.image_width_cells))
     }
     if self.streaming_assistant is ref<ai_types.assistant_message_t> assistant {
         result.append(render_assistant_lines(assistant, width, true, self.thinking_visible, self.output_pad))
@@ -476,8 +486,7 @@ pub fn chat_t.clear(&self) {
     self.context_known = true
 }
 
-#local
-fn render_message_lines(ai_types.message_t message, int width, bool tool_output_expanded, bool thinking_visible, int output_pad): [string]! {
+fn render_message_lines(ai_types.message_t message, int width, bool tool_output_expanded, bool thinking_visible, int output_pad, bool show_images, int image_width_cells): [string]! {
     [string] result = vec<string>.cap_of(8)
     if message is ref<ai_types.user_message_t> user {
         // Pi renders user messages through Markdown inside a Box with one
@@ -499,6 +508,7 @@ fn render_message_lines(ai_types.message_t message, int width, bool tool_output_
         if body != '' && tool_output_expanded {
             result.append(render_tool_body(body, width))
         }
+        result.append(render_tool_images(*tool, width, show_images, image_width_cells))
     } else if message is ref<ai_types.compaction_summary_message_t> summary {
         result.append(wrapped_lines(theme.fg(theme.muted_color(), '[Context summary] ' + summary.summary), width))
     } else if message is ref<ai_types.branch_summary_message_t> summary {
@@ -513,6 +523,34 @@ fn render_message_lines(ai_types.message_t message, int width, bool tool_output_
     return result
 }
 
+// Render image attachments produced by read/vision tools.  Image escape
+// sequences occupy terminal rows themselves; blank rows reserve that space so
+// the diff renderer keeps its cursor accounting aligned with the emulator.
+fn render_tool_images(ai_types.tool_result_message_t tool, int width, bool show_images, int image_width_cells): [string]! {
+    [string] result = []
+    for image in tool.images {
+        if !show_images {
+            result.push(theme.fg(theme.dim_color(), '[Image hidden by settings]'))
+            continue
+        }
+        var dimensions = terminal_image.get_image_dimensions(image.data, image.mime_type)
+        if dimensions is terminal_image.image_dimensions_t known {
+            var rendered = terminal_image.render_image(image.data, known, image_width_cells < width ? image_width_cells : width, 0, 0, true)
+            if rendered is terminal_image.image_render_result_t image_result {
+                result.push(image_result.sequence)
+                for int row = 1; row < image_result.rows; row += 1 {
+                    result.push('')
+                }
+                continue
+            }
+            result.push(theme.fg(theme.dim_color(), terminal_image.image_fallback(image.mime_type, known, '')))
+        } else {
+            result.push(theme.fg(theme.dim_color(), terminal_image.image_fallback(image.mime_type, null, '')))
+        }
+    }
+    return result
+}
+
 // Pi's bash-execution rendering: collapsed state shows the last few visual
 // lines with an expand hint, the truncated flag surfaces the full output
 // path, and the exit status is a short inline footer.
@@ -522,7 +560,6 @@ const BASH_PREVIEW_VISUAL_LINES = 20
 // hints and command tails remain visible. The full result stays in context.
 const TOOL_BODY_MAX_PHYSICAL_LINES = 200
 
-#local
 fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, bool expanded): [string]! {
     [string] result = vec<string>.cap_of(8)
     string color = bash.exclude_from_context ? theme.dim_color() : theme.accent()
@@ -578,7 +615,6 @@ fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, boo
     return result
 }
 
-#local
 fn render_bounded_bash_body(string body, int width): [string]! {
     [string] lines = body.split('\n')
     int head_limit = TOOL_BODY_MAX_PHYSICAL_LINES / 2
@@ -603,7 +639,6 @@ fn render_bounded_bash_body(string body, int width): [string]! {
     return finish_bounded_rows(head_rows, tail_rows, total_rows, TOOL_BODY_MAX_PHYSICAL_LINES)
 }
 
-#local
 fn render_active_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, int spinner_index): [string]! {
     [string] result = vec<string>.cap_of(24)
     string color = bash.exclude_from_context ? theme.dim_color() : theme.SUCCESS
@@ -624,7 +659,6 @@ fn render_active_bash_lines(ref<ai_types.bash_execution_message_t> bash, int wid
     return result
 }
 
-#local
 fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width, bool streaming, bool thinking_visible, int output_pad): [string]! {
     [string] result = vec<string>.cap_of(16)
     bool had_content = false
@@ -733,7 +767,6 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
     return result
 }
 
-#local
 fn render_markdown_rows(string value, int width, string background, int output_pad): [string]! {
     int content_width = width - 2 * output_pad
     if content_width < 1 {
@@ -749,7 +782,6 @@ fn render_markdown_rows(string value, int width, string background, int output_p
     return result
 }
 
-#local
 fn render_padded_text(string value, int width, int output_pad): [string]! {
     int content_width = width - 2 * output_pad
     if content_width < 1 {
@@ -764,12 +796,10 @@ fn render_padded_text(string value, int width, int output_pad): [string]! {
 }
 
 // Pi outputPad: one column of horizontal padding (1, default) or none (0).
-#local
 fn pad_sides(string value, int output_pad): string {
     return output_pad == 0 ? value : ' ' + value + ' '
 }
 
-#local
 fn pad_terminal_line(string value, int width): string! {
     string fitted = value
     if text_utils.visible_width(fitted) > width {
@@ -779,13 +809,11 @@ fn pad_terminal_line(string value, int width): string! {
     return fitted + repeat_spaces(remaining > 0 ? remaining : 0)
 }
 
-#local
 fn render_status_lines(string status, bool running, int width, int spinner_index): [string]! {
     string prefix = running ? theme.fg(theme.accent(), spinner_frame(spinner_index) + ' ') : ''
     return wrapped_lines(prefix + theme.fg(theme.muted_color(), status), width)
 }
 
-#local
 fn spinner_frame(int index): string {
     [string] frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
     int normalized = index % frames.len()
@@ -793,7 +821,6 @@ fn spinner_frame(int index): string {
     return frames[normalized]
 }
 
-#local
 fn colored_row(string background, string line, int width): string! {
     string fitted = line
     if text_utils.visible_width(fitted) > width {
@@ -802,7 +829,6 @@ fn colored_row(string background, string line, int width): string! {
     return theme.background_line(background, fitted, width)
 }
 
-#local
 fn shorten_cwd(string cwd): string {
     string home = syscall.get_env('HOME')
     if home != '' && cwd == home {
@@ -814,7 +840,6 @@ fn shorten_cwd(string cwd): string {
     return cwd
 }
 
-#local
 fn format_tokens(int count): string {
     if count < 1000 {return fmt.sprintf('%d', count)}
     if count < 10000 {return fmt.sprintf('%.1fk', count as float / 1000.0)}
@@ -823,13 +848,11 @@ fn format_tokens(int count): string {
     return fmt.sprintf('%dM', (count + 500000) / 1000000)
 }
 
-#local
 fn format_percent(int tokens, int context_window): string {
     int tenths = context_window > 0 ? tokens * 1000 / context_window : 0
     return fmt.sprintf('%d.%d%%', tenths / 10, tenths % 10)
 }
 
-#local
 fn repeat_spaces(int count): string {
     string result = ''
     for int index = 0; index < count; index += 1 {
@@ -838,12 +861,10 @@ fn repeat_spaces(int count): string {
     return result
 }
 
-#local
 fn wrapped_lines(string text, int width): [string]! {
     return text_utils.wrap_text_with_ansi(text, width)
 }
 
-#local
 fn tool_result_text(tool_types.tool_result_t result): string {
     string text = ''
     for content in result.content {
@@ -855,7 +876,6 @@ fn tool_result_text(tool_types.tool_result_t result): string {
     return text
 }
 
-#local
 // Pi's tool result diff rendering: unified-diff bodies get per-line
 // coloring (+ added, - removed, @@ hunk headers, context muted).  Line-level
 // only; Pi additionally word-diffs single-line changes.
@@ -888,7 +908,6 @@ fn render_tool_body(string body, int width): [string]! {
     return finish_bounded_rows(head_rows, tail_rows, total_rows, TOOL_BODY_MAX_PHYSICAL_LINES)
 }
 
-#local
 fn finish_bounded_rows([string] head_rows, [string] tail_rows, int total_rows, int limit): [string]! {
     [string] result = vec<string>.cap_of(limit + 1)
     result.append(head_rows)

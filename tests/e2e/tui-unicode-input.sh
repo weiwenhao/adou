@@ -33,9 +33,9 @@ root = tempfile.mkdtemp(prefix="adou-tui-unicode-")
 env = os.environ.copy()
 env.update(
     {
-        "PI_CODING_AGENT_DIR": os.path.join(root, "agent"),
-        "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
-        "PI_TUI_WRITE_LOG": os.path.join(root, "write.log"),
+        "ADOU_CODING_AGENT_DIR": os.path.join(root, "agent"),
+        "ADOU_SESSION_DIR": os.path.join(root, "sessions"),
+        "ADOU_TUI_WRITE_LOG": os.path.join(root, "write.log"),
     }
 )
 os.makedirs(os.path.join(root, "agent"), exist_ok=True)

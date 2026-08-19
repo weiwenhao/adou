@@ -65,11 +65,14 @@ skills、prompt templates、slash commands、项目 trust 和核心 TUI 均在�
 
 ## 3. 冻结快照
 
-审计时 OpenCode 已停止，未运行 Nature 编译或 e2e。当前与本轮 Interactive UI 直接
-相关的 WIP 包括：
+2026-08-19 复验：当前 worktree 已完成干净 `make build`、全量 `make test`、全量
+`make e2e` 和 `make eval`；`slash-menu.sh --runs 3` 三轮通过且屏幕一致。真实
+provider/live smoke 因没有显式开关和 DeepSeek 测试 key 跳过，不能把离线结果写成
+完整真机 parity。当前与本轮 Interactive UI 仍直接相关的开放项包括：
 
 - `src/tui/session_view.n`：slash 候选窗口、动态描述、query/selection 绑定的未验收实现；
-- `tests/e2e/slash-menu.sh`：未完成，最近一次执行在 Esc 关闭菜单断言失败；
+- `tests/e2e/slash-menu.sh`：当前三轮语义断言、屏幕一致性和退出码均通过；后续只保留
+  真 provider 长会话与同版本真机对照，不再把历史 Esc 失败当作当前状态；
 - `tests/e2e/input-cursor-seq.sh`：原始 cursor 序列测试 WIP；
 - `docs/herdr-real-machine-testing.md`：已记录真机稳定性问题，但 Interactive parity
   章节尚未按本文口径重写。
@@ -245,8 +248,8 @@ test 和 Pi 同版本真机对照四层证据。
 | resize/shrink/render | Pi TUI diff renderer | 稳定性已加强；settings-driven clear-on-shrink 未实现 | PARTIAL | P1 |
 | debug/terminal lifecycle | Pi debug log + ProcessTerminal | debug 隔离/job control 已通过 | PASS（保留回归） | P1 |
 | extension UI | extension components | 产品范围排除 | EXCLUDED | — |
-| OAuth/account | login dialog OAuth flows | 尚未实现完整 login/refresh/logout 契约 | OPEN | P1 |
-| interactive images | image selectors/render | 已有底层编码与图片 API，读取/消息/TUI 接线未完成 | OPEN | P1 |
+| OAuth/account | login dialog OAuth flows | provider-specific credential/PKCE/device/browser callback/bearer/refresh、login/logout、异步 TUI generation/cancel、Radius discovery 已接线；真实 live recovery 仍待完成 | PARTIAL | P1 |
+| interactive images | image selectors/render | PNG/JPEG/GIF/WebP 读取、消息/session/provider 传递、Kitty/iTerm2/fallback 已接线；BMP conversion、auto-resize、clipboard 和完整 UI 未完成 | PARTIAL | P1 |
 
 ## 6. 实施原则
 
@@ -445,7 +448,7 @@ OpenCode 不得自行宣布全量收口或安装。Batch 0–6 期间不提交/�
   静默超时、normalized visible screen、exit code。
   - **env 隔离**：`start()` 用 `execvpe` 精确替换子进程环境，只携带
     `fixed_oracle_env()` 的最小 allowlist（PATH/TMPDIR 从父进程继承；
-    HOME/PI_CODING_AGENT_DIR 固定为 fixture；TERM=xterm-256color 与
+    HOME/ADOU_CODING_AGENT_DIR 固定为 fixture；TERM=xterm-256color 与
     LANG/LC_ALL/LC_CTYPE=en_US.UTF-8 固定）。凭据、proxy、token 按构造
     排除，不读取不打印不落盘。回归见 `tests/e2e/lib/pty_env_isolation_test.py`。
   - **生命周期**：`wait_exit` 获得任何退出状态后立即清空 `pid`，`close()`
@@ -1117,14 +1120,14 @@ Adou 现状源：
 | enableSkillCommands（true） | g+p | 无 | 新增；gate compose_resource_commands 的 /skill:name |
 | doubleEscapeAction（tree；tree/fork/none） | g+p | 无（ESC ESC 固定 tree） | 新增；分支到 tree/fork/none |
 | treeFilterMode（default；5 档） | g+p | 无（overlay 内循环） | 新增；/tree 打开时种子 overlay.tree_filter |
-| showHardwareCursor（false；PI_HARDWARE_CURSOR env） | g+p | 无 | 新增；term cursor 显隐 |
+| showHardwareCursor（false；ADOU_HARDWARE_CURSOR env） | g+p | 无 | 新增；term cursor 显隐 |
 | editorPaddingX（0；0-3 clamp） | g+p | 无 | 新增；editor 左侧 padding |
 | outputPad（1；0/1） | g+p | 无（固定 1 空格） | 新增；chat 输出 padding |
 | autocompleteMaxVisible（5；3-20 clamp；UI 值 3/5/7/10/15/20） | g+p | load/clamp 已有，UI 无 | UI 六选接入 |
-| terminal.clearOnShrink（false；PI_CLEAR_ON_SHRINK env） | g+p | 无 | 新增；renderer 收缩清理 |
+| terminal.clearOnShrink（false；ADOU_CLEAR_ON_SHRINK env） | g+p | 无 | 新增；renderer 收缩清理 |
 | terminal.showTerminalProgress（false） | g+p | 无 | 新增；OSC 9;4 |
 | warnings.anthropicExtraUsage（true） | g+p | 无 | 新增；子菜单；Adou 无 Anthropic 订阅鉴权路径，runtime NOP 记录 |
-| terminal.showImages/imageWidthCells、images.autoResize/blockImages | g+p | 无 | OPEN：当前 UI 只显示 unavailable，不伪实现；完整落盘与运行时 effect 待补 |
+| terminal.showImages/imageWidthCells、images.autoResize/blockImages | g+p | 已有 | PARTIAL：settings nested load/save、终端能力感知、TUI image render/fallback 和 block_images runtime 已接入；BMP conversion、auto-resize processor、clipboard 仍待补 |
 
 失败 baseline（Batch 3 开工时的事实）：
 
@@ -1148,7 +1151,7 @@ Adou 现状源：
   terminal.showTerminalProgress/warnings.anthropicExtraUsage）；磁盘形状迁移
   （autoCompaction→compaction.enabled、retry 扁平键→retry.{enabled,maxRetries,
   baseDelayMs}，旧键读取兼容并在保存时删除）；Pi env fallback
-  （PI_CLEAR_ON_SHRINK/PI_HARDWARE_CURSOR）；defaultProjectTrust 仅 global
+  （ADOU_CLEAR_ON_SHRINK/ADOU_HARDWARE_CURSOR）；defaultProjectTrust 仅 global
   （项目文件不可覆盖）；theme 接受 "light/dark" 自动对；逐项 clamp 对齐 Pi
   （padding 0-3、outputPad 0|1、autocomplete 3-20、httpIdleTimeoutMs
   "disabled"/数字解析）。
@@ -1420,9 +1423,10 @@ docs/pi-batch3-evidence/herdr-keybindings-parity-summary.json。
   key actions、取消恢复和干净 terminal restore。
 - `git diff --check` 干净；本批没有 vendors 改动，也没有提交凭据。
 
-本批已定义范围内残余 FAIL：无。OAuth 仍未在本批实现，但现归入开放 parity
-工作；项目资源 scope 使用 Adou 现有 named allow-list 模型，Pi package manager
-中属于 extension 的部分保持排除，其他可观察差异继续审计。
+本批已定义范围内残余 FAIL：无。OAuth 已完成 provider-specific credential/PKCE/device-code/browser callback/bearer
+slice、Radius OAuth/discovery 和异步 TUI 接线；真实 provider recovery、图片 processor 尾项和 live 长会话
+仍归入开放 parity；项目资源 scope 使用 Adou 现有 named allow-list 模型，Pi package
+manager 中属于 extension 的部分保持排除，其他可观察差异继续审计。
 
 ## 16. Batch 6 记录（Streaming、Resize 与稳定性组合回归，2026-08-17）
 
@@ -1559,3 +1563,21 @@ docs/pi-batch3-evidence/herdr-keybindings-parity-summary.json。
   DeepSeek 流仍需一轮针对性 Herdr 验证，才能关闭真机风险记录。
 - 按项目约束仍未运行约两小时的完整 `make test`；没有修改 `vendors/`，本轮
   改动已形成当前 commit。
+
+## 19. Stage 2 / Batch 7 继续验收（2026-08-19）
+
+### 19.1 `/model` 真机 RSS 压力复验
+
+- Stage 0 与 Stage 1 分别提交后，在 Herdr `w7:pE` 恢复当前
+  `build/bin/adou`（SHA-256
+  `2ce02803da1d064ad8ef0c2fb4d4cd16017c6f4979a91cd921b00e0d715c41c4`），
+  cwd、debug 选项和持久 session 目录保持不变。
+- 连续执行 100 轮 `Ctrl+L` 打开 model selector、等待渲染、`Esc` 关闭；每
+  10 轮确认进程存活，100 轮全部完成，终端回到 idle editor。
+- 同期采集 400 个 RSS 样本：首值 6,544 KiB、最小值 6,544 KiB、峰值
+  39,248 KiB、末值 27,232 KiB；进程测试后继续存活，没有复现
+  `page allocation failed`。
+
+该结果再次确认旧 provider definition 重建热点已不在当前 `/model` 路径中，
+但只关闭本次 bounded 压力复验。Stage 2 仍需完成真实长会话和连续三轮完整
+交互矩阵，完成前不提交本阶段改动。

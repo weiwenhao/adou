@@ -4,7 +4,7 @@ import adou.src.ai.providers.openrouter_models
 import adou.src.ai.types
 
 pub fn def(): types.provider_def_t {
-    return types.provider_def_t {id: 'openrouter', name: 'OpenRouter', api: 'openai-completions', base_url: 'https://openrouter.ai/api/v1', env_vars: ['OPENROUTER_API_KEY'], headers: {},}
+    return types.provider_def_t {id: 'openrouter', name: 'OpenRouter', api: 'openai-completions', base_url: 'https://openrouter.ai/api/v1', env_vars: ['OPENROUTER_API_KEY'], headers: {}, supports_oauth: true,}
 }
 
 pub fn models(): [ref<types.model_t>] {

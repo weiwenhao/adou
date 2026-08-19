@@ -1063,7 +1063,6 @@ pub fn editor_t.remove_paste_and_renumber(&self, int removed_id) {
     self.paste_counter -= 1
 }
 
-#local
 fn marker_for(paste_t paste): string {
     int line_count = split_lines(paste.content).len()
     if line_count > 10 {
@@ -1072,7 +1071,6 @@ fn marker_for(paste_t paste): string {
     return fmt.sprintf('[paste #%d %d chars]', paste.id, utf8.utf16_length(paste.content))
 }
 
-#local
 fn markers([paste_t] pastes): [string] {
     [string] result = vec<string>.cap_of(pastes.len())
     for paste in pastes {
@@ -1081,7 +1079,6 @@ fn markers([paste_t] pastes): [string] {
     return result
 }
 
-#local
 fn marker_ending_at([paste_t] pastes, string text, int cursor): int {
     for paste in pastes {
         string marker = marker_for(paste)
@@ -1092,7 +1089,6 @@ fn marker_ending_at([paste_t] pastes, string text, int cursor): int {
     return -1
 }
 
-#local
 fn marker_starting_at([paste_t] pastes, string text, int cursor): int {
     for paste in pastes {
         string marker = marker_for(paste)
@@ -1103,7 +1099,6 @@ fn marker_starting_at([paste_t] pastes, string text, int cursor): int {
     return -1
 }
 
-#local
 fn paste_id_for_marker([paste_t] pastes, string marker): int {
     for paste in pastes {
         if marker_for(paste) == marker {
@@ -1113,7 +1108,6 @@ fn paste_id_for_marker([paste_t] pastes, string marker): int {
     return -1
 }
 
-#local
 fn snap_out_of_marker([paste_t] pastes, string text, int cursor): int {
     for paste in pastes {
         string marker = marker_for(paste)
@@ -1129,7 +1123,6 @@ fn snap_out_of_marker([paste_t] pastes, string text, int cursor): int {
     return cursor
 }
 
-#local
 fn visible_prefix_width(string line, int byte_column): int! {
     int safe_column = byte_column
     if safe_column < 0 {
@@ -1141,7 +1134,6 @@ fn visible_prefix_width(string line, int byte_column): int! {
     return unicode.visible_width(line.slice(0, safe_column))
 }
 
-#local
 fn byte_column_at_width(string line, int target_width): int! {
     if target_width <= 0 || line == '' {
         return 0
@@ -1161,12 +1153,10 @@ fn byte_column_at_width(string line, int target_width): int! {
     return column
 }
 
-#local
 fn normalize_text(string text): string {
     return text.replace('\r\n', '\n').replace('\r', '\n').replace('\t', '    ')
 }
 
-#local
 fn decode_csi_u_controls(string text): string {
     string result = ''
     int cursor = 0
@@ -1190,7 +1180,6 @@ fn decode_csi_u_controls(string text): string {
     return result
 }
 
-#local
 fn filter_paste(string text): string {
     [u8] result = vec<u8>.cap_of(text.len())
     for byte in text as [u8] {
@@ -1201,12 +1190,10 @@ fn filter_paste(string text): string {
     return result as string
 }
 
-#local
 fn starts_like_path(string text): bool {
     return text != '' && (text[0] == '/'.char() || text[0] == '~'.char() || text[0] == '.'.char())
 }
 
-#local
 fn is_ascii_word_byte(u8 value): bool {
     return value >= 'a'.char() && value <= 'z'.char() || value >= 'A'.char() && value <= 'Z'.char() || value >= '0'.char() && value <= '9'.char() || value == '_'.char()
 }
@@ -1231,7 +1218,6 @@ pub fn copy_strings([string] values): [string] {
     return result
 }
 
-#local
 fn copy_pastes([paste_t] values): [paste_t] {
     [paste_t] result = vec<paste_t>.cap_of(values.len())
     for value in values {

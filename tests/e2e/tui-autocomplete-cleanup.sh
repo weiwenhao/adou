@@ -33,7 +33,7 @@ with open(os.path.join(agent, "settings.json"), "w") as handle:
 
 env = fixed_oracle_env(home, agent_dir=agent)
 env["DEEPSEEK_API_KEY"] = "test-key"
-env["PI_OFFLINE"] = "1"
+env["ADOU_OFFLINE"] = "1"
 case = PtyCase(
     [
         binary,

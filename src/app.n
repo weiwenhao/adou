@@ -9,6 +9,7 @@ import adou.src.ai.event_stream as ai_event_stream
 import adou.src.ai.types as ai_types
 import adou.src.config.args
 import adou.src.config.auth
+import adou.src.config.oauth
 import adou.src.config.models
 import adou.src.config.resolve
 import adou.src.debug
@@ -68,7 +69,6 @@ type rpc_sink_t = struct {
 }
 
 // --mode rpc keeps writing responses to stdout.
-#local
 fn stdout_rpc_sink(): ref<rpc_sink_t> {
     return new rpc_sink_t(lock = mutex.mutex_t.new(), write = fn(string line) {
         var output = fs.stdout() catch error {
@@ -80,7 +80,6 @@ fn stdout_rpc_sink(): ref<rpc_sink_t> {
 
 // IPC connection sink: framed lines; a failed write only drops the line (the
 // connection coroutine owns close).
-#local
 fn conn_rpc_sink(ref<tcp.conn_t> conn): ref<rpc_sink_t> {
     return new rpc_sink_t(lock = mutex.mutex_t.new(), write = fn(string line) {
         var bytes = (line + '\n') as [u8]
@@ -475,15 +474,30 @@ pub fn run(): void! {
     return
 }
 
-#local
 fn stream_provider(): agent_types.stream_fn {
     agent_types.stream_fn result = fn(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> options): ref<ai_event_stream.assistant_stream_t> {
+        // OAuth access tokens are refreshed immediately before a request when
+        // they are inside the five-minute expiry window.  Keep this in the
+        // shared application stream closure so TUI, RPC and one-shot runs all
+        // observe the same credential lifecycle.
+        if auth.is_using_oauth(model.provider) {
+            bool refreshed = oauth.refresh_if_needed(model.provider) catch error {
+                var failed = ai_event_stream.new()
+                var message = new ai_types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, stop_reason = ai_types.STOP_ERROR, error_message = error.msg())
+                var event = ai_types.assistant_event_t {kind: ai_types.EVENT_ERROR, reason: ai_types.STOP_ERROR, error: message,}
+                failed.push(event) catch push_error {}
+                failed.end() catch end_error {}
+                return failed
+            }
+            if refreshed {
+                options.api_key = auth.effective(model.provider)
+            }
+        }
         return provider.stream(model, context, options)
     }
     return result
 }
 
-#local
 fn list_contains([string] values, string target): bool {
     for value in values {
         if value == target {
@@ -495,7 +509,6 @@ fn list_contains([string] values, string target): bool {
 
 // Pi's credential-print.ts print-api-key: validates --model, forbids
 // --api-key, resolves the configured key (env or stored) and prints it.
-#local
 fn run_auth_print_api_key([string] argv): void! {
     var arguments = args.parse(argv)
     if arguments.errors.len() > 0 {
@@ -535,7 +548,6 @@ fn run_auth_print_api_key([string] argv): void! {
 
 // Credential-print failures keep stdout empty and use the Error: prefix on
 // stderr so callers can distinguish a missing credential from a printed one.
-#local
 fn print_auth_error(string message) {
     var err = fs.stderr() catch error {
         return
@@ -545,7 +557,6 @@ fn print_auth_error(string message) {
     err.write(nl) catch error {}
 }
 
-#local
 fn report_startup_config_error(config_types.cli_args_t arguments): bool {
     string message = ''
     if arguments.errors.len() > 0 {
@@ -592,7 +603,6 @@ fn report_startup_config_error(config_types.cli_args_t arguments): bool {
     return false
 }
 
-#local
 fn open_repository(config_types.config_t config, string cwd): ref<repository.manager_t>! {
     if config.no_session {
         return repository.in_memory(cwd)
@@ -628,7 +638,6 @@ fn open_repository(config_types.config_t config, string cwd): ref<repository.man
     return repository.create(cwd, config.session_dir)
 }
 
-#local
 // The Nature TLS runtime stops its connect timer once TCP connects and
 // leaves the mbedtls handshake untimed: under a silently blackholed proxy
 // a request can hang forever instead of honouring --timeout-ms.  Coroutines
@@ -675,7 +684,6 @@ fn run_headless(ref<session.runner_t> runner, [string] prompts, bool plain, bool
     println(strings.join(lines, '\n'))
 }
 
-#local
 fn run_headless_with_watchdog(ref<session.runner_t> runner, [string] prompts, bool json_mode): void! {
     int budget_ms = runner.agent_config.stream_options.timeout_ms
     if budget_ms <= 0 {
@@ -691,7 +699,6 @@ fn run_headless_with_watchdog(ref<session.runner_t> runner, [string] prompts, bo
     guard.send(0) catch error {}
 }
 
-#local
 fn headless_watchdog(chan<int> guard, int budget_ms, bool json_mode) {
     co.sleep(budget_ms)
     var (cancelled, received) = guard.try_recv() catch error {
@@ -715,7 +722,6 @@ fn headless_watchdog(chan<int> guard, int budget_ms, bool json_mode) {
 }
 
 // Plain one-shot loop extracted so the watchdog covers the whole session.
-#local
 fn run_plain(ref<session.runner_t> runner, [string] prompts): void! {
     [ai_types.message_t] messages = []
     for prompt in prompts {
@@ -743,7 +749,6 @@ fn run_plain(ref<session.runner_t> runner, [string] prompts): void! {
     }
 }
 
-#local
 fn run_json(ref<session.runner_t> runner, [string] prompts): void! {
     if runner.repository.persisted {
         println(runner.repository.header_json())
@@ -765,7 +770,6 @@ fn run_json(ref<session.runner_t> runner, [string] prompts): void! {
     }
 }
 
-#local
 fn json_error(string message): string! {
     {string:any} object = {}
     object['type'] = 'error'
@@ -773,13 +777,11 @@ fn json_error(string message): string! {
     return json.serialize(object)
 }
 
-#local
 fn export_repository(ref<repository.manager_t> repository, string target): void! {
     string absolute = write_export(repository, target)
     println('Exported session to ' + absolute)
 }
 
-#local
 fn export_session_file(string source_path, string requested_output, string cwd): void! {
     string source = path_utils.resolve_to_cwd(source_path, cwd)
     var session_repository = repository.open(source)
@@ -803,7 +805,6 @@ fn export_session_file(string source_path, string requested_output, string cwd):
     println('Exported to: ' + absolute)
 }
 
-#local
 fn write_export(ref<repository.manager_t> repository, string target): string! {
     if !repository.persisted {
         throw errorf('Cannot export an in-memory session')
@@ -843,7 +844,6 @@ pub fn html_escape(string value): string {
 // line and the connection closes (upstream socket.end semantics), while
 // rpc_stream keeps the connection open for the bidirectional command/event
 // loop.
-#local
 fn server_executable(): string! {
     [string] argv = os.args()
     if argv.len() == 0 || argv[0] == '' {
@@ -856,18 +856,18 @@ fn server_executable(): string! {
     return path.join(platform_cwd.current(), executable)
 }
 
-#local
 fn run_serve(int port, bool offline): void! {
     var sup = ipc_supervisor.new(server_executable(), offline)
+    sup.start_presence()
     ipc_server.connection_handler_t handler = fn(ref<tcp.conn_t> conn): void {
         serve_connection(sup, conn) catch error {
             conn.close()
         }
     }
     ipc_server.serve('127.0.0.1', port, handler)
+    sup.stop_presence()
 }
 
-#local
 fn serve_connection(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn): void! {
     for true {
         string line = ipc_server.read_line(conn) catch error {
@@ -901,7 +901,6 @@ fn serve_connection(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn):
 // One IPC request line -> response line (upstream handler.ts command surface
 // with the upstream response shapes: spawn_result/list_result/status_result/
 // stop_result/rpc_result/error).
-#local
 fn serve_request(ref<ipc_supervisor.supervisor_t> sup, {string:any} object, string kind): string! {
     if kind == 'spawn' {
         string cwd = rpc_string(object, 'cwd')
@@ -965,7 +964,6 @@ fn serve_request(ref<ipc_supervisor.supervisor_t> sup, {string:any} object, stri
 // then the connection stays open and every command line is answered with the
 // RpcResponse/AgentSessionEvent lines the instance emits.  Closing the
 // connection unsubscribes the subscriber.
-#local
 fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, {string:any} object): void! {
     string instance_id = rpc_string(object, 'instanceId')
     var instance = sup.get(instance_id)
@@ -1035,7 +1033,6 @@ fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, 
 // Shared command dispatch for one RpcCommand.  Used both by --mode rpc
 // (stdout sink and run_rpc loop).  The server reaches this command surface
 // through one child process per instance.
-#local
 fn rpc_dispatch(ref<session.runner_t> runner, {string:any} object, string command, string id, ref<rpc_sink_t> sink, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns, config_types.skills_options_t skills_options): void! {
     if command == 'prompt' {
         string prompt_behavior = rpc_string(object, 'streamingBehavior')
@@ -1165,7 +1162,6 @@ fn rpc_dispatch(ref<session.runner_t> runner, {string:any} object, string comman
     }
 }
 
-#local
 fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns, config_types.skills_options_t skills_options): void! {
     var input = fs.stdin()
     var reader = new buf.reader<ref<fs.file_t>>(rd = input)
@@ -1200,7 +1196,6 @@ fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_pr
     runner.wait_rpc_delivery()
 }
 
-#local
 fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string streaming_behavior, ref<rpc_sink_t> sink): void! {
     // Pi lets clients use `prompt` as a convenience queue operation while an
     // assistant turn is already running.  Keep explicit steer/follow_up
@@ -1222,7 +1217,6 @@ fn rpc_run_prompt(ref<session.runner_t> runner, string id, string prompt, string
     go rpc_prompt_worker(runner, stream, id, sink)
 }
 
-#local
 fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<rpc_sink_t> sink): void! {
     rpc_write(sink, rpc_ok(id, 'prompt'))
     for true {
@@ -1250,7 +1244,6 @@ fn rpc_prompt_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> 
     runner.finish_rpc_delivery(stream)
 }
 
-#local
 fn rpc_queue_message(ref<session.runner_t> runner, string id, string text, bool steering, ref<rpc_sink_t> sink): void! {
     // Pi expands prompt templates and skill commands for prompt, steer and
     // follow-up alike.  Use the runner's already-published snapshot so queue
@@ -1265,7 +1258,6 @@ fn rpc_queue_message(ref<session.runner_t> runner, string id, string text, bool 
     rpc_write(sink, rpc_ok(id, steering ? 'steer' : 'follow_up'))
 }
 
-#local
 fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope_patterns, ref<rpc_sink_t> sink): void! {
     [ref<ai_types.model_t>] available = []
     [models.scoped_model_t] scoped = models.resolve_scope(model_scope_patterns)
@@ -1318,7 +1310,6 @@ fn rpc_cycle_model(ref<session.runner_t> runner, string id, [string] model_scope
     rpc_write(sink, rpc_ok_data(id, 'cycle_model', result))
 }
 
-#local
 fn rpc_cycle_thinking(ref<session.runner_t> runner, string id, ref<rpc_sink_t> sink): void! {
     if !runner.agent_config.model.reasoning {
         rpc_write(sink, rpc_ok_data(id, 'cycle_thinking_level', null))
@@ -1341,7 +1332,6 @@ fn rpc_cycle_thinking(ref<session.runner_t> runner, string id, ref<rpc_sink_t> s
     rpc_write(sink, rpc_ok_data(id, 'cycle_thinking_level', result))
 }
 
-#local
 fn rpc_set_queue_mode(ref<session.runner_t> runner, string id, bool steering, string mode, ref<rpc_sink_t> sink): void! {
     if mode != agent_types.QUEUE_ALL && mode != agent_types.QUEUE_ONE {
         rpc_write(sink, rpc_error(id, steering ? 'set_steering_mode' : 'set_follow_up_mode', 'mode must be all or one-at-a-time'))
@@ -1361,7 +1351,6 @@ fn rpc_set_queue_mode(ref<session.runner_t> runner, string id, bool steering, st
     rpc_write(sink, rpc_ok(id, steering ? 'set_steering_mode' : 'set_follow_up_mode'))
 }
 
-#local
 fn rpc_run_bash(ref<session.runner_t> runner, string id, string command_text, bool excluded, ref<rpc_sink_t> sink): void! {
     if command_text == '' {
         rpc_write(sink, rpc_error(id, 'bash', 'command is required'))
@@ -1376,7 +1365,6 @@ fn rpc_run_bash(ref<session.runner_t> runner, string id, string command_text, bo
     go rpc_bash_worker(runner, stream, command_text, excluded, id, sink)
 }
 
-#local
 fn rpc_bash_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string command_text, bool excluded, string id, ref<rpc_sink_t> sink): void! {
     // Keep callback state in a heap object.  Nature's process output reader
     // invokes the callback from a separate coroutine after the worker has
@@ -1413,7 +1401,6 @@ fn rpc_bash_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> st
     runner.end_operation()
 }
 
-#local
 fn rpc_export_html(ref<session.runner_t> runner, string id, string requested_path, ref<rpc_sink_t> sink): void! {
     if !runner.repository.persisted {
         rpc_write(sink, rpc_error(id, 'export_html', 'Cannot export an in-memory session'))
@@ -1435,7 +1422,6 @@ fn rpc_export_html(ref<session.runner_t> runner, string id, string requested_pat
     rpc_write(sink, rpc_ok_data(id, 'export_html', data))
 }
 
-#local
 fn rpc_switch_session(ref<session.runner_t> runner, string id, string session_path, bool no_context_files, string system_prompt_override, [string] append_system_prompts, config_types.skills_options_t skills_options, ref<rpc_sink_t> sink): void! {
     if session_path == '' {
         rpc_write(sink, rpc_error(id, 'switch_session', 'sessionPath is required'))
@@ -1467,7 +1453,6 @@ fn rpc_switch_session(ref<session.runner_t> runner, string id, string session_pa
 // fresh/spawned/TUI paths); and the trust-aware settings snapshot is applied
 // to the runner's queue/compaction/retry preferences instead of core reading
 // project settings directly.
-#local
 fn rebind_rpc_context(ref<session.runner_t> runner, string cwd, bool no_context_files, string system_prompt_override, [string] append_system_prompts, config_types.skills_options_t skills_options): void! {
     bool trusted = resolve.skills_trusted(skills_options, cwd)
     // B1-R4-10: refresh the ONE trust-aware snapshot (trust-aware settings,
@@ -1526,7 +1511,6 @@ fn rebind_rpc_context(ref<session.runner_t> runner, string cwd, bool no_context_
     }
 }
 
-#local
 fn rpc_run_compaction(ref<session.runner_t> runner, string id, string instructions, ref<rpc_sink_t> sink): void! {
     var stream = runner.compact_now(instructions) catch error {
         rpc_write(sink, rpc_error(id, 'compact', error.msg()))
@@ -1535,7 +1519,6 @@ fn rpc_run_compaction(ref<session.runner_t> runner, string id, string instructio
     go rpc_compaction_worker(runner, stream, id, sink)
 }
 
-#local
 fn rpc_compaction_worker(ref<session.runner_t> runner, ref<session_stream.stream_t> stream, string id, ref<rpc_sink_t> sink): void! {
     string summary = ''
     int tokens_before = 0
@@ -1576,7 +1559,6 @@ fn rpc_compaction_worker(ref<session.runner_t> runner, ref<session_stream.stream
     rpc_write(sink, rpc_ok_data(id, 'compact', data))
 }
 
-#local
 fn rpc_set_model(ref<session.runner_t> runner, string id, string provider_name, string model_id, ref<rpc_sink_t> sink): void! {
     ref<ai_types.model_t>? selected = models.find(provider_name + '/' + model_id)
     if !(selected is ref<ai_types.model_t>) {
@@ -1590,7 +1572,6 @@ fn rpc_set_model(ref<session.runner_t> runner, string id, string provider_name, 
     rpc_write(sink, rpc_ok_data(id, 'set_model', rpc_model_data(selected as ref<ai_types.model_t>)))
 }
 
-#local
 fn rpc_state(ref<session.runner_t> runner): {string:any} {
     {string:any} object = {}
     object['model'] = rpc_model_data(runner.agent_config.model)
@@ -1610,7 +1591,6 @@ fn rpc_state(ref<session.runner_t> runner): {string:any} {
     return object
 }
 
-#local
 fn rpc_models(ref<session.runner_t> runner): {string:any} {
     [any] values = []
     for model in models.all() {
@@ -1624,7 +1604,6 @@ fn rpc_models(ref<session.runner_t> runner): {string:any} {
     return result
 }
 
-#local
 fn rpc_model_data(ref<ai_types.model_t> model): {string:any} {
     {string:any} object = {}
     object['provider'] = model.provider
@@ -1646,7 +1625,6 @@ fn rpc_model_data(ref<ai_types.model_t> model): {string:any} {
     return object
 }
 
-#local
 fn rpc_thinking_levels(ref<ai_types.model_t> model): {string:any} {
     [any] values = []
     for level in models.available_thinking_levels(model) {
@@ -1657,7 +1635,6 @@ fn rpc_thinking_levels(ref<ai_types.model_t> model): {string:any} {
     return result
 }
 
-#local
 fn rpc_messages([ai_types.message_t] messages): {string:any} {
     [any] values = []
     for message in messages {
@@ -1669,7 +1646,6 @@ fn rpc_messages([ai_types.message_t] messages): {string:any} {
     return result
 }
 
-#local
 fn rpc_entries(ref<repository.manager_t> repository, string since): {string:any}! {
     [any] values = []
     bool found_since = since == ''
@@ -1693,7 +1669,6 @@ fn rpc_entries(ref<repository.manager_t> repository, string since): {string:any}
     return result
 }
 
-#local
 fn rpc_tree(ref<repository.manager_t> repository): {string:any} {
     [string] visited = []
     [any] roots = rpc_tree_nodes(repository, '', visited)
@@ -1703,7 +1678,6 @@ fn rpc_tree(ref<repository.manager_t> repository): {string:any} {
     return result
 }
 
-#local
 fn rpc_tree_nodes(ref<repository.manager_t> repository, string parent_id, [string] visited): [any] {
     [any] values = []
     for entry in repository.get_entries() {
@@ -1747,7 +1721,6 @@ fn rpc_tree_nodes(ref<repository.manager_t> repository, string parent_id, [strin
     return values
 }
 
-#local
 fn rpc_fork_messages(ref<repository.manager_t> repository): {string:any} {
     [any] values = []
     for entry in repository.get_entries() {
@@ -1764,7 +1737,6 @@ fn rpc_fork_messages(ref<repository.manager_t> repository): {string:any} {
     return result
 }
 
-#local
 fn rpc_fork_message_text(ref<repository.manager_t> repository, string entry_id): string {
     ref<session_types.entry_t>? possible = repository.get_entry(entry_id) catch error {return ''}
     if !(possible is ref<session_types.entry_t>) {return ''}
@@ -1778,7 +1750,6 @@ fn rpc_fork_message_text(ref<repository.manager_t> repository, string entry_id):
     return ''
 }
 
-#local
 fn rpc_nullable_string(string value): any {
     if value == '' {
         return null
@@ -1786,14 +1757,12 @@ fn rpc_nullable_string(string value): any {
     return value
 }
 
-#local
 fn rpc_cancelled_data(bool cancelled): {string:any} {
     {string:any} object = {}
     object['cancelled'] = cancelled
     return object
 }
 
-#local
 fn rpc_commands(ref<session.runner_t> runner): {string:any} {
     // B1-R4-10: get_commands reads the runner's trust-aware resource
     // snapshot refreshed at init/switch — NO disk access, so files changing
@@ -1808,7 +1777,6 @@ fn rpc_commands(ref<session.runner_t> runner): {string:any} {
     return result
 }
 
-#local
 fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): {string:any} {
     {string:any} object = {}
     string session_file = repository.get_session_file()
@@ -1837,7 +1805,6 @@ fn rpc_stats(repository.stats_t stats, ref<repository.manager_t> repository): {s
     return object
 }
 
-#local
 fn rpc_text_data(string key, string value): {string:any} {
     {string:any} object = {}
     if value == '' {
@@ -1848,7 +1815,6 @@ fn rpc_text_data(string key, string value): {string:any} {
     return object
 }
 
-#local
 fn rpc_ok(string id, string command): string! {
     {string:any} object = {}
     if id != '' {object['id'] = id}
@@ -1858,7 +1824,6 @@ fn rpc_ok(string id, string command): string! {
     return json.serialize(object)
 }
 
-#local
 fn rpc_ok_data(string id, string command, any data): string! {
     {string:any} object = {}
     if id != '' {object['id'] = id}
@@ -1869,7 +1834,6 @@ fn rpc_ok_data(string id, string command, any data): string! {
     return json.serialize(object)
 }
 
-#local
 fn rpc_error(string id, string command, string message): string! {
     {string:any} object = {}
     if id != '' {object['id'] = id}
@@ -1880,26 +1844,22 @@ fn rpc_error(string id, string command, string message): string! {
     return json.serialize(object)
 }
 
-#local
 fn rpc_write(ref<rpc_sink_t> sink, string line) {
     sink.lock.lock()
     sink.write(line)
     sink.lock.unlock()
 }
 
-#local
 fn rpc_string({string:any} object, string key): string {
     if object.contains(key) && object[key] is string {return object[key] as string}
     return ''
 }
 
-#local
 fn rpc_bool({string:any} object, string key, bool fallback): bool {
     if object.contains(key) && object[key] is bool {return object[key] as bool}
     return fallback
 }
 
-#local
 fn last_assistant_text([ai_types.message_t] messages): string {
     for int index = messages.len() - 1; index >= 0; index -= 1 {
         if messages[index] is ref<ai_types.assistant_message_t> assistant {
@@ -1918,7 +1878,6 @@ fn last_assistant_text([ai_types.message_t] messages): string {
     return ''
 }
 
-#local
 fn load_file_arguments([string] file_args, string cwd): string! {
     string result = ''
     for file_arg in file_args {
@@ -1943,7 +1902,6 @@ fn load_file_arguments([string] file_args, string cwd): string! {
 #linkid adou_stdin_peek
 fn stdin_peek(int fd): int
 
-#local
 fn read_piped_stdin(): string! {
     var input = fs.stdin()
     [u8] output = vec<u8>.new(0, 0)
@@ -1997,7 +1955,6 @@ fn read_piped_stdin(): string! {
 // prompt".  Inspect the descriptor type before reading so a bare `adou`
 // never manufactures a prompt containing NUL bytes, while regular-file and
 // FIFO redirection continue to work.
-#local
 fn stdin_can_contain_prompt(): bool {
     var status = syscall.fstat(term.STDIN) catch error {
         return false

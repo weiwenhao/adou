@@ -8,10 +8,10 @@ test 'debug configure creates a default durable sink and records process metadat
     string root = '/tmp/adou-debug-configure-test'
     os.rmdir(root, true) catch error {}
     os.mkdirs(root, 0o700)
-    string previous_agent_dir = syscall.get_env('PI_CODING_AGENT_DIR')
+    string previous_agent_dir = syscall.get_env('ADOU_CODING_AGENT_DIR')
     string previous_debug = syscall.get_env('ADOU_DEBUG')
     string previous_debug_file = syscall.get_env('ADOU_DEBUG_FILE')
-    syscall.set_env('PI_CODING_AGENT_DIR', path.join(root, 'agent'))
+    syscall.set_env('ADOU_CODING_AGENT_DIR', path.join(root, 'agent'))
     syscall.set_env('ADOU_DEBUG', '')
     syscall.set_env('ADOU_DEBUG_FILE', '')
 
@@ -25,7 +25,7 @@ test 'debug configure creates a default durable sink and records process metadat
     assert(content.contains('[adou debug] test: configure fixture ts='))
     assert(content.contains(' pid='))
 
-    syscall.set_env('PI_CODING_AGENT_DIR', previous_agent_dir)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', previous_agent_dir)
     syscall.set_env('ADOU_DEBUG', previous_debug)
     syscall.set_env('ADOU_DEBUG_FILE', previous_debug_file)
     os.rmdir(root, true)
@@ -35,10 +35,10 @@ test 'Pi debug artifacts follow the configured agent directory' {
     string root = '/tmp/adou-debug-artifacts-test'
     os.rmdir(root, true) catch error {}
     os.mkdirs(root, 0o700)
-    string previous_agent_dir = syscall.get_env('PI_CODING_AGENT_DIR')
-    string previous_write_log = syscall.get_env('PI_TUI_WRITE_LOG')
-    syscall.set_env('PI_CODING_AGENT_DIR', path.join(root, 'agent'))
-    syscall.set_env('PI_TUI_WRITE_LOG', root)
+    string previous_agent_dir = syscall.get_env('ADOU_CODING_AGENT_DIR')
+    string previous_write_log = syscall.get_env('ADOU_TUI_WRITE_LOG')
+    syscall.set_env('ADOU_CODING_AGENT_DIR', path.join(root, 'agent'))
+    syscall.set_env('ADOU_TUI_WRITE_LOG', root)
 
     string target = debug.write_debug_file('debug fixture\n')
     assert(target == path.join(root, 'agent/adou-debug.log'))
@@ -61,14 +61,14 @@ test 'Pi debug artifacts follow the configured agent directory' {
     assert(found_terminal_log)
 
     string file_target = path.join(root, 'terminal.log')
-    syscall.set_env('PI_TUI_WRITE_LOG', file_target)
+    syscall.set_env('ADOU_TUI_WRITE_LOG', file_target)
     debug.log_terminal_output('file terminal fixture\n')
     var file_log = fs.open(file_target, syscall.O_RDONLY, 0)
     assert(file_log.content() == 'file terminal fixture\n')
     file_log.close()
 
-    syscall.set_env('PI_CODING_AGENT_DIR', previous_agent_dir)
-    syscall.set_env('PI_TUI_WRITE_LOG', previous_write_log)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', previous_agent_dir)
+    syscall.set_env('ADOU_TUI_WRITE_LOG', previous_write_log)
     os.rmdir(root, true)
 }
 

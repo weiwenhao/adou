@@ -188,6 +188,20 @@ test 'surfaces response.failed details' {
     assert(failed)
 }
 
+test 'surfaces nested error event details' {
+    var processor = openai_responses.processor(test_model(), 123)
+    processor.start()
+    var frame = sse.event_t {
+        event: 'message', data: '{"type":"error","error":{"code":"usage_limit","message":"The usage limit has been reached"}}', id: '', retry: -1,
+    }
+    bool failed = false
+    processor.feed(frame) catch e {
+        failed = e.msg() == 'Error Code usage_limit: The usage limit has been reached'
+        []
+    }
+    assert(failed)
+}
+
 test 'repairs incomplete final function arguments like Pi' {
     var processor = openai_responses.processor(test_model(), 1)
     processor.start()

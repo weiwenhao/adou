@@ -3,6 +3,8 @@ import adou.src.agent.types as agent_types
 import adou.src.ai.types
 import adou.src.tools.types as tool_types
 import adou.src.tui.chat
+import adou.src.tui.terminal_image
+import base64
 import adou.src.tui.theme
 import co
 import fmt
@@ -34,6 +36,24 @@ test 'chat view consumes streaming messages, tools, compaction and errors' {
     assert(value.compaction_count == 1)
     value.apply(session_stream.event_t {kind: session_stream.EVENT_SESSION_END,})
     assert(!value.running)
+}
+
+test 'tool image attachments render through terminal capability settings' {
+    terminal_image.set_capabilities('kitty', true, true)
+    var value = chat.new('mock-model', '/tmp/project')
+    [u8] png = []
+    png.append([0x89, 0x50, 0x4e, 0x47])
+    png.append([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])
+    png.append([0, 0, 0, 32, 0, 0, 0, 16])
+    var image = new types.image_attachment_t(mime_type = 'image/png', data = base64.encode(png) as string)
+    var tool = new types.tool_result_message_t(tool_call_id = 'image-call', tool_name = 'read', content = [new types.text_content_t(text = 'image')], images = [image])
+    value.load_messages([tool])
+    string rendered = strings.join(value.render(80), '\n')
+    assert(rendered.contains('\x1b_G'))
+    value.set_image_preferences(false, 60, true)
+    string hidden = strings.join(value.render(80), '\n')
+    assert(hidden.contains('[Image hidden by settings]'))
+    terminal_image.reset_capabilities_cache()
 }
 
 test 'streamed multiline tool previews stay one terminal row and settle once' {

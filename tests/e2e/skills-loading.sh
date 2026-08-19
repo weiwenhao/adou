@@ -54,7 +54,7 @@ run_case() {
     expected_index=$2
     shift 2
     output=$(cd "$project_dir" && HOME="$home_dir" \
-        PI_CODING_AGENT_DIR="$home_dir/.pi/agent" \
+        ADOU_CODING_AGENT_DIR="$home_dir/.pi/agent" \
         DEEPSEEK_API_KEY=skills-e2e-key \
         "$binary" --provider deepseek --model deepseek/deepseek-v4-flash \
         --base-url "http://127.0.0.1:$port" --max-tokens 128 --no-session -p "hi" "$@" 2>&1)

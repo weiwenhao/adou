@@ -195,7 +195,6 @@ fn is_gemma4(ref<types.model_t> model): bool {
     return id.contains('gemma-4') || id.contains('gemma4')
 }
 
-#local
 fn convert_contents(ref<types.context_t> context): [any] {
     [any] result = []
     var replay = replay.tracker()
@@ -249,7 +248,6 @@ fn convert_contents(ref<types.context_t> context): [any] {
     return result
 }
 
-#local
 fn user_content(string text): any {
     {string:any} content = {}
     content['role'] = 'user'
@@ -261,7 +259,6 @@ fn user_content(string text): any {
     return content
 }
 
-#local
 fn model_content(ref<types.assistant_message_t> message): any {
     [any] parts = []
     for block in message.content {
@@ -295,7 +292,6 @@ fn model_content(ref<types.assistant_message_t> message): any {
     return content
 }
 
-#local
 fn tool_result_content(ref<types.tool_result_message_t> message): any {
     [string] lines = []
     for block in message.content {

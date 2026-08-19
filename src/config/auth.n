@@ -10,6 +10,13 @@ import os
 import path
 import syscall
 
+#linkid adou_auth_lock
+fn native_auth_lock(anyptr path): i32
+#linkid adou_auth_unlock
+fn native_auth_unlock(i32 fd): i32
+#linkid adou_auth_atomic_write
+fn native_auth_atomic_write(anyptr path, anyptr data, i32 length): i32
+
 // Pi's RuntimeCredentials overlay: non-persistent API keys win over the
 // persisted auth.json store without writing to disk.
 {string:string} runtime_api_keys = {}
@@ -33,7 +40,6 @@ import syscall
 {string:any} cached_auth_root = {}
 bool auth_cache_valid = false
 
-#local
 fn cached_root(): {string:any} {
     if !auth_cache_valid {
         reload_snapshot_from(auth_path())
@@ -56,7 +62,6 @@ pub fn reload() {
     }
 }
 
-#local
 fn invalidate_auth_cache() {
     // Deliberately does NOT clear cached_auth_root: if the re-read after a
     // self-write ever fails, the last valid snapshot must survive.
@@ -81,11 +86,32 @@ pub fn effective(string provider): string {
     if runtime_api_keys.contains(provider) {
         return runtime_api_keys[provider]
     }
-    string stored = read(provider)
-    if stored != '' {
-        return stored
+    var stored = read_credential(provider)
+    if stored is ref<api_key_credential_t> api_key {
+        return resolve_config_value.resolve_config_value(api_key.key)
+    }
+    if stored is ref<oauth_credential_t> oauth {
+        return oauth.access
+    }
+    // A canonical provider entry owns credential resolution even when its
+    // value is malformed or empty.  Never silently fall through to an env
+    // key that could make a failed login appear configured.
+    if cached_root().contains(provider) {
+        return ''
     }
     return environment(provider)
+}
+
+pub fn oauth_access(string provider): string {
+    var stored = read_credential(provider)
+    if stored is ref<oauth_credential_t> oauth {
+        return oauth.access
+    }
+    return ''
+}
+
+pub fn is_using_oauth(string provider): bool {
+    return read_credential(provider) is ref<oauth_credential_t>
 }
 
 pub fn environment(string provider): string {
@@ -107,16 +133,12 @@ pub fn read(string provider): string {
         return ''
     }
     var credential = object[provider] as {string:any}
-    if credential.contains('type') && credential['type'] is string && credential['type'] as string != 'api_key' {
+    if !credential.contains('type') || !(credential['type'] is string) || credential['type'] as string != 'api_key' {
         return ''
     }
     if credential.contains('key') && credential['key'] is string {
         string stored = credential['key'] as string
         // Pi resolves `!command` / `$ENV` templates in stored credentials.
-        return resolve_config_value.resolve_config_value(stored)
-    }
-    if credential.contains('apiKey') && credential['apiKey'] is string {
-        string stored = credential['apiKey'] as string
         return resolve_config_value.resolve_config_value(stored)
     }
     return ''
@@ -128,12 +150,21 @@ pub fn save(string provider, string key): void! {
     }
     string file_path = auth_path()
     os.mkdirs(path.dir(file_path), 0o700)
+    i32 lock_fd = acquire_lock(file_path)
     var object = read_root(file_path)
     {string:any} credential = {}
     credential['type'] = 'api_key'
     credential['key'] = key
     object[provider] = credential
-    write_file(file_path, json.serialize(object))
+    string serialized = json.serialize(object)
+    i32 write_result = native_auth_atomic_write(file_path.ref(), serialized.ref(), serialized.len() as i32)
+    i32 unlock_result = native_auth_unlock(lock_fd)
+    if write_result < 0 {
+        throw errorf('Could not atomically write auth storage')
+    }
+    if unlock_result < 0 {
+        throw errorf('Could not unlock auth storage')
+    }
     invalidate_auth_cache()
 }
 
@@ -146,19 +177,27 @@ pub fn save(string provider, string key): void! {
 // last-valid contract is unaffected (the snapshot was already updated).
 pub fn remove(string provider): void! {
     string file_path = auth_path()
-    if path_utils.exists(file_path) {
-        var object = read_root(file_path)
-        if object.contains(provider) {
-            object.del(provider)
-            write_file(file_path, json.serialize(object))
-            invalidate_auth_cache()
-            return
+    os.mkdirs(path.dir(file_path), 0o700)
+    i32 lock_fd = acquire_lock(file_path)
+    var object = read_root(file_path)
+    if object.contains(provider) {
+        object.del(provider)
+        string serialized = json.serialize(object)
+        i32 write_result = native_auth_atomic_write(file_path.ref(), serialized.ref(), serialized.len() as i32)
+        i32 unlock_result = native_auth_unlock(lock_fd)
+        if write_result < 0 {
+            throw errorf('Could not atomically write auth storage')
         }
+        if unlock_result < 0 {
+            throw errorf('Could not unlock auth storage')
+        }
+        invalidate_auth_cache()
+        return
     }
+    native_auth_unlock(lock_fd)
     remove_from_snapshot(provider)
 }
 
-#local
 fn remove_from_snapshot(string provider) {
     if cached_auth_root.contains(provider) {
         cached_auth_root.del(provider)
@@ -170,16 +209,31 @@ pub fn auth_path(): string {
     return paths.auth_path()
 }
 
-// Pi CredentialStore interface surface: one type-tagged credential per
-// provider, serialized read-modify-write via modify, and secret-free list.
-pub type credential_t = struct {
-    string credential_type
+// Pi CredentialStore interface surface: one canonical tagged credential per
+// provider.  The variants intentionally reject legacy `apiKey` and untagged
+// objects; callers must migrate them explicitly instead of silently changing
+// the credential meaning.
+pub type api_key_credential_t = struct {
+    string credential_type = 'api_key'
     string key
+}
+
+pub type oauth_credential_t = struct {
+    string credential_type = 'oauth'
     string refresh
     string access
     int expires
-    {string:string} env = {}
+    string account_id
+    string enterprise_domain
+    string base_url
+    string gateway
+    string scope
+    [string] available_model_ids = []
+    any gateway_config = null
 }
+
+pub type credential_t = ref<api_key_credential_t>|ref<oauth_credential_t>
+pub type optional_credential_t = ref<api_key_credential_t>|ref<oauth_credential_t>|null
 
 pub type credential_info_t = struct {
     string provider_id
@@ -192,8 +246,30 @@ pub type credential_info_t = struct {
 // calls; an explicit reload() is the only refresh point.  Only
 // modify_credential reads the current disk object (serialized
 // read-modify-write) and invalidates the snapshot on success.
-pub fn read_credential(string provider): ref<credential_t>? {
+pub fn read_credential(string provider): optional_credential_t {
     return credential_from_object(cached_root(), provider)
+}
+
+pub fn read_credential_env(string provider): {string:string} {
+    {string:string} result = {}
+    var object = cached_root()
+    if !object.contains(provider) || !json_util.is_obj(object[provider]) {
+        return result
+    }
+    var credential = object[provider] as {string:any}
+    string credential_type = json_util.opt_string(credential, 'type')
+    if credential_type != 'api_key' && credential_type != 'oauth' {
+        return result
+    }
+    for env_name, env_value in credential {
+        if credential_field(env_name) {
+            continue
+        }
+        if env_value is string {
+            result[env_name] = json_util.opt_string(credential, env_name)
+        }
+    }
+    return result
 }
 
 pub fn list_credentials(): [credential_info_t] {
@@ -204,88 +280,207 @@ pub fn list_credentials(): [credential_info_t] {
             continue
         }
         var credential = value as {string:any}
-        string credential_type = json_util.opt_string(credential, 'type')
-        if credential_type == '' {
-            credential_type = 'api_key'
+        if !credential.contains('type') || !(credential['type'] is string) {
+            continue
         }
-        result.push(credential_info_t {provider_id: provider_id, credential_type: credential_type})
+        string credential_type = credential['type'] as string
+        if credential_type == 'api_key' || credential_type == 'oauth' {
+            result.push(credential_info_t {provider_id: provider_id, credential_type: credential_type})
+        }
     }
     return result
 }
 
 // Build a typed credential for one provider from a parsed auth object.
-#local
-fn credential_from_object({string:any} object, string provider): ref<credential_t>? {
+fn credential_from_object({string:any} object, string provider): optional_credential_t {
     if !object.contains(provider) || !json_util.is_obj(object[provider]) {
         return null
     }
     var credential = object[provider] as {string:any}
-    string credential_type = json_util.opt_string(credential, 'type')
-    if credential_type == '' {
-        credential_type = 'api_key'
+    if !credential.contains('type') || !(credential['type'] is string) {
+        return null
     }
-    var result = new credential_t(credential_type = credential_type)
-    string key = json_util.opt_string(credential, 'key')
-    if key == '' {
-        key = json_util.opt_string(credential, 'apiKey')
-    }
-    result.key = key
-    result.refresh = json_util.opt_string(credential, 'refresh')
-    result.access = json_util.opt_string(credential, 'access')
-    result.expires = json_util.opt_int(credential, 'expires')
-    // Pi stores ambient values (e.g. CLOUDFLARE_ACCOUNT_ID) with the
-    // credential; restore them for callers that merge env into requests.
-    for env_name, env_value in credential {
-        if env_name == 'type' || env_name == 'key' || env_name == 'apiKey' || env_name == 'refresh' || env_name == 'access' || env_name == 'expires' {
-            continue
+    string credential_type = credential['type'] as string
+    if credential_type == 'api_key' {
+        if !credential.contains('key') || !(credential['key'] is string) {
+            return null
         }
-        if env_value is string {
-            string stored_value = env_value as string
-            result.env[env_name] = stored_value
-        }
+        var result = new api_key_credential_t()
+        string stored_key = json_util.opt_string(credential, 'key')
+        result.key = stored_key
+        return result
     }
-    return result
+    if credential_type == 'oauth' {
+        var result = new oauth_credential_t()
+        result.refresh = json_util.opt_string(credential, 'refresh')
+        result.access = json_util.opt_string(credential, 'access')
+        result.expires = json_util.opt_int(credential, 'expires')
+        result.account_id = json_util.opt_string(credential, 'accountId')
+        result.enterprise_domain = json_util.opt_string(credential, 'enterpriseDomain')
+        if result.enterprise_domain == '' {
+            result.enterprise_domain = json_util.opt_string(credential, 'enterpriseUrl')
+        }
+        result.base_url = json_util.opt_string(credential, 'baseUrl')
+        result.gateway = json_util.opt_string(credential, 'gateway')
+        result.scope = json_util.opt_string(credential, 'scope')
+        if credential.contains('availableModelIds') && credential['availableModelIds'] is [any] {
+            for value in credential['availableModelIds'] as [any] {
+                if value is string {
+                    result.available_model_ids.push(value as string)
+                }
+            }
+        }
+        if credential.contains('gatewayConfig') && json_util.is_obj(credential['gatewayConfig']) {
+            result.gateway_config = credential['gatewayConfig']
+        }
+        return result
+    }
+    return null
 }
 
-pub type credential_modify_fn = fn(ref<credential_t>? current): ref<credential_t>?
+// Mutation callbacks use a concrete edit record.  Nature 0.82 currently
+// miscompiles nullable reference unions when they cross a callback boundary;
+// the public read path remains the canonical api_key/oauth union while this
+// lock-held write ABI stays representationally stable.
+pub type credential_edit_t = struct {
+    string credential_type
+    string key
+    string refresh
+    string access
+    int expires
+    string account_id
+    string enterprise_domain
+    string base_url
+    string gateway
+    string scope
+    [string] available_model_ids = []
+    any gateway_config = null
+    {string:string} env = {}
+}
+
+pub type credential_modify_fn = fn(ref<credential_edit_t>? current): ref<credential_edit_t>?
 
 // Serialized read-modify-write: the only write path, like Pi's modify.  The
 // callback sees the CURRENT DISK credential (never the possibly stale
 // snapshot); a successful write invalidates the snapshot so subsequent
 // reads see the new state.
-pub fn modify_credential(string provider, credential_modify_fn modify_fn): ref<credential_t>?! {
-    var current = credential_from_object(read_root(auth_path()), provider)
-    var next = modify_fn(current)
-    if next is ref<credential_t> replacement {
-        string file_path = auth_path()
-        os.mkdirs(path.dir(file_path), 0o700)
-        var object = read_root(file_path)
-        {string:any} credential = {}
-        credential['type'] = replacement.credential_type
-        if replacement.key != '' {
-            credential['key'] = replacement.key
-        }
-        if replacement.refresh != '' {
-            credential['refresh'] = replacement.refresh
-        }
-        if replacement.access != '' {
-            credential['access'] = replacement.access
-        }
-        if replacement.expires > 0 {
-            credential['expires'] = replacement.expires
-        }
-        for name, value in replacement.env {
-            credential[name] = value
-        }
-        object[provider] = credential
-        write_file(file_path, json.serialize(object))
-        invalidate_auth_cache()
-        return replacement
+pub fn modify_credential(string provider, credential_modify_fn modify_fn): void! {
+    string file_path = auth_path()
+    os.mkdirs(path.dir(file_path), 0o700)
+    i32 lock_fd = acquire_lock(file_path)
+    var current = credential_edit_from_object(read_root(file_path), provider)
+    var next = modify_fn(current) catch error {
+        native_auth_unlock(lock_fd)
+        throw error
     }
-    return current
+    if next is ref<credential_edit_t> replacement {
+        persist_edit_locked(file_path, provider, replacement, lock_fd)
+        return
+    }
+    native_auth_unlock(lock_fd)
 }
 
-#local
+fn persist_object_locked(string file_path, string provider, {string:any} credential, i32 lock_fd): void! {
+    var object = read_root(file_path)
+    object[provider] = credential
+    string serialized = json.serialize(object)
+    i32 write_result = native_auth_atomic_write(file_path.ref(), serialized.ref(), serialized.len() as i32)
+    i32 unlock_result = native_auth_unlock(lock_fd)
+    if write_result < 0 {
+        throw errorf('Could not atomically write auth storage')
+    }
+    if unlock_result < 0 {
+        throw errorf('Could not unlock auth storage')
+    }
+    invalidate_auth_cache()
+}
+
+fn persist_edit_locked(string file_path, string provider, ref<credential_edit_t> credential, i32 lock_fd): void! {
+    {string:any} object = {}
+    object['type'] = credential.credential_type
+    if credential.credential_type == 'api_key' {
+        object['key'] = credential.key
+    } else if credential.credential_type == 'oauth' {
+        object['refresh'] = credential.refresh
+        object['access'] = credential.access
+        object['expires'] = credential.expires
+        if credential.account_id != '' {object['accountId'] = credential.account_id}
+        if credential.enterprise_domain != '' {object['enterpriseDomain'] = credential.enterprise_domain}
+        if credential.base_url != '' {object['baseUrl'] = credential.base_url}
+        if credential.gateway != '' {object['gateway'] = credential.gateway}
+        if credential.scope != '' {object['scope'] = credential.scope}
+        if credential.available_model_ids.len() > 0 {object['availableModelIds'] = credential.available_model_ids}
+        if json_util.is_obj(credential.gateway_config) {object['gatewayConfig'] = credential.gateway_config}
+    }
+    for name, value in credential.env {
+        object[name] = value
+    }
+    persist_object_locked(file_path, provider, object, lock_fd)
+}
+
+fn credential_edit_from_object({string:any} object, string provider): ref<credential_edit_t>? {
+    if !object.contains(provider) || !json_util.is_obj(object[provider]) {
+        return null
+    }
+    var credential = object[provider] as {string:any}
+    if !credential.contains('type') || !(credential['type'] is string) {
+        return null
+    }
+    string credential_type = credential['type'] as string
+    if credential_type != 'api_key' && credential_type != 'oauth' {
+        return null
+    }
+    var result = new credential_edit_t(credential_type = credential_type)
+    result.key = json_util.opt_string(credential, 'key')
+    result.refresh = json_util.opt_string(credential, 'refresh')
+    result.access = json_util.opt_string(credential, 'access')
+    result.expires = json_util.opt_int(credential, 'expires')
+    result.account_id = json_util.opt_string(credential, 'accountId')
+    result.enterprise_domain = json_util.opt_string(credential, 'enterpriseDomain')
+    if result.enterprise_domain == '' {
+        result.enterprise_domain = json_util.opt_string(credential, 'enterpriseUrl')
+    }
+    result.base_url = json_util.opt_string(credential, 'baseUrl')
+    result.gateway = json_util.opt_string(credential, 'gateway')
+    result.scope = json_util.opt_string(credential, 'scope')
+    if credential.contains('availableModelIds') && credential['availableModelIds'] is [any] {
+        for value in credential['availableModelIds'] as [any] {
+            if value is string {result.available_model_ids.push(value as string)}
+        }
+    }
+    if credential.contains('gatewayConfig') && json_util.is_obj(credential['gatewayConfig']) {
+        result.gateway_config = credential['gatewayConfig']
+    }
+    {string:string} env = {}
+    restore_env(env, credential)
+    result.env = env
+    return result
+}
+
+fn restore_env({string:string} env, {string:any} credential) {
+    for env_name, env_value in credential {
+        if credential_field(env_name) {
+            continue
+        }
+        if env_value is string {
+            env[env_name] = json_util.opt_string(credential, env_name)
+        }
+    }
+}
+
+pub fn credential_field(string name): bool {
+    return name == 'type' || name == 'key' || name == 'refresh' || name == 'access' || name == 'expires' || name == 'accountId' || name == 'enterpriseDomain' || name == 'enterpriseUrl' || name == 'baseUrl' || name == 'gateway' || name == 'scope' || name == 'availableModelIds' || name == 'gatewayConfig'
+}
+
+fn acquire_lock(string file_path): i32! {
+    string lock_path = file_path + '.lock'
+    i32 fd = native_auth_lock(lock_path.ref())
+    if fd < 0 {
+        throw errorf('Could not lock auth storage')
+    }
+    return fd
+}
+
 fn read_root(string file_path): {string:any} {
     // Plain object read for the save/remove/modify read-modify-write paths;
     // returns the parsed object or an empty map.  Never uses map-in-tuple.
@@ -319,7 +514,6 @@ fn read_root(string file_path): {string:any} {
 // snapshot with an empty map and reports success; unreadable/corrupt JSON
 // or a top-level non-object leaves cached_auth_root untouched and reports
 // failure so the last valid snapshot survives.
-#local
 fn reload_snapshot_from(string file_path): bool {
     if !path_utils.exists(file_path) {
         {string:any} empty = {}
@@ -345,11 +539,9 @@ fn reload_snapshot_from(string file_path): bool {
 }
 
 pub fn write_file(string file_path, string content): void! {
-    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
-    int written = output.write(content as [u8])
-    output.close()
-    if written != content.len() {
-        throw errorf('Could not write auth storage')
+    os.mkdirs(path.dir(file_path), 0o700)
+    i32 result = native_auth_atomic_write(file_path.ref(), content.ref(), content.len() as i32)
+    if result < 0 {
+        throw errorf('Could not atomically write auth storage')
     }
 }
-

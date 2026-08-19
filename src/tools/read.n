@@ -3,7 +3,9 @@ import adou.src.json_util
 import adou.src.tools.path_utils
 import adou.src.tools.truncate
 import adou.src.tools.types as tool_types
+import adou.src.ai.types
 import adou.src.unicode.utf8
+import base64
 import fmt
 import fs
 import json
@@ -31,7 +33,9 @@ pub fn execute(string cwd, string input_path, bool has_offset, float offset, boo
         if mime == 'image/bmp' {
             return tool_types.text_result('Read image file [image/bmp]\n[Image omitted: configure an imageProcessor to convert BMP images.]')
         }
-        return tool_types.text_result('Read image file [' + mime + ']')
+        var result = tool_types.text_result('Read image file [' + mime + ']')
+        result.images.push(new types.image_attachment_t(mime_type = mime, data = base64.encode(raw as [u8]) as string))
+        return result
     }
     string content = utf8.replacement_decode(raw as [u8])
     [string] all_lines = truncate.split_all_lines(content)
@@ -95,12 +99,10 @@ pub fn execute(string cwd, string input_path, bool has_offset, float offset, boo
     return result
 }
 
-#local
 fn to_integer(float value): int {
     return value as int
 }
 
-#local
 fn slice_index(float value, int length): int {
     int result = to_integer(value)
     if result < 0 {
@@ -115,7 +117,6 @@ fn slice_index(float value, int length): int {
     return result
 }
 
-#local
 fn js_number(float value): string {
     int integer = value as int
     if integer as float == value {
@@ -147,7 +148,6 @@ pub fn truncation_details(truncate.result_t value): any! {
     return details
 }
 
-#local
 fn image_mime([u8] data): string {
     if starts(data, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) {
         return 'image/png'

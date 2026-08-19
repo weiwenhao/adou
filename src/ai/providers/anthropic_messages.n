@@ -261,7 +261,6 @@ pub fn update_event(string event_type, int content_index, string delta, string c
     return types.assistant_event_t {kind: event_type, content_index: content_index, delta: delta, content: content, partial: partial,}
 }
 
-#local
 fn is_message_event(string event): bool {
     return event == 'message_start' || event == 'message_delta' || event == 'message_stop' || event == 'content_block_start' || event == 'content_block_delta' || event == 'content_block_stop'
 }

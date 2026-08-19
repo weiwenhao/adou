@@ -1,0 +1,11 @@
+import adou.src.ai.types
+import adou.src.sdk
+
+test 'Nature SDK creates an in-memory runner with explicit model and prompt surface' {
+    var model = new types.model_t(id = 'sdk-model', name = 'SDK model', api = 'test-api', provider = 'test-provider', base_url = 'https://example.invalid', context_window = 1000, max_tokens = 100)
+    var session = sdk.create(sdk.options_t {cwd: '/tmp', model: model, api_key: 'test-key', system_prompt: 'system'})
+    assert(session.repository.persisted == false)
+    assert(session.runner.agent_config.model.id == 'sdk-model')
+    assert(session.runner.agent_config.stream_options.api_key == 'test-key')
+    assert(session.messages().len() == 0)
+}

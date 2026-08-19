@@ -28,11 +28,12 @@ pub fn base_models(): [ref<types.model_t>] {
 test 'loads providers from a models.json file like Pi' {
     string dir = path.join('/tmp', 'adou-models-json-' + suffix())
     string file_path = path.join(dir, 'models.json')
-    write_file(file_path, '{"providers":{"custom":{"baseUrl":"https://gateway.example.com","headers":{"X-Custom":"yes"},"models":[{"id":"extra","name":"Extra","reasoning":true,"cost":{"input":1.0,"output":2.0},"contextWindow":64000,"maxTokens":8192}]}}}')
+    write_file(file_path, '{"providers":{"custom":{"baseUrl":"https://gateway.example.com","headers":{"X-Custom":"yes"},"oauth":"radius","models":[{"id":"extra","name":"Extra","reasoning":true,"cost":{"input":1.0,"output":2.0},"contextWindow":64000,"maxTokens":8192}]}}}')
     var providers = models_json.load_models_json(file_path)
     assert(providers.contains('custom'))
     var provider = providers['custom']
     assert(provider.base_url == 'https://gateway.example.com')
+    assert(provider.oauth == 'radius')
     string custom = provider.headers['X-Custom'] catch error {'missing'}
     println('DEBUG custom header=', custom)
     assert(custom == 'yes')
@@ -125,7 +126,7 @@ fn suffix(): string {
 
 test 'config models.all() composes models.json over the built-in catalog' {
     string dir = path.join('/tmp', 'adou-models-json-wiring-' + suffix())
-    syscall.set_env('PI_CODING_AGENT_DIR', dir)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', dir)
     os.mkdirs(dir, 0o700)
     write_file(path.join(dir, 'models.json'), '{"providers":{"custom":{"baseUrl":"https://gateway.example.com","models":[{"id":"wired-extra","api":"openai-completions","baseUrl":"https://custom.example.com"}]},"deepseek":{"modelOverrides":{"deepseek-v4-flash":{"contextWindow":777777}}}}}')
     [ref<types.model_t>] catalog = config_models.all()
@@ -142,5 +143,5 @@ test 'config models.all() composes models.json over the built-in catalog' {
     if overridden is ref<types.model_t> selected {
         assert(selected.context_window == 777777)
     }
-    syscall.set_env('PI_CODING_AGENT_DIR', '')
+    syscall.set_env('ADOU_CODING_AGENT_DIR', '')
 }

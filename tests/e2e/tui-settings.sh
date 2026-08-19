@@ -31,10 +31,28 @@ agent = os.path.join(root, "agent")
 env = os.environ.copy()
 env.update(
     {
-        "PI_CODING_AGENT_DIR": agent,
-        "PI_CODING_AGENT_SESSION_DIR": os.path.join(root, "sessions"),
+        "ADOU_CODING_AGENT_DIR": agent,
+        "ADOU_SESSION_DIR": os.path.join(root, "sessions"),
     }
 )
+# This PTY is intercepted by the test process, so it cannot display terminal
+# image protocols even when the parent shell is running in Ghostty/Kitty.
+# Clear inherited emulator identity to make the unavailable-state assertion
+# independent of the developer's terminal.
+for key in (
+    "TERM_PROGRAM",
+    "TERMINAL_EMULATOR",
+    "GHOSTTY_RESOURCES_DIR",
+    "KITTY_WINDOW_ID",
+    "WEZTERM_PANE",
+    "WARP_SESSION_ID",
+    "WARP_TERMINAL_SESSION_UUID",
+    "ITERM_SESSION_ID",
+    "WT_SESSION",
+    "TMUX",
+):
+    env.pop(key, None)
+env["TERM"] = "xterm-256color"
 
 os.makedirs(agent, exist_ok=True)
 open(os.path.join(agent, ".adou-setup"), "w").close()

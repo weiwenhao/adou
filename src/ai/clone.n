@@ -31,7 +31,11 @@ pub fn message(types.message_t source): types.message_t {
         for item in tool.content {
             content.push(new types.text_content_t(text = item.text, text_signature = item.text_signature))
         }
-        types.message_t result = new types.tool_result_message_t(role = tool.role, tool_call_id = tool.tool_call_id, tool_name = tool.tool_name, content = content, details = tool.details, usage = tool.usage, added_tool_names = tool.added_tool_names, is_error = tool.is_error, timestamp = tool.timestamp)
+        [ref<types.image_attachment_t>] images = []
+        for image in tool.images {
+            images.push(new types.image_attachment_t(mime_type = image.mime_type, data = image.data))
+        }
+        types.message_t result = new types.tool_result_message_t(role = tool.role, tool_call_id = tool.tool_call_id, tool_name = tool.tool_name, content = content, images = images, details = tool.details, usage = tool.usage, added_tool_names = tool.added_tool_names, is_error = tool.is_error, timestamp = tool.timestamp)
         return result
     }
     if source is ref<types.compaction_summary_message_t> summary {

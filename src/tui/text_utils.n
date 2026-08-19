@@ -227,7 +227,6 @@ pub fn wrap_text_with_ansi(string text, int width): [string]! {
     return result.len() > 0 ? result : ['']
 }
 
-#local
 fn fragment_to_width(string text, int maximum): slice_t! {
     if maximum <= 0 || text == '' {
         return slice_t{}
@@ -275,7 +274,6 @@ fn fragment_to_width(string text, int maximum): slice_t! {
     return slice_t {text: result, width: width,}
 }
 
-#local
 fn wrap_single_line(string line, int width): [string]! {
     if line == '' {
         return ['']
@@ -343,7 +341,6 @@ fn wrap_single_line(string line, int width): [string]! {
     return result
 }
 
-#local
 fn break_plain_word(string word, int width): [string]! {
     if is_ascii_text(word) {
         [string] lines = vec<string>.cap_of((word.len() + width - 1) / width)
@@ -378,7 +375,6 @@ fn break_plain_word(string word, int width): [string]! {
     return lines.len() > 0 ? lines : ['']
 }
 
-#local
 fn split_tokens(string text): [string]! {
     if text.find('\x1b') < 0 && text.find('\t') < 0 {
         return split_plain_tokens(text)
@@ -430,7 +426,6 @@ fn split_tokens(string text): [string]! {
     return tokens
 }
 
-#local
 fn split_plain_tokens(string text): [string]! {
     if is_ascii_text(text) {
         return split_ascii_tokens(text)
@@ -466,7 +461,6 @@ fn split_plain_tokens(string text): [string]! {
     return tokens
 }
 
-#local
 fn split_ascii_tokens(string text): [string]! {
     [string] tokens = vec<string>.cap_of(16)
     int start = -1
@@ -491,7 +485,6 @@ fn split_ascii_tokens(string text): [string]! {
     return tokens
 }
 
-#local
 fn break_long_word(string word, int width, string sgr_history, bool underline, string hyperlink, string hyperlink_terminator): [string]! {
     if is_ascii_text(word) {
         return break_ascii_ansi_word(word, width, sgr_history, underline, hyperlink, hyperlink_terminator)
@@ -532,7 +525,6 @@ fn break_long_word(string word, int width, string sgr_history, bool underline, s
     return lines.len() > 0 ? lines : ['']
 }
 
-#local
 fn break_ascii_ansi_word(string word, int width, string sgr_history, bool underline, string hyperlink, string hyperlink_terminator): [string]! {
     [string] lines = vec<string>.cap_of(8)
     var tracker = new tracker_t(sgr_history = sgr_history, underline = underline, hyperlink = hyperlink, hyperlink_terminator = hyperlink_terminator)
@@ -580,7 +572,6 @@ fn break_ascii_ansi_word(string word, int width, string sgr_history, bool underl
     return lines.len() > 0 ? lines : ['']
 }
 
-#local
 fn ascii_visible_length(string text): int {
     int visible = 0
     int cursor = 0
@@ -597,7 +588,6 @@ fn ascii_visible_length(string text): int {
     return visible
 }
 
-#local
 fn is_ascii_text(string text): bool {
     for int cursor = 0; cursor < text.len(); cursor += 1 {
         if text[cursor] >= 0x80 {
@@ -682,7 +672,6 @@ pub fn split_lines(string text): [string] {
     return result
 }
 
-#local
 fn next_ansi_or_end(string text, int start): int {
     int cursor = start
     for cursor < text.len() {
@@ -694,7 +683,6 @@ fn next_ansi_or_end(string text, int start): int {
     return cursor
 }
 
-#local
 fn next_ansi_or_tab_or_end(string text, int start): int {
     int cursor = start
     for cursor < text.len() {
@@ -706,7 +694,6 @@ fn next_ansi_or_tab_or_end(string text, int start): int {
     return cursor
 }
 
-#local
 fn visible_text_is_spaces(string text): bool {
     int cursor = 0
     bool saw = false
@@ -725,7 +712,6 @@ fn visible_text_is_spaces(string text): bool {
     return saw
 }
 
-#local
 fn trim_spaces_end(string text): string {
     int end = text.len()
     for end > 0 && (text[end - 1] == ' '.char() || text[end - 1] == '\t'.char()) {
@@ -742,7 +728,6 @@ pub fn spaces(int count): string {
     return result
 }
 
-#local
 fn parse_sgr_value(string value): int {
     if value == '' {
         return 0

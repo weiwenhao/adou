@@ -128,8 +128,24 @@ pub fn processor_t.feed(&self, sse.event_t frame): [types.assistant_event_t]! {
         self.saw_terminal = true
         throw errorf('%s', failed_message((root as {string:any})['response']))
     } else if event_type == 'error' {
-        string code = optional_string(root, 'code', 'unknown')
-        string message = optional_string(root, 'message', 'Unknown error')
+        var object = root as {string:any}
+        string code = optional_string(root, 'code', '')
+        string message = optional_string(root, 'message', '')
+        if object.contains('error') && json_util.is_obj(object['error']) {
+            var nested = object['error'] as {string:any}
+            if code == '' {
+                code = optional_string(nested, 'code', '')
+            }
+            if message == '' {
+                message = optional_string(nested, 'message', '')
+            }
+        }
+        if code == '' {
+            code = 'unknown'
+        }
+        if message == '' {
+            message = 'Unknown error'
+        }
         throw errorf('Error Code %s: %s', code, message)
     }
     return events
@@ -343,7 +359,6 @@ pub fn optional_int(any value, string key, int fallback): int! {
     }
     return (object[key] as f64) as int
 }
-#local
 fn joined_part_text(any item, string key): string! {
     var object = item as {string:any}
     if !object.contains(key) || json_util.is_null(object[key]) {
@@ -355,7 +370,6 @@ fn joined_part_text(any item, string key): string! {
     }
     return strings.join(parts, '\n\n')
 }
-#local
 fn message_text(any item): string! {
     var object = item as {string:any}
     if !object.contains('content') || json_util.is_null(object['content']) {
@@ -372,7 +386,6 @@ fn message_text(any item): string! {
     }
     return result as string
 }
-#local
 fn encode_text_signature(string id, string phase): string! {
     string encoded_id = json.serialize(id)
     if phase == 'commentary' || phase == 'final_answer' {
@@ -381,7 +394,6 @@ fn encode_text_signature(string id, string phase): string! {
     }
     return '{"v":1,"id":' + encoded_id + '}'
 }
-#local
 fn failed_message(any response): string! {
     var object = response as {string:any}
     if object.contains('error') && !json_util.is_null(object['error']) {

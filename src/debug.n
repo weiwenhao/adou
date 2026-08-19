@@ -181,7 +181,7 @@ pub fn write_debug_file(string content): string! {
 }
 
 pub fn log_redraw(string reason, int previous_lines, int new_lines, int height) {
-    if syscall.get_env('PI_DEBUG_REDRAW') != '1' {
+    if syscall.get_env('ADOU_DEBUG_REDRAW') != '1' {
         return
     }
     string line = fmt.sprintf('[%s] fullRender: %s (prev=%d, new=%d, height=%d)\n', timestamp(), reason, previous_lines, new_lines, height)
@@ -189,7 +189,7 @@ pub fn log_redraw(string reason, int previous_lines, int new_lines, int height) 
 }
 
 pub fn log_terminal_output(string output) {
-    string configured = syscall.get_env('PI_TUI_WRITE_LOG')
+    string configured = syscall.get_env('ADOU_TUI_WRITE_LOG')
     if configured == '' {
         terminal_log_configured = ''
         terminal_log_target = ''
@@ -203,7 +203,7 @@ pub fn log_terminal_output(string output) {
 }
 
 pub fn log_tui_frame(string content) {
-    if syscall.get_env('PI_TUI_DEBUG') != '1' {
+    if syscall.get_env('ADOU_TUI_DEBUG') != '1' {
         return
     }
     string directory = '/tmp/tui'
@@ -215,7 +215,7 @@ pub fn log_tui_frame(string content) {
 }
 
 pub fn tui_frame_debug_enabled(): bool {
-    return syscall.get_env('PI_TUI_DEBUG') == '1'
+    return syscall.get_env('ADOU_TUI_DEBUG') == '1'
 }
 
 // B1-R5-01 terminal I/O diagnostic: explicitly enabled via
@@ -251,7 +251,6 @@ pub fn write_crash_file(string content): string! {
     return target
 }
 
-#local
 fn resolve_terminal_log_target(string configured): string {
     // Pi accepts either a file path or an existing directory here.  A failed
     // stat means the value is treated as a file path, which also lets the

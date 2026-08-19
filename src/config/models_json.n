@@ -15,6 +15,7 @@ pub type models_json_provider_t = struct {
     string base_url
     string api_key
     string api
+    string oauth
     {string:string} headers = {}
     bool auth_header
     {string:any} models = {}
@@ -55,6 +56,7 @@ pub fn load_models_json(string file_path): {string:models_json_provider_t} {
         provider.base_url = json_util.opt_string(object, 'baseUrl')
         provider.api_key = json_util.opt_string(object, 'apiKey')
         provider.api = json_util.opt_string(object, 'api')
+        provider.oauth = json_util.opt_string(object, 'oauth')
         provider.auth_header = json_util.opt_bool(object, 'authHeader')
         var headers = json_util.opt_obj(object, 'headers')
         for name, header_value in headers {
@@ -91,7 +93,7 @@ pub fn load_models_json(string file_path): {string:models_json_provider_t} {
 // Compose a provider's catalog with its models.json configuration.  Throws
 // the same validation errors as Pi (missing api/baseUrl, empty config).
 pub fn compose_provider_models(string provider_id, [ref<types.model_t>] base_models, ref<models_json_provider_t> config): [ref<types.model_t>]! {
-    if config.name == '' && config.base_url == '' && config.headers.len() == 0 && config.models.len() == 0 && config.model_overrides.len() == 0 && config.api_key == '' && !config.auth_header {
+    if config.name == '' && config.base_url == '' && config.headers.len() == 0 && config.models.len() == 0 && config.model_overrides.len() == 0 && config.api_key == '' && config.oauth == '' && !config.auth_header {
         throw errorf('Provider %s: must specify "baseUrl", "headers", "compat", "modelOverrides", or "models".', provider_id)
     }
     [ref<types.model_t>] models = []

@@ -3,10 +3,10 @@ import syscall
 
 // Port of vendors/pi/packages/coding-agent/src/core/telemetry.ts and
 // provider-attribution.ts.  Attribution headers are gated behind install
-// telemetry, which the PI_TELEMETRY env var enables explicitly.
+// telemetry, which the ADOU_TELEMETRY env var enables explicitly.
 
 pub fn is_install_telemetry_enabled(): bool {
-    string value = syscall.get_env('PI_TELEMETRY')
+    string value = syscall.get_env('ADOU_TELEMETRY')
     if value == '' {
         return false
     }

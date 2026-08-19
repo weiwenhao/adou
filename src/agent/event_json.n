@@ -85,7 +85,6 @@ pub fn encode(session_stream.event_t event): string! {
     return json.serialize(object)
 }
 
-#local
 fn add_agent_fields({string:any} object, agent_types.agent_event_t event): {string:any}! {
     if event.kind == agent_types.EVENT_AGENT_END {
         object['messages'] = encode_messages(event.messages)
@@ -123,7 +122,6 @@ fn add_agent_fields({string:any} object, agent_types.agent_event_t event): {stri
     return object
 }
 
-#local
 fn encode_messages([ai_types.message_t] messages): any! {
     [any] values = []
     for message in messages {
@@ -132,7 +130,6 @@ fn encode_messages([ai_types.message_t] messages): any! {
     return values
 }
 
-#local
 fn encode_tool_messages([ref<ai_types.tool_result_message_t>] messages): any! {
     [any] values = []
     for message in messages {
@@ -141,7 +138,6 @@ fn encode_tool_messages([ref<ai_types.tool_result_message_t>] messages): any! {
     return values
 }
 
-#local
 fn encode_string_array([string] values): any! {
     [any] encoded = []
     for value in values {
@@ -165,7 +161,6 @@ pub fn encode_tool_result(tool_types.tool_result_t result): any! {
     return object
 }
 
-#local
 fn encode_compaction_result(session_stream.event_t event): any! {
     {string:any} object = {}
     object['summary'] = event.summary
@@ -197,7 +192,6 @@ pub fn has_usage(ai_types.usage_t usage): bool {
     return usage.input != 0 || usage.output != 0 || usage.cache_read != 0 || usage.cache_write != 0 || usage.cache_write_1h != 0 || usage.reasoning != 0 || usage.total_tokens != 0
 }
 
-#local
 fn encode_assistant_event(ai_types.assistant_event_t event): any! {
     {string:any} object = {}
     object['type'] = event.kind
@@ -223,7 +217,6 @@ fn encode_assistant_event(ai_types.assistant_event_t event): any! {
     return object
 }
 
-#local
 fn tool_output(tool_types.tool_result_t tool_result): string {
     string result = ''
     for block in tool_result.content {

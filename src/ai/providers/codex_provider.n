@@ -72,7 +72,6 @@ pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.
     return result
 }
 
-#local
 fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
     debug.log('provider', 'codex stream start model=' + model.id)
     var processor = openai_responses.processor(model, time.now().ms_timestamp())
@@ -83,7 +82,6 @@ fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, re
     }
 }
 
-#local
 fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
     if stream.is_aborted() {
         throw errorf('Operation aborted')
@@ -124,7 +122,6 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     run_sse(stream, state)
 }
 
-#local
 fn run_sse(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
     var current = send_with_retry(state, 0)
     debug.log('provider', 'codex response status=' + fmt.sprintf('%d', current.status))
@@ -171,7 +168,6 @@ fn run_sse(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state):
 // try_websocket runs the WebSocket path and reports whether it completed.
 // Transport failures before the first event fall back to SSE; failures after
 // the stream started (or in forced 'websocket' transports) propagate.
-#local
 fn try_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): bool! {
     run_websocket(stream, state) catch error {
         debug.log('provider', 'codex websocket attempt failed: ' + error.msg())
@@ -188,7 +184,6 @@ fn try_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     return true
 }
 
-#local
 fn record_websocket_fallback(ref<run_state_t> state) {
     string session_key = codex_session_key(state)
     if session_key != '' {
@@ -197,7 +192,6 @@ fn record_websocket_fallback(ref<run_state_t> state) {
     websocket_fallbacks += 1
 }
 
-#local
 fn codex_session_key(ref<run_state_t> state): string {
     if state.options.session_id == '' {
         return ''
@@ -205,7 +199,6 @@ fn codex_session_key(ref<run_state_t> state): string {
     return clamp_key(state.options.session_id)
 }
 
-#local
 fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
     if stream.is_aborted() {
         throw errorf('Request aborted')
@@ -275,7 +268,6 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
 
 // Pi's mapCodexEvents treats response.done as response.completed; the
 // Responses processor only knows the latter spelling.
-#local
 fn normalize_ws_event(string text): string! {
     var root = json_util.parse(text) catch error {
         throw errorf('Invalid Codex WebSocket JSON: %s', error.msg())
@@ -291,7 +283,6 @@ fn normalize_ws_event(string text): string! {
     return text
 }
 
-#local
 fn websocket_headers(ref<run_state_t> state): {string:string} {
     // Pi: x-client-request-id and session-id carry the codex session id when
     // present, otherwise a fresh uuid (websocketRequestId).
@@ -311,7 +302,6 @@ fn websocket_headers(ref<run_state_t> state): {string:string} {
     return headers
 }
 
-#local
 fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response_t>! {
     var stream = state.stream
     if stream.is_aborted() {
@@ -351,7 +341,6 @@ fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response
     return send_with_retry(state, retry_index + 1)
 }
 
-#local
 fn send_once(ref<run_state_t> state): ref<client.response_t>! {
     debug.log('provider', 'codex sending request')
     var request = client.new().post(codex_messages.endpoint(state.model)).timeout(state.options.timeout_ms).header('Authorization', 'Bearer ' + state.options.api_key).header('chatgpt-account-id', state.account_id).header('originator', 'pi').header('OpenAI-Beta', 'responses=experimental').header('Content-Type', 'application/json').header('Accept', 'text/event-stream').content(state.body)
@@ -363,7 +352,6 @@ fn send_once(ref<run_state_t> state): ref<client.response_t>! {
     return request.send()
 }
 
-#local
 fn clamp_key(string value): string {
     if value.len() > 64 {
         return value.slice(0, 64)
@@ -371,7 +359,6 @@ fn clamp_key(string value): string {
     return value
 }
 
-#local
 fn response_headers(ref<client.response_t> response): [provider_retry.header_t] {
     [provider_retry.header_t] result = []
     for name, value in response.headers {
@@ -380,7 +367,6 @@ fn response_headers(ref<client.response_t> response): [provider_retry.header_t] 
     return result
 }
 
-#local
 fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
     debug.log('provider', 'codex terminal failure: ' + message)
     if state.ws_conn is ref<codex_websocket.conn_t> ws_conn {
@@ -394,7 +380,6 @@ fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, str
     stream.end() catch error {}
 }
 
-#local
 fn read_error_body(ref<client.response_t> response): string! {
     [u8] result = []
     [u8] scratch = vec<u8>.new(0, 4096)
@@ -415,7 +400,6 @@ fn read_error_body(ref<client.response_t> response): string! {
     return result as string
 }
 
-#local
 fn clear_streaming_scratch(ref<types.assistant_message_t> message) {
     for block in message.content {
         if block is ref<types.tool_call_t> tool_call {

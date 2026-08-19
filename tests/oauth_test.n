@@ -1,0 +1,82 @@
+import adou.src.config.oauth
+import adou.src.config.paths
+import os
+import path
+import syscall
+
+test 'OAuth provider metadata exposes canonical account capabilities' {
+    assert(oauth.supports('anthropic'))
+    assert(oauth.supports('openai-codex'))
+    assert(oauth.supports('github-copilot'))
+    assert(oauth.supports('openrouter'))
+    assert(oauth.supports('kimi-coding'))
+    assert(oauth.supports('xai'))
+    assert(oauth.supports('radius'))
+    assert(!oauth.supports('deepseek'))
+    assert(oauth.config('openai-codex').client_id == 'app_EMoamEEZ73f0CkXaXp7hrann')
+}
+
+test 'PKCE challenge and authorize URL are deterministic and URL encoded' {
+    string challenge = oauth.challenge('verifier-value')
+    assert(challenge == 'GPXfFfmq30W8w5PWMLNtzZR2q9pxnxZ4FkY2A8xIsF4')
+    string url = oauth.authorize_url('openai-codex', 'state with space', challenge)
+    assert(url.contains('client_id=app_EMoamEEZ73f0CkXaXp7hrann'))
+    assert(url.contains('state=state+with+space'))
+    assert(url.contains('code_challenge_method=S256'))
+}
+
+test 'verifier generates URL-safe entropy without padding' {
+    string value = oauth.verifier()
+    assert(value != '')
+    assert(!value.contains('+') && !value.contains('/') && !value.contains('='))
+}
+
+test 'device-code providers expose RFC 8628 endpoints while browser providers stay PKCE' {
+    assert(oauth.is_device_flow('github-copilot'))
+    assert(oauth.is_device_flow('kimi-coding'))
+    assert(oauth.is_device_flow('xai'))
+    assert(!oauth.is_device_flow('anthropic'))
+    assert(oauth.config('github-copilot').device_code_url.contains('/login/device/code'))
+    assert(oauth.config('xai').device_token_url.contains('/oauth2/token'))
+}
+
+test 'provider-specific OAuth contracts preserve redirect, scope, and method rules' {
+    var anthropic = oauth.config('anthropic')
+    assert(anthropic.redirect_uri == 'http://localhost:53692/callback')
+    assert(anthropic.scope.contains('user:inference'))
+    assert(oauth.login_methods('anthropic').len() == 1)
+    assert(oauth.login_methods('openai-codex').len() == 2)
+    assert(oauth.login_methods('radius').len() == 2)
+    var copilot = oauth.github_config('github.com')
+    assert(copilot.device_code_url.contains('/login/device/code'))
+    assert(copilot.device_token_url.contains('/login/oauth/access_token'))
+    string openrouter = oauth.authorize_url('openrouter', 'state', 'challenge')
+    assert(openrouter.contains('callback_url='))
+    assert(openrouter.contains('code_challenge_method=S256'))
+    string xai = oauth.authorize_url('xai', 'state', 'challenge')
+    assert(xai.contains('referrer=pi') || xai.contains('response_type=code'))
+}
+
+test 'token response parser carries account and gateway metadata' {
+    {string:any} body = {}
+    body['access_token'] = 'access'
+    body['refresh_token'] = 'refresh'
+    body['expires_in'] = 3600
+    body['account_id'] = 'acct'
+    var parsed = oauth.parse_token_response('openai-codex', oauth.http_json_t {status: 200, body: body}, '', '')
+    assert(parsed.access == 'access')
+    assert(parsed.refresh == 'refresh')
+    assert(parsed.gateway == '')
+    assert(parsed.expires > 0)
+}
+
+test 'callback parser accepts raw codes and validates redirect state' {
+    assert(oauth.authorization_code('raw-code', 'state') == 'raw-code')
+    assert(oauth.authorization_code('http://localhost/callback?code=abc%2B123&state=state', 'state') == 'abc+123')
+    assert(oauth.authorization_code('http://localhost/callback#code=fragment-code&state=state', 'state') == 'fragment-code')
+    bool rejected = false
+    oauth.authorization_code('http://localhost/callback?code=abc&state=wrong', 'state') catch error {
+        rejected = true
+    }
+    assert(rejected)
+}

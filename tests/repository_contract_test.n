@@ -15,19 +15,16 @@ import fmt
 // errors, full fork, fork before/at, parent lineage, entry order and JSONL
 // reopen persistence.
 
-#local
 fn user_message(string text): ai_types.message_t {
     return new ai_types.user_message_t(content = text)
 }
 
-#local
 fn fixture_cwd(): string {
     return syscall.getcwd() catch error {
         '/tmp'
     }
 }
 
-#local
 fn fork_before_throws(ref<repository.manager_t> manager, string entry_id): bool {
     manager.fork_before(entry_id) catch error {
         return true
@@ -35,7 +32,6 @@ fn fork_before_throws(ref<repository.manager_t> manager, string entry_id): bool 
     return false
 }
 
-#local
 fn fork_to_throws(ref<repository.manager_t> manager, string cwd, string dir, string id): bool {
     manager.fork_to(cwd, dir, id) catch error {
         return true
@@ -43,7 +39,6 @@ fn fork_to_throws(ref<repository.manager_t> manager, string cwd, string dir, str
     return false
 }
 
-#local
 fn backend_fork_throws(backend.backend_t b, string id): bool {
     backend.fork_to(b, id) catch error {
         return true
@@ -160,7 +155,6 @@ fn run_contract_suite(backend.backend_t backend_ref, bool persisted): void! {
     }
 }
 
-#local
 fn temp_dir(string tag): string {
     return path.join('/tmp', 'adou-contract-' + tag + '-' + fmt.sprintf('%d', time.now().ms_timestamp()))
 }

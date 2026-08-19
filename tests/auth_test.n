@@ -108,3 +108,21 @@ test 'B1-R4-06 remove clears stale snapshot state after external delete or corru
     syscall.set_env('HOME', saved_home)
     auth.reload()
 }
+
+test 'canonical provider entries own resolution over environment fallback' {
+    string saved_home = syscall.get_env('HOME')
+    string saved_key = syscall.get_env('DEEPSEEK_API_KEY')
+    string home = '/tmp/adou-auth-ownership-test'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    syscall.set_env('DEEPSEEK_API_KEY', 'ambient-key')
+    auth.reload()
+    string file_path = auth.auth_path()
+    auth.write_file(file_path, '{"deepseek": {"type": "oauth", "access": ""}}')
+    auth.reload()
+    assert(auth.effective('deepseek') == '')
+    os.rmdir(home, true)
+    syscall.set_env('DEEPSEEK_API_KEY', saved_key)
+    syscall.set_env('HOME', saved_home)
+    auth.reload()
+}

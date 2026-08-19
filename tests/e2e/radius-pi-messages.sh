@@ -33,7 +33,7 @@ fi
 # The local fixture asserts the request shape and answers with a complete
 # pi-messages event stream; the CLI resolves radius/default through the
 # registry and --base-url redirects it at the fixture.
-output=$(PI_CODING_AGENT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/adou-radius-e2e.XXXXXX")" \
+output=$(ADOU_CODING_AGENT_DIR="$(mktemp -d "${TMPDIR:-/tmp}/adou-radius-e2e.XXXXXX")" \
     RADIUS_API_KEY=radius-e2e-key \
     "$binary" --provider radius --model radius/default \
     --base-url "http://127.0.0.1:$port" --max-tokens 128 -p "hello" 2>&1)

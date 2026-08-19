@@ -10,7 +10,7 @@ import time
 
 test 'theme and resource lists persist through settings round trips' {
     string dir = path.join('/tmp', 'adou-settings-persist-' + fmt.sprintf('%d', time.now().ms_timestamp()))
-    syscall.set_env('PI_CODING_AGENT_DIR', dir)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', dir)
     os.mkdirs(dir, 0o700)
     var saved = settings.settings_t {theme: 'light', enabled_skill_names: ['demo', 'other'], enabled_prompt_names: ['review'],}
     settings.save(saved) catch error {
@@ -30,14 +30,14 @@ test 'theme and resource lists persist through settings round trips' {
     assert(explicit_none.enabled_skills_configured)
     assert(explicit_none.enabled_prompts_configured)
     assert(explicit_none.enabled_skill_names.len() == 0)
-    syscall.set_env('PI_CODING_AGENT_DIR', '')
+    syscall.set_env('ADOU_CODING_AGENT_DIR', '')
     os.rmdir(dir, true)
 }
 
 test 'project resource settings stay in the project file' {
     string agent_dir = path.join('/tmp', 'adou-settings-project-' + fmt.sprintf('%d', time.now().ms_timestamp()))
     string project_dir = path.join(agent_dir, 'project')
-    syscall.set_env('PI_CODING_AGENT_DIR', agent_dir)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', agent_dir)
     os.mkdirs(project_dir, 0o700)
     var project = settings.settings_t {enabled_skill_names: ['project-skill'], enabled_prompt_names: ['project-prompt'],}
     settings.save_project(project_dir, project) catch error {
@@ -49,6 +49,6 @@ test 'project resource settings stay in the project file' {
     assert(merged.enabled_prompt_names[0] == 'project-prompt')
     assert(path_utils.exists(paths.project_settings_path(project_dir)))
     assert(!path_utils.exists(paths.settings_path()))
-    syscall.set_env('PI_CODING_AGENT_DIR', '')
+    syscall.set_env('ADOU_CODING_AGENT_DIR', '')
     os.rmdir(agent_dir, true)
 }

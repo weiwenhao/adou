@@ -174,7 +174,7 @@ pub fn connect(string ws_url, {string:string} headers, int timeout_ms): ref<conn
     }
     types.connable? temp = null
     if parsed.scheme == 'wss' {
-        temp = tls.connect_timeout(fmt.sprintf('%s:%d', host, port), timeout_ms)
+        temp = tls.connect_ip_timeout(host, port, parsed.hostname, timeout_ms)
     } else {
         temp = tcp.connect_timeout(fmt.sprintf('%s:%d', host, port), timeout_ms)
     }
@@ -246,7 +246,6 @@ pub fn conn_t.close(&self) {
     self.reader.rd.close()
 }
 
-#local
 fn conn_t.read_frame(&self): frame_t! {
     var frame = decode_frame(self.reader) catch error {
         throw errorf('%s', normalize_read_error(error.msg()))
@@ -258,12 +257,10 @@ fn conn_t.read_frame(&self): frame_t! {
     return frame
 }
 
-#local
 fn conn_t.send_frame(&self, int opcode, [u8] payload): void! {
     self.reader.rd.write(encode_frame(opcode, payload, true))
 }
 
-#local
 fn conn_t.read_handshake(&self): {string:string}! {
     {string:string} headers = {}
     bool read_status = false
@@ -302,7 +299,6 @@ fn conn_t.read_handshake(&self): {string:string}! {
     return headers
 }
 
-#local
 fn build_request(url.url_t parsed, {string:string} headers, string key): string {
     string request = 'GET ' + parsed.request_uri() + ' HTTP/1.1\r\n'
     request += 'Host: ' + parsed.authority + '\r\n'
@@ -317,7 +313,6 @@ fn build_request(url.url_t parsed, {string:string} headers, string key): string 
     return request
 }
 
-#local
 fn header_lookup({string:string} headers, string lower_name): string {
     for k, v in headers {
         if k.to_lower() == lower_name {
@@ -327,12 +322,10 @@ fn header_lookup({string:string} headers, string lower_name): string {
     return ''
 }
 
-#local
 fn random_websocket_key(): string {
     return base64.encode(random_bytes(16)) as string
 }
 
-#local
 fn random_bytes(int count): [u8] {
     [u8] result = vec<u8>.cap_of(count)
     for int i = 0; i < count; i += 1 {
@@ -341,7 +334,6 @@ fn random_bytes(int count): [u8] {
     return result
 }
 
-#local
 fn next_random(): u32 {
     rng_state = rng_state * 1664525 + 1013904223
     u32 now = (time.now().ns_timestamp() as u32)
@@ -349,7 +341,6 @@ fn next_random(): u32 {
     return rng_state
 }
 
-#local
 fn normalize_read_error(string message): string {
     string lower = message.to_lower()
     if lower.find('read timeout') >= 0 {

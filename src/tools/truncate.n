@@ -102,7 +102,6 @@ pub fn tail_with_limits(string content, int max_lines, int max_bytes): result_t 
     return result_t {content: output_content, truncated: true, truncated_by: reason, total_lines: total_lines, total_bytes: total_bytes, output_lines: output.len(), output_bytes: output_content.len(), max_lines: max_lines, max_bytes: max_bytes,}
 }
 
-#local
 fn utf8_boundary_start(string value, int start): int {
     int cursor = start
     for cursor < value.len() && value[cursor] >= 0x80 && value[cursor] <= 0xbf {
@@ -133,7 +132,6 @@ pub fn split_all_lines(string content): [string] {
     return result
 }
 
-#local
 fn split_lines_for_counting(string content): [string] {
     if content == '' {
         return []

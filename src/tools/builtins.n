@@ -74,7 +74,6 @@ pub fn select_tools(string cwd, [string] included, [string] excluded, bool no_to
     return result
 }
 
-#local
 fn contains_name([string] names, string value): bool {
     for name in names {
         if name == value {
@@ -84,7 +83,6 @@ fn contains_name([string] names, string value): bool {
     return false
 }
 
-#local
 fn execute_read(string cwd, any arguments, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
     var object = arguments as {string:any}
     string input_path = object['path'] as string
@@ -101,7 +99,6 @@ fn execute_read(string cwd, any arguments, ref<abort.abort_t> cancellation): too
     return read.execute(cwd, input_path, has_offset, offset, has_limit, limit, cancellation)
 }
 
-#local
 fn execute_write(string cwd, any arguments, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
     var object = arguments as {string:any}
     return write.execute(cwd, object['path'] as string, object['content'] as string, cancellation)

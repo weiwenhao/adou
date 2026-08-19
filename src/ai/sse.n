@@ -74,7 +74,6 @@ pub fn parser_t.finish(&self): void! {
 pub fn parser_t.finish_pending(&self): [event_t]! {
     return self.finish_inner(true)
 }
-#local
 fn parser_t.finish_inner(&self, bool dispatch_pending): [event_t]! {
     if self.finished {
         throw errorf('SSE parser is already finished')
@@ -93,7 +92,6 @@ fn parser_t.finish_inner(&self, bool dispatch_pending): [event_t]! {
     self.event_bytes = 0
     return events
 }
-#local
 fn parser_t.process_line(&self, [event_t] events): [event_t]! {
     var bytes = self.line
     self.line = []
@@ -147,7 +145,6 @@ fn parser_t.process_line(&self, [event_t] events): [event_t]! {
     }
     return events
 }
-#local
 fn parser_t.dispatch(&self, [event_t] events): [event_t]{
     if self.data_lines.len() > 0 {
         string name = self.event_name
@@ -164,7 +161,6 @@ fn parser_t.dispatch(&self, [event_t] events): [event_t]{
     self.event_bytes = 0
     return events
 }
-#local
 fn parser_t.update_retry(&self, string value) {
     if value == '' {
         return
@@ -181,7 +177,6 @@ fn parser_t.update_retry(&self, string value) {
         self.retry = parsed
     }
 }
-#local
 fn contains_nul([u8] bytes): bool {
     for byte in bytes {
         if byte == 0 {
@@ -192,7 +187,6 @@ fn contains_nul([u8] bytes): bool {
 }
 // Strings are created only after a full line has arrived. This validator makes
 // malformed UTF-8 a transport error while allowing code points to span chunks.
-#local
 fn valid_utf8([u8] bytes): void! {
     int i = 0
     for i < bytes.len() {

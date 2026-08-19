@@ -270,7 +270,6 @@ pub fn session_token_header(): string {
     return syscall.get_env('AWS_SESSION_TOKEN')
 }
 
-#local
 fn hmac_key(string secret, string date, string region): string {
     var k_date = hmac_lib.new(hmac_lib.SHA256, ('AWS4' + secret) as [u8])
     k_date.update(date as [u8])
@@ -286,14 +285,12 @@ fn hmac_key(string secret, string date, string region): string {
     return k_signing.finish() as string
 }
 
-#local
 fn hmac_hex(string key, string message): string {
     var h = hmac_lib.new(hmac_lib.SHA256, key as [u8])
     h.update(message as [u8])
     return bytes_hex(h.finish())
 }
 
-#local
 fn bytes_hex([u8] bytes): string {
     string result = ''
     for byte in bytes {
@@ -302,13 +299,11 @@ fn bytes_hex([u8] bytes): string {
     return result
 }
 
-#local
 fn hex_byte(u8 byte): string {
     [string] digits = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f']
     return digits[byte >> 4] + digits[byte & 0x0f]
 }
 
-#local
 fn convert_messages(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): [any]! {
     [any] result = []
     var replay = replay.tracker()
@@ -382,7 +377,6 @@ fn convert_messages(ref<types.model_t> model, ref<types.context_t> context, ref<
     return result
 }
 
-#local
 fn user_item(string text): any {
     {string:any} item = {}
     item['role'] = 'user'
@@ -394,7 +388,6 @@ fn user_item(string text): any {
     return item
 }
 
-#local
 fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> message): any! {
     [any] content = []
     for block in message.content {
@@ -446,7 +439,6 @@ fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> messa
     return item
 }
 
-#local
 fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_t> message): any {
     [string] lines = []
     for block in message.content {
@@ -468,7 +460,6 @@ fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_t> m
     return wrapper
 }
 
-#local
 fn convert_tools([ref<types.tool_t>] tools): {string:any}! {
     [any] result = []
     for tool in tools {
@@ -532,7 +523,6 @@ pub type header_value_t = struct {
     string text
 }
 
-#local
 fn read_header_value([u8] buffer, int cursor, u8 value_type): header_value_t {
     if value_type == 7 {
         int len = read_u16(buffer, cursor)
@@ -557,12 +547,10 @@ fn read_header_value([u8] buffer, int cursor, u8 value_type): header_value_t {
     return header_value_t {next: cursor, text: '',}
 }
 
-#local
 fn read_u16([u8] buffer, int offset): int {
     return (buffer[offset] as int) << 8 | (buffer[offset + 1] as int)
 }
 
-#local
 fn read_u32([u8] buffer, int offset): int {
     return (buffer[offset] as int) << 24 | (buffer[offset + 1] as int) << 16 | (buffer[offset + 2] as int) << 8 | (buffer[offset + 3] as int)
 }

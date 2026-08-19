@@ -12,8 +12,8 @@ trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 
 output=$(printf '%s\n' '{"id":"missing-key","type":"prompt","message":"hello"}' | \
     env -u DEEPSEEK_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
-    PI_CODING_AGENT_DIR="$tmp_dir/agent" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions" \
+    ADOU_CODING_AGENT_DIR="$tmp_dir/agent" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions" \
     "$binary" --mode rpc --no-session --provider deepseek --model deepseek-v4-flash --thinking off)
 
 python3 - "$output" <<'PY'
@@ -37,8 +37,8 @@ PY
 
 plain_output="$tmp_dir/plain-output"
 if ! env -u DEEPSEEK_API_KEY -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
-    PI_CODING_AGENT_DIR="$tmp_dir/plain-agent" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/plain-sessions" \
+    ADOU_CODING_AGENT_DIR="$tmp_dir/plain-agent" \
+    ADOU_SESSION_DIR="$tmp_dir/plain-sessions" \
     "$binary" --print --no-session --provider deepseek --model deepseek-v4-flash --thinking off hello > "$plain_output" 2>&1; then
     echo 'e2e: one-shot missing-key invocation returned a hard process failure' >&2
     cat "$plain_output" >&2

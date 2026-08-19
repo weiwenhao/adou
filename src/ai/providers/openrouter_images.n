@@ -50,7 +50,6 @@ pub fn generate_images(images_models.image_model_t model, images_context_t conte
     return result
 }
 
-#local
 fn send(images_models.image_model_t model, images_context_t context, string api_key, int timeout_ms): ref<assistant_images_t>! {
     {string:any} body = {}
     body['model'] = model.id
@@ -101,7 +100,6 @@ fn send(images_models.image_model_t model, images_context_t context, string api_
     return parse_response(model, text_body)
 }
 
-#local
 fn parse_response(images_models.image_model_t model, string body): ref<assistant_images_t>! {
     var output = new assistant_images_t(api = model.api, provider = model.provider, model = model.id, timestamp = time.now().ms_timestamp())
     var root = json_util.parse(body)
@@ -164,7 +162,6 @@ fn parse_response(images_models.image_model_t model, string body): ref<assistant
     return output
 }
 
-#local
 fn split_data_url(string url): (string, string) {
     // data:<mime>;base64,<data>
     int semicolon = url.find(';')
@@ -179,7 +176,6 @@ fn split_data_url(string url): (string, string) {
     return (mime, url.slice(comma + 1, url.len()))
 }
 
-#local
 fn num({string:any} object, string key): int {
     if object.contains(key) && !json_util.is_null(object[key]) {
         if object[key] is int {
@@ -190,7 +186,6 @@ fn num({string:any} object, string key): int {
     return 0
 }
 
-#local
 fn read_error_body(ref<client.response_t> response): string! {
     [u8] result = []
     [u8] scratch = vec<u8>.new(0, 4096)

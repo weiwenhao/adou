@@ -59,7 +59,6 @@ pub fn filter_skills_configured([ref<skills.skill_t>] skills_list, [string] enab
     return result
 }
 
-#local
 fn contains_name([string] names, string wanted): bool {
     for name in names {
         if name == wanted {

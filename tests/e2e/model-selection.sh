@@ -49,8 +49,8 @@ echo 'e2e: model selection OK'
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/adou-model-e2e.XXXXXX")
 trap 'rm -rf "$tmp_dir"' EXIT HUP INT TERM
 state=$(printf '%s\n' '{"id":"1","type":"get_state"}' | \
-    PI_CODING_AGENT_DIR="$tmp_dir/agent" \
-    PI_CODING_AGENT_SESSION_DIR="$tmp_dir/sessions" \
+    ADOU_CODING_AGENT_DIR="$tmp_dir/agent" \
+    ADOU_SESSION_DIR="$tmp_dir/sessions" \
     "$binary" --model anthropic/claude-sonnet-4-5 --mode rpc --no-session)
 case "$state" in
     *'"provider":"anthropic","id":"claude-sonnet-4-5"'*) ;;
@@ -72,8 +72,8 @@ scope_output=$(printf '%s\n' \
     DEEPSEEK_API_KEY=scope-deepseek-key \
     OPENAI_API_KEY=scope-openai-key \
     ANTHROPIC_API_KEY=scope-anthropic-key \
-    PI_CODING_AGENT_DIR="$scope_dir/agent" \
-    PI_CODING_AGENT_SESSION_DIR="$scope_dir/sessions" \
+    ADOU_CODING_AGENT_DIR="$scope_dir/agent" \
+    ADOU_SESSION_DIR="$scope_dir/sessions" \
     "$binary" --models 'anthropic/claude-sonnet-4-5:low,openai/gpt-5.1-codex:medium,deepseek/deepseek-v4-flash:max' --mode rpc --no-session)
 python3 - "$scope_output" <<'PY'
 import json

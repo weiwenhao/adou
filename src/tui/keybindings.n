@@ -259,7 +259,6 @@ pub fn default_keybindings(): ref<keybindings_t> {
     return registry
 }
 
-#local
 fn define(ref<keybindings_t> registry, string action, [string] keys, string description) {
     var definition = keybinding_def_t {description: description,}
     for key in keys {
@@ -307,7 +306,6 @@ pub fn rebuild(ref<keybindings_t> registry) {
     }
 }
 
-#local
 fn user_keys(ref<keybindings_t> registry, string action): [string] {
     [string] result = []
     if registry.user_bindings.contains(action) {
@@ -423,7 +421,6 @@ pub fn key_text(ref<keybindings_t> registry, string action): string {
     return strings_join(formatted, '/')
 }
 
-#local
 fn strings_join([string] values, string separator): string {
     string result = ''
     for index, value in values {
@@ -439,7 +436,6 @@ pub fn keybindings_path(string agent_dir): string {
     return path.join(agent_dir, 'keybindings.json')
 }
 
-#local
 fn load_user_bindings(string file_path): {string:[string]} {
     {string:[string]} result = {}
     if !path_utils.exists(file_path) {

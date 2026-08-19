@@ -416,7 +416,6 @@ pub fn processor_t.content_index_thinking(&self, ref<types.thinking_content_t> t
     return -1
 }
 
-#local
 fn reasoning_delta({string:any} object): string! {
     [string] keys = ['reasoning_content', 'reasoning', 'reasoning_text']
     for key in keys {
@@ -430,7 +429,6 @@ fn reasoning_delta({string:any} object): string! {
     return ''
 }
 
-#local
 fn error_value(any value): string! {
     if value is string {
         return value as string

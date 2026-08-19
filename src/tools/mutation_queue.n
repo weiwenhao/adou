@@ -45,7 +45,6 @@ pub fn release(string key, ref<entry_t> entry) {
     registry.lock.unlock()
 }
 
-#local
 fn get_registry(): ref<registry_t> {
     ref<registry_t>? current = global_registry
     if current is ref<registry_t> value {
