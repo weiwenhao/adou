@@ -1,0 +1,6 @@
+#linkid adou_fs_watch_wait
+fn native_fs_watch_wait(anyptr path, int timeout_ms): int
+
+pub fn wait(string file_path, int timeout_ms): bool {
+    return native_fs_watch_wait(file_path.ref(), timeout_ms) > 0
+}

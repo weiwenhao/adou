@@ -1,5 +1,6 @@
 import adou.src.tools.path_utils
 import adou.src.tools.command
+import adou.src.context.fs_watch
 import fs
 import path
 import syscall
@@ -92,16 +93,10 @@ pub fn resolve_branch_with_git(string repo_dir): string {
     return result.stdout.trim([' ', '\t', '\n', '\r'])
 }
 
-pub fn watcher_available(): bool {
-    var result = command.shell('', 'command -v fswatch >/dev/null 2>&1') catch error {return false}
-    return result.exit_code == 0
-}
+pub fn watcher_available(): bool {return true}
 
 pub fn wait_for_change(string head_path, int timeout_ms): bool {
-    if !watcher_available() {return false}
-    string quoted = command.quote(head_path)
-    var result = command.shell_timeout('', 'fswatch --event Created --event Updated --event Removed --one-event ' + quoted, timeout_ms) catch error {return false}
-    return result.exit_code == 0
+    return fs_watch.wait(head_path, timeout_ms)
 }
 
 fn read_text(string file_path): string! {

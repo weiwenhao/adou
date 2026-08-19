@@ -12,8 +12,8 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 - `/changelog` 已改为解析 `CHANGELOG.md`，启动版本检查请求 `https://pi.dev/api/latest-version`，支持 `ADOU_OFFLINE` / `ADOU_SKIP_VERSION_CHECK` 守卫。
 - `rg` / `fd` 已具备本机查找、`fdfind` 兼容、GitHub release 查询/下载/解包/安装路径；离线模式不联网。
 - 证据：`make build` 通过；`tests/startup_migrations_test.n` 4/4 通过。工具下载 fixture/e2e 仍需在本阶段最终关闭前补齐。
-- **阶段 2 已完成（提交 `2337559`）**：Codex `websocket-cached` 已增加连接缓存、TTL、`previous_response_id` 和增量 input；TUI 支持 JSON 主题加载/reload，`ADOU_THEME_FILE` 主题文件和 git HEAD 通过 `fswatch --one-event` 事件监听；grep/find 现在优先经 managed-tools 解析 `rg`。
-- 阶段 2 证据：`make build`、`tests/theme_test.n` 4/4、`tests/startup_migrations_test.n` 4/4；监听器在没有 `fswatch` 时保持安全降级，后续跨平台 watcher 需要发布环境 fixture。
+- **阶段 2 已完成（提交 `2337559`，watcher native 补丁待提交）**：Codex `websocket-cached` 已增加连接缓存、TTL、`previous_response_id` 和增量 input；TUI 支持 JSON 主题加载/reload，`ADOU_THEME_FILE` 主题文件和 git HEAD 通过 native kqueue/inotify 事件监听；grep/find 现在优先经 managed-tools 解析 `rg`。
+- 阶段 2 证据：`make build`、`tests/theme_test.n` 4/4、`tests/startup_migrations_test.n` 4/4；watcher 不依赖外部 `fswatch` 命令。
 - **阶段 3 已完成（待提交）**：新增 `src/server/client.n` 与 `adou server list|spawn|status|stop|rpc|rpc-stream` 命令入口；新增 `src/sdk_harness.n`、`src/sdk_node.n`、`src/sdk_proxy.n`，补齐公共 Harness、Node execution environment、SSE streamProxy surface。
 - 阶段 3 证据：`make build`、`tests/server_client_test.n` 1/1、`tests/sdk_surface_test.n` 1/1；server live 多进程握手仍需在最终验收批次补跑。
 
