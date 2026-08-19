@@ -29,6 +29,7 @@ import adou.src.context.system_prompt
 import adou.src.json_util
 import adou.src.platform.cwd as platform_cwd
 import adou.src.server.ipc_server
+import adou.src.server.client as ipc_client
 import adou.src.server.protocol as ipc_protocol
 import adou.src.server.supervisor as ipc_supervisor
 import adou.src.session.repository
@@ -105,6 +106,10 @@ pub fn run(): void! {
     // configured credential and print it alone on stdout.
     if argv.len() > 2 && argv[1] == 'auth' && argv[2] == 'print-api-key' {
         run_auth_print_api_key(argv)
+        return
+    }
+    if argv.len() > 1 && argv[1] == 'server' {
+        run_server_cli(argv)
         return
     }
     var arguments = args.parse(argv)
@@ -504,6 +509,48 @@ pub fn run(): void! {
     // Exit explicitly after restoring the terminal.
     syscall.exit(0) catch exit_error {}
     return
+}
+
+fn run_server_cli([string] argv): void! {
+    var client = ipc_client.from_env()
+    int index = 2
+    for index < argv.len() && argv[index] == '--port' {
+        if index + 1 >= argv.len() {println('server --port requires a value'); return}
+        client.port = ipc_client.parse_port(argv[index + 1])
+        index += 2
+    }
+    if index >= argv.len() {
+        println('Usage: adou server [--port <port>] list|spawn|status|stop|rpc|rpc-stream ...')
+        return
+    }
+    string command = argv[index]
+    {string:any} response = {}
+    if command == 'list' {
+        response = client.list()
+        println(json.serialize(response))
+        return
+    }
+    if command == 'spawn' {
+        if index + 1 >= argv.len() {println('server spawn requires cwd'); return}
+        string label = index + 2 < argv.len() ? argv[index + 2] : ''
+        response = client.spawn(argv[index + 1], label)
+        println(json.serialize(response))
+        return
+    }
+    if command == 'status' || command == 'stop' || command == 'rpc' || command == 'rpc-stream' {
+        if index + 1 >= argv.len() {println('server ' + command + ' requires instance id'); return}
+        string instance_id = argv[index + 1]
+        if command == 'status' {response = client.status(instance_id); println(json.serialize(response)); return}
+        if command == 'stop' {response = client.stop(instance_id); println(json.serialize(response)); return}
+        if command == 'rpc-stream' {client.rpc_stream(instance_id); return}
+        if index + 2 >= argv.len() {println('server rpc requires a JSON command'); return}
+        var parsed = json_util.parse(argv[index + 2]) catch error {println('Invalid RPC JSON: ' + error.msg()); return}
+        if !(parsed is {string:any}) {println('RPC command must be a JSON object'); return}
+        response = client.rpc(instance_id, parsed as {string:any})
+        println(json.serialize(response))
+        return
+    }
+    println('Unsupported server command: ' + command)
 }
 
 fn stream_provider(): agent_types.stream_fn {

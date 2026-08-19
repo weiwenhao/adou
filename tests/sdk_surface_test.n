@@ -1,0 +1,14 @@
+import adou.src.sdk_node
+import adou.src.sdk_proxy
+import adou.src.sdk_harness
+import adou.src.sdk
+import adou.src.ai.types
+
+test 'public SDK exposes node environment and harness phases' {
+    var environment = sdk_node.new('/tmp')
+    assert(environment.cwd == '/tmp')
+    assert(environment.temp_dir() != '')
+    assert(sdk_harness.PHASE_IDLE == 'idle')
+    var proxy_options = new sdk_proxy.options_t()
+    assert(proxy_options.timeout_ms == 120000)
+}

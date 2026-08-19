@@ -1,0 +1,118 @@
+import adou.src.ai.event_stream
+import adou.src.ai.sse
+import adou.src.ai.types as ai_types
+import adou.src.json_util
+import adou.src.ai.types
+import http.client
+import json
+import time
+
+pub type options_t = struct {
+    string proxy_url
+    string auth_token
+    int timeout_ms = 120000
+}
+
+pub fn stream_proxy(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> stream_options, options_t options): ref<event_stream.assistant_stream_t> {
+    var stream = event_stream.new()
+    go run_proxy(stream, model, context, stream_options, options)
+    return stream
+}
+
+fn run_proxy(ref<event_stream.assistant_stream_t> stream, ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> stream_options, options_t options): void! {
+    ref<ai_types.assistant_message_t> partial = new ai_types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, timestamp = time.now().ms_timestamp())
+    var response = send_proxy(model, context, stream_options, options)
+    if response.status < 200 || response.status >= 300 {
+        string body = response.text() catch error {''}
+        response.close()
+        throw errorf('Proxy error: HTTP %d %s', response.status, body)
+    }
+    stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_START, partial: partial,})
+    var parser = sse.parser()
+    [u8] buffer = vec<u8>.new(0, 8192)
+    for true {
+        int count = response.read(buffer) catch error {break}
+        if count <= 0 {break}
+        var frames = parser.feed(buffer.slice(0, count))
+        for frame in frames {
+            apply_proxy_event(stream, partial, frame.data)
+        }
+    }
+    var pending = parser.finish_pending()
+    for frame in pending {
+        apply_proxy_event(stream, partial, frame.data)
+    }
+    response.close()
+    if partial.stop_reason == ai_types.STOP_PENDING {
+        partial.stop_reason = ai_types.STOP_STOP
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_DONE, reason: partial.stop_reason, message: partial,})
+    }
+    stream.end()
+}
+
+fn send_proxy(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> stream_options, options_t options): ref<client.response_t>! {
+    {string:any} body = {}
+    body['model'] = model
+    body['context'] = context
+    body['options'] = stream_options
+    var request = client.new().post(options.proxy_url + '/api/stream').timeout(options.timeout_ms).header('Authorization', 'Bearer ' + options.auth_token).header('Content-Type', 'application/json').header('Accept', 'text/event-stream')
+    request.content(json.serialize(body))
+    return request.send()
+}
+
+fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.assistant_message_t> partial, string data): void! {
+    var parsed = json_util.parse(data) catch error {return}
+    if !json_util.is_obj(parsed) {return}
+    var object = parsed as {string:any}
+    string kind = json_util.opt_string(object, 'type')
+    int index = object.contains('contentIndex') ? json_util.opt_int(object, 'contentIndex') : -1
+    if kind == 'start' {stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_START, partial: partial,}); return}
+    if kind == 'text_start' {
+        ensure_content(partial, index, new ai_types.text_content_t(text = ''))
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_START, content_index: index, partial: partial,})
+    } else if kind == 'text_delta' {
+        string delta = json_util.opt_string(object, 'delta')
+        var content = partial.content[index] as ref<ai_types.text_content_t>
+        content.text += delta
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_DELTA, content_index: index, delta: delta, partial: partial,})
+    } else if kind == 'text_end' {
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_END, content_index: index, content: (partial.content[index] as ref<ai_types.text_content_t>).text, partial: partial,})
+    } else if kind == 'thinking_start' {
+        ensure_content(partial, index, new ai_types.thinking_content_t(thinking = ''))
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_START, content_index: index, partial: partial,})
+    } else if kind == 'thinking_delta' {
+        string delta = json_util.opt_string(object, 'delta')
+        var content = partial.content[index] as ref<ai_types.thinking_content_t>
+        content.thinking += delta
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_DELTA, content_index: index, delta: delta, partial: partial,})
+    } else if kind == 'thinking_end' {
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_END, content_index: index, content: (partial.content[index] as ref<ai_types.thinking_content_t>).thinking, partial: partial,})
+    } else if kind == 'toolcall_start' {
+        var call = new ai_types.tool_call_t(id = json_util.opt_string(object, 'id'), name = json_util.opt_string(object, 'toolName'), arguments = {}, partial_json = '')
+        ensure_content(partial, index, call)
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_START, content_index: index, tool_call: call, partial: partial,})
+    } else if kind == 'toolcall_delta' {
+        string delta = json_util.opt_string(object, 'delta')
+        var call = partial.content[index] as ref<ai_types.tool_call_t>
+        call.partial_json += delta
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_DELTA, content_index: index, delta: delta, partial: partial,})
+    } else if kind == 'toolcall_end' {
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_END, content_index: index, partial: partial,})
+    } else if kind == 'done' {
+        partial.stop_reason = json_util.opt_string(object, 'reason')
+        if partial.stop_reason == '' {partial.stop_reason = ai_types.STOP_STOP}
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_DONE, reason: partial.stop_reason, message: partial,})
+    } else if kind == 'error' {
+        partial.stop_reason = ai_types.STOP_ERROR
+        partial.error_message = json_util.opt_string(object, 'errorMessage')
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_ERROR, reason: ai_types.STOP_ERROR, error: partial,})
+    }
+}
+
+fn ensure_content(ref<ai_types.assistant_message_t> partial, int index, ai_types.content_t content) {
+    for true {
+        if partial.content.len() > index {break}
+        partial.content.push(content)
+    }
+    partial.content[index] = content
+}

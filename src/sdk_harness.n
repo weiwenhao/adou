@@ -1,0 +1,72 @@
+import adou.src.sdk
+import adou.src.ai.types as ai_types
+import adou.src.agent.session_stream as session_stream
+
+pub const PHASE_IDLE = 'idle'
+pub const PHASE_TURN = 'turn'
+pub const PHASE_COMPACTION = 'compaction'
+pub const PHASE_RETRY = 'retry'
+
+pub type event_handler_fn = fn(string kind)
+
+pub type harness_t = struct {
+    ref<sdk.session_t> session
+    string phase = PHASE_IDLE
+    {string:event_handler_fn} handlers = {}
+}
+
+pub fn new(ref<sdk.session_t> session): ref<harness_t> {
+    return new harness_t(session = session)
+}
+
+pub fn harness_t.on(&self, string kind, event_handler_fn handler) {
+    self.handlers[kind] = handler
+}
+
+pub fn harness_t.current_phase(&self): string {return self.phase}
+
+pub fn harness_t.prompt(&self, string text): ref<session_stream.stream_t>! {
+    if self.phase != PHASE_IDLE {throw errorf('AgentHarness is busy')}
+    self.phase = PHASE_TURN
+    var stream = self.session.prompt(text)
+    observe(self, stream)
+    return stream
+}
+
+pub fn harness_t.steer(&self, string text) {
+    ai_types.message_t message = new ai_types.user_message_t(content = text, timestamp = 0)
+    self.session.runner.queue_steering(message)
+    emit(self, 'steer')
+}
+
+pub fn harness_t.follow_up(&self, string text) {
+    ai_types.message_t message = new ai_types.user_message_t(content = text, timestamp = 0)
+    self.session.runner.queue_follow_up(message)
+    emit(self, 'follow_up')
+}
+
+pub fn harness_t.abort(&self) {
+    self.session.runner.abort_active()
+    emit(self, 'abort')
+}
+
+pub fn harness_t.messages(&self): [ai_types.message_t] {return self.session.messages()}
+
+fn emit(ref<harness_t> harness, string kind) {
+    if harness.handlers.contains(kind) {harness.handlers[kind](kind)}
+    if harness.handlers.contains('*') {harness.handlers['*'](kind)}
+}
+
+fn observe(ref<harness_t> harness, ref<session_stream.stream_t> stream) {
+    go fn() {
+        for true {
+            var event = stream.recv() catch error {break}
+            if event.kind == session_stream.EVENT_COMPACTION_START {harness.phase = PHASE_COMPACTION}
+            if event.kind == session_stream.EVENT_RETRY_START {harness.phase = PHASE_RETRY}
+            if event.kind == session_stream.EVENT_AGENT_SETTLED || event.kind == session_stream.EVENT_SESSION_END {
+                harness.phase = PHASE_IDLE
+            }
+            emit(harness, event.kind)
+        }
+    }()
+}

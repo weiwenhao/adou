@@ -1,0 +1,6 @@
+import adou.src.server.client
+
+test 'server client parses configured endpoint and port' {
+    assert(client.parse_port('1234') == 1234)
+    assert(client.parse_port('bad') == 7777)
+}

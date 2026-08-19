@@ -1,0 +1,49 @@
+import adou.src.tools.command
+import adou.src.tools.path_utils
+import fs
+import os
+import path
+import syscall
+
+// Nature's embedding equivalent of Pi's NodeExecutionEnvironment.  It keeps
+// filesystem and process effects scoped to an explicit cwd and exposes the
+// same primitives needed by harness tools without requiring Node.js.
+pub type environment_t = struct {
+    string cwd
+    {string:string} env = {}
+}
+
+pub fn new(string cwd): ref<environment_t> {
+    return new environment_t(cwd = path_utils.expand_path(cwd))
+}
+
+pub fn environment_t.read_file(&self, string file_path): string! {
+    var file = fs.open(path_utils.resolve_to_cwd(file_path, self.cwd), syscall.O_RDONLY, 0)
+    string content = file.content()
+    file.close()
+    return content
+}
+
+pub fn environment_t.write_file(&self, string file_path, string content): void! {
+    string target = path_utils.resolve_to_cwd(file_path, self.cwd)
+    os.mkdirs(path.dir(target), 0o700)
+    var file = fs.open(target, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    file.write(content as [u8])
+    file.close()
+}
+
+pub fn environment_t.remove(&self, string file_path): void! {
+    os.remove(path_utils.resolve_to_cwd(file_path, self.cwd))
+}
+
+pub fn environment_t.exec(&self, string script, int timeout_ms): command.result_t! {
+    return command.shell_timeout(self.cwd, script, timeout_ms)
+}
+
+pub fn environment_t.which(&self, string executable): string {
+    var result = command.shell(self.cwd, 'command -v ' + command.quote(executable)) catch error {return ''}
+    if result.exit_code != 0 {return ''}
+    return result.stdout.trim([' ', '\t', '\n', '\r'])
+}
+
+pub fn environment_t.temp_dir(&self): string {return syscall.get_env('TMPDIR') != '' ? syscall.get_env('TMPDIR') : '/tmp'}

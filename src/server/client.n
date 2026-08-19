@@ -1,0 +1,94 @@
+import adou.src.json_util
+import adou.src.server.ipc_server
+import json
+import net.tcp
+import syscall
+import fmt
+
+pub type client_t = struct {
+    string host
+    int port
+    int timeout_ms
+}
+
+pub fn from_env(): ref<client_t> {
+    string endpoint = syscall.get_env('ADOU_SERVER_ADDRESS')
+    string host = '127.0.0.1'
+    int port = 7777
+    if endpoint != '' {
+        int colon = endpoint.rfind(':')
+        if colon > 0 {
+            host = endpoint.slice(0, colon)
+            port = parse_port(endpoint.slice(colon + 1, endpoint.len()))
+        }
+    }
+    string port_env = syscall.get_env('ADOU_SERVER_PORT')
+    if port_env != '' {port = parse_port(port_env)}
+    return new client_t(host = host, port = port, timeout_ms = 5000)
+}
+
+pub fn parse_port(string value): int {
+    int result = 0
+    for byte in value {
+        if byte < '0'.char() || byte > '9'.char() {return 7777}
+        result = result * 10 + ((byte as int) - ('0'.char() as int))
+    }
+    return result
+}
+
+pub fn client_t.request(&self, string kind, {string:any} fields): {string:any}! {
+    var conn = tcp.connect_timeout(fmt.sprintf('%s:%d', self.host, self.port), self.timeout_ms)
+    {string:any} object = {}
+    object['type'] = kind
+    for key, value in fields {
+        object[key] = value
+    }
+    ipc_server.write_line(conn, json.serialize(object))
+    string line = ipc_server.read_line(conn)
+    conn.close()
+    var parsed = json_util.parse(line)
+    if !json_util.is_obj(parsed) {throw errorf('Invalid server response')}
+    return parsed as {string:any}
+}
+
+pub fn client_t.list(&self): {string:any}! {return self.request('list', {})}
+
+pub fn client_t.spawn(&self, string cwd, string label): {string:any}! {
+    {string:any} fields = {}
+    fields['cwd'] = cwd
+    if label != '' {fields['label'] = label}
+    return self.request('spawn', fields)
+}
+
+pub fn client_t.status(&self, string instance_id): {string:any}! {
+    {string:any} fields = {}
+    fields['instanceId'] = instance_id
+    return self.request('status', fields)
+}
+
+pub fn client_t.stop(&self, string instance_id): {string:any}! {
+    {string:any} fields = {}
+    fields['instanceId'] = instance_id
+    return self.request('stop', fields)
+}
+
+pub fn client_t.rpc(&self, string instance_id, {string:any} command): {string:any}! {
+    {string:any} fields = {}
+    fields['instanceId'] = instance_id
+    fields['command'] = command
+    return self.request('rpc', fields)
+}
+
+pub fn client_t.rpc_stream(&self, string instance_id): void! {
+    var conn = tcp.connect_timeout(fmt.sprintf('%s:%d', self.host, self.port), self.timeout_ms)
+    {string:any} request = {}
+    request['type'] = 'rpc_stream'
+    request['instanceId'] = instance_id
+    ipc_server.write_line(conn, json.serialize(request))
+    for true {
+        string line = ipc_server.read_line(conn)
+        if line == '' {break}
+        println(line)
+    }
+    conn.close()
+}
