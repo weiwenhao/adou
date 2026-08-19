@@ -62,7 +62,17 @@ pub fn reload(): bool {return loaded_theme_path != '' && load_json(loaded_theme_
 pub fn loaded_path(): string {return loaded_theme_path}
 
 fn set_custom_color(string name, string value) {
-    custom_colors[name] = value
+    string key = name
+    if key == 'userMessageBg' {key = 'user_bg'
+    } else if key == 'selectedBg' {key = 'selected_bg'
+    } else if key == 'toolPendingBg' {key = 'tool_pending_bg'
+    } else if key == 'toolSuccessBg' {key = 'tool_success_bg'
+    } else if key == 'toolErrorBg' {key = 'tool_error_bg'
+    } else if key == 'borderAccent' {key = 'border_accent'
+    } else if key == 'codeBlock' {key = 'code_block'
+    } else if key == 'codeBlockBorder' {key = 'code_block_border'
+    }
+    custom_colors[key] = value
 }
 
 pub fn set_variant(string name) {
