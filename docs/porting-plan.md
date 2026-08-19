@@ -5,6 +5,14 @@
 release hardening：macOS 主线进行中（Batch 1、Batch 2A、native `.pkg` installer 已完成；Batch 2B 真实签名/公证需新权限；Linux 暂缓，见 `docs/release-hardening-plan.md`、`docs/macos-signing.md` 与 `docs/macos-installer.md`）
 RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make release-check`、`make signing-check` 证据见下）；历史 runtime blocker `nature#302` 已由上游 PR #303 修复并用专用 toolchain 验证，后续 PTY 冷启动失败也已定位为测试在 raw mode 前过早发键的同步缺陷并修复
 
+## 2026-08-20 非 Extension 差异补齐批次
+
+- **阶段 1 已完成（提交待写入）**：对照 `vendors/pi/packages/coding-agent/src/migrations.ts`、`utils/version-check.ts`、`utils/changelog.ts` 和 `utils/tools-manager.ts`，新增 `src/config/migrations.n`、`src/config/version_check.n`、`src/config/changelog.n`、`src/tools/managed_tools.n`。
+- 启动期迁移已覆盖旧 `oauth.json`、settings 中 `apiKeys`、agent 根目录旧 JSONL session、旧 `tools/{rg,fd}`；迁移范围严格限制在 `ADOU_CODING_AGENT_DIR`，不改写 `~/.pi`。
+- `/changelog` 已改为解析 `CHANGELOG.md`，启动版本检查请求 `https://pi.dev/api/latest-version`，支持 `ADOU_OFFLINE` / `ADOU_SKIP_VERSION_CHECK` 守卫。
+- `rg` / `fd` 已具备本机查找、`fdfind` 兼容、GitHub release 查询/下载/解包/安装路径；离线模式不联网。
+- 证据：`make build` 通过；`tests/startup_migrations_test.n` 4/4 通过。工具下载 fixture/e2e 仍需在本阶段最终关闭前补齐。
+
 ## 当前进度快照
 
 - Adou 当前有 241 个 `src/**/*.n` 文件、161 个 Nature 单元测试文件和 63 个普通离线 e2e 脚本；另有 7 个 opt-in live 脚本。

@@ -1,0 +1,110 @@
+import adou.src.tools.path_utils
+import fs
+import path
+import syscall
+
+pub type entry_t = struct {
+    int major
+    int minor
+    int patch
+    string content
+}
+
+pub fn parse(string file_path): [entry_t] {
+    [entry_t] entries = []
+    if !path_utils.exists(file_path) {return entries}
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return entries}
+    string text = input.content() catch error {
+        input.close()
+        return entries
+    }
+    input.close()
+    [string] lines = text.split('\n')
+    entry_t current = entry_t {}
+    bool active = false
+    string body = ''
+    for line in lines {
+        if line.starts_with('## ') {
+            if active {
+                current.content = body.trim([' ', '\t', '\n', '\r'])
+                entries.push(current)
+            }
+            var version = parse_version(line)
+            if version[0] >= 0 {
+                current = entry_t {major: version[0], minor: version[1], patch: version[2], content: ''}
+                body = line
+                active = true
+            } else {
+                active = false
+                body = ''
+            }
+        } else if active {
+            body += '\n' + line
+        }
+    }
+    if active {
+        current.content = body.trim([' ', '\t', '\n', '\r'])
+        entries.push(current)
+    }
+    return entries
+}
+
+pub fn newer_than([entry_t] entries, string version): [entry_t] {
+    [int] parsed = parse_version('## ' + version)
+    int major = parsed[0] < 0 ? 0 : parsed[0]
+    int minor = parsed[1] < 0 ? 0 : parsed[1]
+    int patch = parsed[2] < 0 ? 0 : parsed[2]
+    [entry_t] result = []
+    for entry in entries {
+        if compare(entry, major, minor, patch) > 0 {result.push(entry)}
+    }
+    return result
+}
+
+pub fn compare(entry_t entry, int major, int minor, int patch): int {
+    if entry.major != major {return entry.major < major ? -1 : 1}
+    if entry.minor != minor {return entry.minor < minor ? -1 : 1}
+    if entry.patch == patch {return 0}
+    return entry.patch < patch ? -1 : 1
+}
+
+pub fn default_path(): string {
+    string configured = syscall.get_env('ADOU_CHANGELOG_PATH')
+    if configured != '' {return path_utils.expand_path(configured)}
+    return path.join(path_utils.current_working_directory(), 'CHANGELOG.md')
+}
+
+fn parse_version(string line): [int] {
+    [int] result = [-1, -1, -1]
+    int start = line.find('[')
+    if start < 0 {start = line.find(' ')}
+    if start < 0 {return result}
+    start += 1
+    string version_part = line.slice(start, line.len())
+    int first_dot_rel = version_part.find('.')
+    if first_dot_rel < 0 {return result}
+    int first_dot = start + first_dot_rel
+    int second_dot_rel = version_part.slice(first_dot_rel + 1, version_part.len()).find('.')
+    if second_dot_rel < 0 {return result}
+    int second_dot = first_dot + 1 + second_dot_rel
+    int end = second_dot + 1
+    for end < line.len() {
+        if line[end] < '0'.char() || line[end] > '9'.char() {break}
+        end += 1
+    }
+    result[0] = parse_digits(line.slice(start, first_dot))
+    result[1] = parse_digits(line.slice(first_dot + 1, second_dot))
+    result[2] = parse_digits(line.slice(second_dot + 1, end))
+    if result[0] < 0 || result[1] < 0 || result[2] < 0 {return [-1, -1, -1]}
+    return result
+}
+
+fn parse_digits(string value): int {
+    if value == '' {return -1}
+    int result = 0
+    for byte in value as [u8] {
+        if byte < '0'.char() || byte > '9'.char() {return -1}
+        result = result * 10 + (byte - '0'.char()) as int
+    }
+    return result
+}

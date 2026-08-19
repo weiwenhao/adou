@@ -21,6 +21,14 @@ pub fn normalize_input(string input): string {
     return result
 }
 
+pub fn expand_path(string input): string {
+    return normalize_input(input)
+}
+
+pub fn current_working_directory(): string {
+    return syscall.getcwd() catch error {'.'}
+}
+
 pub fn resolve_to_cwd(string input, string cwd): string {
     string normalized = normalize_input(input)
     if normalized.starts_with('/') {

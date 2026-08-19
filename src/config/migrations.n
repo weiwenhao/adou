@@ -1,0 +1,159 @@
+import adou.src.config.paths
+import adou.src.json_util
+import adou.src.session.types
+import adou.src.tools.path_utils
+import fs
+import json
+import os
+import path
+import syscall
+
+// Pi's startup migrations, scoped to Adou's own agent directory.  We do not
+// inspect ~/.pi: Adou and Pi deliberately own separate credential/session
+// stores.
+pub type report_t = struct {
+    [string] migrated_auth_providers = []
+    int migrated_sessions
+    [string] migrated_tools = []
+}
+
+pub fn run(): report_t {
+    report_t result = report_t {}
+    result.migrated_auth_providers = migrate_auth()
+    result.migrated_sessions = migrate_sessions()
+    result.migrated_tools = migrate_tools()
+    return result
+}
+
+fn read_text(string file_path): string! {
+    var input = fs.open(file_path, syscall.O_RDONLY, 0)
+    string content = input.content() catch error {
+        input.close()
+        throw error
+    }
+    input.close()
+    return content
+}
+
+fn write_text(string file_path, string content): void! {
+    os.mkdirs(path.dir(file_path), 0o700)
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    int written = output.write(content as [u8])
+    output.close()
+    if written != content.len() {
+        throw errorf('Could not write migration file: %s', file_path)
+    }
+}
+
+fn migrate_auth(): [string] {
+    [string] providers = []
+    string agent_dir = paths.agent_dir()
+    string auth_path = paths.auth_path()
+    if path_utils.exists(auth_path) {
+        return providers
+    }
+
+    {string:any} migrated = {}
+    string oauth_path = path.join(agent_dir, 'oauth.json')
+    if path_utils.exists(oauth_path) {
+        string content = read_text(oauth_path) catch error {''}
+        if content != '' {
+            any parsed = json_util.parse(content) catch error {'{}'}
+            if json_util.is_obj(parsed) {
+                for provider, value in parsed as {string:any} {
+                    if json_util.is_obj(value) {
+                        any cloned = json_util.clone(value) catch error {'{}'}
+                        if json_util.is_obj(cloned) {
+                            var credential = cloned as {string:any}
+                            credential['type'] = 'oauth'
+                            migrated[provider] = credential
+                            providers.push(provider)
+                        }
+                    }
+                }
+            }
+        }
+        syscall.rename(oauth_path, oauth_path + '.migrated') catch error {}
+    }
+
+    string settings_path = paths.settings_path()
+    if path_utils.exists(settings_path) {
+        string content = read_text(settings_path) catch error {''}
+        if content != '' {
+            any parsed = json_util.parse(content) catch error {'{}'}
+            if json_util.is_obj(parsed) {
+                var settings = parsed as {string:any}
+                var api_keys = json_util.opt_obj(settings, 'apiKeys')
+                if api_keys.len() > 0 {
+                    for provider, value in api_keys {
+                        if !migrated.contains(provider) && value is string {
+                            migrated[provider] = {'type': 'api_key', 'key': value as string}
+                            providers.push(provider)
+                        }
+                    }
+                    settings.del('apiKeys')
+                    write_text(settings_path, json.serialize(settings) + '\n') catch error {}
+                }
+            }
+        }
+    }
+
+    if migrated.len() > 0 {
+        write_text(auth_path, json.serialize(migrated) + '\n') catch error {
+            return []
+        }
+    }
+    return providers
+}
+
+fn session_dir_for(string cwd): string {
+    string resolved = path_utils.clean(cwd)
+    if resolved.starts_with('/') {
+        resolved = resolved.slice(1, resolved.len())
+    }
+    string safe = resolved.replace('/', '-').replace('\\', '-').replace(':', '-')
+    return path.join(paths.sessions_dir(), '--' + safe + '--')
+}
+
+fn migrate_sessions(): int {
+    string agent_dir = paths.agent_dir()
+    [string] names = os.listdir(agent_dir) catch error {return 0}
+    int moved = 0
+    for name in names {
+        if !name.ends_with('.jsonl') {continue}
+        string source = path.join(agent_dir, name)
+        string first_line = read_text(source) catch error {continue}
+        int newline = first_line.find('\n')
+        if newline >= 0 {first_line = first_line.slice(0, newline)}
+        any parsed = json_util.parse(first_line) catch error {'{}'}
+        if !json_util.is_obj(parsed) {continue}
+        var header = parsed as {string:any}
+        if json_util.opt_string(header, 'type') != 'session' {continue}
+        string cwd = json_util.opt_string(header, 'cwd')
+        if cwd == '' {continue}
+        string target_dir = session_dir_for(cwd)
+        string target = path.join(target_dir, name)
+        if path_utils.exists(target) {continue}
+        os.mkdirs(target_dir, 0o700) catch error {continue}
+        syscall.rename(source, target) catch error {continue}
+        moved += 1
+    }
+    return moved
+}
+
+fn migrate_tools(): [string] {
+    [string] moved = []
+    string old_dir = path.join(paths.agent_dir(), 'tools')
+    string new_dir = path.join(paths.agent_dir(), 'bin')
+    [string] names = os.listdir(old_dir) catch error {return moved}
+    for name in names {
+        if name != 'rg' && name != 'fd' && name != 'rg.exe' && name != 'fd.exe' {continue}
+        string source = path.join(old_dir, name)
+        string target = path.join(new_dir, name)
+        if path_utils.exists(target) {continue}
+        os.mkdirs(new_dir, 0o700) catch error {continue}
+        syscall.rename(source, target) catch error {continue}
+        moved.push(name)
+    }
+    return moved
+}

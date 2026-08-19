@@ -1,0 +1,98 @@
+import adou.src.config.changelog
+import adou.src.config.migrations
+import adou.src.config.paths
+import adou.src.tools.managed_tools
+import adou.src.tools.path_utils
+import fs
+import json
+import os
+import path
+import syscall
+
+fn write_file(string file_path, string content): void! {
+    os.mkdirs(path.dir(file_path), 0o700)
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    output.write(content as [u8])
+    output.close()
+}
+
+test 'Pi startup migrations move oauth credentials and legacy api keys' {
+    string old_home = syscall.get_env('HOME')
+    string old_dir = syscall.get_env('ADOU_CODING_AGENT_DIR')
+    string home = '/tmp/adou-startup-migration-home'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', '')
+    string agent = path.join(home, '.adou/agent')
+    write_file(path.join(agent, 'oauth.json'), '{"openai-codex":{"access":"a","refresh":"r"}}')
+    write_file(path.join(agent, 'settings.json'), '{"apiKeys":{"deepseek":"k"},"quietStartup":true}')
+
+    var report = migrations.run()
+    assert(report.migrated_auth_providers.len() == 2)
+    assert(path_utils_exists(path.join(agent, 'oauth.json.migrated')))
+    string auth = read_file(paths.auth_path())
+    any parsed = json.deserialize<any>(auth)
+    assert(parsed is {string:any})
+    var object = parsed as {string:any}
+    assert((object['openai-codex'] as {string:any})['type'] as string == 'oauth')
+    assert((object['deepseek'] as {string:any})['key'] as string == 'k')
+    assert(!json_object_has(read_file(path.join(agent, 'settings.json')), 'apiKeys'))
+
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', old_home)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', old_dir)
+}
+
+test 'Pi startup migrations move root sessions into cwd encoded directories' {
+    string old_home = syscall.get_env('HOME')
+    string old_dir = syscall.get_env('ADOU_CODING_AGENT_DIR')
+    string home = '/tmp/adou-startup-session-migration-home'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', '')
+    string agent = path.join(home, '.adou/agent')
+    string session = path.join(agent, 'legacy.jsonl')
+    write_file(session, '{"type":"session","version":3,"id":"legacy","timestamp":"2026-01-01T00:00:00Z","cwd":"/tmp/project"}\n')
+
+    var report = migrations.run()
+    assert(report.migrated_sessions == 1)
+    assert(path_utils_exists(path.join(agent, 'sessions/--tmp-project--/legacy.jsonl')))
+    assert(!path_utils_exists(session))
+
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', old_home)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', old_dir)
+}
+
+test 'changelog parser reads Pi-style version sections' {
+    string file_path = '/tmp/adou-changelog-test.md'
+    write_file(file_path, '# Changelog\n\n## [1.2.3] - 2026-01-01\n\n- one\n\n## 1.1.0\n\n- two\n')
+    var entries = changelog.parse(file_path)
+    assert(entries.len() == 2)
+    assert(entries[0].major == 1 && entries[0].minor == 2 && entries[0].patch == 3)
+    assert(entries[0].content.contains('- one'))
+    assert(changelog.newer_than(entries, '1.1.0').len() == 1)
+    os.remove(file_path) catch error {}
+}
+
+test 'managed tools use an installed system binary before downloading' {
+    string rg = managed_tools.find('rg')
+    assert(rg != '')
+}
+
+fn read_file(string file_path): string! {
+    var input = fs.open(file_path, syscall.O_RDONLY, 0)
+    string content = input.content()
+    input.close()
+    return content
+}
+
+fn path_utils_exists(string file_path): bool {
+    return path_utils.exists(file_path)
+}
+
+fn json_object_has(string content, string key): bool {
+    any parsed = json.deserialize<any>(content) catch error {return false}
+    if !(parsed is {string:any}) {return false}
+    return (parsed as {string:any}).contains(key)
+}

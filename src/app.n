@@ -9,6 +9,8 @@ import adou.src.ai.event_stream as ai_event_stream
 import adou.src.ai.types as ai_types
 import adou.src.config.args
 import adou.src.config.auth
+import adou.src.config.changelog
+import adou.src.config.migrations as config_migrations
 import adou.src.config.oauth
 import adou.src.config.models
 import adou.src.config.resolve
@@ -18,6 +20,7 @@ import adou.src.config.settings
 import adou.src.config.settings as config_settings
 import adou.src.config.trust
 import adou.src.config.types as config_types
+import adou.src.config.version_check
 import adou.src.config.paths as config_paths
 import adou.src.context.project
 import adou.src.context.resource_snapshot
@@ -130,6 +133,16 @@ pub fn run(): void! {
     }
 
     string cwd = platform_cwd.current()
+    var migration_report = config_migrations.run()
+    if migration_report.migrated_auth_providers.len() > 0 {
+        debug.log('migration', 'migrated credentials: ' + strings.join(migration_report.migrated_auth_providers, ', '))
+    }
+    if migration_report.migrated_sessions > 0 {
+        debug.log('migration', 'migrated sessions: ' + fmt.sprintf('%d', migration_report.migrated_sessions))
+    }
+    if migration_report.migrated_tools.len() > 0 {
+        debug.log('migration', 'migrated managed tools: ' + strings.join(migration_report.migrated_tools, ', '))
+    }
     // Pi's CLI export is independent of provider/session startup: the first
     // value names an existing JSONL session and the optional positional value
     // is the HTML destination.  Resolve it before loading model credentials
@@ -448,9 +461,19 @@ pub fn run(): void! {
         return
     }
 
+    string update_notice = ''
+    if !config.offline {
+        var latest = version_check.latest(VERSION)
+        if latest is ref<version_check.release_t> release {
+            update_notice = 'New Adou version available: ' + release.version
+        }
+    }
     var terminal = term.open()
     var view = session_view.new(terminal, runner, config.model.id, session_cwd, config.skill_paths, config.no_skills, config.trust_override, config.trust_override_explicit, config.scoped_models, config.scoped_models_explicit, config.system_prompt, config.append_system_prompts, config.no_context_files)
     view.chat.thinking_visible = !config.hide_thinking
+    if update_notice != '' && view.chat.status == '' {
+        view.chat.status = update_notice
+    }
     if config.resume && config.initial_messages.len() == 0 {
         // Pi's --resume opens the session picker.  Keep the headless path
         // deterministic (open_repository already selected the recent

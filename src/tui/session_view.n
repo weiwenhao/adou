@@ -7,6 +7,7 @@ import adou.src.ai.abort
 import adou.src.ai.attribution
 import adou.src.ai.types as ai_types
 import adou.src.config.auth
+import adou.src.config.changelog
 import adou.src.config.oauth
 import adou.src.config.oauth_callback
 import adou.src.config.models
@@ -1357,7 +1358,18 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         return null
     }
     if command == '/changelog' {
-        self.chat.status = 'Adou changelog\n0.1.0-dev · Pi core parity work\n• streaming agent loop and tool events\n• append-only Pi v3 sessions and automatic compaction\n• transient request retry with cancellation\n• JSON and RPC headless protocols'
+        var entries = changelog.parse(changelog.default_path())
+        if entries.len() == 0 {
+            self.chat.status = 'No changelog entries found'
+        } else {
+            [string] lines = []
+            int shown = entries.len() > 5 ? 5 : entries.len()
+            for int index = 0; index < shown; index += 1 {
+                var entry = entries[index]
+                lines.push(fmt.sprintf('%d.%d.%d\n%s', entry.major, entry.minor, entry.patch, entry.content))
+            }
+            self.chat.status = strings.join(lines, '\n\n')
+        }
         self.redraw()
         return null
     }

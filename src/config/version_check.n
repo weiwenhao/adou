@@ -1,0 +1,59 @@
+import adou.src.json_util
+import adou.src.tools.path_utils
+import http.client as client
+import syscall
+
+pub type release_t = struct {
+    string version
+    string package_name
+    string note
+}
+
+pub fn compare_versions(string left, string right): int {
+    [int] a = parts(left)
+    [int] b = parts(right)
+    for int index = 0; index < 3; index += 1 {
+        if a[index] != b[index] {return a[index] < b[index] ? -1 : 1}
+    }
+    return 0
+}
+
+pub fn latest(string current): ref<release_t>? {
+    if truthy(syscall.get_env('ADOU_OFFLINE')) || truthy(syscall.get_env('ADOU_SKIP_VERSION_CHECK')) {
+        return null
+    }
+    var response = client.new().get('https://pi.dev/api/latest-version').timeout(10000).header('Accept', 'application/json').header('User-Agent', 'adou-coding-agent/' + current).send() catch error {
+        return null
+    }
+    if response.status < 200 || response.status >= 300 {return null}
+    any parsed = json_util.parse(response.body) catch error {return null}
+    if !json_util.is_obj(parsed) {return null}
+    var object = parsed as {string:any}
+    string version = json_util.opt_string(object, 'version')
+    if version == '' || compare_versions(version, current) <= 0 {return null}
+    return new release_t(version = version, package_name = json_util.opt_string(object, 'packageName'), note = json_util.opt_string(object, 'note'))
+}
+
+fn parts(string value): [int] {
+    [int] result = [0, 0, 0]
+    string normalized = value.trim([' ', '\t', 'v'])
+    [string] values = normalized.split('.')
+    for int index = 0; index < values.len() && index < 3; index += 1 {
+        result[index] = digits(values[index])
+    }
+    return result
+}
+
+fn digits(string value): int {
+    int result = 0
+    for byte in value as [u8] {
+        if byte < '0'.char() || byte > '9'.char() {break}
+        result = result * 10 + (byte - '0'.char()) as int
+    }
+    return result
+}
+
+fn truthy(string value): bool {
+    string lower = value.to_lower()
+    return lower == '1' || lower == 'true' || lower == 'yes'
+}
