@@ -1,0 +1,13 @@
+import adou.src.session.share
+
+test 'share viewer uses Pi fragment URL contract' {
+    assert(share.viewer_url_with_base('abc123', '') == 'https://pi.dev/session/#abc123')
+    assert(share.viewer_url_with_base('abc123', 'https://viewer.example/session') == 'https://viewer.example/session#abc123')
+    assert(share.viewer_url_with_base('abc123', 'https://viewer.example/session/#old') == 'https://viewer.example/session/#abc123')
+}
+
+test 'share extracts gist ids from GitHub URLs' {
+    assert(share.gist_id_from_url('https://gist.github.com/user/abc123') == 'abc123')
+    assert(share.gist_id_from_url('https://gist.github.com/user/abc123/') == 'abc123')
+    assert(share.gist_id_from_url('abc123') == 'abc123')
+}

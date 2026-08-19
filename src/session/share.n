@@ -1,0 +1,31 @@
+import syscall
+
+pub const DEFAULT_VIEWER_URL = 'https://pi.dev/session/'
+
+// Pi's remote viewer contract is a fragment URL: the gist remains the
+// storage artifact and the viewer receives only its id after '#'.
+pub fn viewer_url(string gist_id): string {
+    return viewer_url_with_base(gist_id, syscall.get_env('ADOU_SHARE_VIEWER_URL'))
+}
+
+pub fn viewer_url_with_base(string gist_id, string configured_base): string {
+    string base = configured_base == '' ? DEFAULT_VIEWER_URL : configured_base
+    int fragment = base.find('#')
+    if fragment >= 0 {
+        base = base.slice(0, fragment)
+    }
+    return base + '#' + gist_id
+}
+
+pub fn gist_id_from_url(string value): string {
+    string cleaned = value.trim([' ', '\t', '\n', '\r'])
+    int fragment = cleaned.find('#')
+    if fragment >= 0 {
+        cleaned = cleaned.slice(0, fragment)
+    }
+    for cleaned.len() > 0 && cleaned[cleaned.len() - 1] == '/'.char() {
+        cleaned = cleaned.slice(0, cleaned.len() - 1)
+    }
+    int slash = cleaned.rfind('/')
+    return slash >= 0 ? cleaned.slice(slash + 1, cleaned.len()) : cleaned
+}

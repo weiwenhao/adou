@@ -29,6 +29,7 @@ import adou.src.session.message_json
 import adou.src.session.identity
 import adou.src.session.cache_stats
 import adou.src.session.export_html as session_export
+import adou.src.session.share
 import adou.src.session.repository
 import adou.src.session.types as session_types
 import adou.src.tui.chat
@@ -1815,11 +1816,8 @@ pub fn view_t.create_github_share(&self) {
         gist_id = gist_id.slice(slash + 1, gist_id.len())
         slash = gist_id.find('/')
     }
-    string base = syscall.get_env('ADOU_SHARE_VIEWER_URL')
-    if base == '' {base = 'https://pi.dev/session/'}
-    if !base.ends_with('/') {base += '/'}
     self.chat.error_message = ''
-    self.chat.status = 'Share URL: ' + base + '#' + gist_id + '\nGist: ' + gist_url
+    self.chat.status = 'Share URL: ' + share.viewer_url(gist_id) + '\nGist: ' + gist_url
 }
 
 pub fn view_t.show_session_overlay(&self) {

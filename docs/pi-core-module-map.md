@@ -27,7 +27,7 @@
 - `packages/coding-agent/src/core/extensions/**`、`src/extensions/**`：TypeScript extension ABI、加载器、事件总线和扩展 UI。早期 QuickJS 实验源码暂留，但生产入口、TUI/RPC 接线和默认链接已停用。
 - `packages/coding-agent/src/extensions/**`：Llama 等扩展 provider。
 - 动态 `.pi/extensions` 资源加载和扩展包管理。`.pi/skills`、`.pi/prompts`、slash commands 已作为核心功能实现，不属于本排除项。
-- `packages/server/**` 中完整远程 viewer 契约仍有开放 parity 工作；IPC、rpc-process、supervisor、实例表、opt-in presence、Radius OAuth/discovery、404 重注册/跨重启 presence 恢复、SDK 最小 surface 和 gist 分享路径已实现。`packages/evals/**` 只代表当前已有的 eval harness，不应被误读为完整工作区 parity。
+- `packages/server/**` 中完整远程 viewer 互操作仍有开放 parity 工作；IPC、rpc-process、supervisor、实例表、opt-in presence、Radius OAuth/discovery、404 重注册/跨重启 presence 恢复、SDK 最小 surface、gist 分享路径和 Pi fragment viewer URL 已实现。`packages/evals/**` 只代表当前已有的 eval harness，不应被误读为完整工作区 parity。
 - Pi 的图片自动处理仍是开放 parity 工作；当前实现包含图片类型检测、PNG/JPEG/GIF/WebP 附件、消息/session/provider 传递、Kitty/iTerm2 渲染和无能力 fallback。BMP 转换、自动 resize、剪贴板粘图和完整交互式图片 UI 尚未完成。
 
 ## 验收规则
