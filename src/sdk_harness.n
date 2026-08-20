@@ -28,18 +28,53 @@ pub fn harness_t.current_phase(&self): string {return self.phase}
 pub fn harness_t.prompt(&self, string text): ref<session_stream.stream_t>! {
     if self.phase != PHASE_IDLE {throw errorf('AgentHarness is busy')}
     self.phase = PHASE_TURN
-    var stream = self.session.prompt(text)
-    observe(self, stream)
+    var source = self.session.prompt(text)
+    var stream = session_stream.new()
+    bridge(self, source, stream)
     return stream
 }
 
-pub fn harness_t.steer(&self, string text) {
+pub fn harness_t.compact(&self, string instructions): ref<session_stream.stream_t>! {
+    if self.phase != PHASE_IDLE {throw errorf('AgentHarness is busy')}
+    self.phase = PHASE_COMPACTION
+    var source = self.session.runner.compact_now(instructions)
+    var stream = session_stream.new()
+    bridge(self, source, stream)
+    return stream
+}
+
+pub fn harness_t.navigate_tree(&self, string entry_id): string! {
+    if self.phase != PHASE_IDLE {throw errorf('AgentHarness is busy')}
+    return self.session.runner.navigate_tree(entry_id)
+}
+
+pub fn harness_t.navigate_tree_with_summary(&self, string entry_id, string instructions): ref<session_stream.stream_t>! {
+    if self.phase != PHASE_IDLE {throw errorf('AgentHarness is busy')}
+    self.phase = PHASE_COMPACTION
+    var source = self.session.runner.navigate_tree_with_summary(entry_id, instructions)
+    var stream = session_stream.new()
+    bridge(self, source, stream)
+    return stream
+}
+
+pub fn harness_t.set_model(&self, ref<ai_types.model_t> model): void! {self.session.runner.set_model(model)}
+pub fn harness_t.set_thinking_level(&self, string level): void! {self.session.runner.set_thinking_level(level)}
+pub fn harness_t.set_steering_mode(&self, string mode): void! {self.session.runner.set_steering_mode(mode)}
+pub fn harness_t.set_follow_up_mode(&self, string mode): void! {self.session.runner.set_follow_up_mode(mode)}
+pub fn harness_t.set_auto_compaction(&self, bool enabled): void! {self.session.runner.set_auto_compaction(enabled)}
+pub fn harness_t.set_auto_retry(&self, bool enabled): void! {self.session.runner.set_auto_retry(enabled)}
+pub fn harness_t.set_transport(&self, string transport) {self.session.runner.set_runtime_transport(transport)}
+pub fn harness_t.set_http_idle_timeout(&self, int timeout_ms) {self.session.runner.set_runtime_http_idle_timeout_ms(timeout_ms)}
+
+pub fn harness_t.steer(&self, string text): void! {
+    if self.phase == PHASE_IDLE {throw errorf('Cannot steer while idle')}
     ai_types.message_t message = new ai_types.user_message_t(content = text, timestamp = 0)
     self.session.runner.queue_steering(message)
     emit(self, 'steer')
 }
 
-pub fn harness_t.follow_up(&self, string text) {
+pub fn harness_t.follow_up(&self, string text): void! {
+    if self.phase == PHASE_IDLE {throw errorf('Cannot follow up while idle')}
     ai_types.message_t message = new ai_types.user_message_t(content = text, timestamp = 0)
     self.session.runner.queue_follow_up(message)
     emit(self, 'follow_up')
@@ -50,6 +85,14 @@ pub fn harness_t.abort(&self) {
     emit(self, 'abort')
 }
 
+pub fn harness_t.wait_for_idle(&self) {
+    self.session.runner.wait_rpc_delivery()
+    self.phase = PHASE_IDLE
+}
+
+pub fn harness_t.steering_mode(&self): string {return self.session.runner.agent_config.queues.steering_mode}
+pub fn harness_t.follow_up_mode(&self): string {return self.session.runner.agent_config.queues.follow_up_mode}
+
 pub fn harness_t.messages(&self): [ai_types.message_t] {return self.session.messages()}
 
 fn emit(ref<harness_t> harness, string kind) {
@@ -57,16 +100,25 @@ fn emit(ref<harness_t> harness, string kind) {
     if harness.handlers.contains('*') {harness.handlers['*'](kind)}
 }
 
-fn observe(ref<harness_t> harness, ref<session_stream.stream_t> stream) {
+fn bridge(ref<harness_t> harness, ref<session_stream.stream_t> source, ref<session_stream.stream_t> target) {
     go fn() {
         for true {
-            var event = stream.recv() catch error {break}
+            var event = source.recv() catch error {
+                target.fail('AgentHarness source stream ended unexpectedly') catch ignored {}
+                break
+            }
             if event.kind == session_stream.EVENT_COMPACTION_START {harness.phase = PHASE_COMPACTION}
             if event.kind == session_stream.EVENT_RETRY_START {harness.phase = PHASE_RETRY}
             if event.kind == session_stream.EVENT_AGENT_SETTLED || event.kind == session_stream.EVENT_SESSION_END {
                 harness.phase = PHASE_IDLE
             }
             emit(harness, event.kind)
+            if event.kind == session_stream.EVENT_SESSION_END {
+                var context = source.result() catch error {[]}
+                target.finish(context) catch ignored {}
+                break
+            }
+            target.push(event) catch ignored {}
         }
     }()
 }

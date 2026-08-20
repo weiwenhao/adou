@@ -7,14 +7,14 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 
 ## 2026-08-20 非 Extension 差异补齐批次
 
-- **阶段 1 已完成（提交待写入）**：对照 `vendors/pi/packages/coding-agent/src/migrations.ts`、`utils/version-check.ts`、`utils/changelog.ts` 和 `utils/tools-manager.ts`，新增 `src/config/migrations.n`、`src/config/version_check.n`、`src/config/changelog.n`、`src/tools/managed_tools.n`。
+- **阶段 1 已完成（提交 `f73e015`）**：对照 `vendors/pi/packages/coding-agent/src/migrations.ts`、`utils/version-check.ts`、`utils/changelog.ts` 和 `utils/tools-manager.ts`，新增 `src/config/migrations.n`、`src/config/version_check.n`、`src/config/changelog.n`、`src/tools/managed_tools.n`。
 - 启动期迁移已覆盖旧 `oauth.json`、settings 中 `apiKeys`、agent 根目录旧 JSONL session、旧 `tools/{rg,fd}`；迁移范围严格限制在 `ADOU_CODING_AGENT_DIR`，不改写 `~/.pi`。
 - `/changelog` 已改为解析 `CHANGELOG.md`，启动版本检查请求 `https://pi.dev/api/latest-version`，支持 `ADOU_OFFLINE` / `ADOU_SKIP_VERSION_CHECK` 守卫。
 - `rg` / `fd` 已具备本机查找、`fdfind` 兼容、GitHub release 查询/下载/解包/安装路径；离线模式不联网。
 - 证据：`make build` 通过；`tests/startup_migrations_test.n` 4/4 通过。工具下载 fixture/e2e 仍需在本阶段最终关闭前补齐。
-- **阶段 2 已完成（提交 `2337559`，watcher native 补丁待提交）**：Codex `websocket-cached` 已增加连接缓存、TTL、`previous_response_id` 和增量 input；TUI 支持 JSON 主题加载/reload，`ADOU_THEME_FILE` 主题文件和 git HEAD 通过 native kqueue/inotify 事件监听；grep/find 现在优先经 managed-tools 解析 `rg`。
-- 阶段 2 证据：`make build`、`tests/theme_test.n` 4/4、`tests/startup_migrations_test.n` 4/4；watcher 不依赖外部 `fswatch` 命令。
-- **阶段 3 已完成（提交 `3855050`）**：新增 `src/server/client.n` 与 `adou server list|spawn|status|stop|rpc|rpc-stream` 命令入口；新增 `src/sdk_harness.n`、`src/sdk_node.n`、`src/sdk_proxy.n`，补齐公共 Harness、Node execution environment、SSE streamProxy surface。
+- **阶段 2 已完成（提交 `e96ff98`、`5dddc65`）**：Codex `websocket-cached` 已增加连接缓存、TTL、`previous_response_id` 和增量 input；失败连接会被驱逐，不残留 busy cache；TUI 支持 Pi `vars` 别名、camelCase JSON 主题加载/reload，`ADOU_THEME_FILE` 主题文件和 git HEAD 通过 native kqueue/inotify 事件监听；grep/find 现在优先经 managed-tools 解析 `rg`/`fd`，缺失时按 Pi tools-manager 下载。
+- 阶段 2 证据：`make build`、`tests/theme_test.n` 5/5、`tests/terminal_colors_test.n` 6/6、`tests/startup_migrations_test.n` 4/4、`tests/codex_websocket_test.n` 7/7、`tests/builtins_test.n` 3/3；watcher 不依赖外部 `fswatch` 命令。
+- **阶段 3 已完成（提交 `3855050`、本批待提交）**：新增 `src/server/client.n` 与 `adou server list|spawn|status|stop|rpc|rpc-stream` 命令入口；新增 `src/sdk_harness.n`、`src/sdk_node.n`、`src/sdk_proxy.n`，补齐公共 Harness、Node execution environment、SSE streamProxy surface。Harness 现在转发完整 session stream，并暴露 compact/tree/model/thinking/queue/runtime 控制；proxy 具备 Pi 的异常转 error event、usage/signature/tool JSON 增量重建。
 - 阶段 3 证据：`make build`、`tests/server_client_test.n` 1/1、`tests/sdk_surface_test.n` 1/1、`tests/e2e/rpc-over-ipc.sh` 通过；server live 多进程 list/spawn/status/stop 已实测。
 
 ## 当前进度快照

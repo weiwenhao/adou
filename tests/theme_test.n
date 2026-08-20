@@ -45,3 +45,15 @@ test 'custom JSON theme loads ANSI colors and reloads' {
     assert(theme.accent() == '\x1b[38;2;10;11;12m')
     os.remove(file_path) catch error {}
 }
+
+test 'custom Pi theme resolves vars and camelCase background aliases' {
+    string file_path = '/tmp/adou-theme-alias-test.json'
+    os.remove(file_path) catch error {}
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    file.write('{"vars":{"cyan":"#112233","surface":"#040506"},"colors":{"borderAccent":"cyan","userMessageBg":"surface"}}' as [u8])
+    file.close()
+    assert(theme.load_json(file_path))
+    assert(theme.custom_color('border_accent') == '\x1b[38;2;17;34;51m')
+    assert(theme.user_bg() == '\x1b[48;2;4;5;6m')
+    os.remove(file_path) catch error {}
+}

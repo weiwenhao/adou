@@ -82,6 +82,8 @@ pub type run_state_t = struct {
     string account_id
     ref<client.response_t>? response = null
     ref<codex_websocket.conn_t>? ws_conn = null
+    string websocket_cache_key
+    ref<cached_websocket_entry_t>? websocket_cache_entry = null
     bool ws_started
 }
 
@@ -188,6 +190,7 @@ fn try_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     run_websocket(stream, state) catch error {
         debug.log('provider', 'codex websocket attempt failed: ' + error.msg())
         string message = error.msg()
+        invalidate_websocket_connection(state)
         if stream.is_aborted() {
             throw errorf('Request aborted')
         }
@@ -252,6 +255,8 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
         websocket_connections_created += 1
     }
     state.ws_conn = conn
+    state.websocket_cache_key = session_key
+    state.websocket_cache_entry = cache_entry
     conn.set_read_timeout(state.options.timeout_ms)
     abort.abort_callback_t close_ws = fn () {
         conn.close()
@@ -319,6 +324,23 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     }
     stream.end()
     debug.log('provider', 'codex websocket stream end')
+}
+
+// A failed WebSocket must never leave a cached entry marked busy. Evicting the
+// connection lets the next request reconnect instead of remaining stuck.
+fn invalidate_websocket_connection(ref<run_state_t> state) {
+    if state.ws_conn is ref<codex_websocket.conn_t> conn {
+        conn.close()
+    }
+    if state.websocket_cache_entry is ref<cached_websocket_entry_t> entry {
+        entry.busy = false
+        if state.websocket_cache_key != '' && websocket_cache.contains(state.websocket_cache_key) {
+            websocket_cache.del(state.websocket_cache_key)
+        }
+    }
+    state.websocket_cache_entry = null
+    state.websocket_cache_key = ''
+    state.ws_conn = null
 }
 
 fn acquire_cached_connection(string session_key, ref<run_state_t> state): ref<cached_websocket_entry_t>? {
@@ -502,9 +524,7 @@ fn response_headers(ref<client.response_t> response): [provider_retry.header_t] 
 
 fn fail(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state, string message) {
     debug.log('provider', 'codex terminal failure: ' + message)
-    if state.ws_conn is ref<codex_websocket.conn_t> ws_conn {
-        ws_conn.close()
-    }
+    invalidate_websocket_connection(state)
     state.processor.output.stop_reason = stream.is_aborted() ? types.STOP_ABORTED : types.STOP_ERROR
     state.processor.output.error_message = message
     clear_streaming_scratch(state.processor.output)

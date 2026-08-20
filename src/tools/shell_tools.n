@@ -1038,6 +1038,24 @@ fn run_grep(string cwd, string pattern, string path, string glob, bool ignore_ca
 }
 
 fn run_find(string cwd, string search_path, string pattern): command.result_t! {
+    // Pi delegates the default find implementation to fd (managed by
+    // tools-manager), retaining fd's gitignore semantics. Keep ripgrep as a
+    // compatibility fallback only when fd cannot be resolved.
+    string fd = managed_tools.ensure('fd') catch error {''}
+    if fd != '' {
+        [string] fd_args = ['--glob', '--color=never', '--hidden']
+        bool inside_git = path_utils.exists(path.join(search_path, '.git'))
+        if !inside_git {fd_args.push('--no-require-git')}
+        string effective_pattern = pattern
+        if pattern.contains('/') {
+            fd_args.push('--full-path')
+            if !pattern.starts_with('/') && !pattern.starts_with('**/') && pattern != '**' {
+                effective_pattern = '**/' + pattern
+            }
+        }
+        fd_args.push('--'); fd_args.push(effective_pattern); fd_args.push(search_path)
+        return command.argv(cwd, fd, fd_args)
+    }
     string rg = managed_tools.ensure('rg') catch error {''}
     if rg != '' {
         string effective_pattern = pattern

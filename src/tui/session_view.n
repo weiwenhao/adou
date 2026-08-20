@@ -49,6 +49,7 @@ import adou.src.tui.renderer
 import adou.src.tui.text_utils
 import adou.src.tui.theme
 import adou.src.tui.terminal_image
+import adou.src.tui.terminal_colors
 import adou.src.tui.clipboard_image
 import adou.src.tools.shell_tools
 import adou.src.tools.command
@@ -364,11 +365,16 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
 }
 
 // Pi theme values: 'light', 'dark' or an automatic 'lightTheme/darkTheme'
-// pair.  Adou has no terminal appearance detection yet, so the automatic
-// pair's active variant falls back to dark (known deviation recorded in the
-// Batch 3 audit notes).
+// pair. Use COLORFGBG as the non-interactive fallback when no live OSC/997
+// terminal report is available.
 fn active_theme_variant(string setting): string {
     if setting == 'light' {return 'light'}
+    if setting.contains('/') {
+        int slash = setting.find('/')
+        string light_name = setting.slice(0, slash)
+        string dark_name = setting.slice(slash + 1, setting.len())
+        return terminal_colors.detect_terminal_theme_from_env() == 'light' ? light_name : dark_name
+    }
     return 'dark'
 }
 

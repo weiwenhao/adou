@@ -1,5 +1,6 @@
 import adou.src.ai.event_stream
 import adou.src.ai.sse
+import adou.src.ai.streaming_json
 import adou.src.ai.types as ai_types
 import adou.src.json_util
 import adou.src.ai.types
@@ -19,8 +20,19 @@ pub fn stream_proxy(ref<ai_types.model_t> model, ref<ai_types.context_t> context
     return stream
 }
 
-fn run_proxy(ref<event_stream.assistant_stream_t> stream, ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> stream_options, options_t options): void! {
+fn run_proxy(ref<event_stream.assistant_stream_t> stream, ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> stream_options, options_t options): void {
     ref<ai_types.assistant_message_t> partial = new ai_types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, timestamp = time.now().ms_timestamp())
+    run_proxy_inner(stream, partial, model, context, stream_options, options) catch error {
+        partial.stop_reason = ai_types.STOP_ABORTED
+        partial.error_message = error.msg()
+        var reason = error.msg().contains('aborted') ? ai_types.STOP_ABORTED : ai_types.STOP_ERROR
+        partial.stop_reason = reason
+        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_ERROR, reason: reason, error: partial,}) catch ignored {}
+        stream.end() catch ignored {}
+    }
+}
+
+fn run_proxy_inner(ref<event_stream.assistant_stream_t> stream, ref<ai_types.assistant_message_t> partial, ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> stream_options, options_t options): void! {
     var response = send_proxy(model, context, stream_options, options)
     if response.status < 200 || response.status >= 300 {
         string body = response.text() catch error {''}
@@ -64,6 +76,9 @@ fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.a
     var parsed = json_util.parse(data) catch error {return}
     if !json_util.is_obj(parsed) {return}
     var object = parsed as {string:any}
+    if object.contains('usage') && json_util.is_obj(object['usage']) {
+        partial.usage = proxy_usage(object['usage'] as {string:any})
+    }
     string kind = json_util.opt_string(object, 'type')
     int index = object.contains('contentIndex') ? json_util.opt_int(object, 'contentIndex') : -1
     match kind {
@@ -81,6 +96,7 @@ fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.a
             stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_DELTA, content_index: index, delta: delta, partial: partial,})
         }
         'text_end' -> {
+            if object.contains('contentSignature') { (partial.content[index] as ref<ai_types.text_content_t>).text_signature = json_util.opt_string(object, 'contentSignature') }
             stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_END, content_index: index, content: (partial.content[index] as ref<ai_types.text_content_t>).text, partial: partial,})
         }
         'thinking_start' -> {
@@ -94,6 +110,7 @@ fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.a
             stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_DELTA, content_index: index, delta: delta, partial: partial,})
         }
         'thinking_end' -> {
+            if object.contains('contentSignature') { (partial.content[index] as ref<ai_types.thinking_content_t>).thinking_signature = json_util.opt_string(object, 'contentSignature') }
             stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_END, content_index: index, content: (partial.content[index] as ref<ai_types.thinking_content_t>).thinking, partial: partial,})
         }
         'toolcall_start' -> {
@@ -105,6 +122,7 @@ fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.a
             string delta = json_util.opt_string(object, 'delta')
             var call = partial.content[index] as ref<ai_types.tool_call_t>
             call.partial_json += delta
+            call.arguments = streaming_json.parse(call.partial_json)
             stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_DELTA, content_index: index, delta: delta, partial: partial,})
         }
         'toolcall_end' -> {
@@ -122,6 +140,23 @@ fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.a
         }
         _ -> {}
     }
+}
+
+fn proxy_usage({string:any} object): ai_types.usage_t {
+    return ai_types.usage_t {
+        input: json_util.opt_int(object, 'input'),
+        output: json_util.opt_int(object, 'output'),
+        cache_read: opt_int_or(object, 'cacheRead', 'cache_read'),
+        cache_write: opt_int_or(object, 'cacheWrite', 'cache_write'),
+        cache_write_1h: opt_int_or(object, 'cacheWrite1h', 'cache_write_1h'),
+        reasoning: json_util.opt_int(object, 'reasoning'),
+        total_tokens: opt_int_or(object, 'totalTokens', 'total_tokens'),
+    }
+}
+
+fn opt_int_or({string:any} object, string primary, string alternate): int {
+    if object.contains(primary) {return json_util.opt_int(object, primary)}
+    return json_util.opt_int(object, alternate)
 }
 
 fn ensure_content(ref<ai_types.assistant_message_t> partial, int index, ai_types.content_t content) {

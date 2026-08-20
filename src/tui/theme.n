@@ -12,6 +12,7 @@ import syscall
 string theme_variant = ''
 string loaded_theme_path = ''
 {string:string} custom_colors = {}
+{string:any} theme_vars = {}
 
 fn hex_byte(string value): int {
     int result = 0
@@ -29,7 +30,7 @@ fn hex_byte(string value): int {
 }
 
 fn parse_color(string value, bool background): string {
-    string raw = value.trim([' ', '\t', '\n', '\r'])
+    string raw = resolve_theme_value(value, 0)
     if raw.starts_with('#') && raw.len() == 7 {
         string prefix = background ? '\x1b[48;2;' : '\x1b[38;2;'
         return prefix + fmt.sprintf('%d;%d;%dm', hex_byte(raw.slice(1, 3)), hex_byte(raw.slice(3, 5)), hex_byte(raw.slice(5, 7)))
@@ -47,12 +48,18 @@ pub fn load_json(string file_path): bool {
     var parsed = json_util.parse(content) catch error {return false}
     if !json_util.is_obj(parsed) {return false}
     var root = parsed as {string:any}
+    custom_colors = {}
+    theme_vars = {}
+    var raw_vars = json_util.opt_obj(root, 'vars')
+    for name, value in raw_vars {
+        if value is string {theme_vars[name] = value as string}
+    }
     any colors = root
     if root.contains('colors') && json_util.is_obj(root['colors']) {colors = root['colors']}
     if !(colors is {string:any}) {return false}
     var object = colors as {string:any}
     for name, value in object {
-        if value is string {set_custom_color(name, parse_color(value as string, name.ends_with('_bg')))}
+        if value is string {set_custom_color(name, parse_color(value as string, is_background_name(name)))}
     }
     loaded_theme_path = path_utils.expand_path(file_path)
     return true
@@ -74,6 +81,30 @@ fn set_custom_color(string name, string value) {
         _ -> name
     }
     custom_colors[key] = value
+}
+
+fn resolve_theme_value(string value, int depth): string {
+    string raw = value.trim([' ', '\t', '\n', '\r'])
+    if depth >= 8 || !theme_vars.contains(raw) {return raw}
+    return resolve_theme_value(theme_vars[raw] as string, depth + 1)
+}
+
+fn is_background_name(string name): bool {
+    return match name {
+        'selectedBg' -> true
+        'userMessageBg' -> true
+        'customMessageBg' -> true
+        'toolPendingBg' -> true
+        'toolSuccessBg' -> true
+        'toolErrorBg' -> true
+        'selected_bg' -> true
+        'user_bg' -> true
+        'custom_bg' -> true
+        'tool_pending_bg' -> true
+        'tool_success_bg' -> true
+        'tool_error_bg' -> true
+        _ -> false
+    }
 }
 
 pub fn set_variant(string name) {
@@ -118,6 +149,8 @@ pub fn border(): string {
 fn custom_or(string name, string fallback): string {
     return custom_colors.contains(name) ? custom_colors[name] : fallback
 }
+
+pub fn custom_color(string name): string {return custom_or(name, '')}
 
 // Pi's built-in dark theme, kept as terminal-native ANSI styling.
 pub const RESET = '\x1b[0m'

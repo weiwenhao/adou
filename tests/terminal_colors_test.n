@@ -46,3 +46,8 @@ test 'parses the color scheme report like Pi' {
     assert(terminal_colors.parse_terminal_color_scheme_report('\x1b[?997;2n') == 'light')
     assert(terminal_colors.parse_terminal_color_scheme_report('nope') == '')
 }
+
+test 'COLORFGBG fallback returns a valid terminal theme' {
+    string detected = terminal_colors.detect_terminal_theme_from_env()
+    assert(detected == 'dark' || detected == 'light')
+}

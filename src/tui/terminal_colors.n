@@ -1,4 +1,5 @@
 import adou.src.json_util
+import syscall
 
 // Port of vendors/pi/packages/tui/src/terminal-colors.ts.
 // OSC 11 background-color responses and the 997 color-scheme report.
@@ -133,6 +134,23 @@ pub fn parse_terminal_color_scheme_report(string data): string {
         }
     }
     return ''
+}
+
+// Environment fallback used when the terminal cannot answer an OSC query.
+// COLORFGBG is conventionally "foreground;background" where bright/default
+// backgrounds (8-15) indicate a light terminal and 0-7 indicate dark.
+pub fn detect_terminal_theme_from_env(): string {
+    string value = syscall.get_env('COLORFGBG')
+    if value == '' {return 'dark'}
+    int separator = value.rfind(';')
+    if separator < 0 || separator + 1 >= value.len() {return 'dark'}
+    string background = value.slice(separator + 1, value.len())
+    int parsed = 0
+    for byte in background as [u8] {
+        if byte < '0'.char() || byte > '9'.char() {return 'dark'}
+        parsed = parsed * 10 + (byte as int) - ('0'.char() as int)
+    }
+    return parsed >= 8 ? 'light' : 'dark'
 }
 
 fn all_hex(string value): bool {
