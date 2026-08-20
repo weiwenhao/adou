@@ -55,10 +55,11 @@ grep -vE '(^|/)\._' "$raw_payload_list" > "$payload_list"
 for required in \
     usr/local/bin/adou \
     usr/local/bin/adou-process-group \
+    usr/local/share/adou/CHANGELOG.md \
     usr/local/share/adou/docs/mvp-implementation-spec.md; do
     grep -qx "$required" "$payload_list" || fail "payload missing $required"
 done
-unexpected=$(grep -vE '^\.?$|^usr/?$|^usr/local/?$|^usr/local/bin/?$|^usr/local/share/?$|^usr/local/share/adou/?$|^usr/local/share/adou/docs/?$|^usr/local/bin/adou$|^usr/local/bin/adou-process-group$|^usr/local/share/adou/docs/mvp-implementation-spec.md$' "$payload_list" || true)
+unexpected=$(grep -vE '^\.?$|^usr/?$|^usr/local/?$|^usr/local/bin/?$|^usr/local/share/?$|^usr/local/share/adou/?$|^usr/local/share/adou/docs/?$|^usr/local/bin/adou$|^usr/local/bin/adou-process-group$|^usr/local/share/adou/CHANGELOG.md$|^usr/local/share/adou/docs/mvp-implementation-spec.md$' "$payload_list" || true)
 [ -z "$unexpected" ] || fail "unexpected payload paths: $unexpected"
 
 payload_root="$tmp/payload-root"
@@ -67,9 +68,11 @@ mkdir -p "$payload_root"
 [ -x "$payload_root/usr/local/bin/adou" ] || fail "packaged adou is not executable"
 [ -x "$payload_root/usr/local/bin/adou-process-group" ] || fail "packaged helper is not executable"
 [ -r "$payload_root/usr/local/share/adou/docs/mvp-implementation-spec.md" ] || fail "packaged docs are unreadable"
+[ -r "$payload_root/usr/local/share/adou/CHANGELOG.md" ] || fail "packaged changelog is unreadable"
 [ "$(stat -f '%Lp' "$payload_root/usr/local/bin/adou")" = 755 ] || fail "packaged adou mode is not 0755"
 [ "$(stat -f '%Lp' "$payload_root/usr/local/bin/adou-process-group")" = 755 ] || fail "packaged helper mode is not 0755"
 [ "$(stat -f '%Lp' "$payload_root/usr/local/share/adou/docs/mvp-implementation-spec.md")" = 644 ] || fail "packaged docs mode is not 0644"
+[ "$(stat -f '%Lp' "$payload_root/usr/local/share/adou/CHANGELOG.md")" = 644 ] || fail "packaged changelog mode is not 0644"
 
 expected_version="adou  $version"
 actual_version=$(ADOU_PROCESS_GROUP_HELPER="$payload_root/usr/local/bin/adou-process-group" \

@@ -111,7 +111,7 @@ if [ -z "$version" ]; then
 fi
 
 actual=$(echo "$entries" | sed "s|^$dist_dir/||" | grep -v '^$' | sort)
-expected=$(printf 'RELEASE-README\nSHA256SUMS\nadou\nadou-process-group\nLICENSE\nTHIRD_PARTY_NOTICES.md\nNATURE-MIT-LICENSE.txt' | sort)
+expected=$(printf 'RELEASE-README\nCHANGELOG.md\nSHA256SUMS\nadou\nadou-process-group\nLICENSE\nTHIRD_PARTY_NOTICES.md\nNATURE-MIT-LICENSE.txt' | sort)
 if [ "$actual" != "$expected" ]; then
     fail "archive file list is not the fixed set:"$'\n'"$(printf 'expected:\n%s\nactual:\n%s' "$expected" "$actual")"
 fi

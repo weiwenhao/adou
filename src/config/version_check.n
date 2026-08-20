@@ -9,39 +9,96 @@ pub type release_t = struct {
     string note
 }
 
+type semver_t = struct {
+    bool valid
+    int major
+    int minor
+    int patch
+    [string] prerelease
+}
+
 pub fn compare_versions(string left, string right): int {
-    [int] a = parts(left)
-    [int] b = parts(right)
-    for int index = 0; index < 3; index += 1 {
-        if a[index] != b[index] {return a[index] < b[index] ? -1 : 1}
+    semver_t a = parse_semver(left)
+    semver_t b = parse_semver(right)
+    if !a.valid || !b.valid {
+        string left_trimmed = left.trim([' ', '\t', '\n', '\r'])
+        string right_trimmed = right.trim([' ', '\t', '\n', '\r'])
+        if left_trimmed == right_trimmed {return 0}
+        return left_trimmed < right_trimmed ? -1 : 1
     }
-    return 0
+    return compare_semver(a, b)
+}
+
+pub fn is_newer(string candidate, string current): bool {
+    semver_t left = parse_semver(candidate)
+    semver_t right = parse_semver(current)
+    if left.valid && right.valid {return compare_semver(left, right) > 0}
+    return candidate.trim([' ', '\t', '\n', '\r']) != current.trim([' ', '\t', '\n', '\r'])
 }
 
 pub fn latest(string current): ref<release_t>? {
     if truthy(syscall.get_env('ADOU_OFFLINE')) || truthy(syscall.get_env('ADOU_SKIP_VERSION_CHECK')) {
         return null
     }
-    var response = client.new().get('https://pi.dev/api/latest-version').timeout(10000).header('Accept', 'application/json').header('User-Agent', 'adou-coding-agent/' + current).send() catch error {
+    string endpoint = syscall.get_env('ADOU_VERSION_CHECK_URL')
+    if endpoint == '' {endpoint = 'https://pi.dev/api/latest-version'}
+    var response = client.new().get(endpoint).timeout(10000).header('Accept', 'application/json').header('User-Agent', 'adou-coding-agent/' + current).send() catch error {
         return null
     }
-    if response.status < 200 || response.status >= 300 {return null}
-    any parsed = json_util.parse(response.body) catch error {return null}
+    if response.status < 200 || response.status >= 300 {
+        response.close()
+        return null
+    }
+    string body = response.body
+    response.close()
+    return parse_release(body, current)
+}
+
+pub fn parse_release(string body, string current): ref<release_t>? {
+    any parsed = json_util.parse(body) catch error {return null}
     if !json_util.is_obj(parsed) {return null}
     var object = parsed as {string:any}
     string version = json_util.opt_string(object, 'version')
-    if version == '' || compare_versions(version, current) <= 0 {return null}
-    return new release_t(version = version, package_name = json_util.opt_string(object, 'packageName'), note = json_util.opt_string(object, 'note'))
+    version = version.trim([' ', '\t', '\n', '\r'])
+    if version == '' || !is_newer(version, current) {return null}
+    return new release_t(version = version, package_name = json_util.opt_string(object, 'packageName').trim([' ', '\t', '\n', '\r']), note = json_util.opt_string(object, 'note').trim([' ', '\t', '\n', '\r']))
 }
 
-fn parts(string value): [int] {
-    [int] result = [0, 0, 0]
-    string normalized = value.trim([' ', '\t', 'v'])
-    [string] values = normalized.split('.')
-    for int index = 0; index < values.len() && index < 3; index += 1 {
-        result[index] = digits(values[index])
+fn parse_semver(string value): semver_t {
+    string normalized = value.trim([' ', '\t', '\n', '\r'])
+    if normalized.starts_with('v') {normalized = normalized.slice(1, normalized.len())}
+    int build = normalized.find('+')
+    if build >= 0 {
+        string build_suffix = normalized.slice(build + 1, normalized.len())
+        if build_suffix == '' {return semver_t {}}
+        for identifier in build_suffix.split('.') {
+            if identifier == '' || !valid_identifier(identifier) {return semver_t {}}
+        }
+        normalized = normalized.slice(0, build)
     }
-    return result
+    string core = normalized
+    [string] prerelease = []
+    int hyphen = normalized.find('-')
+    if hyphen >= 0 {
+        core = normalized.slice(0, hyphen)
+        string suffix = normalized.slice(hyphen + 1, normalized.len())
+        if suffix == '' {return semver_t {}}
+        prerelease = suffix.split('.')
+        for identifier in prerelease {
+            if identifier == '' || !valid_identifier(identifier) {return semver_t {}}
+            bool numeric = true
+            for byte in identifier as [u8] {
+                if byte < '0'.char() || byte > '9'.char() {numeric = false; break}
+            }
+            if numeric && !valid_numeric(identifier) {return semver_t {}}
+        }
+    }
+    [string] values = core.split('.')
+    if values.len() != 3 {return semver_t {}}
+    for part in values {
+        if !valid_numeric(part) {return semver_t {}}
+    }
+    return semver_t {valid: true, major: digits(values[0]), minor: digits(values[1]), patch: digits(values[2]), prerelease: prerelease,}
 }
 
 fn digits(string value): int {
@@ -51,6 +108,47 @@ fn digits(string value): int {
         result = result * 10 + (byte - '0'.char()) as int
     }
     return result
+}
+
+fn valid_numeric(string value): bool {
+    if value == '' || (value.len() > 1 && value.starts_with('0')) {return false}
+    for byte in value as [u8] {
+        if byte < '0'.char() || byte > '9'.char() {return false}
+    }
+    return true
+}
+
+fn valid_identifier(string value): bool {
+    for byte in value as [u8] {
+        bool digit = byte >= '0'.char() && byte <= '9'.char()
+        bool alpha = (byte >= 'a'.char() && byte <= 'z'.char()) || (byte >= 'A'.char() && byte <= 'Z'.char())
+        if !digit && !alpha && byte != '-'.char() {return false}
+    }
+    return true
+}
+
+fn compare_semver(semver_t left, semver_t right): int {
+    [int] a = [left.major, left.minor, left.patch]
+    [int] b = [right.major, right.minor, right.patch]
+    for int index = 0; index < 3; index += 1 {
+        if a[index] != b[index] {return a[index] < b[index] ? -1 : 1}
+    }
+    if left.prerelease.len() == 0 && right.prerelease.len() == 0 {return 0}
+    if left.prerelease.len() == 0 {return 1}
+    if right.prerelease.len() == 0 {return -1}
+    int length = left.prerelease.len() < right.prerelease.len() ? left.prerelease.len() : right.prerelease.len()
+    for int index = 0; index < length; index += 1 {
+        string a_part = left.prerelease[index]
+        string b_part = right.prerelease[index]
+        if a_part == b_part {continue}
+        bool a_numeric = valid_numeric(a_part)
+        bool b_numeric = valid_numeric(b_part)
+        if a_numeric && b_numeric {return digits(a_part) < digits(b_part) ? -1 : 1}
+        if a_numeric != b_numeric {return a_numeric ? -1 : 1}
+        return a_part < b_part ? -1 : 1
+    }
+    if left.prerelease.len() == right.prerelease.len() {return 0}
+    return left.prerelease.len() < right.prerelease.len() ? -1 : 1
 }
 
 fn truthy(string value): bool {

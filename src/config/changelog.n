@@ -1,5 +1,7 @@
 import adou.src.tools.path_utils
 import fs
+import fmt
+import os
 import path
 import syscall
 
@@ -26,7 +28,7 @@ pub fn parse(string file_path): [entry_t] {
     for line in lines {
         if line.starts_with('## ') {
             if active {
-                current.content = body.trim([' ', '\t', '\n', '\r'])
+                current.content = normalize_links(body.trim([' ', '\t', '\n', '\r']), entry_version(current))
                 entries.push(current)
             }
             var version = parse_version(line)
@@ -43,7 +45,7 @@ pub fn parse(string file_path): [entry_t] {
         }
     }
     if active {
-        current.content = body.trim([' ', '\t', '\n', '\r'])
+        current.content = normalize_links(body.trim([' ', '\t', '\n', '\r']), entry_version(current))
         entries.push(current)
     }
     return entries
@@ -71,7 +73,89 @@ pub fn compare(entry_t entry, int major, int minor, int patch): int {
 pub fn default_path(): string {
     string configured = syscall.get_env('ADOU_CHANGELOG_PATH')
     if configured != '' {return path_utils.expand_path(configured)}
-    return path.join(path_utils.current_working_directory(), 'CHANGELOG.md')
+    string cwd_path = path.join(path_utils.current_working_directory(), 'CHANGELOG.md')
+    if path_utils.exists(cwd_path) {return cwd_path}
+    [string] argv = os.args()
+    if argv.len() > 0 && argv[0] != '' {
+        string executable_dir = path.dir(path_utils.resolve_to_cwd(argv[0], path_utils.current_working_directory()))
+        string adjacent = path.join(executable_dir, 'CHANGELOG.md')
+        if path_utils.exists(adjacent) {return adjacent}
+        string installed = path_utils.clean(path.join(executable_dir, '../share/adou/CHANGELOG.md'))
+        if path_utils.exists(installed) {return installed}
+    }
+    string system = '/usr/local/share/adou/CHANGELOG.md'
+    if path_utils.exists(system) {return system}
+    return cwd_path
+}
+
+pub fn normalize_links(string markdown, string version): string {
+    string tag = version.starts_with('v') ? version : 'v' + version
+    string output = ''
+    int cursor = 0
+    for cursor < markdown.len() {
+        int open = cursor == 0 ? markdown.find('[') : markdown.find_after('[', cursor)
+        if open < 0 {
+            output += markdown.slice(cursor, markdown.len())
+            break
+        }
+        int separator = markdown.find_after('](', open + 1)
+        if separator < 0 {
+            output += markdown.slice(cursor, markdown.len())
+            break
+        }
+        int close = markdown.find_after(')', separator + 2)
+        if close < 0 {
+            output += markdown.slice(cursor, markdown.len())
+            break
+        }
+        string inside = markdown.slice(separator + 2, close)
+        int space = inside.find(' ')
+        string target = space < 0 ? inside : inside.slice(0, space)
+        string suffix = space < 0 ? '' : inside.slice(space, inside.len())
+        output += markdown.slice(cursor, separator + 2)
+        output += normalize_target(target, tag) + suffix + ')'
+        cursor = close + 1
+    }
+    return output
+}
+
+fn normalize_target(string target, string tag): string {
+    string canonical = target
+    canonical = canonical.replace('https://github.com/badlogic/pi-mono', 'https://github.com/earendil-works/pi')
+    canonical = canonical.replace('https://github.com/earendil-works/pi-mono', 'https://github.com/earendil-works/pi')
+    string repo = 'https://github.com/earendil-works/pi'
+    for route in ['blob', 'tree'] {
+        for branch in ['main', 'master'] {
+            string prefix = repo + '/' + route + '/' + branch + '/'
+            if canonical.starts_with(prefix) {
+                return repo + '/' + route + '/' + tag + '/' + canonical.slice(prefix.len(), canonical.len())
+            }
+        }
+    }
+    if canonical.starts_with('#') || canonical.starts_with('//') || has_url_scheme(canonical) {return canonical}
+    int hash = canonical.find('#')
+    string before_hash = hash < 0 ? canonical : canonical.slice(0, hash)
+    string fragment = hash < 0 ? '' : canonical.slice(hash, canonical.len())
+    int query_at = before_hash.find('?')
+    string path_part = query_at < 0 ? before_hash : before_hash.slice(0, query_at)
+    string query = query_at < 0 ? '' : before_hash.slice(query_at, before_hash.len())
+    if path_part == '' {return canonical}
+    string normalized_path = path_utils.clean('packages/coding-agent/' + path_part.replace('\\', '/'))
+    if normalized_path == '..' || normalized_path.starts_with('../') {return canonical}
+    bool directory = path_part.ends_with('/') || !path.base(normalized_path).contains('.')
+    if path_part.ends_with('/') && !normalized_path.ends_with('/') {normalized_path += '/'}
+    return repo + '/' + (directory ? 'tree' : 'blob') + '/' + tag + '/' + normalized_path + query + fragment
+}
+
+fn has_url_scheme(string target): bool {
+    int colon = target.find(':')
+    if colon <= 0 {return false}
+    int slash = target.find('/')
+    return slash < 0 || colon < slash
+}
+
+fn entry_version(entry_t entry): string {
+    return fmt.sprintf('%d.%d.%d', entry.major, entry.minor, entry.patch)
 }
 
 fn parse_version(string line): [int] {

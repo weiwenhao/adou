@@ -57,9 +57,11 @@ fn migrate_auth(): [string] {
     string oauth_path = path.join(agent_dir, 'oauth.json')
     if path_utils.exists(oauth_path) {
         string content = read_text(oauth_path) catch error {''}
+        bool parsed_oauth = false
         if content != '' {
-            any parsed = json_util.parse(content) catch error {'{}'}
+            any parsed = json_util.parse(content) catch error {''}
             if json_util.is_obj(parsed) {
+                parsed_oauth = true
                 for provider, value in parsed as {string:any} {
                     if json_util.is_obj(value) {
                         any cloned = json_util.clone(value) catch error {'{}'}
@@ -73,7 +75,9 @@ fn migrate_auth(): [string] {
                 }
             }
         }
-        syscall.rename(oauth_path, oauth_path + '.migrated') catch error {}
+        if parsed_oauth {
+            syscall.rename(oauth_path, oauth_path + '.migrated') catch error {}
+        }
     }
 
     string settings_path = paths.settings_path()
@@ -150,7 +154,10 @@ fn migrate_tools(): [string] {
         if name != 'rg' && name != 'fd' && name != 'rg.exe' && name != 'fd.exe' {continue}
         string source = path.join(old_dir, name)
         string target = path.join(new_dir, name)
-        if path_utils.exists(target) {continue}
+        if path_utils.exists(target) {
+            os.remove(source) catch error {}
+            continue
+        }
         os.mkdirs(new_dir, 0o700) catch error {continue}
         syscall.rename(source, target) catch error {continue}
         moved.push(name)

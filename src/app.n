@@ -20,7 +20,6 @@ import adou.src.config.settings
 import adou.src.config.settings as config_settings
 import adou.src.config.trust
 import adou.src.config.types as config_types
-import adou.src.config.version_check
 import adou.src.config.paths as config_paths
 import adou.src.context.project
 import adou.src.context.resource_snapshot
@@ -466,19 +465,10 @@ pub fn run(): void! {
         return
     }
 
-    string update_notice = ''
-    if !config.offline {
-        var latest = version_check.latest(VERSION)
-        if latest is ref<version_check.release_t> release {
-            update_notice = 'New Adou version available: ' + release.version
-        }
-    }
     var terminal = term.open()
     var view = session_view.new(terminal, runner, config.model.id, session_cwd, config.skill_paths, config.no_skills, config.trust_override, config.trust_override_explicit, config.scoped_models, config.scoped_models_explicit, config.system_prompt, config.append_system_prompts, config.no_context_files)
     view.chat.thinking_visible = !config.hide_thinking
-    if update_notice != '' && view.chat.status == '' {
-        view.chat.status = update_notice
-    }
+    view.start_version_check(VERSION, config.offline)
     if config.resume && config.initial_messages.len() == 0 {
         // Pi's --resume opens the session picker.  Keep the headless path
         // deterministic (open_repository already selected the recent

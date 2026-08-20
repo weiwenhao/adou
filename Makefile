@@ -132,6 +132,7 @@ install: build
 	@cp "$(PROCESS_GROUP_HELPER)" "$(DESTDIR)$(PREFIX)/bin/adou-process-group"
 	@mkdir -p "$(DESTDIR)$(PREFIX)/share/adou/docs"
 	@cp docs/mvp-implementation-spec.md "$(DESTDIR)$(PREFIX)/share/adou/docs/"
+	@cp CHANGELOG.md "$(DESTDIR)$(PREFIX)/share/adou/CHANGELOG.md"
 
 # darwin-arm64 release tarball.  src/app.n's VERSION is the single source of
 # truth; package.toml must agree or dist fails.  File list and permissions are

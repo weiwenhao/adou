@@ -58,6 +58,7 @@ install -m 0755 "$adou_bin" "$root/usr/local/bin/adou"
 install -m 0755 "$helper_bin" "$root/usr/local/bin/adou-process-group"
 install -m 0644 "$repo_root/docs/mvp-implementation-spec.md" \
     "$root/usr/local/share/adou/docs/mvp-implementation-spec.md"
+install -m 0644 "$repo_root/CHANGELOG.md" "$root/usr/local/share/adou/CHANGELOG.md"
 
 verify_payload_signature() {
     path=$1

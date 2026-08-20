@@ -82,7 +82,8 @@ for bin_name in adou-process-group adou; do
 done
 
 cp "$stage/RELEASE-README" "$signed_stage/RELEASE-README"
-(cd "$signed_stage" && shasum -a 256 adou adou-process-group RELEASE-README > SHA256SUMS)
+cp "$stage/CHANGELOG.md" "$signed_stage/CHANGELOG.md"
+(cd "$signed_stage" && shasum -a 256 adou adou-process-group RELEASE-README CHANGELOG.md > SHA256SUMS)
 tar -C "$dist_dir" -czf "$dist_dir/adou-$adou_version-darwin-arm64-signed.tar.gz" "adou-$adou_version-darwin-arm64-signed"
 
 echo "signed-dist: status=ok artifact=$dist_dir/adou-$adou_version-darwin-arm64-signed.tar.gz"

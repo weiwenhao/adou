@@ -9,11 +9,11 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 
 - **阶段 1 已完成（提交 `f73e015`）**：对照 `vendors/pi/packages/coding-agent/src/migrations.ts`、`utils/version-check.ts`、`utils/changelog.ts` 和 `utils/tools-manager.ts`，新增 `src/config/migrations.n`、`src/config/version_check.n`、`src/config/changelog.n`、`src/tools/managed_tools.n`。
 - 启动期迁移已覆盖旧 `oauth.json`、settings 中 `apiKeys`、agent 根目录旧 JSONL session、旧 `tools/{rg,fd}`；迁移范围严格限制在 `ADOU_CODING_AGENT_DIR`，不改写 `~/.pi`。
-- `/changelog` 已改为解析 `CHANGELOG.md`，启动版本检查请求 `https://pi.dev/api/latest-version`，支持 `ADOU_OFFLINE` / `ADOU_SKIP_VERSION_CHECK` 守卫。
+- `/changelog` 已改为解析真实 `CHANGELOG.md`，并按 Pi 规则把相对链接固定到对应 release tag；路径按 `ADOU_CHANGELOG_PATH`、当前目录、可执行文件相邻目录和安装 share 目录顺序解析。启动版本检查请求 `https://pi.dev/api/latest-version`，支持 SemVer 预发布比较、`ADOU_VERSION_CHECK_URL` 测试端点和 `ADOU_OFFLINE` / `ADOU_SKIP_VERSION_CHECK` 守卫；检查在 TUI 启动后异步完成，不阻塞首屏。
 - `rg` / `fd` 已具备本机查找、`fdfind` 兼容、GitHub release 查询/下载/解包/安装路径；离线模式支持 `1/true/yes`，平台/架构按运行时识别，Android 明确提示走 Termux 包，安装采用临时目录和原子发布。
-- 证据：`make build` 通过；`tests/startup_migrations_test.n` 4/4；`tests/managed_tools_test.n` 4/4。覆盖 release asset 矩阵、未知工具拒绝、平台/架构 override 和离线无网络。
+- 证据：`make build` 通过；`tests/startup_migrations_test.n` 6/6、`tests/version_check_test.n` 3/3、`tests/managed_tools_test.n` 4/4。覆盖 SemVer、真实响应解析、release asset 矩阵、未知工具拒绝、平台/架构 override 和离线无网络；tar/pkg/install 产物均携带真实 `CHANGELOG.md`。
 - **阶段 2 已完成（提交 `e96ff98`、`5dddc65`）**：Codex `websocket-cached` 已增加连接缓存、TTL、`previous_response_id` 和增量 input；失败连接会被驱逐，不残留 busy cache；TUI 支持 Pi `vars` 别名、camelCase JSON 主题加载/reload，`ADOU_THEME_FILE` 主题文件和 git HEAD 通过 native kqueue/inotify 事件监听；grep/find 现在优先经 managed-tools 解析 `rg`/`fd`，缺失时按 Pi tools-manager 下载。
-- 阶段 2 证据：`make build`、`tests/theme_test.n` 5/5、`tests/terminal_colors_test.n` 6/6、`tests/startup_migrations_test.n` 4/4、`tests/codex_websocket_test.n` 7/7、`tests/builtins_test.n` 3/3；watcher 不依赖外部 `fswatch` 命令。
+- 阶段 2 证据：`make build`、`tests/theme_test.n` 5/5、`tests/terminal_colors_test.n` 6/6、`tests/startup_migrations_test.n` 6/6、`tests/codex_websocket_test.n` 9/9、`tests/builtins_test.n` 3/3；watcher 不依赖外部 `fswatch` 命令。
 - **阶段 3 已完成（提交 `3855050`、`bac6dc6` 及本批 SDK 补丁）**：新增 `src/server/client.n` 与 `adou server list|spawn|status|stop|rpc|rpc-stream` 命令入口；新增 `src/sdk_harness.n`、`src/sdk_node.n`、`src/sdk_proxy.n`，补齐公共 Harness、Node execution environment、SSE streamProxy surface。Harness 现在转发完整 session stream，并暴露 compact/tree/model/thinking/queue/runtime 控制；Node environment 覆盖 Pi 文件读写、行/二进制读取、目录/stat/canonical/temp 和执行环境；proxy 具备 Pi 的异常转 error event、usage/signature/tool JSON 增量重建。
 - 阶段 3 证据：`make build`、`tests/server_client_test.n` 1/1、`tests/sdk_surface_test.n` 2/2、`tests/e2e/rpc-over-ipc.sh` 通过；server live 多进程 list/spawn/status/stop 已实测。
 

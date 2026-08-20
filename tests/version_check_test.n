@@ -1,0 +1,37 @@
+import adou.src.config.version_check
+import syscall
+
+test 'version comparison follows strict SemVer including prereleases' {
+    assert(version_check.compare_versions('1.2.3', '1.2.2') > 0)
+    assert(version_check.compare_versions('1.2.3-beta.2', '1.2.3-beta.1') > 0)
+    assert(version_check.compare_versions('1.2.3-beta.1', '1.2.3') < 0)
+    assert(version_check.compare_versions('1.2.3', '1.2.3-beta.9') > 0)
+    assert(version_check.is_newer('nightly', '1.2.3'))
+    assert(!version_check.is_newer(' 1.2.3 ', '1.2.3'))
+}
+
+test 'version check parses a release response and trims metadata' {
+    var latest = version_check.parse_release('{"version":" 9.0.0 ","packageName":" @scope/adou ","note":" upgrade "}', '1.0.0')
+    assert(latest is ref<version_check.release_t>)
+    var release = latest as ref<version_check.release_t>
+    assert(release.version == '9.0.0')
+    assert(release.package_name == '@scope/adou')
+    assert(release.note == 'upgrade')
+    assert(version_check.parse_release('{"version":"1.0.0"}', '1.0.0') is null)
+    assert(version_check.parse_release('{"version":1}', '1.0.0') is null)
+}
+
+test 'version check offline and skip guards avoid network access' {
+    string old_url = syscall.get_env('ADOU_VERSION_CHECK_URL')
+    string old_offline = syscall.get_env('ADOU_OFFLINE')
+    string old_skip = syscall.get_env('ADOU_SKIP_VERSION_CHECK')
+    syscall.set_env('ADOU_VERSION_CHECK_URL', 'http://127.0.0.1:1/unreachable')
+    syscall.set_env('ADOU_OFFLINE', 'yes')
+    assert(version_check.latest('1.0.0') is null)
+    syscall.set_env('ADOU_OFFLINE', '')
+    syscall.set_env('ADOU_SKIP_VERSION_CHECK', 'true')
+    assert(version_check.latest('1.0.0') is null)
+    syscall.set_env('ADOU_VERSION_CHECK_URL', old_url)
+    syscall.set_env('ADOU_OFFLINE', old_offline)
+    syscall.set_env('ADOU_SKIP_VERSION_CHECK', old_skip)
+}

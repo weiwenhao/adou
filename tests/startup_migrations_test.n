@@ -75,6 +75,42 @@ test 'changelog parser reads Pi-style version sections' {
     os.remove(file_path) catch error {}
 }
 
+test 'changelog links are pinned to the entry release tag' {
+    string markdown = '[Project Trust](README.md#project-trust)\n[Extensions](docs/extensions.md#project_trust)\n[Examples](examples/extensions/)\n[Root README](../../README.md#supply-chain-hardening)\n[#5167](https://github.com/earendil-works/pi-mono/pull/5167)\n[Agent README](https://github.com/badlogic/pi-mono/blob/main/packages/agent/README.md)\n[External](https://example.com/docs)\n[Local anchor](#settings)'
+    string normalized = changelog.normalize_links(markdown, '0.79.0')
+    assert(normalized.contains('https://github.com/earendil-works/pi/blob/v0.79.0/packages/coding-agent/README.md#project-trust'))
+    assert(normalized.contains('https://github.com/earendil-works/pi/tree/v0.79.0/packages/coding-agent/examples/extensions/'))
+    assert(normalized.contains('https://github.com/earendil-works/pi/blob/v0.79.0/README.md#supply-chain-hardening'))
+    assert(normalized.contains('https://github.com/earendil-works/pi/pull/5167'))
+    assert(normalized.contains('https://github.com/earendil-works/pi/blob/v0.79.0/packages/agent/README.md'))
+    assert(normalized.contains('[External](https://example.com/docs)'))
+    assert(normalized.contains('[Local anchor](#settings)'))
+}
+
+test 'startup migrations keep invalid oauth and delete duplicate old tools' {
+    string old_home = syscall.get_env('HOME')
+    string old_dir = syscall.get_env('ADOU_CODING_AGENT_DIR')
+    string home = '/tmp/adou-startup-invalid-migration-home'
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', home)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', '')
+    string agent = path.join(home, '.adou/agent')
+    write_file(path.join(agent, 'oauth.json'), '{invalid')
+    write_file(path.join(agent, 'tools/rg'), 'old')
+    write_file(path.join(agent, 'bin/rg'), 'new')
+
+    var report = migrations.run()
+    assert(report.migrated_auth_providers.len() == 0)
+    assert(path_utils_exists(path.join(agent, 'oauth.json')))
+    assert(!path_utils_exists(path.join(agent, 'oauth.json.migrated')))
+    assert(!path_utils_exists(path.join(agent, 'tools/rg')))
+    assert(read_file(path.join(agent, 'bin/rg')) == 'new')
+
+    os.rmdir(home, true) catch error {}
+    syscall.set_env('HOME', old_home)
+    syscall.set_env('ADOU_CODING_AGENT_DIR', old_dir)
+}
+
 test 'managed tools use an installed system binary before downloading' {
     string rg = managed_tools.find('rg')
     assert(rg != '')

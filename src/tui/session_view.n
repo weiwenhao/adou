@@ -14,6 +14,7 @@ import adou.src.config.models
 import adou.src.config.paths
 import adou.src.tui.keybindings
 import adou.src.config.settings as config_settings
+import adou.src.config.version_check
 import adou.src.config.trust as trust
 import adou.src.config.types
 import adou.src.context.project
@@ -78,6 +79,8 @@ pub type input_t = struct {
     bool model_refresh_done
     int model_refresh_generation
     int model_refresh_failures
+    bool version_check_done
+    string version_notice
     bool oauth_ready
     bool oauth_done
     bool oauth_failed
@@ -675,6 +678,10 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
         self.apply_model_refresh(input.model_refresh_generation, input.model_refresh_failures)
         return null
     }
+    if input.version_check_done {
+        self.apply_version_notice(input.version_notice)
+        return null
+    }
     if self.overlay is ref<overlay_t> active_overlay {
         self.handle_overlay_input(active_overlay, input)
         return null
@@ -872,6 +879,10 @@ pub fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, in
         self.apply_model_refresh(input.model_refresh_generation, input.model_refresh_failures)
         return
     }
+    if input.version_check_done {
+        self.apply_version_notice(input.version_notice)
+        return
+    }
     if input.paste {
         self.editor.handle_paste(input.data)
         self.redraw()
@@ -932,6 +943,26 @@ pub fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, in
         self.runner.queue_steering(message)
     }
     self.redraw()
+}
+
+pub fn view_t.start_version_check(&self, string current_version, bool offline) {
+    if offline || syscall.get_env('ADOU_SKIP_VERSION_CHECK') != '' {return}
+    go version_check_worker(self, current_version)
+}
+
+fn version_check_worker(ref<view_t> view, string current_version): void! {
+    var latest = version_check.latest(current_version)
+    if latest is ref<version_check.release_t> release {
+        view.input_events.try_send(input_t {version_check_done: true, version_notice: 'New Adou version available: ' + release.version,}) catch error {}
+    }
+}
+
+fn view_t.apply_version_notice(&self, string notice) {
+    if notice == '' || self.quitting {return}
+    if self.chat.status == '' {
+        self.chat.status = notice
+        self.redraw()
+    }
 }
 
 fn view_t.apply_editor_action(&self, editor.key_result_t result) {

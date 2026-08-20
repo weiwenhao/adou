@@ -53,6 +53,7 @@ Contents
 --------
   adou                 The Adou CLI (Mach-O arm64)
   adou-process-group   Process-group helper used by the bash tool
+  CHANGELOG.md         Release history used by /changelog
   RELEASE-README       This file
   SHA256SUMS           SHA-256 manifest of the files above
 
@@ -103,12 +104,13 @@ Distribution and signing
 EOF
 
 cp "$SCRIPT_DIR/../LICENSE" "$stage/LICENSE"
+cp "$SCRIPT_DIR/../CHANGELOG.md" "$stage/CHANGELOG.md"
 cp "$SCRIPT_DIR/../THIRD_PARTY_NOTICES.md" "$stage/THIRD_PARTY_NOTICES.md"
 cp "$SCRIPT_DIR/../licenses/NATURE-MIT-LICENSE.txt" "$stage/NATURE-MIT-LICENSE.txt"
 chmod 0755 "$stage/adou" "$stage/adou-process-group"
-chmod 0644 "$stage/RELEASE-README" "$stage/LICENSE" "$stage/THIRD_PARTY_NOTICES.md" "$stage/NATURE-MIT-LICENSE.txt"
+chmod 0644 "$stage/RELEASE-README" "$stage/CHANGELOG.md" "$stage/LICENSE" "$stage/THIRD_PARTY_NOTICES.md" "$stage/NATURE-MIT-LICENSE.txt"
 
-(cd "$stage" && shasum -a 256 adou adou-process-group RELEASE-README LICENSE THIRD_PARTY_NOTICES.md NATURE-MIT-LICENSE.txt > SHA256SUMS)
+(cd "$stage" && shasum -a 256 adou adou-process-group RELEASE-README CHANGELOG.md LICENSE THIRD_PARTY_NOTICES.md NATURE-MIT-LICENSE.txt > SHA256SUMS)
 
 tar -C "$dist_dir" -czf "$dist_dir/$dist_name.tar.gz" "$dist_name"
 (cd "$dist_dir" && shasum -a 256 "$dist_name.tar.gz" > "$dist_name.tar.gz.sha256")
