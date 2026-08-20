@@ -39,6 +39,7 @@ pub type runner_t = struct {
     agent_types.stream_fn stream_function
     compaction_types.settings_t compaction_settings
     [ai_types.message_t] active_messages = []
+    [ai_types.message_t] next_turn_messages = []
     // Pi retries transient assistant failures at the session layer, after the
     // provider's own request retry budget is exhausted. These are deliberately
     // separate from stream_options.max_retries, which belongs to one HTTP
@@ -833,6 +834,27 @@ pub fn runner_t.queue_follow_up(&self, ai_types.message_t message) {
     self.emit_queue_update_for(queues)
 }
 
+pub fn runner_t.queue_next_turn(&self, ai_types.message_t message) {
+    self.lock.lock()
+    self.next_turn_messages.push(message)
+    self.lock.unlock()
+}
+
+pub fn runner_t.next_turn_snapshot(&self): [ai_types.message_t] {
+    self.lock.lock()
+    var result = self.next_turn_messages.slice(0, self.next_turn_messages.len())
+    self.lock.unlock()
+    return result
+}
+
+fn runner_t.drain_next_turn(&self): [ai_types.message_t] {
+    self.lock.lock()
+    var result = self.next_turn_messages.slice(0, self.next_turn_messages.len())
+    self.next_turn_messages = []
+    self.lock.unlock()
+    return result
+}
+
 pub fn runner_t.restore_queued_messages(&self): [ai_types.message_t] {
     self.lock.lock()
     ref<agent_types.queue_t> queues = self.agent_config.queues
@@ -971,7 +993,9 @@ pub fn run_prompt_inner(ref<runner_t> runner, ref<session_stream.stream_t> outpu
     }
     var context = runner.context_from_repository()
     ai_types.message_t prompt = new ai_types.user_message_t(content = text, images = images, timestamp = time.now().ms_timestamp())
-    var current = loop.prompt([prompt], context, runner.agent_config, runner.stream_function)
+    [ai_types.message_t] prompts = runner.drain_next_turn()
+    prompts.push(prompt)
+    var current = loop.prompt(prompts, context, runner.agent_config, runner.stream_function)
     bool overflow_recovery_attempted = false
     int retry_attempt = 0
     for true {

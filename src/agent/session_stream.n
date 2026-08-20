@@ -67,6 +67,7 @@ pub type event_t = struct {
     string retry_reason
     [string] queue_steering = []
     [string] queue_follow_up = []
+    [string] queue_next_turn = []
     string instance_id
     string instance_status
     string instance_exit_reason

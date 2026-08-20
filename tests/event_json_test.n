@@ -87,12 +87,13 @@ test 'json mode matches Pi message update and tool event field names' {
 }
 
 test 'json mode encodes Pi queue_update snapshots' {
-    var event = session_stream.event_t {kind: session_stream.EVENT_QUEUE_UPDATE, queue_steering: ['stop and inspect'], queue_follow_up: ['summarize after'],}
+    var event = session_stream.event_t {kind: session_stream.EVENT_QUEUE_UPDATE, queue_steering: ['stop and inspect'], queue_follow_up: ['summarize after'], queue_next_turn: ['next prompt'],}
     var object = json_util.parse(event_json.encode(event)) as {string:any}
     assert(object['type'] as string == session_stream.EVENT_QUEUE_UPDATE)
-    assert(json_util.is_arr(object['steering']) && json_util.is_arr(object['followUp']))
-    assert((object['steering'] as [any]).len() == 1 && (object['followUp'] as [any]).len() == 1)
+    assert(json_util.is_arr(object['steering']) && json_util.is_arr(object['followUp']) && json_util.is_arr(object['nextTurn']))
+    assert((object['steering'] as [any]).len() == 1 && (object['followUp'] as [any]).len() == 1 && (object['nextTurn'] as [any]).len() == 1)
     assert((object['steering'] as [any])[0] as string == 'stop and inspect')
+    assert((object['nextTurn'] as [any])[0] as string == 'next prompt')
 }
 
 test 'json mode encodes Pi bash execution updates as deltas' {

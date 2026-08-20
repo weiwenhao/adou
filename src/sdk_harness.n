@@ -1,6 +1,7 @@
 import adou.src.sdk
 import adou.src.ai.types as ai_types
 import adou.src.agent.session_stream as session_stream
+import co.mutex
 
 pub const PHASE_IDLE = 'idle'
 pub const PHASE_TURN = 'turn'
@@ -12,6 +13,7 @@ pub type event_handler_fn = fn(string kind)
 pub type event_detail_handler_fn = fn(session_stream.event_t event)
 
 pub type harness_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
     ref<sdk.session_t> session
     string phase = PHASE_IDLE
     {string:event_handler_fn} handlers = {}
@@ -19,6 +21,7 @@ pub type harness_t = struct {
     [string] active_tool_names = []
     {string:any} resources = {}
     {string:any} stream_options = {}
+    [ai_types.message_t] pending_session_messages = []
 }
 
 pub fn new(ref<sdk.session_t> session): ref<harness_t> {
@@ -85,12 +88,24 @@ pub fn harness_t.steer(&self, string text): void! {
 
 pub fn harness_t.next_turn(&self, string text): void! {
     ai_types.message_t message = new ai_types.user_message_t(content = text, timestamp = 0)
-    self.session.runner.append_active_message(message)
+    self.session.runner.queue_next_turn(message)
+    var queue = self.session.runner.next_turn_snapshot()
+    [string] visible = []
+    for queued in queue {
+        if queued is ref<ai_types.user_message_t> user {visible.push(user.content)}
+    }
+    emit_event(self, session_stream.event_t {kind: session_stream.EVENT_QUEUE_UPDATE, queue_next_turn: visible,})
     emit(self, 'next_turn')
 }
 
 pub fn harness_t.append_message(&self, ai_types.message_t message): void! {
-    self.session.runner.append_active_message(message)
+    if self.phase == PHASE_IDLE {
+        self.session.append_message(message)
+        return
+    }
+    self.lock.lock()
+    self.pending_session_messages.push(message)
+    self.lock.unlock()
 }
 
 pub fn harness_t.set_active_tools(&self, [string] names): void! {
@@ -140,6 +155,22 @@ fn emit_event(ref<harness_t> harness, session_stream.event_t event) {
     if harness.detail_handlers.contains('*') {harness.detail_handlers['*'](event)}
 }
 
+fn flush_pending_messages(ref<harness_t> harness): void! {
+    for true {
+        harness.lock.lock()
+        if harness.pending_session_messages.len() == 0 {
+            harness.lock.unlock()
+            return
+        }
+        ai_types.message_t message = harness.pending_session_messages[0]
+        harness.lock.unlock()
+        harness.session.append_message(message)
+        harness.lock.lock()
+        harness.pending_session_messages = harness.pending_session_messages.slice(1, harness.pending_session_messages.len())
+        harness.lock.unlock()
+    }
+}
+
 fn bridge(ref<harness_t> harness, ref<session_stream.stream_t> source, ref<session_stream.stream_t> target) {
     go fn() {
         for true {
@@ -150,14 +181,21 @@ fn bridge(ref<harness_t> harness, ref<session_stream.stream_t> source, ref<sessi
             if event.kind == session_stream.EVENT_COMPACTION_START {harness.phase = PHASE_COMPACTION}
             if event.kind == session_stream.EVENT_RETRY_START {harness.phase = PHASE_RETRY}
             if event.kind == session_stream.EVENT_BRANCH_SUMMARY_START {harness.phase = PHASE_BRANCH_SUMMARY}
+            if event.kind == 'turn_end' || event.kind == session_stream.EVENT_SESSION_END {
+                flush_pending_messages(harness) catch error {
+                    harness.phase = PHASE_IDLE
+                    target.fail(error.msg()) catch ignored {}
+                    return
+                }
+            }
             if event.kind == session_stream.EVENT_AGENT_SETTLED || event.kind == session_stream.EVENT_SESSION_END {
                 harness.phase = PHASE_IDLE
             }
             emit(harness, event.kind)
             emit_event(harness, event)
             if event.kind == session_stream.EVENT_SESSION_END {
-                var context = source.result() catch error {[]}
-                target.finish(context) catch ignored {}
+                var ignored_context = source.result() catch error {[]}
+                target.finish(harness.session.messages()) catch ignored {}
                 break
             }
             target.push(event) catch ignored {}

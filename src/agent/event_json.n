@@ -81,6 +81,7 @@ pub fn encode(session_stream.event_t event): string! {
     if event.kind == session_stream.EVENT_QUEUE_UPDATE {
         object['steering'] = encode_string_array(event.queue_steering)
         object['followUp'] = encode_string_array(event.queue_follow_up)
+        object['nextTurn'] = encode_string_array(event.queue_next_turn)
     }
     return json.serialize(object)
 }

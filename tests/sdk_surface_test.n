@@ -6,6 +6,7 @@ import adou.src.ai.types
 import adou.src.ai.event_stream
 import adou.src.agent.types as agent_types
 import adou.src.session.identity
+import co
 
 test 'public SDK exposes node environment and harness phases' {
     var environment = sdk_node.new('/tmp')
@@ -27,9 +28,29 @@ fn fixture_stream(ref<types.model_t> model, ref<types.context_t> context, ref<ty
     return stream
 }
 
+fn queued_fixture_stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    assert(context.messages.len() == 2)
+    assert((context.messages[0] as ref<types.user_message_t>).content == 'queued')
+    assert((context.messages[1] as ref<types.user_message_t>).content == 'hello')
+    return fixture_stream(model, context, options)
+}
+
+fn delayed_fixture_stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    var stream = event_stream.new()
+    go fn() {
+        co.sleep(20)
+        var message = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, stop_reason = types.STOP_STOP)
+        message.content.push(new types.text_content_t(text = 'sdk-ok'))
+        stream.push(types.assistant_event_t {kind: types.EVENT_START, partial: message}) catch error {}
+        stream.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message}) catch error {}
+        stream.end() catch error {}
+    }()
+    return stream
+}
+
 test 'public AgentHarness exposes embeddable control and event surfaces' {
     var model = new types.model_t(id = 'sdk-model', name = 'SDK model', api = 'test-api', provider = 'test-provider', base_url = 'https://example.invalid', context_window = 1000, max_tokens = 100)
-    agent_types.stream_fn stream_function = fixture_stream as agent_types.stream_fn
+    agent_types.stream_fn stream_function = queued_fixture_stream as agent_types.stream_fn
     var embedded = sdk.create(sdk.options_t {cwd: '/tmp', model: model, api_key: 'test-key', system_prompt: 'system', stream_function: stream_function})
     var harness = sdk_harness.new(embedded)
     assert(harness.is_idle())
@@ -40,7 +61,7 @@ test 'public AgentHarness exposes embeddable control and event surfaces' {
     harness.set_active_tools([])
     assert(harness.active_tools().len() == 0)
     harness.next_turn('queued')
-    assert(harness.messages().len() == 1)
+    assert(harness.messages().len() == 0)
     var stream = harness.prompt('hello')
     for true {
         var event = stream.recv() catch error {break}
@@ -50,6 +71,25 @@ test 'public AgentHarness exposes embeddable control and event surfaces' {
     assert(messages.len() >= 3)
     assert(harness.is_idle())
     assert(embedded.session_id() != '')
+}
+
+test 'AgentHarness appendMessage persists immediately or at the next save point' {
+    var model = new types.model_t(id = 'sdk-model', name = 'SDK model', api = 'test-api', provider = 'test-provider', base_url = 'https://example.invalid', context_window = 1000, max_tokens = 100)
+    agent_types.stream_fn stream_function = delayed_fixture_stream as agent_types.stream_fn
+    var embedded = sdk.create(sdk.options_t {cwd: '/tmp', model: model, api_key: 'test-key', system_prompt: 'system', stream_function: stream_function})
+    var harness = sdk_harness.new(embedded)
+    harness.append_message(new types.user_message_t(content = 'idle append', timestamp = 0))
+    assert(harness.messages().len() == 1)
+    assert(embedded.repository.build_context().messages.len() == 1)
+    var stream = harness.prompt('hello')
+    harness.append_message(new types.custom_message_t(custom_type = 'sdk', content = 'pending append', display = true, timestamp = 0))
+    for true {
+        var event = stream.recv() catch error {break}
+        if event.kind == 'session_end' {break}
+    }
+    var messages = stream.result()
+    assert(messages.len() == 4)
+    assert(embedded.repository.build_context().messages.len() == 4)
 }
 
 test 'node execution environment exposes Pi filesystem primitives' {
