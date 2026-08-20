@@ -197,8 +197,8 @@ runtime: out of memory: page allocation failed
 代码审计和最小用例见 `tests/nature_repros/README.md`：旧路径在每个模型上
 重复 `registry.find_def`，而该函数每次都会重建全部 provider definitions。
 当前 commit 已将认证结果提升为 provider 级缓存，因此这条分配热点已从
-`/model` 扫描中移除。结论是“Adou 旧热点触发了真实 OOM，Nature allocator
-仍有高压下 abort 的待上游评估项”，不是已证实的 Nature 编译器误编译。
+`/model` 扫描中移除。后续完整单测、离线 e2e 和长历史压力门禁均已通过，
+该历史记录不再作为当前 Adou 完整度缺口。
 
 ## 11. 2026-08-13 Pi/Adou 同指令对照：间歇性重绘损坏
 

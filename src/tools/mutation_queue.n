@@ -1,4 +1,5 @@
 import adou.src.tools.path_utils
+import co
 import co.mutex
 
 pub type entry_t = struct {
@@ -14,6 +15,7 @@ pub type registry_t = struct {
 // Keep the singleton as a GC-visible reference.  Storing it as anyptr lets the
 // collector reclaim the registry while a later tool call still uses it.
 ref<registry_t>? global_registry = null
+int registry_init_busy = 0
 
 pub fn acquire(string file_path): (string, ref<entry_t>)! {
     string resolved = path_utils.clean(file_path)
@@ -46,11 +48,17 @@ pub fn release(string key, ref<entry_t> entry) {
 }
 
 fn get_registry(): ref<registry_t> {
+    for registry_init_busy != 0 {
+        co.yield()
+    }
+    registry_init_busy = 1
     ref<registry_t>? current = global_registry
     if current is ref<registry_t> value {
+        registry_init_busy = 0
         return value
     }
     var registry = new registry_t(lock = mutex.mutex_t.new(), entries = {})
     global_registry = registry
+    registry_init_busy = 0
     return registry
 }

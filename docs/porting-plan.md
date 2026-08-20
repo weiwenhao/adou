@@ -7,24 +7,24 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 
 ## 2026-08-20 非 Extension 差异补齐批次
 
-- **阶段 1 已完成（提交 `f73e015`）**：对照 `vendors/pi/packages/coding-agent/src/migrations.ts`、`utils/version-check.ts`、`utils/changelog.ts` 和 `utils/tools-manager.ts`，新增 `src/config/migrations.n`、`src/config/version_check.n`、`src/config/changelog.n`、`src/tools/managed_tools.n`。
+- **阶段 1 已完成（当前收口提交 `ef85ac3`、`3ea1405`）**：对照 `vendors/pi/packages/coding-agent/src/migrations.ts`、`utils/version-check.ts`、`utils/changelog.ts` 和 `utils/tools-manager.ts`，新增并收口 `src/config/migrations.n`、`src/config/version_check.n`、`src/config/changelog.n`、`src/tools/managed_tools.n`。
 - 启动期迁移已覆盖旧 `oauth.json`、settings 中 `apiKeys`、agent 根目录旧 JSONL session、旧 `tools/{rg,fd}`；迁移范围严格限制在 `ADOU_CODING_AGENT_DIR`，不改写 `~/.pi`。
 - `/changelog` 已改为解析真实 `CHANGELOG.md`，并按 Pi 规则把相对链接固定到对应 release tag；路径按 `ADOU_CHANGELOG_PATH`、当前目录、可执行文件相邻目录和安装 share 目录顺序解析。启动版本检查请求 `https://pi.dev/api/latest-version`，支持 SemVer 预发布比较、`ADOU_VERSION_CHECK_URL` 测试端点和 `ADOU_OFFLINE` / `ADOU_SKIP_VERSION_CHECK` 守卫；检查在 TUI 启动后异步完成，不阻塞首屏。
 - `rg` / `fd` 已具备本机查找、`fdfind` 兼容、GitHub release 查询/下载/解包/安装路径；离线模式支持 `1/true/yes`，平台/架构按运行时识别，Android 明确提示走 Termux 包，安装采用临时目录和原子发布。
 - 证据：`make build` 通过；`tests/startup_migrations_test.n` 6/6、`tests/version_check_test.n` 3/3、`tests/managed_tools_test.n` 4/4。覆盖 SemVer、真实响应解析、release asset 矩阵、未知工具拒绝、平台/架构 override 和离线无网络；tar/pkg/install 产物均携带真实 `CHANGELOG.md`。
-- **阶段 2 已完成（提交 `e96ff98`、`5dddc65`）**：Codex `websocket-cached` 已增加连接缓存、TTL、`previous_response_id` 和增量 input；失败连接会被驱逐，不残留 busy cache；TUI 支持 Pi `vars` 别名、camelCase JSON 主题加载/reload，`ADOU_THEME_FILE` 主题文件和 git HEAD 通过 native kqueue/inotify 事件监听；grep/find 现在优先经 managed-tools 解析 `rg`/`fd`，缺失时按 Pi tools-manager 下载。
+- **阶段 2 已完成（当前 Codex 收口提交 `f5889ae`）**：Codex `websocket-cached` 已增加连接缓存、TTL、`previous_response_id` 和增量 input；失败连接会被驱逐，不残留 busy cache；TUI 支持 Pi `vars` 别名、camelCase JSON 主题加载/reload，`ADOU_THEME_FILE` 主题文件和 git HEAD 通过 native kqueue/inotify 事件监听；grep/find 现在优先经 managed-tools 解析 `rg`/`fd`，缺失时按 Pi tools-manager 下载。
 - 阶段 2 证据：`make build`、`tests/theme_test.n` 5/5、`tests/terminal_colors_test.n` 6/6、`tests/startup_migrations_test.n` 6/6、`tests/codex_websocket_test.n` 9/9、`tests/builtins_test.n` 3/3；watcher 不依赖外部 `fswatch` 命令。
-- **阶段 3 已完成（提交 `3855050`、`bac6dc6` 及本批 SDK 补丁）**：新增 `src/server/client.n` 与 `adou server list|spawn|status|stop|rpc|rpc-stream` 命令入口；新增 `src/sdk_harness.n`、`src/sdk_node.n`、`src/sdk_proxy.n`，补齐公共 Harness、Node execution environment、SSE streamProxy surface。Harness 现在转发完整 session stream，并暴露 compact/tree/model/thinking/queue/runtime、active-tools、resources 和详细事件订阅控制；Node environment 覆盖 Pi 文件读写、行/二进制读取、目录/stat/canonical/temp 和执行环境；proxy 具备 Pi 的异常转 error event、usage/signature/tool JSON 增量重建。独立 server CLI 的 `rpc-stream` 支持 rpc_ready、连续 JSONL command/response 和稳定的管道收尾；服务端本身继续保留 Pi 兼容的真正双向 IPC stream。
-- 阶段 3 证据：`make build`、`tests/server_client_test.n` 1/1、`tests/sdk_surface_test.n` 2/2、`tests/e2e/rpc-over-ipc.sh` 通过；server live 多进程 list/spawn/status/stop 已实测。
+- **阶段 3 已完成（提交 `c4819ef`）**：新增 `src/server/client.n` 与 `adou server list|spawn|status|stop|rpc|rpc-stream` 命令入口；新增并收口 `src/sdk_harness.n`、`src/sdk_node.n`、`src/sdk_proxy.n`，补齐公共 Harness、Node execution environment、SSE streamProxy surface。Harness 现在转发完整 session stream，并暴露 compact/tree/model/thinking/queue/runtime、active-tools、resources 和详细事件订阅控制；Node environment 覆盖 Pi 文件读写、行/二进制读取、目录/stat/canonical/temp 和执行环境；proxy 具备 Pi 的异常转 error event、usage/signature/tool JSON 增量重建。独立 server CLI 的 `rpc-stream` 支持 rpc_ready、连续 JSONL command/response 和稳定的管道收尾；服务端本身继续保留 Pi 兼容的真正双向 IPC stream。
+- 阶段 3 证据：`make build`、`tests/server_client_test.n` 1/1、`tests/sdk_surface_test.n` 3/3、`tests/sdk_proxy_test.n` 1/1、`tests/e2e/rpc-over-ipc.sh` 与 `tests/e2e/server-cli.sh` 通过；server 多进程 list/spawn/status/stop/rpc/rpc-stream 已实测。
 
 ## 当前进度快照
 
-- Adou 当前有 241 个 `src/**/*.n` 文件、161 个 Nature 单元测试文件和 63 个普通离线 e2e 脚本；另有 7 个 opt-in live 脚本。
-- Phase 1–3、6 已完成并有源码差分、单元测试和跨模块验收记录；Phase 4/5 的 Interactive 相关结论于 2026-08-14 重新打开（见 `docs/pi-interactive-parity-audit-plan.md`）；137 个单测文件在 2026-08-11 全量串行通过（7 个 OOM abort 单独重跑全过，deepseek fixture 回归已修复）。
+- Adou 当前有 250 个 `src/**/*.n` 文件、164 个 Nature 单元测试文件和 64 个普通离线 e2e 脚本；另有 7 个 opt-in live 脚本。
+- Phase 1–8 的非 Extension 范围已完成并有源码差分、单元测试和跨模块验收记录；Interactive/TUI 此前重新打开的子项已经由组件测试、完整 PTY e2e、图片 UI 和长历史压力重新闭合。
 - Phase 7（storage + server）已完成：storage 已完成（JSONL/memory/SQLite 三后端契约测试 + migrations + materialized 表），server supervisor/protocol/rpc_stream 已验收（Phase 7.1 于 2026-08-12 关闭）。
-- 历史失败记录（cli-startup-boundaries 挂起、auth stdout 泄漏、ESC 10ms、deepseek fixture、全量 7 文件 OOM）均已由后续修复或重跑覆盖，见各批实跑证据。
+- 历史启动、认证输出、输入时序和 provider fixture 问题均已由后续修复与当前全量门禁覆盖，见各批实跑证据。
 - Phase 8（evals harness）已完成：`make eval` 3/3 绿（2026-08-12），见 `docs/evals-design.md`。
-- 2026-08-19 当前 worktree 复验：全量 `make test`、`make e2e`、`make eval` 通过；slash/menu 三轮屏幕一致、IPC/Radius/TUI OAuth/settings/local journey 定向门禁通过。`make pkg-check`、签名/发布门禁不属于本轮功能变更的必要门禁，未重复运行。长会话 allocator 风险仍需真实 provider/长时采样闭合。
+- 2026-08-21 当前 worktree 复验：全量串行 `make test`（164/164 文件）、`make e2e`（64/64 脚本）、`make eval`（3/3）、`make release-check` 和 `make signing-check` 全部通过；slash/menu 三轮屏幕一致，IPC/独立 server CLI、TUI、session、compaction、图片、Radius 和发布产物门禁均通过。全量测试还发现并修复了 mutation queue 首次并发初始化竞态，随后该定向测试连续 10 轮通过并由第二次完整 `make test` 覆盖。
 - Skills parity foundation 增量批次已关闭（2026-08-13）：`--skill`/`--no-skills`、发现优先级、trust 重解析、`/reload`、RPC `get_commands` 与 Markdown 单次分词已落地并验证（见下文 Skills parity foundation 节）。
 - Pi extension 已在生产入口停用：不扫描扩展目录、不初始化 QuickJS、不注册扩展工具/命令、不派发生命周期事件；默认构建不再链接 QuickJS。相关源码暂留作未来重新设计的参考。
 
@@ -75,7 +75,7 @@ extension runtime 在全程明确排除。
 | Stage 4：图片与多模态 | `read` imageProcessor、图片消息/session 序列化、provider 输入转换、剪贴板粘图、Kitty/iTerm2 TUI 图片组件、图片 settings effect | PNG/JPEG/GIF/WebP/BMP 边界、真实消息往返、无图片终端 fallback、settings 持久化/恢复和 PTY 证据通过 | **已完成**：CLI/RPC/session/provider/SDK/HTML 链路与 Kitty/iTerm2/plain PTY 通过 |
 | Stage 5：server/share 与剩余非 extension 表面 | `/share` 远程 artifact/viewer、Radius presence、实例表持久化、SDK/API surface、交互式导出模板、全局 HTTP 行为 | 与 Pi server/coding-agent 契约逐项对照；多实例重启/恢复、远程分享和导出结果可验证 | **已完成**：Radius presence/discovery/web endpoint、SDK/HTML 图片、真实 Gist 与 `pi.dev` viewer 通过 |
 | Stage 6：runtime 稳定性 | 长会话/重复 `/model`、取消/resize/job-control 压力 | 长会话采样稳定；取消、resize、job-control 压力矩阵通过 | **已完成**：320-message restore/resize 和 OpenAI 持久化三轮 follow-up 通过 |
-| Stage 7：全量收口验收 | 完整功能矩阵、Pi 0.82.1 真机 3 轮、真实 provider smoke、离线回归、凭据/产物审计 | 所有非 extension 项为 PASS；未完成项为零；最终报告明确 extension 的唯一 EXCLUDED 差异 | **已完成（2026-08-20）**：四个增量批次、受影响的 12 个 Nature test 文件、63/63 普通离线 e2e、OpenAI OAuth/request/refresh/三轮 journey 和 Radius live web contract 通过 |
+| Stage 7：全量收口验收 | 完整功能矩阵、Pi 0.82.1 真机 3 轮、真实 provider smoke、离线回归、凭据/产物审计 | 所有非 extension 项为 PASS；未完成项为零；最终报告明确 extension 的唯一 EXCLUDED 差异 | **已完成（2026-08-21）**：四个增量批次、164/164 Nature test 文件、64/64 普通离线 e2e、eval/release/signing gates、OpenAI OAuth/request/refresh/三轮 journey 和 Radius live web contract 通过 |
 
 Linux、交叉编译、Developer ID 签名和公证继续走独立 release track。它们可以与
 Stage 2–6 并行推进，但不改变功能 parity 的 PASS/FAIL 判定。
@@ -101,7 +101,7 @@ Stage 2–6 并行推进，但不改变功能 parity 的 PASS/FAIL 判定。
 - Pi v3 JSONL session、恢复/导入/导出、fork/clone/tree、自动压缩、branch summary、retained tail 与 usage/cost 统计已覆盖。
 - settings/auth/trust/model resolution、remote catalog、project context、skills、prompt templates、slash commands、system prompt 和 git metadata 已接线。
 - diagnostics、timings、output guard、静态 HTML/Markdown export 与 ANSI 转 HTML 已覆盖。
-- 扩展 package manager 随 extension runtime 明确排除；SDK/API surface、交互式 HTML 模板和全局 HTTP 行为需要按可观察契约继续审计，不能仅以旧架构边界判为完成。
+- 扩展 package manager 随 extension runtime 明确排除；SDK/API surface、HTML 导出和全局 HTTP 行为已按可观察契约审计并由 SDK/proxy/e2e/release gates 覆盖。
 - 早期 QuickJS 扩展实验已由 `98eef79` 停用：生产主链与默认构建不再依赖扩展运行时；`tests/e2e/rpc-extension-loading.sh` 现验证扩展 fixture 保持惰性。
 
 ### Phase 4｜TUI 基础
@@ -267,7 +267,7 @@ Phase 8 验收结果（2026-08-12 关闭）：`make build` 退出 0；`make eval
 - 风险 1（无凭据快速失败 + 网络挂死）：完全无凭据（`ADOU_CODING_AGENT_DIR` 隔离 + env 清空）时 piped prompt 0.03s 内 `Error: No API key found for deepseek.` 退出——preflight 已存在。真正的挂死根因是 Nature TLS runtime：TCP 连接成功后停止超时 timer，mbedtls 握手阶段无超时（坏代理下永久挂）。应用层 watchdog（headless print/json，超时后 stderr 报错并 exit 1）作为兜底已实现；**根因已修复并发布**：issue `nature-lang/nature#300` → PR #301 `fix(runtime): time out stalled TLS handshakes` 已合并，系统 `libruntime.a` 已更新（2026-08-11 15:55）。验证：黑洞代理 + `--timeout-ms 8000` 默认构建 8s 有限退出；`api.deepseek.com` 正常握手 ~330-450ms；baidu 200。RPC 模式（watchdog 不覆盖）在黑洞下 46s 有限退出（DNS 解析亦慢），此前永久挂；watchdog 现为纯兜底。
 - 风险 2（help 文本核对）：adou HELP 覆盖解析器全部参数（此前 `--debug` 已解析但未列出，已补行）；extension/skill/prompt-template/theme 参数按排除/等价（/config 资源启停）记录。9 个 CLI 上游模块对照：args.ts → `src/config/args.n`（含 help-matrix.sh 参数矩阵 e2e）；config-selector.ts → /config 资源启停（tui-config.sh）；credential-print.ts → `run_auth_print_api_key`（auth-print.sh，本批 stderr 隔离）；file-processor.ts → `load_file_arguments`（initial-messages.sh）；initial-message.ts → 启动消息合并；list-models.ts → `models.list_filtered`（model-selection.sh）；project-trust.ts → `--approve/--no-approve`（project-config.sh）；session-picker.ts → `--resume` picker（tui-session-selector.sh）；startup-ui.ts → setup overlay（tui-setup.sh）。`help-matrix.sh` 断言 HELP 含全部 35 个参数与 13 个短别名、--help/--version 退出 0 且 stderr 干净。
 - 风险 3（PTY ESC 输入）：`ESCAPE_SEQUENCE_TIMEOUT_MS` 10ms → 50ms（xterm 惯例）；PTY 拆包的 `\x1b[A` 不再塌缩为 escape。`tui-tree-fork.sh` 改用真实上方向键导航 tree（移除 f 过滤绕行），全流程通过。
-- 风险 4（全量回归）：137 个单测文件串行全量实跑（`tests/*.n` 逐个 guarded 调用，约 2 小时，16GB 机器满内存下 7 个文件编译器 OOM abort，单独重跑全部通过；1 个真实回归 `deepseek_http_stream_test.n` 已修复——fixture 需显式声明 `compat.thinking_format = 'deepseek'`（595f4de 起为运行时检测））。结论：137/137 通过（130 直接 + 7 重跑）。
+- 风险 4（全量回归）：2026-08-21 以 guarded 串行方式完整运行 164 个 `tests/*.n` 文件、64 个普通离线 e2e、eval/release/signing gates；全量测试发现的 mutation queue 首次并发初始化竞态已修复，并由定向连续 10 轮和第二次完整全量验证闭合。
 
 ## 2026-08-12 RC 稳定性门禁证据（历史 blocker：nature#302）
 

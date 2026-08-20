@@ -43,12 +43,12 @@
 
 ## 当前测试口径与验收证据
 
-- 当前有 241 个 Nature 源文件、161 个 Nature 单测文件、63 个普通离线 e2e 脚本和 7 个 opt-in live 脚本。项目没有 line/branch coverage instrumentation，不把文件触达率表述成代码覆盖率。
-- 2026-08-20 当前 worktree：串行 `make build`、受影响的 12 个 Nature test 文件和 `make e2e` 63/63 通过。live OpenAI browser OAuth、真实请求、隔离强制过期 refresh recovery、持久化三轮 follow-up 和 Radius discovery/web endpoint 通过；真实 secret Gist 已由 `pi.dev` viewer 渲染并随后删除。
+- 当前有 250 个 Nature 源文件、164 个 Nature 单测文件、64 个普通离线 e2e 脚本和 7 个 opt-in live 脚本。项目没有 line/branch coverage instrumentation，不把文件触达率表述成代码覆盖率。
+- 2026-08-21 当前 worktree：串行 `make test` 164/164、`make e2e` 64/64、`make eval` 3/3、`make release-check` 和 `make signing-check` 全部通过。live OpenAI browser OAuth、真实请求、隔离强制过期 refresh recovery、持久化三轮 follow-up 和 Radius discovery/web endpoint 证据继续有效；真实 secret Gist 已由 `pi.dev` viewer 渲染并随后删除。
 - 2026-08-11 第二批：`read_piped_stdin()` 增加 native poll 前置探测（`native/stdin_peek.c`），空但未关闭的 FIFO 不再阻塞等 EOF；offline 守卫移到 piped/@file prompt 摄入之后。实跑：`/bin/sh -c 'out=$(printf "" | ./build/bin/adou --offline --no-context-files --no-session --print)'` 返回，`cli-startup-boundaries.sh` 覆盖 /dev/null、空 pipe、有内容 pipe、regular file 与损坏/缺失 session，自然退出通过（不再依赖 timeout）。
 - 2026-08-11 第三批：`auth print-api-key` 失败路径统一 stdout 为空、`Error: ` 写 stderr、退出码非零；`auth-print.sh` 断言成功仅 stdout、失败三要素。
-- 2026-08-11 第四批的 TUI 结论曾于 2026-08-14 重新打开；2026-08-20 已由图片 UI、320-message history、真实 OpenAI 三轮 journey 和本轮 63/63 普通离线 e2e 再次闭合。
-- 本轮按项目约束运行受影响的定向 Nature tests，未重复耗时的全量 `make test`；全量 Nature 历史记录为 2026-08-19，当前源码增量由定向测试与完整离线 e2e 覆盖。
+- 2026-08-11 第四批的 TUI 结论曾于 2026-08-14 重新打开；2026-08-21 已由图片 UI、320-message history、真实 OpenAI 三轮 journey 和本轮 64/64 普通离线 e2e 再次闭合。
+- 本轮按项目约束完整串行运行全部 Nature tests；mutation queue 首次并发初始化竞态在全量运行中被发现并修复，定向连续 10 轮和随后第二次完整全量均通过。
 - 常规模型与测试密钥的项目约定维护在 `docs/porting-plan.md` 的“测试模型、密钥与成本约束”章节；集中实现于 `tests/e2e/lib/deepseek-test-config.sh`（被 source、不会被 `make e2e` 的 `tests/e2e/*.sh` glob 匹配）；普通回归优先 offline/local mock，live smoke 显式开启（`ADOU_LIVE_SMOKE=1`）并限制消费。
 - 2026-08-11 live smoke 实跑：`ADOU_LIVE_SMOKE=1 ADOU_BIN=./build/bin/adou sh tests/e2e/live/live-smoke.sh` 通过（`deepseek/deepseek-v4-flash`，thinking off、64 max tokens、0 retries、60s timeout）；日志只输出 key 的配置状态，不打印 key 本身。
 - 若 `nature --version` 已更新但 `/usr/local/nature/lib/darwin_arm64/libruntime.a` 仍是旧文件，Adou 仍会链接旧 runtime；需用管理员权限覆盖该静态库后再重新 `make clean && make build`。
