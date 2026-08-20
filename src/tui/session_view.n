@@ -74,6 +74,7 @@ import time
 pub type input_t = struct {
     string data
     bool paste
+    bool resize
     bool model_refresh_done
     int model_refresh_generation
     int model_refresh_failures
@@ -309,12 +310,16 @@ pub type view_t = struct {
     bool session_trust_override_set
     bool session_trust_override
     string session_trust_cwd
-    // Pi coalesces render requests into one frame per animation interval.
-    // Keep the same property so a burst of stream deltas cannot race the
-    // differential renderer or write duplicate terminal frames.
+    // Serialize state mutation and terminal rendering across the input loop
+    // and file-watch/signal coroutines.
     ref<mutex.mutex_t> render_lock = mutex.mutex_t.new()
-    bool redraw_scheduled
-    bool redraw_dirty
+    // Coalesce SIGWINCH notifications before the input loop performs a
+    // render request.
+    ref<mutex.mutex_t> redraw_lock = mutex.mutex_t.new()
+    bool resize_pending
+    bool suppress_quit_render
+    bool defer_redraw
+    bool redraw_deferred
     // Batch 4: one keybinding registry shared by the app dispatch, the
     // editor and every hint surface (Pi setKeybindings/getKeybindings).
     ref<keybindings.keybindings_t> keybindings = keybindings.current()
@@ -476,9 +481,62 @@ pub fn view_t.run_loop(&self): void! {
             self.quitting = true
             break
         }
+        // Resize notifications are lower priority than already-buffered
+        // keyboard input.  Drain one queued event first so a resize burst
+        // cannot delay /quit or another editing command behind a full frame.
+        if incoming.resize {
+            for true {
+                var (queued, has_queued) = self.input_events.try_recv() catch error {
+                    self.quitting = true
+                    break
+                }
+                if !has_queued {break}
+                self.redraw_lock.lock()
+                self.resize_pending = false
+                self.redraw_lock.unlock()
+                if queued.resize {continue}
+                incoming = queued
+                break
+            }
+        }
+        self.defer_redraw = true
+        self.redraw_deferred = false
         ref<session_stream.stream_t>? next = self.handle_idle_input(incoming)
         if next is ref<session_stream.stream_t> stream {
             self.active_stream = stream
+        }
+        // Terminal readers commonly deliver a pasted/PTY-fed line as many
+        // input events in one scheduler turn. Handle the queued suffix before
+        // rendering so a full line never causes one terminal write per byte.
+        for true {
+            var (queued, has_queued) = self.input_events.try_recv() catch error {
+                self.quitting = true
+                break
+            }
+            if !has_queued {break}
+            if queued.resize {
+                self.redraw_lock.lock()
+                self.resize_pending = false
+                self.redraw_lock.unlock()
+                self.render_lock.lock()
+                self.renderer.invalidate()
+                self.render_lock.unlock()
+                continue
+            }
+            if self.active_stream is ref<session_stream.stream_t> stream {
+                self.handle_stream_input(stream, queued)
+            } else {
+                var queued_stream = self.handle_idle_input(queued)
+                if queued_stream is ref<session_stream.stream_t> stream {
+                    self.active_stream = stream
+                }
+            }
+        }
+        self.defer_redraw = false
+        bool should_redraw = self.redraw_deferred && !self.quitting
+        self.redraw_deferred = false
+        if should_redraw {
+            self.redraw()
         }
     }
 }
@@ -566,17 +624,9 @@ pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! 
     return true
 }
 
-// Stream events mutate chat-owned state on the main run-loop coroutine while
-// deferred_redraw renders it on another coroutine (Nature coroutines run in
-// parallel).  Unserialized, a burst of events reallocates buffers mid-render:
-// `bash.output += delta`, tool detail replacement and message/tool vector
-// growth can free the memory a concurrent frame is still reading, which is a
-// plausible source of the non-UTF-8 bytes and the EFAULT
-// ("bad address in system call argument") observed on the real machine
-// (consistent with a write hitting a buffer that was already released).
-// Applying events under the render lock makes mutation and rendering
-// mutually exclusive.  Apply failures propagate exactly like the original
-// synchronous path so the app's error handling and terminal restore run.
+// Stream events mutate chat-owned state while rendering can also be requested
+// by file-watch and signal coroutines. Applying events under the render lock
+// keeps vector replacement and terminal rendering serialized.
 fn view_t.apply_stream_event(&self, session_stream.event_t event): void! {
     self.render_lock.lock()
     self.chat.apply(event) catch error {
@@ -605,6 +655,18 @@ fn view_t.clear_chat(&self) {
 }
 
 pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream_t>? {
+    if input.resize {
+        self.redraw_lock.lock()
+        self.resize_pending = false
+        self.redraw_lock.unlock()
+        // A resize invalidates differential history. Defer the actual full
+        // repaint until the next state-changing input so a SIGWINCH burst
+        // cannot fill a PTY output buffer while the user is still typing.
+        self.render_lock.lock()
+        self.renderer.invalidate()
+        self.render_lock.unlock()
+        return null
+    }
     if input.oauth_ready || input.oauth_done || input.oauth_failed {
         self.handle_oauth_event(input)
         return null
@@ -634,6 +696,7 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
     if self.autocomplete.active {
         if key == 'escape' {
             self.autocomplete.cancel()
+            self.invalidate_transient_renderer()
             self.redraw()
             return null
         }
@@ -685,6 +748,7 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
             // Pi setText('') cancels autocomplete; the cleared editor must
             // never leave a stale menu active (B1-R1-05).
             self.autocomplete.cancel()
+            self.invalidate_transient_renderer()
             self.last_sigint_time = now
             self.redraw()
         }
@@ -775,11 +839,31 @@ pub fn view_t.handle_idle_input(&self, input_t input): ref<session_stream.stream
         return null
     }
     self.update_autocomplete_state()
+    // /quit and /exit are terminal lifecycle commands. Once their prefix is
+    // recognized, avoid repainting for every remaining character while the
+    // PTY may still contain a large overlay frame.
+    string pending_command = self.editor.get_text()
+    if self.suppress_quit_render {
+        if pending_command == '/' || pending_command.starts_with('/quit') || pending_command.starts_with('/exit') {
+            return null
+        }
+        self.suppress_quit_render = false
+    }
+    if pending_command.starts_with('/quit') || pending_command.starts_with('/exit') {
+        return null
+    }
     self.redraw()
     return null
 }
 
 pub fn view_t.handle_stream_input(&self, ref<session_stream.stream_t> stream, input_t input) {
+    if input.resize {
+        self.redraw_lock.lock()
+        self.resize_pending = false
+        self.redraw_lock.unlock()
+        self.redraw()
+        return
+    }
     if input.oauth_ready || input.oauth_done || input.oauth_failed {
         self.handle_oauth_event(input)
         return
@@ -1060,9 +1144,7 @@ fn view_t.restore_terminal(&self): void! {
     }
 }
 
-// Shutdown entry point for the app after the run loop exits: any deferred
-// render coroutine may still hold the render lock mid-frame, so the restore
-// sequences must wait for it instead of racing on stdout.  Restore failures
+// Shutdown entry point for the app after the run loop exits. Restore failures
 // propagate like the previous direct terminal.restore() calls; the app
 // decides whether to ignore them (error-exit path) or surface them.
 pub fn view_t.restore_terminal_sync(&self): void! {
@@ -2355,11 +2437,8 @@ pub fn view_t.handle_debug_command(&self) {
 }
 
 fn view_t.write_terminal(&self, string output): void! {
-    // A deferred redraw can still be in flight when /quit takes effect: the
-    // quitting flag is set before the run loop exits, but the render
-    // coroutine may have already passed its own checks.  Suppressing writes
-    // here keeps terminal.restore()'s sequences the last output on screen
-    // instead of flashing one stale frame on the restored terminal.
+    // Suppress writes after /quit so terminal.restore()'s sequences remain
+    // the last output on screen instead of flashing a stale frame.
     if self.quitting {
         return
     }
@@ -2463,105 +2542,31 @@ fn start_file_watchers(ref<view_t> view, string cwd) {
     }
 }
 
+// Closing a transient menu must erase every row it occupied.  Resetting the
+// differential renderer here avoids a stale candidate row when an Esc frame
+// races with a preceding autocomplete update.
+fn view_t.invalidate_transient_renderer(&self) {
+    self.render_lock.lock()
+    self.renderer.invalidate()
+    self.render_lock.unlock()
+    self.transient_ui_rendered = false
+}
+
 pub fn view_t.redraw(&self) {
     if self.quitting {
         return
     }
-    self.render_lock.lock()
-    self.redraw_dirty = true
-    if self.redraw_scheduled {
-        self.render_lock.unlock()
+    if self.defer_redraw {
+        self.redraw_deferred = true
         return
     }
-    self.redraw_scheduled = true
+    self.render_lock.lock()
+    self.render() catch error {
+        self.chat.error_message = error.msg()
+        self.chat.status = 'Render failed'
+        self.renderer.invalidate()
+    }
     self.render_lock.unlock()
-    go deferred_redraw(self)
-}
-
-fn deferred_redraw(ref<view_t> view): void! {
-    // Pi's TUI uses a 16ms minimum render interval.  A deferred coroutine
-    // keeps input handling responsive while coalescing deltas from one SSE
-    // burst into a single terminal write.
-    co.sleep(16)
-    int consecutive_failures = 0
-    for true {
-        if view.quitting {
-            view.render_lock.lock()
-            view.redraw_dirty = false
-            view.redraw_scheduled = false
-            view.render_lock.unlock()
-            return
-        }
-        view.render_lock.lock()
-        bool dirty = view.redraw_dirty
-        view.redraw_dirty = false
-        view.render_lock.unlock()
-        if !dirty {
-            break
-        }
-        // The whole render (diff computation, commit, terminal write) runs
-        // under the render lock.  Without this a burst of events can start a
-        // second deferred coroutine mid-frame and two frames can overlap on
-        // the same terminal/file handles, dropping rows or corrupting state.
-        // The historical SIGABRTs associated with this area were traced to an
-        // external Nature runtime bug, nature-lang/nature#302 (concurrent
-        // creation of capacity <= 8 dynamic strings races on the global
-        // const_str_pool, heap corruption abort).  Serializing frames here is
-        // a defensive frame-integrity measure only; it does NOT fix #302,
-        // which has been resolved upstream by PR #303 and verified with the
-        // dedicated toolchain (see docs/porting-plan.md).
-        view.render_lock.lock()
-        view.render() catch error {
-            view.chat.error_message = error.msg()
-            view.chat.status = 'Render failed'
-            // A failed frame must not leave the diff state ahead of the
-            // screen.  invalidate() forgets the committed lines AND forces a
-            // cleared full repaint on the next attempt, so a partially
-            // written frame or foreign screen content cannot survive as
-            // stale diff state.
-            view.renderer.invalidate()
-            view.redraw_dirty = true
-            view.render_lock.unlock()
-            // A failing render must not hot-spin: pace retries and give up
-            // after a bounded budget so the loop exits and a later redraw
-            // (user input) retries fresh.
-            consecutive_failures += 1
-            if consecutive_failures > 50 {
-                view.render_lock.lock()
-                view.redraw_dirty = false
-                view.render_lock.unlock()
-                break
-            }
-            co.sleep(16)
-            continue
-        }
-        view.render_lock.unlock()
-        consecutive_failures = 0
-        if view.quitting {
-            view.render_lock.lock()
-            view.redraw_dirty = false
-            view.redraw_scheduled = false
-            view.render_lock.unlock()
-            return
-        }
-        view.render_lock.lock()
-        bool again = view.redraw_dirty
-        view.render_lock.unlock()
-        if !again {
-            break
-        }
-        co.sleep(16)
-    }
-    view.render_lock.lock()
-    view.redraw_scheduled = false
-    bool queued = !view.quitting && view.redraw_dirty
-    if view.quitting {
-        view.redraw_dirty = false
-    }
-    view.render_lock.unlock()
-    if queued {
-        view.redraw()
-    }
 }
 
 fn read_signals(ref<view_t> view): void! {
@@ -2570,7 +2575,13 @@ fn read_signals(ref<view_t> view): void! {
             return
         }
         if received == syscall.SIGWINCH as signal.sig_t {
-            view.redraw()
+            view.redraw_lock.lock()
+            bool pending = view.resize_pending
+            if !pending {
+                view.resize_pending = true
+                view.input_events.try_send(input_t {resize: true,}) catch error {view.resize_pending = false}
+            }
+            view.redraw_lock.unlock()
             continue
         }
         if received == syscall.SIGINT as signal.sig_t {
@@ -3405,7 +3416,6 @@ pub fn view_t.show_settings_overlay(&self) {
 // open their submenu; currently unavailable rows are inert.
 fn view_t.handle_settings_option(&self, ref<overlay_t> overlay, string option) {
     var s = self.settings_snapshot
-    bool images_available = terminal_image.detect_capabilities()[0] != ''
     if option.starts_with('Warnings:') {
         self.show_warnings_overlay(overlay)
         return
@@ -3418,6 +3428,7 @@ fn view_t.handle_settings_option(&self, ref<overlay_t> overlay, string option) {
         self.show_theme_overlay(overlay)
         return
     }
+    bool images_available = terminal_image.detect_capabilities()[0] != ''
     if option.starts_with('Auto-compact:') {
         s.auto_compaction = !s.auto_compaction
         self.runner.set_auto_compaction(s.auto_compaction) catch error {}
@@ -4259,6 +4270,7 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
                 return
             }
             self.overlay = null
+            self.suppress_quit_render = true
             self.redraw()
             return
         }
