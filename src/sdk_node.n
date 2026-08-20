@@ -1,5 +1,6 @@
 import adou.src.tools.command
 import adou.src.tools.path_utils
+import adou.src.tools.temp as temp
 import fs
 import os
 import path
@@ -13,6 +14,14 @@ pub type environment_t = struct {
     {string:string} env = {}
 }
 
+pub type file_info_t = struct {
+    string name
+    string path
+    string kind
+    i64 size
+    i64 mtime_ms
+}
+
 pub fn new(string cwd): ref<environment_t> {
     return new environment_t(cwd = path_utils.expand_path(cwd))
 }
@@ -24,6 +33,27 @@ pub fn environment_t.read_file(&self, string file_path): string! {
     return content
 }
 
+pub fn environment_t.read_text_file(&self, string file_path): string! {return self.read_file(file_path)}
+
+pub fn environment_t.read_text_lines(&self, string file_path, int max_lines): [string]! {
+    string content = self.read_file(file_path)
+    string normalized = content.replace('\r\n', '\n').replace('\r', '\n')
+    [string] lines = []
+    if normalized == '' {return lines}
+    for line in normalized.split('\n') {
+        lines.push(line)
+        if max_lines > 0 && lines.len() >= max_lines {break}
+    }
+    return lines
+}
+
+pub fn environment_t.read_binary_file(&self, string file_path): [u8]! {
+    var file = fs.open(path_utils.resolve_to_cwd(file_path, self.cwd), syscall.O_RDONLY, 0)
+    string content = file.content()
+    file.close()
+    return content as [u8]
+}
+
 pub fn environment_t.write_file(&self, string file_path, string content): void! {
     string target = path_utils.resolve_to_cwd(file_path, self.cwd)
     os.mkdirs(path.dir(target), 0o700)
@@ -32,12 +62,78 @@ pub fn environment_t.write_file(&self, string file_path, string content): void! 
     file.close()
 }
 
+pub fn environment_t.append_file(&self, string file_path, string content): void! {
+    string target = path_utils.resolve_to_cwd(file_path, self.cwd)
+    os.mkdirs(path.dir(target), 0o700)
+    var file = fs.open(target, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_APPEND, 0o600)
+    file.write(content as [u8])
+    file.close()
+}
+
+pub fn environment_t.absolute_path(&self, string file_path): string {return path_utils.resolve_to_cwd(file_path, self.cwd)}
+pub fn environment_t.join_path(&self, [string] parts): string {
+    if parts.len() == 0 {return self.cwd}
+    string result = parts[0]
+    for int index = 1; index < parts.len(); index += 1 {
+        result = path.join(result, parts[index])
+    }
+    return result
+}
+
+pub fn environment_t.exists(&self, string file_path): bool {return path_utils.exists(path_utils.resolve_to_cwd(file_path, self.cwd))}
+
+pub fn environment_t.canonical_path(&self, string file_path): string! {
+    return path_utils.canonicalize_existing(path_utils.resolve_to_cwd(file_path, self.cwd))
+}
+
+pub fn environment_t.file_info(&self, string file_path): file_info_t! {
+    string resolved = path_utils.resolve_to_cwd(file_path, self.cwd)
+    var stat = syscall.stat(resolved)
+    string kind = syscall.stat_is_dir(stat.mode) ? 'directory' : 'file'
+    return file_info_t {name: path.base(resolved), path: resolved, kind: kind, size: stat.size, mtime_ms: stat.mtim.sec * 1000 + stat.mtim.nsec / 1000000,}
+}
+
+pub fn environment_t.list_dir(&self, string directory): [file_info_t]! {
+    string resolved = path_utils.resolve_to_cwd(directory, self.cwd)
+    [file_info_t] result = []
+    for name in os.listdir(resolved) {
+        string child = path.join(resolved, name)
+        var info = self.file_info(child) catch error {continue}
+        result.push(info)
+    }
+    return result
+}
+
+pub fn environment_t.create_dir(&self, string directory, bool recursive): void! {
+    string resolved = path_utils.resolve_to_cwd(directory, self.cwd)
+    os.mkdirs(resolved, recursive ? 0o700 : 0o700)
+}
+
+pub fn environment_t.create_temp_dir(&self, string prefix): string! {
+    return temp.create_temp_dir(prefix)
+}
+
+pub fn environment_t.create_temp_file(&self, string prefix, string suffix): string! {
+    return temp.create_temp_file(prefix, suffix)
+}
+
 pub fn environment_t.remove(&self, string file_path): void! {
     os.remove(path_utils.resolve_to_cwd(file_path, self.cwd))
 }
 
 pub fn environment_t.exec(&self, string script, int timeout_ms): command.result_t! {
     return command.shell_timeout(self.cwd, script, timeout_ms)
+}
+
+pub fn environment_t.exec_with_env(&self, string script, int timeout_ms, {string:string} env): command.result_t! {
+    string prefix = ''
+    for name, value in self.env {
+        prefix += 'export ' + command.quote(name) + '=' + command.quote(value) + ' && '
+    }
+    for name, value in env {
+        prefix += 'export ' + command.quote(name) + '=' + command.quote(value) + ' && '
+    }
+    return command.shell_timeout(self.cwd, prefix + script, timeout_ms)
 }
 
 pub fn environment_t.which(&self, string executable): string {

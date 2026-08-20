@@ -3,6 +3,7 @@ import adou.src.sdk_proxy
 import adou.src.sdk_harness
 import adou.src.sdk
 import adou.src.ai.types
+import adou.src.session.identity
 
 test 'public SDK exposes node environment and harness phases' {
     var environment = sdk_node.new('/tmp')
@@ -11,4 +12,21 @@ test 'public SDK exposes node environment and harness phases' {
     assert(sdk_harness.PHASE_IDLE == 'idle')
     var proxy_options = new sdk_proxy.options_t()
     assert(proxy_options.timeout_ms == 120000)
+}
+
+test 'node execution environment exposes Pi filesystem primitives' {
+    var environment = sdk_node.new('/tmp')
+    string name = 'adou-sdk-node-' + identity.uuid_v7()
+    string file_path = environment.absolute_path(name)
+    environment.write_file(name, 'one\ntwo\n')
+    environment.append_file(name, 'three\n')
+    assert(environment.exists(name))
+    assert(environment.read_text_file(name) == 'one\ntwo\nthree\n')
+    assert(environment.read_text_lines(name, 2).len() == 2)
+    assert(environment.read_binary_file(name).len() > 0)
+    var info = environment.file_info(name)
+    assert(info.kind == 'file')
+    assert(info.size > 0)
+    environment.remove(name)
+    assert(!environment.exists(name))
 }

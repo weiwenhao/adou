@@ -14,8 +14,8 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 - 证据：`make build` 通过；`tests/startup_migrations_test.n` 4/4 通过。工具下载 fixture/e2e 仍需在本阶段最终关闭前补齐。
 - **阶段 2 已完成（提交 `e96ff98`、`5dddc65`）**：Codex `websocket-cached` 已增加连接缓存、TTL、`previous_response_id` 和增量 input；失败连接会被驱逐，不残留 busy cache；TUI 支持 Pi `vars` 别名、camelCase JSON 主题加载/reload，`ADOU_THEME_FILE` 主题文件和 git HEAD 通过 native kqueue/inotify 事件监听；grep/find 现在优先经 managed-tools 解析 `rg`/`fd`，缺失时按 Pi tools-manager 下载。
 - 阶段 2 证据：`make build`、`tests/theme_test.n` 5/5、`tests/terminal_colors_test.n` 6/6、`tests/startup_migrations_test.n` 4/4、`tests/codex_websocket_test.n` 7/7、`tests/builtins_test.n` 3/3；watcher 不依赖外部 `fswatch` 命令。
-- **阶段 3 已完成（提交 `3855050`、本批待提交）**：新增 `src/server/client.n` 与 `adou server list|spawn|status|stop|rpc|rpc-stream` 命令入口；新增 `src/sdk_harness.n`、`src/sdk_node.n`、`src/sdk_proxy.n`，补齐公共 Harness、Node execution environment、SSE streamProxy surface。Harness 现在转发完整 session stream，并暴露 compact/tree/model/thinking/queue/runtime 控制；proxy 具备 Pi 的异常转 error event、usage/signature/tool JSON 增量重建。
-- 阶段 3 证据：`make build`、`tests/server_client_test.n` 1/1、`tests/sdk_surface_test.n` 1/1、`tests/e2e/rpc-over-ipc.sh` 通过；server live 多进程 list/spawn/status/stop 已实测。
+- **阶段 3 已完成（提交 `3855050`、`bac6dc6` 及本批 SDK 补丁）**：新增 `src/server/client.n` 与 `adou server list|spawn|status|stop|rpc|rpc-stream` 命令入口；新增 `src/sdk_harness.n`、`src/sdk_node.n`、`src/sdk_proxy.n`，补齐公共 Harness、Node execution environment、SSE streamProxy surface。Harness 现在转发完整 session stream，并暴露 compact/tree/model/thinking/queue/runtime 控制；Node environment 覆盖 Pi 文件读写、行/二进制读取、目录/stat/canonical/temp 和执行环境；proxy 具备 Pi 的异常转 error event、usage/signature/tool JSON 增量重建。
+- 阶段 3 证据：`make build`、`tests/server_client_test.n` 1/1、`tests/sdk_surface_test.n` 2/2、`tests/e2e/rpc-over-ipc.sh` 通过；server live 多进程 list/spawn/status/stop 已实测。
 
 ## 当前进度快照
 

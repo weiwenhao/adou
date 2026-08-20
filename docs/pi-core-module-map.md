@@ -1,6 +1,6 @@
 # Pi Core Module Map
 
-状态：Pi `0.82.1` 的非 extension 可观察行为按模块收口；唯一明确排除是 TypeScript/QuickJS extension runtime。2026-08-20 已完成 OpenAI browser OAuth/live request/refresh recovery、用户图片全链路、Kitty/iTerm2/plain 图片 UI、Radius discovery/web endpoint、真实 `/share` viewer、长历史/重复 live 会话，并继续修复 SDK/proxy/theme/tools/Codex 失败路径。
+状态：Pi `0.82.1` 的非 extension 可观察行为按模块收口；唯一明确排除是 TypeScript/QuickJS extension runtime。2026-08-20 已完成 OpenAI browser OAuth/live request/refresh recovery、用户图片全链路、Kitty/iTerm2/plain 图片 UI、Radius discovery/web endpoint、真实 `/share` viewer、长历史/重复 live 会话，以及 SDK/proxy/theme/tools/Codex 的失败路径与公共 API 收口。
 
 本文把 `vendors/pi` 中必须翻译到 Nature 的核心边界固定下来。判断标准是 Pi 的可观察 coding-agent 行为，而不是 TypeScript 文件是否已经有一个同名 Nature 文件。每个模块只有在完成源码差分、单元测试和至少一个跨模块集成测试后，才可标记为完成。
 
