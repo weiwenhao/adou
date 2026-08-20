@@ -22,25 +22,27 @@ pub fn directory(): string {
 }
 
 pub fn find(string name): string {
-    string local = path.join(directory(), name)
+    if !known_tool(name) {return ''}
+    string suffix = platform() == 'win32' ? '.exe' : ''
+    string local = path.join(directory(), name + suffix)
     if path_utils.exists(local) {return local}
-    var probe = command.shell('', 'command -v ' + command.quote(name)) catch error {return ''}
-    if probe.exit_code == 0 {return probe.stdout.trim([' ', '\t', '\n', '\r'])}
-    if name == 'rg' {
-        var alternate = command.shell('', 'command -v rg') catch error {return ''}
-        if alternate.exit_code == 0 {return alternate.stdout.trim([' ', '\t', '\n', '\r'])}
-    }
-    if name == 'fd' {
-        var alternate = command.shell('', 'command -v fdfind') catch error {return ''}
-        if alternate.exit_code == 0 {return alternate.stdout.trim([' ', '\t', '\n', '\r'])}
+    [string] candidates = name == 'fd' ? ['fd', 'fdfind'] : ['rg']
+    for candidate in candidates {
+        var probe = command.shell('', 'command -v ' + command.quote(candidate)) catch error {continue}
+        if probe.exit_code == 0 {
+            string resolved = probe.stdout.trim([' ', '\t', '\n', '\r'])
+            if resolved != '' {return resolved}
+        }
     }
     return ''
 }
 
 pub fn ensure(string name): string! {
+    if !known_tool(name) {return ''}
     string existing = find(name)
     if existing != '' {return existing}
-    if syscall.get_env('ADOU_OFFLINE') == '1' {return ''}
+    if is_truthy(syscall.get_env('ADOU_OFFLINE')) {return ''}
+    if platform() == 'android' {return ''}
     if tool_lock is null {
         tool_lock = mutex.mutex_t.new()
     }
@@ -62,13 +64,15 @@ pub fn ensure(string name): string! {
 pub fn ensure_all(): [tool_result_t] {
     [tool_result_t] result = []
     for name in ['rg', 'fd'] {
+        string before = find(name)
         string resolved = ensure(name) catch error {''}
-        result.push(tool_result_t {name: name, path: resolved, downloaded: false,})
+        result.push(tool_result_t {name: name, path: resolved, downloaded: before == '' && resolved != '',})
     }
     return result
 }
 
 fn download(string name): string! {
+    if !known_tool(name) {throw errorf('Unknown managed tool: %s', name)}
     string repo = name == 'rg' ? 'BurntSushi/ripgrep' : 'sharkdp/fd'
     string tag_prefix = name == 'fd' ? 'v' : ''
     var latest = command.shell_timeout('', 'curl -fsSL --connect-timeout 10 --max-time 10 ' + command.quote('https://api.github.com/repos/' + repo + '/releases/latest'), 15000)
@@ -78,19 +82,24 @@ fn download(string name): string! {
     string tag = json_util.opt_string(parsed as {string:any}, 'tag_name')
     if tag == '' {throw errorf('Missing %s release tag', name)}
     string version = tag.starts_with(tag_prefix) ? tag.slice(tag_prefix.len(), tag.len()) : tag
-    string platform = syscall.get_env('ADOU_TOOL_PLATFORM')
-    if platform == '' {platform = 'darwin'}
-    string arch = syscall.get_env('ADOU_TOOL_ARCH')
-    if arch == '' {arch = 'arm64'}
+    string platform = platform()
+    string arch = architecture()
+    // Pi pins this old fd release because newer arm/x64 archives were not
+    // available for the macOS x64 target at the time of the 0.82.1 release.
+    if name == 'fd' && platform == 'darwin' && arch == 'x64' {version = '10.3.0'}
     string asset = asset_name(name, version, platform, arch)
     if asset == '' {throw errorf('Unsupported platform for %s', name)}
     string root = directory()
     os.mkdirs(root, 0o700)
     string archive = path.join(root, '.' + name + '.download')
     string extract = path.join(root, '.' + name + '.extract')
+    string target = path.join(root, name + (platform == 'win32' ? '.exe' : ''))
+    // Every installation uses a private temporary archive/extraction path and
+    // only publishes the executable after extraction and chmod succeed.
+    os.remove(archive) catch cleanup {}
+    os.rmdir(extract, true) catch cleanup {}
     var fetched = command.shell_timeout('', 'curl -fsSL --connect-timeout 10 --max-time 120 -o ' + command.quote(archive) + ' ' + command.quote('https://github.com/' + repo + '/releases/download/' + tag + '/' + asset), 130000)
     if fetched.exit_code != 0 {os.remove(archive) catch cleanup {}; throw errorf('Could not download %s: %s', name, fetched.stderr)}
-    os.rmdir(extract, true) catch cleanup {}
     os.mkdirs(extract, 0o700)
     string unpack = asset.ends_with('.zip') ? 'unzip -q ' + command.quote(archive) + ' -d ' + command.quote(extract) : 'tar -xzf ' + command.quote(archive) + ' -C ' + command.quote(extract)
     var extracted = command.shell_timeout('', unpack, 30000)
@@ -98,15 +107,17 @@ fn download(string name): string! {
     var located = command.shell('', 'find ' + command.quote(extract) + ' -type f -name ' + command.quote(name) + ' -print -quit')
     string binary = located.stdout.trim([' ', '\t', '\n', '\r'])
     if binary == '' {os.remove(archive) catch cleanup {}; os.rmdir(extract, true) catch cleanup {}; throw errorf('Downloaded %s archive did not contain its binary', name)}
-    string target = path.join(root, name)
-    var installed = command.shell_timeout('', 'cp ' + command.quote(binary) + ' ' + command.quote(target) + ' && chmod 755 ' + command.quote(target), 10000)
+    string staged = target + '.install'
+    os.remove(staged) catch cleanup {}
+    var installed = command.shell_timeout('', 'cp ' + command.quote(binary) + ' ' + command.quote(staged) + ' && chmod 755 ' + command.quote(staged) + ' && mv -f ' + command.quote(staged) + ' ' + command.quote(target), 10000)
     os.remove(archive) catch cleanup {}
     os.rmdir(extract, true) catch cleanup {}
+    os.remove(staged) catch cleanup {}
     if installed.exit_code != 0 {throw errorf('Could not install %s: %s', name, installed.stderr)}
     return target
 }
 
-fn asset_name(string name, string version, string platform, string arch): string {
+pub fn asset_name(string name, string version, string platform, string arch): string {
     string machine = arch == 'arm64' ? 'aarch64' : 'x86_64'
     if name == 'fd' {
         if platform == 'darwin' {return 'fd-v' + version + '-' + machine + '-apple-darwin.tar.gz'}
@@ -117,4 +128,39 @@ fn asset_name(string name, string version, string platform, string arch): string
     if platform == 'linux' {return arch == 'arm64' ? 'ripgrep-' + version + '-aarch64-unknown-linux-gnu.tar.gz' : 'ripgrep-' + version + '-x86_64-unknown-linux-musl.tar.gz'}
     if platform == 'win32' {return 'ripgrep-' + version + '-' + machine + '-pc-windows-msvc.zip'}
     return ''
+}
+
+pub fn known_tool(string name): bool {
+    return name == 'rg' || name == 'fd'
+}
+
+pub fn platform(): string {
+    string configured = syscall.get_env('ADOU_TOOL_PLATFORM')
+    if configured != '' {return configured.to_lower()}
+    var result = command.shell('', 'uname -s') catch error {return 'darwin'}
+    string value = result.stdout.trim([' ', '\t', '\n', '\r']).to_lower()
+    if value == 'darwin' {return 'darwin'}
+    if value == 'linux' {return 'linux'}
+    if value == 'android' {return 'android'}
+    if value.contains('mingw') || value.contains('msys') || value.contains('windows') {return 'win32'}
+    return value
+}
+
+pub fn architecture(): string {
+    string configured = syscall.get_env('ADOU_TOOL_ARCH')
+    if configured != '' {return normalize_arch(configured)}
+    var result = command.shell('', 'uname -m') catch error {return 'arm64'}
+    return normalize_arch(result.stdout.trim([' ', '\t', '\n', '\r']))
+}
+
+fn normalize_arch(string value): string {
+    string lower = value.to_lower()
+    if lower == 'aarch64' || lower == 'arm64' {return 'arm64'}
+    if lower == 'x86_64' || lower == 'amd64' || lower == 'x64' {return 'x64'}
+    return lower
+}
+
+fn is_truthy(string value): bool {
+    string lower = value.to_lower()
+    return lower == '1' || lower == 'true' || lower == 'yes'
 }
