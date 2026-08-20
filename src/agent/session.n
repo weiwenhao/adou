@@ -33,6 +33,8 @@ pub type runner_t = struct {
     bool busy
     ref<repository.manager_t> repository
     ref<agent_types.context_t> base_context
+    [ref<agent_types.agent_tool_t>] all_tools = []
+    [string] active_tool_names = []
     ref<agent_types.config_t> agent_config
     agent_types.stream_fn stream_function
     compaction_types.settings_t compaction_settings
@@ -77,7 +79,10 @@ pub type tree_target_t = struct {
 
 pub fn new(ref<repository.manager_t> session_repository, ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function, compaction_types.settings_t settings): ref<runner_t>! {
     var stored = session_repository.build_context()
-    return new runner_t(lock = mutex.mutex_t.new(), repository = session_repository, base_context = context, agent_config = config, stream_function = stream_function, compaction_settings = settings, active_messages = stored.messages)
+    [string] active_names = stored.active_tool_names.len() > 0 ? stored.active_tool_names : tool_names(context.tools)
+    var runner = new runner_t(lock = mutex.mutex_t.new(), repository = session_repository, base_context = context, all_tools = context.tools.slice(0, context.tools.len()), active_tool_names = active_names, agent_config = config, stream_function = stream_function, compaction_settings = settings, active_messages = stored.messages)
+    runner.base_context.tools = filter_tools(runner.all_tools, active_names)
+    return runner
 }
 
 pub fn runner_t.prompt(&self, string text): ref<session_stream.stream_t>! {
@@ -298,6 +303,11 @@ pub fn runner_t.set_rpc_snapshot(&self, ref<resource_snapshot.resource_snapshot_
 pub fn runner_t.publish_rpc_resources(&self, ref<resource_snapshot.resource_snapshot_t> snapshot, string system_prompt, [ref<agent_types.agent_tool_t>] tools, bool apply_preferences) {
     var context = new agent_types.context_t(system_prompt = system_prompt, tools = tools)
     self.lock.lock()
+    self.all_tools = tools.slice(0, tools.len())
+    if self.active_tool_names.len() == 0 {
+        self.active_tool_names = tool_names(tools)
+    }
+    context.tools = filter_tools(self.all_tools, self.active_tool_names)
     self.base_context = context
     self.rpc_snapshot = snapshot
     if apply_preferences {
@@ -580,6 +590,47 @@ pub fn runner_t.set_auto_retry(&self, bool enabled): void! {
     self.retry_enabled = enabled
     self.lock.unlock()
     settings.set_retry_enabled(enabled)
+}
+
+pub fn runner_t.set_active_tools(&self, [string] names): void! {
+    self.lock.lock()
+    if self.busy {
+        self.lock.unlock()
+        throw errorf('Agent session is already running')
+    }
+    self.lock.unlock()
+    for name in names {
+        bool known = false
+        for tool in self.all_tools {
+            if tool.name == name {
+                known = true
+            }
+        }
+        if !known {throw errorf('Unknown tool: %s', name)}
+    }
+    self.repository.append_active_tools_change(names) catch error {throw error}
+    self.lock.lock()
+    self.active_tool_names = names.slice(0, names.len())
+    self.base_context.tools = filter_tools(self.all_tools, names)
+    self.lock.unlock()
+}
+
+fn filter_tools([ref<agent_types.agent_tool_t>] tools, [string] names): [ref<agent_types.agent_tool_t>] {
+    [ref<agent_types.agent_tool_t>] result = []
+    for name in names {
+        for tool in tools {
+            if tool.name == name {result.push(tool); break}
+        }
+    }
+    return result
+}
+
+fn tool_names([ref<agent_types.agent_tool_t>] tools): [string] {
+    [string] result = []
+    for tool in tools {
+        result.push(tool.name)
+    }
+    return result
 }
 
 // Batch 3: runtime-only mirrors for the transport and HTTP idle timeout

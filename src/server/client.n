@@ -4,11 +4,49 @@ import json
 import net.tcp
 import syscall
 import fmt
+import fs
+import io.buf
 
 pub type client_t = struct {
     string host
     int port
     int timeout_ms
+}
+
+type line_reader_t = struct {
+    ref<tcp.conn_t> conn
+    [u8] pending = []
+}
+
+fn line_reader_t.read_line(&self): string! {
+    for true {
+        for index, byte in self.pending {
+            if byte == 10 {
+                string line = self.pending.slice(0, index) as string
+                self.pending = self.pending.slice(index + 1, self.pending.len())
+                if line.ends_with('\r') {
+                    line = line.slice(0, line.len() - 1)
+                }
+                return line
+            }
+        }
+        var chunk = vec<u8>.new(0, 512)
+        int count = self.conn.read(chunk) catch error {
+            if self.pending.len() > 0 {
+                string trailing = self.pending as string
+                self.pending = []
+                return trailing
+            }
+            throw errorf('server stream read failed')
+        }
+        if count <= 0 {
+            string trailing = self.pending as string
+            self.pending = []
+            return trailing
+        }
+        self.pending.append(chunk.slice(0, count))
+    }
+    return ''
 }
 
 pub fn from_env(): ref<client_t> {
@@ -85,10 +123,26 @@ pub fn client_t.rpc_stream(&self, string instance_id): void! {
     request['type'] = 'rpc_stream'
     request['instanceId'] = instance_id
     ipc_server.write_line(conn, json.serialize(request))
+    var socket_reader = new line_reader_t(conn = conn)
+    string ready = socket_reader.read_line() catch error {conn.close(); return}
+    if ready != '' {println(ready)}
+    var input = fs.stdin() catch error {conn.close(); return}
+    var reader = new buf.reader<ref<fs.file_t>>(rd = input)
     for true {
-        string line = ipc_server.read_line(conn)
-        if line == '' {break}
-        println(line)
+        string command_line = reader.read_line() catch error {break}
+        command_line = command_line.trim([' ', '\t', '\r', '\n'])
+        if command_line == '' {continue}
+        conn.write((command_line + '\n') as [u8]) catch error {break}
+        for true {
+            string line = socket_reader.read_line() catch error {break}
+            if line == '' {break}
+            println(line)
+            var response = json_util.parse(line) catch error {continue}
+            if response is {string:any} object {
+                string response_type = object.contains('type') && object['type'] is string ? object['type'] as string : ''
+                if response_type == 'response' || response_type == 'error' {break}
+            }
+        }
     }
     conn.close()
 }

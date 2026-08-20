@@ -1,0 +1,60 @@
+import adou.src.ai.types
+import adou.src.sdk_proxy
+import co
+import fmt
+import http
+
+pub const SDK_PROXY_PORT = 18993
+
+fn serve_fixture(ref<http.server_t> server): void! {server.listen(server.port)}
+
+test 'streamProxy reconstructs one start, text, tool JSON and usage' {
+    var server = http.server()
+    server.port = SDK_PROXY_PORT
+    http.callback_fn handler = fn (http.request_t request, ref<http.response_t> response): void! {
+        response.content_type = 'text/event-stream'
+        string body = ''
+        body += 'data: {"type":"start"}\n\n'
+        body += 'data: {"type":"text_start","contentIndex":0}\n\n'
+        body += 'data: {"type":"text_delta","contentIndex":0,"delta":"hello"}\n\n'
+        body += 'data: {"type":"text_end","contentIndex":0}\n\n'
+        body += 'data: {"type":"toolcall_start","contentIndex":1,"id":"call-1","toolName":"read"}\n\n'
+        body += 'data: {"type":"toolcall_delta","contentIndex":1,"delta":"{\\"n\\":"}\n\n'
+        body += 'data: {"type":"toolcall_delta","contentIndex":1,"delta":"1}"}\n\n'
+        body += 'data: {"type":"toolcall_end","contentIndex":1}\n\n'
+        body += 'data: {"type":"done","reason":"stop","usage":{"input":2,"output":3,"totalTokens":5}}\n\n'
+        response.send(body)
+        server.close()
+    }
+    server.post('/api/stream', handler)
+    go serve_fixture(server)
+    co.sleep(250)
+    var model = new types.model_t(id = 'proxy-model', api = 'proxy-api', provider = 'proxy', base_url = 'http://proxy.invalid', max_tokens = 64)
+    var context = new types.context_t()
+    var options = sdk_proxy.options_t {proxy_url: fmt.sprintf('http://127.0.0.1:%d', SDK_PROXY_PORT), auth_token: 'proxy-token', timeout_ms: 5000,}
+    var stream = sdk_proxy.stream_proxy(model, context, new types.stream_options_t(), options)
+    [string] kinds = []
+    for true {
+        var event = stream.recv() catch error {break}
+        kinds.push(event.kind)
+        if event.kind == types.EVENT_DONE || event.kind == types.EVENT_ERROR {break}
+    }
+    var result = stream.result()
+    assert(count_kind(kinds, types.EVENT_START) == 1)
+    assert(count_kind(kinds, types.EVENT_TEXT_DELTA) == 1)
+    assert(count_kind(kinds, types.EVENT_TOOLCALL_DELTA) == 2)
+    assert(result.stop_reason == types.STOP_STOP)
+    assert(result.usage.input == 2 && result.usage.output == 3 && result.usage.total_tokens == 5)
+    assert((result.content[0] as ref<types.text_content_t>).text == 'hello')
+    var call = result.content[1] as ref<types.tool_call_t>
+    assert(call.name == 'read')
+    assert(call.partial_json == '{"n":1}')
+}
+
+fn count_kind([string] kinds, string wanted): int {
+    int count = 0
+    for kind in kinds {
+        if kind == wanted {count += 1}
+    }
+    return count
+}

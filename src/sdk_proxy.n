@@ -1,9 +1,11 @@
 import adou.src.ai.event_stream
+import adou.src.ai.abort
 import adou.src.ai.sse
 import adou.src.ai.streaming_json
 import adou.src.ai.types as ai_types
 import adou.src.json_util
 import adou.src.ai.types
+import adou.src.session.message_json
 import http.client
 import json
 import time
@@ -34,22 +36,28 @@ fn run_proxy(ref<event_stream.assistant_stream_t> stream, ref<ai_types.model_t> 
 
 fn run_proxy_inner(ref<event_stream.assistant_stream_t> stream, ref<ai_types.assistant_message_t> partial, ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> stream_options, options_t options): void! {
     var response = send_proxy(model, context, stream_options, options)
+    abort.abort_callback_t cancel_response = fn() {response.close()}
+    stream.cancellation.on_abort(cancel_response)
     if response.status < 200 || response.status >= 300 {
         string body = response.text() catch error {''}
         response.close()
         throw errorf('Proxy error: HTTP %d %s', response.status, body)
     }
-    stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_START, partial: partial,})
     var parser = sse.parser()
     [u8] buffer = vec<u8>.new(0, 8192)
     for true {
-        int count = response.read(buffer) catch error {break}
+        if stream.is_aborted() {throw errorf('Proxy request aborted by user')}
+        int count = response.read(buffer) catch error {
+            if stream.is_aborted() {throw errorf('Proxy request aborted by user')}
+            break
+        }
         if count <= 0 {break}
         var frames = parser.feed(buffer.slice(0, count))
         for frame in frames {
-            apply_proxy_event(stream, partial, frame.data)
+            apply_proxy_event(stream, partial, frame.data) catch error {throw error}
         }
     }
+    if stream.is_aborted() {throw errorf('Proxy request aborted by user')}
     var pending = parser.finish_pending()
     for frame in pending {
         apply_proxy_event(stream, partial, frame.data)
@@ -64,9 +72,31 @@ fn run_proxy_inner(ref<event_stream.assistant_stream_t> stream, ref<ai_types.ass
 
 fn send_proxy(ref<ai_types.model_t> model, ref<ai_types.context_t> context, ref<ai_types.stream_options_t> stream_options, options_t options): ref<client.response_t>! {
     {string:any} body = {}
-    body['model'] = model
-    body['context'] = context
-    body['options'] = stream_options
+    {string:any} model_json = {}
+    model_json['id'] = model.id
+    model_json['name'] = model.name
+    model_json['api'] = model.api
+    model_json['provider'] = model.provider
+    model_json['baseUrl'] = model.base_url
+    model_json['reasoning'] = model.reasoning
+    model_json['contextWindow'] = model.context_window
+    model_json['maxTokens'] = model.max_tokens
+    {string:any} context_json = {}
+    context_json['systemPrompt'] = context.system_prompt
+    [any] messages = []
+    for message in context.messages {
+        messages.push(message_json.encode(message))
+    }
+    context_json['messages'] = messages
+    {string:any} options_json = {}
+    options_json['timeoutMs'] = stream_options.timeout_ms
+    options_json['maxTokens'] = stream_options.max_tokens
+    options_json['maxRetries'] = stream_options.max_retries
+    options_json['transport'] = stream_options.transport
+    options_json['cacheRetention'] = stream_options.cache_retention
+    body['model'] = model_json
+    body['context'] = context_json
+    body['options'] = options_json
     var request = client.new().post(options.proxy_url + '/api/stream').timeout(options.timeout_ms).header('Authorization', 'Bearer ' + options.auth_token).header('Content-Type', 'application/json').header('Accept', 'text/event-stream')
     request.content(json.serialize(body))
     return request.send()
@@ -91,11 +121,13 @@ fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.a
         }
         'text_delta' -> {
             string delta = json_util.opt_string(object, 'delta')
+            if index < 0 || index >= partial.content.len() || !(partial.content[index] is ref<ai_types.text_content_t>) {throw errorf('Received text_delta for non-text content')}
             var content = partial.content[index] as ref<ai_types.text_content_t>
             content.text += delta
             stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_DELTA, content_index: index, delta: delta, partial: partial,})
         }
         'text_end' -> {
+            if index < 0 || index >= partial.content.len() || !(partial.content[index] is ref<ai_types.text_content_t>) {throw errorf('Received text_end for non-text content')}
             if object.contains('contentSignature') { (partial.content[index] as ref<ai_types.text_content_t>).text_signature = json_util.opt_string(object, 'contentSignature') }
             stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_END, content_index: index, content: (partial.content[index] as ref<ai_types.text_content_t>).text, partial: partial,})
         }
@@ -105,11 +137,13 @@ fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.a
         }
         'thinking_delta' -> {
             string delta = json_util.opt_string(object, 'delta')
+            if index < 0 || index >= partial.content.len() || !(partial.content[index] is ref<ai_types.thinking_content_t>) {throw errorf('Received thinking_delta for non-thinking content')}
             var content = partial.content[index] as ref<ai_types.thinking_content_t>
             content.thinking += delta
             stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_DELTA, content_index: index, delta: delta, partial: partial,})
         }
         'thinking_end' -> {
+            if index < 0 || index >= partial.content.len() || !(partial.content[index] is ref<ai_types.thinking_content_t>) {throw errorf('Received thinking_end for non-thinking content')}
             if object.contains('contentSignature') { (partial.content[index] as ref<ai_types.thinking_content_t>).thinking_signature = json_util.opt_string(object, 'contentSignature') }
             stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_END, content_index: index, content: (partial.content[index] as ref<ai_types.thinking_content_t>).thinking, partial: partial,})
         }
@@ -120,13 +154,15 @@ fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.a
         }
         'toolcall_delta' -> {
             string delta = json_util.opt_string(object, 'delta')
+            if index < 0 || index >= partial.content.len() || !(partial.content[index] is ref<ai_types.tool_call_t>) {throw errorf('Received toolcall_delta for non-toolCall content')}
             var call = partial.content[index] as ref<ai_types.tool_call_t>
             call.partial_json += delta
             call.arguments = streaming_json.parse(call.partial_json)
             stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_DELTA, content_index: index, delta: delta, partial: partial,})
         }
         'toolcall_end' -> {
-            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_END, content_index: index, partial: partial,})
+            if index < 0 || index >= partial.content.len() || !(partial.content[index] is ref<ai_types.tool_call_t>) {throw errorf('Received toolcall_end for non-toolCall content')}
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_END, content_index: index, tool_call: partial.content[index] as ref<ai_types.tool_call_t>, partial: partial,})
         }
         'done' -> {
             partial.stop_reason = json_util.opt_string(object, 'reason')
@@ -134,9 +170,10 @@ fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.a
             stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_DONE, reason: partial.stop_reason, message: partial,})
         }
         'error' -> {
-            partial.stop_reason = ai_types.STOP_ERROR
+            partial.stop_reason = json_util.opt_string(object, 'reason')
+            if partial.stop_reason != ai_types.STOP_ABORTED {partial.stop_reason = ai_types.STOP_ERROR}
             partial.error_message = json_util.opt_string(object, 'errorMessage')
-            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_ERROR, reason: ai_types.STOP_ERROR, error: partial,})
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_ERROR, reason: partial.stop_reason, error: partial,})
         }
         _ -> {}
     }
@@ -159,7 +196,8 @@ fn opt_int_or({string:any} object, string primary, string alternate): int {
     return json_util.opt_int(object, alternate)
 }
 
-fn ensure_content(ref<ai_types.assistant_message_t> partial, int index, ai_types.content_t content) {
+fn ensure_content(ref<ai_types.assistant_message_t> partial, int index, ai_types.content_t content): void! {
+    if index < 0 {throw errorf('Proxy content index must be non-negative')}
     for true {
         if partial.content.len() > index {break}
         partial.content.push(content)

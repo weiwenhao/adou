@@ -509,11 +509,19 @@ fn run_server_cli([string] argv): void! {
         client.port = ipc_client.parse_port(argv[index + 1])
         index += 2
     }
-    if index >= argv.len() {
-        println('Usage: adou server [--port <port>] list|spawn|status|stop|rpc|rpc-stream ...')
+    if index >= argv.len() || argv[index] == '--help' || argv[index] == '-h' {
+        println(server_help())
         return
     }
     string command = argv[index]
+    if command == '--version' || command == '-v' {
+        println(VERSION)
+        return
+    }
+    if command == 'serve' {
+        run_serve(client.port, false)
+        return
+    }
     {string:any} response = {}
     if command == 'list' {
         response = client.list()
@@ -521,9 +529,22 @@ fn run_server_cli([string] argv): void! {
         return
     }
     if command == 'spawn' {
-        if index + 1 >= argv.len() {println('server spawn requires cwd'); return}
-        string label = index + 2 < argv.len() ? argv[index + 2] : ''
-        response = client.spawn(argv[index + 1], label)
+        string spawn_cwd = platform_cwd.current()
+        string label = ''
+        int option = index + 1
+        for option < argv.len() {
+            if argv[option] == '--cwd' && option + 1 < argv.len() {
+                spawn_cwd = argv[option + 1]
+                option += 2
+            } else if argv[option] == '--label' && option + 1 < argv.len() {
+                label = argv[option + 1]
+                option += 2
+            } else {
+                println('Unknown server spawn option: ' + argv[option])
+                return
+            }
+        }
+        response = client.spawn(spawn_cwd, label)
         println(json.serialize(response))
         return
     }
@@ -541,6 +562,10 @@ fn run_server_cli([string] argv): void! {
         return
     }
     println('Unsupported server command: ' + command)
+}
+
+fn server_help(): string {
+    return 'Adou server ' + VERSION + '\n\nUsage:\n  adou server [--port <port>] serve\n  adou server [--port <port>] list\n  adou server [--port <port>] spawn [--cwd <path>] [--label <label>]\n  adou server [--port <port>] status <instance-id>\n  adou server [--port <port>] stop <instance-id>\n  adou server [--port <port>] rpc <instance-id> <json-command>\n  adou server [--port <port>] rpc-stream <instance-id>\n\nRPC stream stdin expects JSONL RpcCommand messages.'
 }
 
 fn stream_provider(): agent_types.stream_fn {
@@ -1054,7 +1079,7 @@ fn serve_rpc_stream(ref<ipc_supervisor.supervisor_t> sup, ref<tcp.conn_t> conn, 
         return
     }
     var sink = conn_rpc_sink(conn)
-    ipc_server.write_line(conn, ipc_protocol.rpc_ready(live.snapshot()))
+    rpc_write(sink, ipc_protocol.rpc_ready(live.snapshot()))
     int subscriber_id = sup.subscribe(live, sink.lock, fn(string line) {
         var bytes = (line + '\n') as [u8]
         conn.write(bytes) catch error {}

@@ -20,6 +20,8 @@ pub type options_t = struct {
     bool auto_compaction = true
     int reserve_tokens = 16384
     int keep_recent_tokens = 20000
+    agent_types.stream_fn? stream_function = null
+    [ref<agent_types.agent_tool_t>] tools = []
 }
 
 pub type session_t = struct {
@@ -33,11 +35,13 @@ pub fn create(options_t options): ref<session_t>! {
     ref<ai_types.model_t> model = options.model
     ref<ai_types.stream_options_t> stream_options = new ai_types.stream_options_t(api_key = options.api_key, max_tokens = model.max_tokens)
     var config = new agent_types.config_t(model = model, stream_options = stream_options)
-    var context = new agent_types.context_t(system_prompt = options.system_prompt)
+    var context = new agent_types.context_t(system_prompt = options.system_prompt, tools = options.tools)
     var compaction = compaction_types.settings_t {enabled: options.auto_compaction, reserve_tokens: options.reserve_tokens, keep_recent_tokens: options.keep_recent_tokens,}
-    var runner = session.new(repository, context, config, fn(ref<ai_types.model_t> request_model, ref<ai_types.context_t> request_context, ref<ai_types.stream_options_t> request_options): ref<ai_event_stream.assistant_stream_t> {
+    agent_types.stream_fn selected_stream = fn(ref<ai_types.model_t> request_model, ref<ai_types.context_t> request_context, ref<ai_types.stream_options_t> request_options): ref<ai_event_stream.assistant_stream_t> {
         return provider.stream(request_model, request_context, request_options)
-    }, compaction)
+    }
+    if options.stream_function is agent_types.stream_fn custom_stream {selected_stream = custom_stream}
+    var runner = session.new(repository, context, config, selected_stream, compaction)
     return new session_t(runner = runner, repository = repository)
 }
 
@@ -55,4 +59,12 @@ pub fn session_t.prompt_rpc(&self, string text): ref<session_stream.stream_t>! {
 
 pub fn session_t.messages(&self): [ai_types.message_t] {
     return self.runner.copy_active_messages()
+}
+
+pub fn session_t.session_id(&self): string {return self.repository.get_session_id()}
+pub fn session_t.session_file(&self): string {return self.repository.get_session_file()}
+pub fn session_t.start_new_session(&self): void! {self.runner.start_new_session()}
+pub fn session_t.append_message(&self, ai_types.message_t message): void! {
+    self.repository.append_message(message) catch error {throw error}
+    self.runner.append_active_message(message)
 }

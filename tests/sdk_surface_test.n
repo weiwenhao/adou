@@ -3,6 +3,8 @@ import adou.src.sdk_proxy
 import adou.src.sdk_harness
 import adou.src.sdk
 import adou.src.ai.types
+import adou.src.ai.event_stream
+import adou.src.agent.types as agent_types
 import adou.src.session.identity
 
 test 'public SDK exposes node environment and harness phases' {
@@ -10,8 +12,44 @@ test 'public SDK exposes node environment and harness phases' {
     assert(environment.cwd == '/tmp')
     assert(environment.temp_dir() != '')
     assert(sdk_harness.PHASE_IDLE == 'idle')
+    assert(sdk_harness.PHASE_BRANCH_SUMMARY == 'branch_summary')
     var proxy_options = new sdk_proxy.options_t()
     assert(proxy_options.timeout_ms == 120000)
+}
+
+fn fixture_stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
+    var stream = event_stream.new()
+    var message = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, stop_reason = types.STOP_STOP)
+    message.content.push(new types.text_content_t(text = 'sdk-ok'))
+    stream.push(types.assistant_event_t {kind: types.EVENT_START, partial: message}) catch error {}
+    stream.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message}) catch error {}
+    stream.end() catch error {}
+    return stream
+}
+
+test 'public AgentHarness exposes embeddable control and event surfaces' {
+    var model = new types.model_t(id = 'sdk-model', name = 'SDK model', api = 'test-api', provider = 'test-provider', base_url = 'https://example.invalid', context_window = 1000, max_tokens = 100)
+    agent_types.stream_fn stream_function = fixture_stream as agent_types.stream_fn
+    var embedded = sdk.create(sdk.options_t {cwd: '/tmp', model: model, api_key: 'test-key', system_prompt: 'system', stream_function: stream_function})
+    var harness = sdk_harness.new(embedded)
+    assert(harness.is_idle())
+    harness.set_resources({'source': 'fixture'})
+    assert((harness.get_resources()['source'] as string) == 'fixture')
+    harness.set_stream_options({'transport': 'sse'})
+    assert((harness.get_stream_options()['transport'] as string) == 'sse')
+    harness.set_active_tools([])
+    assert(harness.active_tools().len() == 0)
+    harness.next_turn('queued')
+    assert(harness.messages().len() == 1)
+    var stream = harness.prompt('hello')
+    for true {
+        var event = stream.recv() catch error {break}
+        if event.kind == 'session_end' {break}
+    }
+    var messages = stream.result()
+    assert(messages.len() >= 3)
+    assert(harness.is_idle())
+    assert(embedded.session_id() != '')
 }
 
 test 'node execution environment exposes Pi filesystem primitives' {
