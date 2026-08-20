@@ -62,15 +62,16 @@ pub fn reload(): bool {return loaded_theme_path != '' && load_json(loaded_theme_
 pub fn loaded_path(): string {return loaded_theme_path}
 
 fn set_custom_color(string name, string value) {
-    string key = name
-    if key == 'userMessageBg' {key = 'user_bg'
-    } else if key == 'selectedBg' {key = 'selected_bg'
-    } else if key == 'toolPendingBg' {key = 'tool_pending_bg'
-    } else if key == 'toolSuccessBg' {key = 'tool_success_bg'
-    } else if key == 'toolErrorBg' {key = 'tool_error_bg'
-    } else if key == 'borderAccent' {key = 'border_accent'
-    } else if key == 'codeBlock' {key = 'code_block'
-    } else if key == 'codeBlockBorder' {key = 'code_block_border'
+    string key = match name {
+        'userMessageBg' -> 'user_bg'
+        'selectedBg' -> 'selected_bg'
+        'toolPendingBg' -> 'tool_pending_bg'
+        'toolSuccessBg' -> 'tool_success_bg'
+        'toolErrorBg' -> 'tool_error_bg'
+        'borderAccent' -> 'border_accent'
+        'codeBlock' -> 'code_block'
+        'codeBlockBorder' -> 'code_block_border'
+        _ -> name
     }
     custom_colors[key] = value
 }

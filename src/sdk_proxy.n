@@ -66,46 +66,61 @@ fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.a
     var object = parsed as {string:any}
     string kind = json_util.opt_string(object, 'type')
     int index = object.contains('contentIndex') ? json_util.opt_int(object, 'contentIndex') : -1
-    if kind == 'start' {stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_START, partial: partial,}); return}
-    if kind == 'text_start' {
-        ensure_content(partial, index, new ai_types.text_content_t(text = ''))
-        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_START, content_index: index, partial: partial,})
-    } else if kind == 'text_delta' {
-        string delta = json_util.opt_string(object, 'delta')
-        var content = partial.content[index] as ref<ai_types.text_content_t>
-        content.text += delta
-        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_DELTA, content_index: index, delta: delta, partial: partial,})
-    } else if kind == 'text_end' {
-        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_END, content_index: index, content: (partial.content[index] as ref<ai_types.text_content_t>).text, partial: partial,})
-    } else if kind == 'thinking_start' {
-        ensure_content(partial, index, new ai_types.thinking_content_t(thinking = ''))
-        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_START, content_index: index, partial: partial,})
-    } else if kind == 'thinking_delta' {
-        string delta = json_util.opt_string(object, 'delta')
-        var content = partial.content[index] as ref<ai_types.thinking_content_t>
-        content.thinking += delta
-        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_DELTA, content_index: index, delta: delta, partial: partial,})
-    } else if kind == 'thinking_end' {
-        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_END, content_index: index, content: (partial.content[index] as ref<ai_types.thinking_content_t>).thinking, partial: partial,})
-    } else if kind == 'toolcall_start' {
-        var call = new ai_types.tool_call_t(id = json_util.opt_string(object, 'id'), name = json_util.opt_string(object, 'toolName'), arguments = {}, partial_json = '')
-        ensure_content(partial, index, call)
-        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_START, content_index: index, tool_call: call, partial: partial,})
-    } else if kind == 'toolcall_delta' {
-        string delta = json_util.opt_string(object, 'delta')
-        var call = partial.content[index] as ref<ai_types.tool_call_t>
-        call.partial_json += delta
-        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_DELTA, content_index: index, delta: delta, partial: partial,})
-    } else if kind == 'toolcall_end' {
-        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_END, content_index: index, partial: partial,})
-    } else if kind == 'done' {
-        partial.stop_reason = json_util.opt_string(object, 'reason')
-        if partial.stop_reason == '' {partial.stop_reason = ai_types.STOP_STOP}
-        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_DONE, reason: partial.stop_reason, message: partial,})
-    } else if kind == 'error' {
-        partial.stop_reason = ai_types.STOP_ERROR
-        partial.error_message = json_util.opt_string(object, 'errorMessage')
-        stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_ERROR, reason: ai_types.STOP_ERROR, error: partial,})
+    match kind {
+        'start' -> {
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_START, partial: partial,})
+        }
+        'text_start' -> {
+            ensure_content(partial, index, new ai_types.text_content_t(text = ''))
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_START, content_index: index, partial: partial,})
+        }
+        'text_delta' -> {
+            string delta = json_util.opt_string(object, 'delta')
+            var content = partial.content[index] as ref<ai_types.text_content_t>
+            content.text += delta
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_DELTA, content_index: index, delta: delta, partial: partial,})
+        }
+        'text_end' -> {
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TEXT_END, content_index: index, content: (partial.content[index] as ref<ai_types.text_content_t>).text, partial: partial,})
+        }
+        'thinking_start' -> {
+            ensure_content(partial, index, new ai_types.thinking_content_t(thinking = ''))
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_START, content_index: index, partial: partial,})
+        }
+        'thinking_delta' -> {
+            string delta = json_util.opt_string(object, 'delta')
+            var content = partial.content[index] as ref<ai_types.thinking_content_t>
+            content.thinking += delta
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_DELTA, content_index: index, delta: delta, partial: partial,})
+        }
+        'thinking_end' -> {
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_THINKING_END, content_index: index, content: (partial.content[index] as ref<ai_types.thinking_content_t>).thinking, partial: partial,})
+        }
+        'toolcall_start' -> {
+            var call = new ai_types.tool_call_t(id = json_util.opt_string(object, 'id'), name = json_util.opt_string(object, 'toolName'), arguments = {}, partial_json = '')
+            ensure_content(partial, index, call)
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_START, content_index: index, tool_call: call, partial: partial,})
+        }
+        'toolcall_delta' -> {
+            string delta = json_util.opt_string(object, 'delta')
+            var call = partial.content[index] as ref<ai_types.tool_call_t>
+            call.partial_json += delta
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_DELTA, content_index: index, delta: delta, partial: partial,})
+        }
+        'toolcall_end' -> {
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_END, content_index: index, partial: partial,})
+        }
+        'done' -> {
+            partial.stop_reason = json_util.opt_string(object, 'reason')
+            if partial.stop_reason == '' {partial.stop_reason = ai_types.STOP_STOP}
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_DONE, reason: partial.stop_reason, message: partial,})
+        }
+        'error' -> {
+            partial.stop_reason = ai_types.STOP_ERROR
+            partial.error_message = json_util.opt_string(object, 'errorMessage')
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_ERROR, reason: ai_types.STOP_ERROR, error: partial,})
+        }
+        _ -> {}
     }
 }
 
