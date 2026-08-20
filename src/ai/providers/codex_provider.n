@@ -15,6 +15,8 @@ import json
 import time
 
 pub const ERROR_BODY_LIMIT = 64 * 1024
+pub const WEBSOCKET_CACHE_IDLE_TTL_MS = 5 * 60 * 1000
+pub const WEBSOCKET_CACHE_MAX_AGE_MS = 55 * 60 * 1000
 
 // Per-process WebSocket debug statistics.  Pi keeps these per session
 // (getOpenAICodexWebSocketDebugStats); Adou aggregates at the process level.
@@ -29,7 +31,9 @@ pub type cached_websocket_entry_t = struct {
     ref<codex_websocket.conn_t> conn
     bool busy
     i64 created_at
+    i64 last_used_at
     string last_response_id
+    string last_request_base
     [any] last_input = []
     [any] last_response_items = []
 }
@@ -85,6 +89,8 @@ pub type run_state_t = struct {
     string websocket_cache_key
     ref<cached_websocket_entry_t>? websocket_cache_entry = null
     bool ws_started
+    string cached_request_base
+    [any] cached_full_input = []
 }
 
 pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
@@ -117,7 +123,7 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     }
     if transport != 'sse' {
         if transport == 'websocket' || transport == 'websocket-cached' {
-            run_websocket(stream, state)
+            run_websocket_with_recovery(stream, state)
             return
         }
         // transport 'auto': try the WebSocket, fall back to SSE when it fails
@@ -187,7 +193,7 @@ fn run_sse(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state):
 // Transport failures before the first event fall back to SSE; failures after
 // the stream started (or in forced 'websocket' transports) propagate.
 fn try_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): bool! {
-    run_websocket(stream, state) catch error {
+    run_websocket_with_recovery(stream, state) catch error {
         debug.log('provider', 'codex websocket attempt failed: ' + error.msg())
         string message = error.msg()
         invalidate_websocket_connection(state)
@@ -201,6 +207,30 @@ fn try_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
         return false
     }
     return true
+}
+
+// Pi retries a cached WebSocket continuation once when the server no longer
+// knows the previous response id. The retry uses a fresh connection and the
+// original full request body; it is not an SSE fallback.
+fn run_websocket_with_recovery(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state): void! {
+    bool retried_missing_continuation = false
+    for true {
+        run_websocket(stream, state) catch error {
+            if !retried_missing_continuation && is_previous_response_not_found(error.msg()) && !stream.is_aborted() {
+                retried_missing_continuation = true
+                invalidate_websocket_connection(state)
+                state.processor = openai_responses.processor(state.model, time.now().ms_timestamp())
+                state.body = codex_messages.build(state.model, state.context, state.options)
+                continue
+            }
+            throw error
+        }
+        return
+    }
+}
+
+fn is_previous_response_not_found(string message): bool {
+    return message.contains('previous_response_not_found')
 }
 
 fn record_websocket_fallback(ref<run_state_t> state) {
@@ -228,7 +258,9 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     ref<cached_websocket_entry_t>? cache_entry = null
     ref<codex_websocket.conn_t>? conn_ref = null
     bool reused_connection = false
+    bool cached_connection_busy = false
     if cached && session_key != '' {
+        cached_connection_busy = websocket_cache.contains(session_key) && websocket_cache[session_key].busy
         cache_entry = acquire_cached_connection(session_key, state)
     }
     if cache_entry is ref<cached_websocket_entry_t> entry {
@@ -243,8 +275,9 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
             throw error
         }
         conn_ref = conn
-        if cached && session_key != '' {
-            var created = new cached_websocket_entry_t(conn = conn, busy = true, created_at = time.now().ms_timestamp())
+        if cached && session_key != '' && !cached_connection_busy {
+            i64 now = time.now().ms_timestamp()
+            var created = new cached_websocket_entry_t(conn = conn, busy = true, created_at = now, last_used_at = now)
             websocket_cache[session_key] = created
             cache_entry = created
         }
@@ -269,7 +302,7 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     state.request_body = build_cached_request_body(state, cache_entry)
     conn.send_text('{"type":"response.create",' + state.request_body.slice(1, state.request_body.len()))
     bool terminal = false
-    bool first = true
+    bool first = !state.ws_started
     for !terminal {
         if stream.is_aborted() {
             throw errorf('Request aborted')
@@ -292,6 +325,10 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
             first = false
             state.ws_started = true
             stream.push(state.processor.start())
+        } else if !state.processor.started {
+            // A cached continuation recovery creates a fresh processor after
+            // the original stream has already emitted its start event.
+            state.processor.start() catch error {throw error}
         }
         // The WebSocket message JSON has the same shape as an SSE record, so
         // the Responses processor consumes it unchanged.
@@ -308,17 +345,12 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
         throw errorf('Codex WebSocket stream closed before a terminal response event')
     }
     if cache_entry is ref<cached_websocket_entry_t> entry {
-        var parsed = json_util.parse(state.body) catch error {'{}'}
-        if json_util.is_obj(parsed) {
-            var body = parsed as {string:any}
-            if body.contains('input') && body['input'] is [any] {
-                entry.last_input = body['input'] as [any]
-            }
-        }
+        entry.last_request_base = state.cached_request_base
+        entry.last_input = state.cached_full_input
         entry.last_response_id = state.processor.output.response_id
         entry.last_response_items = assistant_response_items(state.processor.output)
         entry.busy = false
-        entry.created_at = time.now().ms_timestamp()
+        entry.last_used_at = time.now().ms_timestamp()
     } else {
         conn.close()
     }
@@ -348,8 +380,10 @@ fn acquire_cached_connection(string session_key, ref<run_state_t> state): ref<ca
         return null
     }
     var entry = websocket_cache[session_key]
-    if entry.busy || entry.conn.closed || time.now().ms_timestamp() - entry.created_at > 300000 {
-        if entry.conn.closed || time.now().ms_timestamp() - entry.created_at > 300000 {
+    i64 now = time.now().ms_timestamp()
+    bool expired = now - entry.created_at >= WEBSOCKET_CACHE_MAX_AGE_MS || now - entry.last_used_at >= WEBSOCKET_CACHE_IDLE_TTL_MS
+    if entry.busy || entry.conn.closed || expired {
+        if entry.conn.closed || expired {
             entry.conn.close()
             websocket_cache.del(session_key)
         }
@@ -364,8 +398,10 @@ fn build_cached_request_body(ref<run_state_t> state, ref<cached_websocket_entry_
         return state.body
     }
     var body = parsed as {string:any}
+    state.cached_request_base = request_base(body)
+    state.cached_full_input = body.contains('input') && body['input'] is [any] ? body['input'] as [any] : []
     if entry is ref<cached_websocket_entry_t> cached {
-        if cached.last_response_id != '' && body.contains('input') && body['input'] is [any] {
+        if cached.last_response_id != '' && cached.last_request_base == state.cached_request_base && body.contains('input') && body['input'] is [any] {
             var current = body['input'] as [any]
             int baseline = cached.last_input.len() + cached.last_response_items.len()
             if current.len() >= baseline && array_prefix_matches(current, cached.last_input, cached.last_response_items) {
@@ -375,6 +411,15 @@ fn build_cached_request_body(ref<run_state_t> state, ref<cached_websocket_entry_
         }
     }
     return json.serialize(body)
+}
+
+fn request_base({string:any} body): string {
+    any cloned = json_util.clone(body) catch error {return ''}
+    if !json_util.is_obj(cloned) {return ''}
+    var base = cloned as {string:any}
+    if base.contains('input') {base.del('input')}
+    if base.contains('previous_response_id') {base.del('previous_response_id')}
+    return json.serialize(base) catch error {''}
 }
 
 fn array_prefix_matches([any] current, [any] input, [any] response_items): bool {

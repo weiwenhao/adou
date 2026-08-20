@@ -7,6 +7,7 @@ import adou.src.ai.providers.codex_messages
 import adou.src.ai.providers.codex_provider
 import adou.src.ai.providers.codex_websocket
 import adou.src.ai.types
+import adou.src.json_util
 import co
 import fmt
 import io.buf
@@ -20,6 +21,8 @@ pub const PING_PORT = 18962
 pub const STREAM_PORT = 18963
 pub const FALLBACK_PORT = 18964
 pub const IDLE_PORT = 18965
+pub const CACHED_PORT = 18966
+pub const RECOVERY_PORT = 18967
 
 type capture_t = struct {
     string request_line
@@ -31,6 +34,7 @@ type capture_t = struct {
     int pong_opcode = -1
     string pong_payload
     int close_opcode = -1
+    [string] request_bodies = []
 }
 
 fn fixture_model(int port): ref<types.model_t> {
@@ -298,6 +302,72 @@ fn serve_idle(int port): void! {
     server.close()
 }
 
+fn cached_events(string response_id, string text): [string] {
+    return [
+        '{"type":"response.created","response":{"id":"' + response_id + '"}}',
+        '{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_' + response_id + '","content":[]}}',
+        '{"type":"response.output_text.delta","output_index":0,"delta":"' + text + '"}',
+        '{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"msg_' + response_id + '","content":[{"type":"output_text","text":"' + text + '"}]}}',
+        '{"type":"response.completed","response":{"id":"' + response_id + '","status":"completed","usage":{"input_tokens":2,"output_tokens":2,"total_tokens":4}}}',
+    ]
+}
+
+fn serve_cached_reuse(int port, ref<capture_t> capture): void! {
+    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', port)) catch error {return}
+    var raw = server.accept() catch error {server.close(); return}
+    ntypes.connable? temp = raw
+    var conn = temp as ntypes.connable
+    var reader = new buf.reader<ntypes.connable>(rd = conn)
+    var request = read_ws_request(reader) catch error {conn.close(); server.close(); return}
+    conn.write(upgrade_response(header_value(request.headers, 'Sec-WebSocket-Key')) as [u8]) catch error {}
+    for int index = 0; index < 2; index += 1 {
+        var frame = codex_websocket.decode_frame(reader) catch error {conn.close(); server.close(); return}
+        capture.request_bodies.push(frame.payload as string)
+        string response_id = index == 0 ? 'resp_cache_1' : 'resp_cache_2'
+        string text = index == 0 ? 'cached one' : 'cached two'
+        for event in cached_events(response_id, text) {
+            conn.write(codex_websocket.encode_frame(codex_websocket.OPCODE_TEXT, event as [u8], false)) catch error {}
+        }
+    }
+    conn.close()
+    server.close()
+}
+
+fn serve_cached_recovery(int port, ref<capture_t> capture): void! {
+    var server = tcp.listen(fmt.sprintf('127.0.0.1:%d', port)) catch error {return}
+    var raw = server.accept() catch error {server.close(); return}
+    ntypes.connable? temp = raw
+    var conn = temp as ntypes.connable
+    var reader = new buf.reader<ntypes.connable>(rd = conn)
+    var request = read_ws_request(reader) catch error {conn.close(); server.close(); return}
+    conn.write(upgrade_response(header_value(request.headers, 'Sec-WebSocket-Key')) as [u8]) catch error {}
+    var first = codex_websocket.decode_frame(reader) catch error {conn.close(); server.close(); return}
+    capture.request_bodies.push(first.payload as string)
+    for event in cached_events('resp_recovery_1', 'before recovery') {
+        conn.write(codex_websocket.encode_frame(codex_websocket.OPCODE_TEXT, event as [u8], false)) catch error {}
+    }
+    var second = codex_websocket.decode_frame(reader) catch error {conn.close(); server.close(); return}
+    capture.request_bodies.push(second.payload as string)
+    string missing = '{"type":"error","code":"previous_response_not_found","message":"cached response expired"}'
+    conn.write(codex_websocket.encode_frame(codex_websocket.OPCODE_TEXT, missing as [u8], false)) catch error {}
+    co.sleep(50)
+    conn.close()
+
+    var raw2 = server.accept() catch error {server.close(); return}
+    ntypes.connable? temp2 = raw2
+    var conn2 = temp2 as ntypes.connable
+    var reader2 = new buf.reader<ntypes.connable>(rd = conn2)
+    var request2 = read_ws_request(reader2) catch error {conn2.close(); server.close(); return}
+    conn2.write(upgrade_response(header_value(request2.headers, 'Sec-WebSocket-Key')) as [u8]) catch error {}
+    var third = codex_websocket.decode_frame(reader2) catch error {conn2.close(); server.close(); return}
+    capture.request_bodies.push(third.payload as string)
+    for event in cached_events('resp_recovery_2', 'after recovery') {
+        conn2.write(codex_websocket.encode_frame(codex_websocket.OPCODE_TEXT, event as [u8], false)) catch error {}
+    }
+    conn2.close()
+    server.close()
+}
+
 fn drain(ref<event_stream.assistant_stream_t> stream): [string] {
     [string] kinds = []
     for true {
@@ -418,6 +488,69 @@ test 'streams Codex responses events over WebSocket' {
     assert(text.text == 'codex ws ok')
     assert(capture.request_body.find('"type":"response.create"') >= 0)
     assert(capture.request_body.find('"model":"gpt-5.4"') >= 0)
+}
+
+test 'websocket-cached reuses a connection and sends only the continuation delta' {
+    codex_provider.reset_codex_websocket_debug_stats()
+    var capture = new capture_t()
+    go serve_cached_reuse(CACHED_PORT, capture)
+    co.sleep(100)
+    var first_context = fixture_context()
+    var first_stream = codex_provider.stream(fixture_model(CACHED_PORT), first_context, test_options('cached-session', 'websocket-cached'))
+    var first_kinds = drain(first_stream)
+    var first = first_stream.result()
+    assert(first_kinds[first_kinds.len() - 1] == types.EVENT_DONE)
+
+    var second_context = new types.context_t()
+    second_context.messages.push(first_context.messages[0])
+    second_context.messages.push(first)
+    second_context.messages.push(new types.user_message_t(content = 'Now finish'))
+    var second_stream = codex_provider.stream(fixture_model(CACHED_PORT), second_context, test_options('cached-session', 'websocket-cached'))
+    var second_kinds = drain(second_stream)
+    var second = second_stream.result()
+    assert(second_kinds[0] == types.EVENT_START)
+    assert(second.stop_reason == types.STOP_STOP)
+    assert((second.content[0] as ref<types.text_content_t>).text == 'cached two')
+    assert(capture.request_bodies.len() == 2)
+    assert(capture.request_bodies[0].find('previous_response_id') < 0)
+    assert(capture.request_bodies[1].find('previous_response_id') >= 0)
+    assert(capture.request_bodies[1].find('resp_cache_1') >= 0)
+    assert(capture.request_bodies[1].find('Now finish') >= 0)
+    assert(capture.request_bodies[1].find('hello') < 0)
+    var stats = codex_provider.get_codex_websocket_debug_stats()
+    assert(stats.requests == 2)
+    assert(stats.connections_created == 1)
+    assert(stats.connections_reused == 1)
+}
+
+test 'websocket-cached retries a missing continuation with full context once' {
+    codex_provider.reset_codex_websocket_debug_stats()
+    var capture = new capture_t()
+    go serve_cached_recovery(RECOVERY_PORT, capture)
+    co.sleep(100)
+    var first_context = fixture_context()
+    var first_stream = codex_provider.stream(fixture_model(RECOVERY_PORT), first_context, test_options('recovery-session', 'websocket-cached'))
+    drain(first_stream)
+    var first = first_stream.result()
+    var second_context = new types.context_t()
+    second_context.messages.push(first_context.messages[0])
+    second_context.messages.push(first)
+    second_context.messages.push(new types.user_message_t(content = 'Now finish'))
+    var second_stream = codex_provider.stream(fixture_model(RECOVERY_PORT), second_context, test_options('recovery-session', 'websocket-cached'))
+    var kinds = drain(second_stream)
+    var result = second_stream.result()
+    assert(kinds[0] == types.EVENT_START)
+    assert(result.stop_reason == types.STOP_STOP)
+    assert((result.content[0] as ref<types.text_content_t>).text == 'after recovery')
+    assert(capture.request_bodies.len() == 3)
+    assert(capture.request_bodies[1].find('"previous_response_id":"resp_recovery_1"') >= 0)
+    assert(capture.request_bodies[2].find('previous_response_id') < 0)
+    assert(capture.request_bodies[2].find('hello') >= 0)
+    assert(capture.request_bodies[2].find('Now finish') >= 0)
+    var stats = codex_provider.get_codex_websocket_debug_stats()
+    assert(stats.requests == 3)
+    assert(stats.connections_created == 2)
+    assert(stats.connections_reused == 1)
 }
 
 test 'falls back to SSE when the WebSocket handshake fails' {
