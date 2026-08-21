@@ -2,9 +2,9 @@
   "case": "slash-menu",
   "side": "adou",
   "fixture": "batch1",
-  "adou_head": "6f5a514e8a141c04acbdd355d1c8ee91b0cff68c",
-  "binary_sha256": "151781a17a80e1a7b54daa97c8d273bdb53b5fc1d7b3f4486aa4699e9dca843f",
-  "source_fingerprint": "2504000dc3360867d4b34500a59ed7dc61e434b481c5a03219b4424cf794e025",
+  "adou_head": "511ef8f822a963cfae929c7db3c5f45fa455fa9e",
+  "binary_sha256": "d592a3130b6e745823c42023ec3a892c992d388d8e81c1a0b24be9ac192a352d",
+  "source_fingerprint": "bacdd1e9d7a35f018ecb81f89ab5f9cd5e993993a66753593680c6aef0c196a2",
   "run": 3,
   "terminal": {
     "rows": 24,
@@ -294,7 +294,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -314,13 +314,13 @@
         "",
         ""
       ],
-      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
+      "screen_sha256": "773ec7c5edb1df968b6873a30014c2639a67372eaa0ab21c852f8d02f1f80c8b",
       "cursor": [
         6,
         80
       ],
-      "normalized_raw_sha256": "30a04a73823567805b4b15404ff7cdc00c2886bb597ad7b434fcca0a6280fbb7",
-      "normalized_raw_bytes": 925
+      "normalized_raw_sha256": "3e22fa505b2ac24be6a1871ab42b3271a07351352e55b6a01e20255e886200d0",
+      "normalized_raw_bytes": 933
     },
     {
       "milestone": "slash-open",
@@ -336,7 +336,7 @@
         "  export               Export session (HTML default, or specify path: .html/.j",
         "  import               Import and resume a session from a JSONL file",
         "  (1/26)",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -350,13 +350,13 @@
         "",
         ""
       ],
-      "screen_sha256": "9b018bd616dc343e6d1b49384ce95f2b012c87bd23348068afddc6ea318801e4",
+      "screen_sha256": "34b541ed10ccb85f0054e2f5bd2190edca14035128d56fe189236fffc3fd1cd8",
       "cursor": [
         12,
         80
       ],
-      "normalized_raw_sha256": "8c91acf9d2c1a218f4715d1ac10aad27093acea66c52b33b218b6a174fba750d",
-      "normalized_raw_bytes": 1127
+      "normalized_raw_sha256": "5361fbbc1ac33dd0d152c83b833501261491dd6a686f5dbf7bc6b7ab92604e50",
+      "normalized_raw_bytes": 1135
     },
     {
       "milestone": "slash-up-wrap",
@@ -372,7 +372,7 @@
         "  tree                 Navigate session tree (switch branches)",
         "  trust                Choose project trust for this or future sessions",
         "  (13/26)",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -386,7 +386,7 @@
         "",
         ""
       ],
-      "screen_sha256": "70ea64c4b4e0f7aec03bfb4c748ac54735b67940861630070bf46b5c236d23a4",
+      "screen_sha256": "1b0aa4f16ab66eb60d62ab30a0399568bb08837b41c779be4682363b2756d4a7",
       "cursor": [
         10,
         9
@@ -408,7 +408,7 @@
         "  quit                 Quit pi",
         "  code-review          [p] Deterministic fixture prompt code-review for parity",
         "  (21/26)",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -422,7 +422,7 @@
         "",
         ""
       ],
-      "screen_sha256": "5e35caee6e353dc9ffdf83ca8381cb816ed80300c37eb7734347d1e09d7e21c0",
+      "screen_sha256": "ae8c2274ed1545a186f5251288f1a58cd78830b82a88c596350828c1f3471315",
       "cursor": [
         10,
         9
@@ -444,7 +444,7 @@
         "  quit                 Quit pi",
         "  code-review          [p] Deterministic fixture prompt code-review for parity",
         "  (21/26)",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -458,7 +458,7 @@
         "",
         ""
       ],
-      "screen_sha256": "5e35caee6e353dc9ffdf83ca8381cb816ed80300c37eb7734347d1e09d7e21c0",
+      "screen_sha256": "ae8c2274ed1545a186f5251288f1a58cd78830b82a88c596350828c1f3471315",
       "cursor": [
         10,
         9
@@ -476,7 +476,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "→ skill:alpha-toolkit  [p] Deterministic fixture skill alpha-toolkit for parit",
         "  skill:beta-ops       [p] Deterministic fixture skill beta-ops for parity run",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -494,13 +494,13 @@
         "",
         ""
       ],
-      "screen_sha256": "1e272d5b0f20c66eaa3fd0a5356a1bd39e52cd9d48d2c9617a48b587be916309",
+      "screen_sha256": "3834fefa308bcc5af8ab439aa992eafcb80c12e66315389c293c5ff7eb363e5b",
       "cursor": [
         8,
         0
       ],
-      "normalized_raw_sha256": "9afd773bec94a7e4c4fb0b5f3b19992c285928f4606adb9e764846d1a0d01a1e",
-      "normalized_raw_bytes": 831
+      "normalized_raw_sha256": "04243750c34457edadf415ee4322e883235ade3fc2ed34992fcebd426890bce2",
+      "normalized_raw_bytes": 839
     },
     {
       "milestone": "slash-esc-closed",
@@ -510,7 +510,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " /skill:",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -530,13 +530,13 @@
         "",
         ""
       ],
-      "screen_sha256": "fb35c6c8a36426cccc9039b4863e95182914d89c18f5a407eed0354081c7a4ea",
+      "screen_sha256": "0e45d125eb9512ccce3b93d323ac0167cdce8c380626fdcf218da72bb772d97c",
       "cursor": [
         6,
-        0
+        80
       ],
-      "normalized_raw_sha256": "61b83441ee5cc5e6cea271014f5c9c2b9177de36611ceb207b45c01d1ed941bc",
-      "normalized_raw_bytes": 254
+      "normalized_raw_sha256": "f2c9c2d7ebb927a45299789beac68630b2990cfda927452a160fcbf99cd52d92",
+      "normalized_raw_bytes": 951
     },
     {
       "milestone": "slash-ctrl-c",
@@ -546,7 +546,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -566,13 +566,13 @@
         "",
         ""
       ],
-      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
+      "screen_sha256": "773ec7c5edb1df968b6873a30014c2639a67372eaa0ab21c852f8d02f1f80c8b",
       "cursor": [
-        3,
-        2
+        6,
+        80
       ],
-      "normalized_raw_sha256": "069af1f4a696f561a736889918c51a3fa4c5b8745bcf47135df6d4d21343f1bb",
-      "normalized_raw_bytes": 46
+      "normalized_raw_sha256": "b2df5e2e2d6525d7f4b37955160c4703e767383bcbae51c66e57edd189eaaeb7",
+      "normalized_raw_bytes": 944
     },
     {
       "milestone": "slash-tab-reopen",
@@ -585,7 +585,7 @@
         "→ model          <provider/model> — Select model (opens selector UI)",
         "  scoped-models  Enable/disable models for Ctrl+P cycling",
         "  import         Import and resume a session from a JSONL file",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -602,13 +602,13 @@
         "",
         ""
       ],
-      "screen_sha256": "3dacb0917faff45e37439aed91280e0f97ebf3021117a698924b82d19559c537",
+      "screen_sha256": "213ad225fa0d71de023d006cc70be910ce4a3caf6a20b9de27dd4cbaac9f1c21",
       "cursor": [
         9,
         80
       ],
-      "normalized_raw_sha256": "c31ba82d31cff7e42ee3d845eef52bdf24e34750df9f11dcd789a4810dfd08e4",
-      "normalized_raw_bytes": 852
+      "normalized_raw_sha256": "2432bd4dae676e30b2f872cdff2815a1fae9bc77bced8068994c4eae8bff02f4",
+      "normalized_raw_bytes": 864
     },
     {
       "milestone": "slash-tab-apply",
@@ -618,7 +618,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " /model",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -638,13 +638,13 @@
         "",
         ""
       ],
-      "screen_sha256": "0ab1b20eb69f5ed943b72dd7d0161813f24ba5695e57874bffdbb6bc58ac6e0d",
+      "screen_sha256": "7362f9389878d1a0b901cfd3e293edc85f07240886663858e308cc17354085f8",
       "cursor": [
         6,
-        0
+        80
       ],
-      "normalized_raw_sha256": "1a92e93170446d90f6d5a99739c199713bba240ef75455080239e3d9ae7996f0",
-      "normalized_raw_bytes": 571
+      "normalized_raw_sha256": "76f487153b70c4c8478ace9ccb86769b50ee5b30b9435ac3ddaf05d20be28f4e",
+      "normalized_raw_bytes": 951
     },
     {
       "milestone": "slash-arg-enter",
@@ -654,7 +654,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " /model deepseek/deepseek-v4-flash",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -674,7 +674,7 @@
         "",
         ""
       ],
-      "screen_sha256": "d9be2545cadbfd0670260bf089d010de05fb8e661e971ede4e08815482df03fb",
+      "screen_sha256": "e46bbc7460b53c6cff4105322b59f7709eb01eed2dfe675b0764011fa4b6a798",
       "cursor": [
         3,
         35
@@ -690,7 +690,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " /",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -710,13 +710,13 @@
         "",
         ""
       ],
-      "screen_sha256": "acd17230cd25fe75829f01b0ad910a2e23aa4ab40b9756d41f457dde1694a294",
+      "screen_sha256": "951c59e718afb336686c5135ce582c65d4c79947819935128d3b31d9d2ea1750",
       "cursor": [
-        3,
-        3
+        6,
+        80
       ],
-      "normalized_raw_sha256": "3c752140575038ef5d417398423d7f21fce60956973cd9c13f5b45a2a0a83b3a",
-      "normalized_raw_bytes": 43
+      "normalized_raw_sha256": "67ab10194487c95f88224a9900e10b2024c6c05217db5ba7ef4167d9d9eb45b6",
+      "normalized_raw_bytes": 945
     },
     {
       "milestone": "slash-multiline",
@@ -727,7 +727,7 @@
         " x",
         " /",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -746,13 +746,13 @@
         "",
         ""
       ],
-      "screen_sha256": "e24c1e85e3dd08462a6c0a14ed742216f801d01805173206d1e6900c8c74a021",
+      "screen_sha256": "3c267927c793e1f6f57a59b8161fc89bfb4cb7b2a6e1b82f9bea56fd478b0e7a",
       "cursor": [
         7,
         80
       ],
-      "normalized_raw_sha256": "3748dd89273865cf8f61790ad6a37ec865ba04b3ff2142f41cb78959e35f1e1b",
-      "normalized_raw_bytes": 557
+      "normalized_raw_sha256": "d6479cd6d990f0b9df2eaa7ed27670c5ecbd999241c4140113e48b9127bb0aa2",
+      "normalized_raw_bytes": 959
     },
     {
       "milestone": "slash-model-enter",
@@ -773,7 +773,7 @@
         "  Model Name: DeepSeek V4 Flash",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -782,13 +782,13 @@
         "",
         ""
       ],
-      "screen_sha256": "76710e018e09e8e4979341de32634d306ec3b2aa0d8f1d0ebe28a5dca19c74b4",
+      "screen_sha256": "7b36b2e6a5ce2faca0580498ad411061a8f8a67de892e7f666a4d6506cd4d512",
       "cursor": [
         17,
         80
       ],
-      "normalized_raw_sha256": "78ae30094fc1f76e787f5962fc382b3346b7e9ca01a20ea51643f3577f524252",
-      "normalized_raw_bytes": 1518
+      "normalized_raw_sha256": "7d003e052d98bb8a54fbd61d5f4bccea5a92231317c9027eeadbb109c7b3572c",
+      "normalized_raw_bytes": 1599
     },
     {
       "milestone": "slash-model-esc",
@@ -798,7 +798,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -818,13 +818,13 @@
         "",
         ""
       ],
-      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
+      "screen_sha256": "773ec7c5edb1df968b6873a30014c2639a67372eaa0ab21c852f8d02f1f80c8b",
       "cursor": [
         6,
         0
       ],
-      "normalized_raw_sha256": "e8d60e7f9e4302a0eb567cd28205439d699dc17dbedd6efb258dbbd50ecfff17",
-      "normalized_raw_bytes": 891
+      "normalized_raw_sha256": "d565ad5eead284e2631eddd41b17e8110e4011dec81ac81f1fd6fb8d2aaaeef3",
+      "normalized_raw_bytes": 899
     },
     {
       "milestone": "at-email-literal",
@@ -834,7 +834,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " me@domain",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -854,7 +854,7 @@
         "",
         ""
       ],
-      "screen_sha256": "7838f3035ccf8dbc35fb5c6a69865fced86f36514387f723a7599722bde13797",
+      "screen_sha256": "703e34498195ec1e704f78ffd2e390a6ceac8e9ce8b28398e685885bd664514a",
       "cursor": [
         3,
         11
@@ -870,7 +870,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -890,13 +890,13 @@
         "",
         ""
       ],
-      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
+      "screen_sha256": "773ec7c5edb1df968b6873a30014c2639a67372eaa0ab21c852f8d02f1f80c8b",
       "cursor": [
-        3,
-        2
+        6,
+        80
       ],
-      "normalized_raw_sha256": "bb55badb9711d388d6effcc6dd30579c0f47dc5cbff055d61b2f1a395b53bdbc",
-      "normalized_raw_bytes": 42
+      "normalized_raw_sha256": "b2df5e2e2d6525d7f4b37955160c4703e767383bcbae51c66e57edd189eaaeb7",
+      "normalized_raw_bytes": 944
     },
     {
       "milestone": "at-one-candidate",
@@ -908,7 +908,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "→ code-review.md                  .pi/prompts/code-review.md",
         "  commit-msg.md                   .pi/prompts/commit-msg.md",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -926,13 +926,13 @@
         "",
         ""
       ],
-      "screen_sha256": "1da85792abbd4310a1d9151ec46d9539c4b0fbef7ac07f8596d0b06e2e5d90dd",
+      "screen_sha256": "8e4fbf4f31455ebc1e436b93ffcd6d07fe19a844e8f6c5330b67d7c4ba3413ec",
       "cursor": [
         8,
         80
       ],
-      "normalized_raw_sha256": "67495e9968d2cfde0e57a55e5dcf07af3509714bcb47ff102f5f364bd829eed0",
-      "normalized_raw_bytes": 742
+      "normalized_raw_sha256": "addc4d0a6ffbc05042d146c16a643dd3af288752c538559c753f0b4ac542384c",
+      "normalized_raw_bytes": 754
     },
     {
       "milestone": "at-type-requery",
@@ -943,7 +943,7 @@
         " @com",
         "────────────────────────────────────────────────────────────────────────────────",
         "→ commit-msg.md                   .pi/prompts/commit-msg.md",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -962,13 +962,13 @@
         "",
         ""
       ],
-      "screen_sha256": "d75205b9af762f467a948c1ecae89fb893f3cda191024b71ee78c5353c6d4627",
+      "screen_sha256": "70b6b7a123fd15a6e3f40e6ddaa6b13a48cc03ff8f0683935d66aa189ccc6e02",
       "cursor": [
         7,
         0
       ],
-      "normalized_raw_sha256": "7b2228b98612f04e29ea458f7a843891e8d1e7965532c0d30462d1c60d06506f",
-      "normalized_raw_bytes": 657
+      "normalized_raw_sha256": "084a98a95075f3a085c6114973544dcbfbeb9a290a55690bd47a180852a66f8b",
+      "normalized_raw_bytes": 665
     },
     {
       "milestone": "at-backspace-requery",
@@ -980,7 +980,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "→ code-review.md                  .pi/prompts/code-review.md",
         "  commit-msg.md                   .pi/prompts/commit-msg.md",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -998,13 +998,13 @@
         "",
         ""
       ],
-      "screen_sha256": "1da85792abbd4310a1d9151ec46d9539c4b0fbef7ac07f8596d0b06e2e5d90dd",
+      "screen_sha256": "8e4fbf4f31455ebc1e436b93ffcd6d07fe19a844e8f6c5330b67d7c4ba3413ec",
       "cursor": [
         8,
         80
       ],
-      "normalized_raw_sha256": "367e862ceeef3caa64ef1c01f9d29cfc41ffaf86de27bdfdbec55cd9cf33cc7f",
-      "normalized_raw_bytes": 746
+      "normalized_raw_sha256": "6469d001b06f355e7cddb87b5bc433a91df7e682662a1ce11462b601e5d9570b",
+      "normalized_raw_bytes": 754
     },
     {
       "milestone": "at-wrap-up",
@@ -1016,7 +1016,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "  code-review.md                  .pi/prompts/code-review.md",
         "→ commit-msg.md                   .pi/prompts/commit-msg.md",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1034,7 +1034,7 @@
         "",
         ""
       ],
-      "screen_sha256": "2cb2026d5ad680e1be3f8a8555e25d54aaf96a373457a5a99af1994018512746",
+      "screen_sha256": "82577e03aee49e3b1cac7f17ff797b5cb838ac2c617b023355a2fb13388a4a1b",
       "cursor": [
         6,
         59
@@ -1052,7 +1052,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "→ code-review.md                  .pi/prompts/code-review.md",
         "  commit-msg.md                   .pi/prompts/commit-msg.md",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1070,7 +1070,7 @@
         "",
         ""
       ],
-      "screen_sha256": "1da85792abbd4310a1d9151ec46d9539c4b0fbef7ac07f8596d0b06e2e5d90dd",
+      "screen_sha256": "8e4fbf4f31455ebc1e436b93ffcd6d07fe19a844e8f6c5330b67d7c4ba3413ec",
       "cursor": [
         6,
         59
@@ -1086,7 +1086,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " @.pi/prompts/code-review.md",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1106,13 +1106,13 @@
         "",
         ""
       ],
-      "screen_sha256": "2675559c94f54f1b735a5756d7d1debf7a46219ef22ae49757e0cd706331603a",
+      "screen_sha256": "45a48c38438eaa1f4ad3055e243aeeaeb60eaa9ebcd2a115de6004357ec193e2",
       "cursor": [
         6,
         0
       ],
-      "normalized_raw_sha256": "b9a0e7152d57b6f1e6cb3ad6ce2e2932de8d7d4243677396930a39a79e6366af",
-      "normalized_raw_bytes": 586
+      "normalized_raw_sha256": "e846985266d221717e58ca1bc52022f7d1d08d9e8b237da63d194dff0a3e908d",
+      "normalized_raw_bytes": 594
     },
     {
       "milestone": "at-clear-2",
@@ -1122,7 +1122,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1142,13 +1142,13 @@
         "",
         ""
       ],
-      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
+      "screen_sha256": "773ec7c5edb1df968b6873a30014c2639a67372eaa0ab21c852f8d02f1f80c8b",
       "cursor": [
-        3,
-        2
+        6,
+        80
       ],
-      "normalized_raw_sha256": "069af1f4a696f561a736889918c51a3fa4c5b8745bcf47135df6d4d21343f1bb",
-      "normalized_raw_bytes": 46
+      "normalized_raw_sha256": "b2df5e2e2d6525d7f4b37955160c4703e767383bcbae51c66e57edd189eaaeb7",
+      "normalized_raw_bytes": 944
     },
     {
       "milestone": "at-dir-apply",
@@ -1158,7 +1158,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " @.pi/",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1178,13 +1178,13 @@
         "",
         ""
       ],
-      "screen_sha256": "5910f39dfb82515af8a65ff1dc23e79ef4addadfcd358460bb06583eb5576ef0",
+      "screen_sha256": "ad1b2f94f92305e5660253ca9cb7b081a8ed39cbd7409fb21802207af18f2282",
       "cursor": [
         3,
         7
       ],
-      "normalized_raw_sha256": "97fd88d0b9bac37cae81380222c5073593f115e8116bf8a2f75dbce071ee9100",
-      "normalized_raw_bytes": 47
+      "normalized_raw_sha256": "24434f97cd4cda3969ee022900d54059d50181c281392ed734a651e27ba55b67",
+      "normalized_raw_bytes": 51
     },
     {
       "milestone": "at-clear-3",
@@ -1194,7 +1194,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1214,13 +1214,13 @@
         "",
         ""
       ],
-      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
+      "screen_sha256": "773ec7c5edb1df968b6873a30014c2639a67372eaa0ab21c852f8d02f1f80c8b",
       "cursor": [
-        3,
-        2
+        6,
+        80
       ],
-      "normalized_raw_sha256": "bb55badb9711d388d6effcc6dd30579c0f47dc5cbff055d61b2f1a395b53bdbc",
-      "normalized_raw_bytes": 42
+      "normalized_raw_sha256": "b2df5e2e2d6525d7f4b37955160c4703e767383bcbae51c66e57edd189eaaeb7",
+      "normalized_raw_bytes": 944
     },
     {
       "milestone": "at-no-candidate-tab",
@@ -1230,7 +1230,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " zzzz-no-such-entry",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1250,13 +1250,13 @@
         "",
         ""
       ],
-      "screen_sha256": "577e8a1682034f71b68800c4ee2a58062938280b284ae984db24ec1f308fb688",
+      "screen_sha256": "c5613935310a134fe3e485f5fb28c4c2af9ff08da7c5c1788269a24000ff4fbe",
       "cursor": [
         3,
         20
       ],
-      "normalized_raw_sha256": "26149d4ac700dd0e270109c155dea499a250f0a3cd3f7fba8facafba4ddde7fc",
-      "normalized_raw_bytes": 60
+      "normalized_raw_sha256": "da32802154e29140d24bb4c6cb875622c1da0a537273fd7002812c96afd1effc",
+      "normalized_raw_bytes": 64
     },
     {
       "milestone": "at-clear-4",
@@ -1266,7 +1266,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1286,13 +1286,13 @@
         "",
         ""
       ],
-      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
+      "screen_sha256": "773ec7c5edb1df968b6873a30014c2639a67372eaa0ab21c852f8d02f1f80c8b",
       "cursor": [
-        3,
-        2
+        6,
+        80
       ],
-      "normalized_raw_sha256": "bb55badb9711d388d6effcc6dd30579c0f47dc5cbff055d61b2f1a395b53bdbc",
-      "normalized_raw_bytes": 42
+      "normalized_raw_sha256": "b2df5e2e2d6525d7f4b37955160c4703e767383bcbae51c66e57edd189eaaeb7",
+      "normalized_raw_bytes": 944
     },
     {
       "milestone": "at-blank-tab-single",
@@ -1302,7 +1302,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " .pi/",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1322,13 +1322,13 @@
         "",
         ""
       ],
-      "screen_sha256": "f31d27cca49e609c8d33705a997a3a96883be48787d7fa2712e9de3620c0c54d",
+      "screen_sha256": "3d80111ac35675c995e26cfce12cf2a9f11b2ab4e5e5227e898f1c847627bb77",
       "cursor": [
         3,
         6
       ],
-      "normalized_raw_sha256": "e3456acad09b4dbb051eb310b4a536892b4776ab0320c94e4f8b7da028bb0c2b",
-      "normalized_raw_bytes": 46
+      "normalized_raw_sha256": "fe76d24049a835163b68750bc7c65bd97eddf813436cd137649e8864c344ac9e",
+      "normalized_raw_bytes": 50
     },
     {
       "milestone": "at-clear-5",
@@ -1338,7 +1338,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1358,13 +1358,13 @@
         "",
         ""
       ],
-      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
+      "screen_sha256": "773ec7c5edb1df968b6873a30014c2639a67372eaa0ab21c852f8d02f1f80c8b",
       "cursor": [
-        3,
-        2
+        6,
+        80
       ],
-      "normalized_raw_sha256": "bb55badb9711d388d6effcc6dd30579c0f47dc5cbff055d61b2f1a395b53bdbc",
-      "normalized_raw_bytes": 42
+      "normalized_raw_sha256": "b2df5e2e2d6525d7f4b37955160c4703e767383bcbae51c66e57edd189eaaeb7",
+      "normalized_raw_bytes": 944
     },
     {
       "milestone": "slash-prompt-filter",
@@ -1375,7 +1375,7 @@
         " /code-r",
         "────────────────────────────────────────────────────────────────────────────────",
         "→ code-review  [p] Deterministic fixture prompt code-review for parity runs",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1394,13 +1394,13 @@
         "",
         ""
       ],
-      "screen_sha256": "b256717ecc12c4ebe606b9714a0bf24c6c2d5b0d20c029d496fb2c3ea8abf384",
+      "screen_sha256": "08c86b265e2eeeaaccff468f612d239f74de2ddf8e497f391a1623a8a0196467",
       "cursor": [
         7,
         80
       ],
-      "normalized_raw_sha256": "4099fa0ca062d803d65fb576859d4a5264eda5fa2f134183611ae2342a828292",
-      "normalized_raw_bytes": 662
+      "normalized_raw_sha256": "d14efc234762c7f8ada7bdeb2a9d20c2a4a5d094cca336d13b4a952163b24a07",
+      "normalized_raw_bytes": 1064
     },
     {
       "milestone": "at-esc-1",
@@ -1410,7 +1410,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " /code-r",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1430,13 +1430,13 @@
         "",
         ""
       ],
-      "screen_sha256": "b30fd90330ed5709dc7635cab222db8e9fd662e85c81f922ea50203045726c99",
+      "screen_sha256": "1fe2a28206049c5e74b4fffc9fdc9c5d0b648411a619bbdc3bb1bac6558e893b",
       "cursor": [
         6,
-        0
+        80
       ],
-      "normalized_raw_sha256": "270b640813970dfda963f21c40b0a616c79bfa27e81e0c2e4959e8b13287a16b",
-      "normalized_raw_bytes": 248
+      "normalized_raw_sha256": "efbc672e3df17ae9752331fb6ce4826ad3a07af8c26a4faa1ee8fc1995347c49",
+      "normalized_raw_bytes": 951
     },
     {
       "milestone": "at-clear-6",
@@ -1446,7 +1446,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1466,13 +1466,13 @@
         "",
         ""
       ],
-      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
+      "screen_sha256": "773ec7c5edb1df968b6873a30014c2639a67372eaa0ab21c852f8d02f1f80c8b",
       "cursor": [
-        3,
-        2
+        6,
+        80
       ],
-      "normalized_raw_sha256": "069af1f4a696f561a736889918c51a3fa4c5b8745bcf47135df6d4d21343f1bb",
-      "normalized_raw_bytes": 46
+      "normalized_raw_sha256": "b2df5e2e2d6525d7f4b37955160c4703e767383bcbae51c66e57edd189eaaeb7",
+      "normalized_raw_bytes": 944
     },
     {
       "milestone": "slash-prompt-filter-2",
@@ -1483,7 +1483,7 @@
         " /commit",
         "────────────────────────────────────────────────────────────────────────────────",
         "→ commit-msg  [p] Deterministic fixture prompt commit-msg for parity runs",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1502,13 +1502,13 @@
         "",
         ""
       ],
-      "screen_sha256": "a86ba86d8910e6fc1a1593beed5deabd81005c7edc47ddac47a384d4bf210750",
+      "screen_sha256": "142165fbcdbed7e6fa4d3e0aea1cc35f9911c3236a01fa9cdc31c03f78a35728",
       "cursor": [
         7,
         80
       ],
-      "normalized_raw_sha256": "6c89edeeb2a528fa836304b1f82e3d21a0bdc462d0c85080e8f283dd45d82bcd",
-      "normalized_raw_bytes": 660
+      "normalized_raw_sha256": "6e861371c5e2f7c4188ab1c51ea73a09fa306ee8aac15e78af596f8cd2d629ec",
+      "normalized_raw_bytes": 672
     },
     {
       "milestone": "at-esc-2",
@@ -1518,7 +1518,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " /commit",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1538,13 +1538,13 @@
         "",
         ""
       ],
-      "screen_sha256": "04360435962cd339a0d3f987f370e2bfbdea9ae17d0ff041c6a68127fae10718",
+      "screen_sha256": "39cd65b5f20d3393966a01693f85a0e81ccab58b1aa6fae967049a0def3f97ce",
       "cursor": [
         6,
-        0
+        80
       ],
-      "normalized_raw_sha256": "270b640813970dfda963f21c40b0a616c79bfa27e81e0c2e4959e8b13287a16b",
-      "normalized_raw_bytes": 248
+      "normalized_raw_sha256": "747a4112c2dacc8d749d62d9c316a0027708405dabaf578dbc877ee09c76ead6",
+      "normalized_raw_bytes": 951
     },
     {
       "milestone": "at-clear-7",
@@ -1554,7 +1554,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         "",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1574,13 +1574,13 @@
         "",
         ""
       ],
-      "screen_sha256": "453bd68f1ee72b535ca8eff7f1a2567c9904b71f5b315722bcf62e958b96af36",
+      "screen_sha256": "773ec7c5edb1df968b6873a30014c2639a67372eaa0ab21c852f8d02f1f80c8b",
       "cursor": [
-        3,
-        2
+        6,
+        80
       ],
-      "normalized_raw_sha256": "069af1f4a696f561a736889918c51a3fa4c5b8745bcf47135df6d4d21343f1bb",
-      "normalized_raw_bytes": 46
+      "normalized_raw_sha256": "b2df5e2e2d6525d7f4b37955160c4703e767383bcbae51c66e57edd189eaaeb7",
+      "normalized_raw_bytes": 944
     },
     {
       "milestone": "slash-login-filter",
@@ -1591,7 +1591,7 @@
         " /login deepseek",
         "────────────────────────────────────────────────────────────────────────────────",
         "→ deepseek                        DeepSeek · API key",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1610,13 +1610,13 @@
         "",
         ""
       ],
-      "screen_sha256": "b8ee405e0669bdc964416f3fe5f2388d1d788e5eb3a0e4ce2fbefd799dcf5e7e",
+      "screen_sha256": "02d83fe027f795495f66d6c1e2c56eb3ffdf887a12871163c542d48cfae02d0a",
       "cursor": [
         7,
         80
       ],
-      "normalized_raw_sha256": "f82210af584032eeedee373b0033419816e39b320e4f03f227f30b2928642ebd",
-      "normalized_raw_bytes": 648
+      "normalized_raw_sha256": "d79300b84bff0950efd7386c085211ad98d3344fc6941cfcc48213293a2f75f5",
+      "normalized_raw_bytes": 660
     },
     {
       "milestone": "at-esc-3",
@@ -1626,7 +1626,7 @@
         "────────────────────────────────────────────────────────────────────────────────",
         " /login deepseek",
         "────────────────────────────────────────────────────────────────────────────────",
-        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (main)",
+        "<REPO>/tests/e2e/lib/pi-oracle/fixtures/batch1/cwd (ma...",
         "0.0%/1M (auto)                                  deepseek-v4-flash • thinking off",
         "",
         "",
@@ -1646,13 +1646,13 @@
         "",
         ""
       ],
-      "screen_sha256": "d4fde8837bf24fc17216091f2b116cae9f326064feb6a4541249e6955aece50c",
+      "screen_sha256": "898fbc3327e0d8ce5dd57c031997674b1f3c2011383bd6127eee3eeda8a72ec5",
       "cursor": [
         6,
-        0
+        80
       ],
-      "normalized_raw_sha256": "270b640813970dfda963f21c40b0a616c79bfa27e81e0c2e4959e8b13287a16b",
-      "normalized_raw_bytes": 248
+      "normalized_raw_sha256": "0c29defc6905b55ee3f9775d2be339de66333e31ce5578b662f29b45613e6688",
+      "normalized_raw_bytes": 959
     }
   ],
   "raw_assertions": [

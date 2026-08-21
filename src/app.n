@@ -478,8 +478,10 @@ pub fn run(): void! {
         view.show_session_overlay()
     }
     // Pi's first-time setup: a theme + telemetry welcome shown once until
-    // the marker below the agent directory exists.
-    if !path_utils.exists(path.join(config_paths.agent_dir(), '.adou-setup')) && config.initial_messages.len() == 0 {
+    // the marker below the agent directory exists.  Pi resolves project
+    // trust before the TUI starts, so a pending startup trust prompt takes
+    // precedence; the setup overlay opens afterwards from the trust flow.
+    if !path_utils.exists(path.join(config_paths.agent_dir(), '.adou-setup')) && config.initial_messages.len() == 0 && !(view.overlay is ref<session_view.overlay_t>) {
         view.show_setup_overlay()
     }
     if config.initial_messages.len() > 0 {

@@ -87,8 +87,11 @@ sys.stdout.write(system_text)
     echo "e2e: $name fixture round-trip OK"
 }
 
-# 1. Trusted project: the .pi/skills/demo skill is injected.
-run_case "trusted default discovery" 1
+# 1. Trusted project: the .pi/skills/demo skill is injected.  The fixture
+# hosts trust-requiring resources with no saved decision, so an explicit
+# --approve mirrors Pi's startup selector outcome (headless 'ask' resolves
+# untrusted).
+run_case "trusted default discovery" 1 --approve
 if ! rg -q '<available_skills>' "${server_log}.body" || ! rg -q '<name>demo</name>' "${server_log}.body"; then
     echo "e2e: trusted default discovery did not inject the demo skill" >&2
     exit 1

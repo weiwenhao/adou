@@ -72,20 +72,23 @@ pub fn save(string cwd, bool trusted): void! {
 // directory.  Startup resolves trust for the launch cwd, but a --session/
 // --resume target, a serve spawn cwd or a TUI session rebind can bind the
 // runtime to a different project; this is the one shared entry point all of
-// those paths call.  An explicit --approve/--no-approve always wins;
-// otherwise a stored decision applies when the directory hosts
-// trust-requiring resources, and the settings.defaultProjectTrust fallback
-// ('always' trusts, 'never' refuses) decides the rest.  'ask' keeps the
-// current no-prompt behavior (interactive trust prompt is Batch 5 scope).
+// those paths call.  Order mirrors upstream exactly: an explicit
+// --approve/--no-approve wins; a directory without trust-requiring
+// resources is trusted before any store or settings lookup; a stored
+// decision beats the settings.defaultProjectTrust fallback; 'always'
+// trusts, 'never' refuses, and unresolved 'ask' is untrusted — headless
+// modes have no UI (upstream returns false), while the TUI opens the
+// selector for this state before project resources load (needs_prompt).
 pub fn resolve_trust(bool explicit_override, bool override_value, string cwd, string default_trust): bool {
     if explicit_override {
         return override_value
     }
-    if has_trust_requiring_resources(cwd) {
-        var decision = decision(cwd)
-        if decision is bool value {
-            return value
-        }
+    if !has_trust_requiring_resources(cwd) {
+        return true
+    }
+    var decision = decision(cwd)
+    if decision is bool value {
+        return value
     }
     if default_trust == 'always' {
         return true
@@ -93,7 +96,24 @@ pub fn resolve_trust(bool explicit_override, bool override_value, string cwd, st
     if default_trust == 'never' {
         return false
     }
-    return true
+    return false
+}
+
+// True when Pi would open the interactive trust selector: no explicit
+// override, trust-requiring resources present, no saved decision and
+// settings.defaultProjectTrust == 'ask'.  Headless modes resolve this
+// state to untrusted; the TUI opens the selector before resources load.
+pub fn needs_prompt(bool explicit_override, bool override_value, string cwd, string default_trust): bool {
+    if explicit_override {
+        return false
+    }
+    if !has_trust_requiring_resources(cwd) {
+        return false
+    }
+    if decision(cwd) is bool {
+        return false
+    }
+    return default_trust != 'always' && default_trust != 'never'
 }
 
 pub type trust_update_t = struct {

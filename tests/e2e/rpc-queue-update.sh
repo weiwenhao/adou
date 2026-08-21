@@ -94,6 +94,7 @@ with tempfile.TemporaryDirectory(prefix="adou-rpc-queue-update-") as root:
     })
     command = [
         binary, "--mode", "rpc", "--no-session", "--no-context-files",
+        "--approve",
         "--provider", "deepseek", "--model", "deepseek-v4-flash",
         "--base-url", f"http://127.0.0.1:{port}", "--api-key", "rpc-queue-key",
         "--max-retries", "0",

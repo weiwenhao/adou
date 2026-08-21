@@ -84,6 +84,7 @@ if pid == 0:
         [
             binary,
             "--offline",
+            "--approve",
             "--no-context-files",
             "--no-session",
             "--provider",

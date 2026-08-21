@@ -2,6 +2,7 @@
 
 状态：当前目标为 Pi `0.82.1` 的全量可观察行为对齐，唯一明确排除是 TypeScript/QuickJS extension runtime。2026-08-20 本批已闭合真实 OpenAI browser OAuth、真实请求和强制过期 refresh recovery，用户图片的 CLI/RPC/session/provider/SDK/HTML 全链路，Kitty/iTerm2/plain TUI 图片交互，以及 Radius 公开 OAuth discovery/web 契约和长历史/重复 live 交互。Radius 第三方账号登录页当前只提供 Email/Google，账号创建不作为 Adou 代码 parity 的完成条件。
 基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）
+剩余缺口与 100%（非扩展口径）收敛计划见 [`docs/porting-plan-100.md`](porting-plan-100.md)（2026-08-22 四路源码差分评估：非扩展口径约 85%，分 7 批收敛）。
 release hardening：macOS 主线进行中（Batch 1、Batch 2A、native `.pkg` installer 已完成；Batch 2B 真实签名/公证需新权限；Linux 暂缓，见 `docs/release-hardening-plan.md`、`docs/macos-signing.md` 与 `docs/macos-installer.md`）
 RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make release-check`、`make signing-check` 证据见下）；历史 runtime blocker `nature#302` 已由上游 PR #303 修复并用专用 toolchain 验证，后续 PTY 冷启动失败也已定位为测试在 raw mode 前过早发键的同步缺陷并修复
 

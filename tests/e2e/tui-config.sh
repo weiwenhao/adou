@@ -53,7 +53,7 @@ def spawn():
     if pid == 0:
         os.execvpe(
             binary,
-            [binary, "--offline", "--no-context-files", "--no-session",
+            [binary, "--offline", "--approve", "--no-context-files", "--no-session",
              "--provider", "deepseek", "--model", "deepseek-v4-flash"],
             env,
         )

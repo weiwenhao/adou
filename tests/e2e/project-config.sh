@@ -92,7 +92,7 @@ port=$(cat "$port_file")
 state=$(printf '%s\n' '{"id":"state","type":"get_state"}' | (cd "$project_dir" && \
     ADOU_CODING_AGENT_DIR="$agent_dir" \
     ADOU_SESSION_DIR="$tmp_dir/sessions-state" \
-    "$binary" --mode rpc --no-session))
+    "$binary" --mode rpc --no-session --approve))
 python3 - "$state" <<'PY'
 import json
 import sys
@@ -118,7 +118,7 @@ if ! (cd "$project_dir" && \
     DEEPSEEK_API_KEY=e2e-project-key \
     ADOU_CODING_AGENT_DIR="$agent_dir" \
     ADOU_SESSION_DIR="$tmp_dir/sessions-prompt" \
-    "$binary" --base-url "http://127.0.0.1:$port/v1" --print --no-session project-prompt > "$output_file" 2>&1); then
+    "$binary" --base-url "http://127.0.0.1:$port/v1" --print --no-session --approve project-prompt > "$output_file" 2>&1); then
     echo 'e2e: project .pi prompt invocation failed' >&2
     cat "$output_file" >&2
     exit 1

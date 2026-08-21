@@ -1,0 +1,116 @@
+# Adou 100% 移植完成度计划（非扩展全量口径）
+
+状态：依据 2026-08-22 四路源码差分评估制定。当前非扩展口径完成度约 **85%**（对 Pi 完整功能面约 78–80%，差额主要为声明排除的扩展生态）。本计划目标：**非扩展口径收敛到 100%**。扩展运行时维持排除，不在此计划内。
+基线：Pi `0.82.1`，commit `cced6a21da273b26ee4a23a803680614bbe8dd1e`（`vendors/pi`）。
+
+验收规则沿用 `docs/porting-plan.md`：每个工作项必须有源码差分记录、Nature 单测（正常/错误/取消/边界/顺序）、至少一个跨模块集成或 e2e；Nature 构建与测试严格串行；不使用 `nature fmt`。
+
+## 口径定义
+
+**100% = Pi 0.82.1 除扩展生态外的全部可观察行为，逐项通过同版本真机对照。**
+
+明确排除（不计入 100%判定，与 README 声明边界一致）：
+
+- TypeScript/QuickJS extension ABI、加载器、生命周期事件总线、`transformContext` 等 extension hook；
+- `extension_ui_request/response` RPC 通道、`extension_error` 事件及对应 TUI 组件（custom editor/input/selector）；
+- 包管理生态：`install/remove/uninstall/update/list/config` 子命令、npm/git 扩展包管理、unknownFlag passthrough、`--extension/-e/--no-extensions`；
+- `extensions.eval`；
+- 平台性等价物：undici http-dispatcher（以 transport 设置等价）、Node 专属执行环境（已有 `src/sdk_node.n` 对应面）；
+- 上游彩蛋组件（armin/daxnuts/clankolas），纯装饰，可选不做。
+
+MCP 不在范围内：Pi core 明确无内建 MCP（属扩展生态能力）。
+
+## 当前差距快照（2026-08-22 评估）
+
+| 域 | 完成度 | 主要缺口 |
+|---|---|---|
+| AI 层 | ~85% | 约束采样与 deferred tools 死代码；Google/OpenAI Responses 请求构建细节；Claude Code 工具名映射；options 钩子 |
+| Agent harness + core | ~80% | SQLite 后端健壮性（~55%）；bash 无界缓冲；edit 互斥窗口；settings/trust 写盘耐久性；trust `'ask'` 语义 |
+| TUI + 交互 | ~77% | Markdown 渲染（~55%）；主题系统（~50%）；selector polish；运行时终端查询缺失 |
+| CLI/RPC/server/SDK/evals | ~78% | SDK 面（~55%）；信号处理；evals 真实 provider runner；若干 flag/subcommand |
+
+## Batch 1｜正确性与数据安全（P0，量级 M，无前置依赖）
+
+| # | 工作项 | 源码定位 | 验收门槛 |
+|---|---|---|---|
+| 1.1 | trust `'ask'` 门控：启动时未知项目弹信任 overlay（TUI）；headless 拒绝加载项目资源并输出提示；显式 `--approve/--no-approve` 与已保存决定优先级不变 | `src/config/trust.n:96`（`'ask'` 现静默返回 true）、`src/app.n:270` | 未信任项目拒载 `.pi/skills`、项目层 settings 的 e2e；TUI overlay 触发路径 PTY e2e |
+| 1.2 | bash 生产路径接入有界捕获（现仅测试使用），替换无界输出缓冲 | `src/tools/shell_tools.n:235` ← `:71` | >10MB 输出压测内存有界；截断标记与 Pi 一致 |
+| 1.3 | edit 读改写全程互斥（mutation queue 覆盖整个操作而非仅最终写入） | `src/tools/shell_tools.n:358→398` | 并发双 edit 定向测试连续 10 轮不丢失 |
+| 1.4 | settings.json/trust.json 原子写：temp+rename+fsync + fcntl 锁（复用 `native/auth_store.c` 先例） | `src/config/settings.n:408-413`、`trust.n` 写盘路径 | kill 注入中断写入后文件不损坏 |
+| 1.5 | SQLite 健壮化：WAL + `synchronous=FULL` + `busy_timeout`；append_entry 包事务；真实 `migrations` 版本表；移除 JSONL 行写入 `.db` 的路径；branch_entries/materialized 补读取与 setLeafId 持久化；补齐 4 个缺失索引；API 补 cwd 过滤、fork entryId/before 模式、delete not_found | `src/session/backend.n:61-70`、`sqlite_repo.n:107-141`、`sqlite_migrations.n` | JSONL/SQLite 双后端一致性测试扩展到分支/树/图片；`.db` hexdump 无 JSONL 行 |
+
+## Batch 2｜会话格式互操作（P0-P1，量级 M，依赖 1.5）
+
+| # | 工作项 | 对照 | 验收 |
+|---|---|---|---|
+| 2.1 | `custom`/`custom_message` 条目：解析、无损保留、读写往返（供 SDK 与跨实现互认）；SDK 面暴露 append 入口 | `session-manager.ts:1122-1189` | Pi 写出的 custom 条目 adou 可读且重序列化不丢字段；双向 fixture 往返测试 |
+| 2.2 | toolResult images 改为嵌入式 ImageContent 序列化（现顶层 `images` 键会丢弃 Pi 写入的图片块） | `src/session/message_json.n:218-227` | 含图 toolResult 跨实现读写往返 |
+| 2.3 | 写路径补齐：`fromHook`、header `metadata` 保留、`responseModel`；header 延迟至首条 assistant 消息落盘 | `session-manager.ts:1015-1042` | header 字段 diff 断言；空 prompt 退出不留 header 文件 |
+| 2.4 | manager 级 `get_tree()/get_children()`；server storage materialized 补全 | `src/session/repository.n`、`src/server/storage.n` | RPC `get_tree` 与 manager API 一致性测试 |
+
+## Batch 3｜AI 层协议收口（P1，量级 M，可与 Batch 1 并行）
+
+1. 约束采样激活：grammar/custom tools 接入 openai-completions 与 openai-responses 请求构建，处理 `custom_tool_call_input.delta/.done` 事件（消除 `constrained_sampling.n` 死代码）。
+2. deferred tools 接线：`split_deferred_tools` 接入 anthropic-messages / openai-responses / codex 三条协议线 + deferred 重注入（消除死代码）。
+3. Google builder 补齐：temperature、toolChoice→`functionCallingConfig`、functionCall thoughtSignature 回放、同 provider thinking 过滤、tool-result 图片→inlineData（对照 `google-generative-ai.ts:358-366` 等）。
+4. OpenAI Responses：`service_tier`、`text.verbosity`、`instructions`、custom tools。
+5. Anthropic OAuth 场景的 Claude Code 工具名映射（`toClaudeCodeName`）。
+6. Options 面补 `onPayload/onResponse/metadata` 注入钩子。
+
+验收：每项一个 HTTP fixture 单测；现有 provider 流测试全量回归；grep 确认零调用方模块清零。
+
+## Batch 4｜TUI 渲染保真度（P1，量级 L，含决策点 C）
+
+1. Markdown 渲染器重构（~55%→100%）：块级 parser（setext 标题、松散列表、段落软连接、反斜杠转义）；表格溢出换行为多行并保留单元格 inline 格式；task checkboxes；OSC8 能力门控 + `(url)` 回退；代码语法高亮（见决策点 C）。
+2. 主题系统（~50%→100%）：命名主题注册表 + JSON schema 校验 + 基于 `fs_watch.n` 热载；256-color 降级链；`MarkdownTheme` 对象；light 变体全色覆盖；将 `terminal_colors.n` 已实现的 OSC11/CSI-16t 解析器接入运行时（替换 env-only 检测）。
+3. 运行时终端查询：CSI 16t 动态 cell size（替换硬编码 9×18）、CURSOR_MARKER 硬件光标定位（IME）、kitty keyboard 协议协商握手、modifyOtherKeys 回退激活。
+4. mid-stream `set_model` 安全切换（当前 streaming 中抛错）；diff renderer 补 kitty 图片跨帧删除跟踪。
+
+## Batch 5｜TUI 组件 polish（P2，量级 M，依赖 Batch 4）
+
+- session/tree selector：异步加载 + `Loading n/m` 进度、current-session 标记、cwd 标签、`(i/n)` 计数、tree `├─└─` 连接线、消息内容行、panning。
+- 编辑器：word-boundary/CJK 软换行（对照 `editor.ts wordWrapLine`）、history-Up 边界守卫、方向键进 keybinding registry、`externalEditor` 设置覆盖。
+- autocomplete：Tab 打开的 path 菜单活过滤、`` #`` 触发器。
+- skill-invocation 独立消息渲染；macOS native modifier 探测。
+
+## Batch 6｜CLI / server / SDK / evals 收口（P2，量级 L）
+
+- Flags：`--prompt-template/--no-prompt-templates/--theme/--no-themes`；`--resume` picker 在 json/rpc/print 模式同样生效；`--session` 跨项目命中时 fork 询问。
+- Subcommands：`auth print-bearer-token`、`auth help`。
+- 进程生命周期：rpc/print/serve 注册 SIGTERM/SIGHUP/SIGINT；serve 优雅停机与 uncaughtException 兜底；RPC prompt success 移至 preflight 之后；stdout 背压处理。
+- Settings 缺失键补齐（`lastChangelogVersion`、`thinkingBudgets`、`shellPath/shellCommandPrefix`、`externalEditor`、`httpProxy`、`websocketConnectTimeoutMs` 等约 17 个）+ 3 个迁移（keybindings.json、commands→prompts、弃用告警）+ changelog dismissed 循环。
+- SDK（~55%→100%）：`ModelRuntime`、`SettingsManager`、`ResourceLoader` 注入、`defineTool/customTools`、`subscribe()`、`cycleModel/cycleThinkingLevel/dispose`、run-mode 导出、`agentDir/thinkingLevel/scopedModels` 选项。
+- Evals：真实 provider runner（`ADOU_PROVIDER/ADOU_MODEL` 等价 `PI_PROVIDER/PI_MODEL`，opt-in）、usage/transcript JSON 报告、run-evals CLI 入口。
+- Server：TCP stale 连接 liveness 探测（对应上游 stale socket 检查）、status 词表对齐（`stopping/error`）、Radius backoff 加抖动、hostname/platform/arch 取实测值。
+
+## Batch 7｜全量收口验收（量级 M，依赖全部批次）
+
+1. 功能矩阵逐项对照 Pi 0.82.1 真机三轮（同终端、同配置、同按键序列）。
+2. 全量串行门禁：`make test`（预计 >200 文件）、`make e2e`、`make eval`、`make release-check`、`make signing-check`。
+3. 本计划各工作项逐条销账；四路差分审计方法复测，四个域均需 ≥99%（剩余为已记录的可接受 drift）。
+4. 更新 `docs/porting-plan.md` 与 `README.md` 的 parity 边界描述。
+
+## 决策点
+
+| 决策点 | 问题 | 建议 |
+|---|---|---|
+| C. 语法高亮范围 | 上游 cli-highlight 支持 190+ 语言；adou 需自实现 | 自实现高频语言子集（ts/js/py/go/rust/json/md/sh/c++），其余语言降级为无高亮纯文本；差异记录于模块映射文档 |
+
+（原扩展语言与包管理决策点随扩展排除一并取消。）
+
+## 里程碑
+
+| 批次 | 量级 | 依赖 |
+|---|---|---|
+| B1 正确性与数据安全 | M | 无 |
+| B2 会话格式互操作 | M | 1.5 |
+| B3 AI 协议收口 | M | 无（可与 B1 并行） |
+| B4 TUI 渲染保真度 | L | 决策点 C |
+| B5 TUI 组件 polish | M | B4 |
+| B6 CLI/server/SDK/evals | L | 无强依赖 |
+| B7 全量收口 | M | 全部 |
+
+## 附：评估缺口 → 批次销账索引
+
+- AI 层全部缺口 → B3；Agent/core 正确性类（trust/bash/edit/原子写/SQLite）→ B1；会话格式类 → B2；Markdown/theme/终端查询/model switch → B4；selector/editor/autocomplete polish → B5；CLI/信号/settings 键/SDK/evals/server → B6。
+- 扩展相关缺口（extension UI、包管理、unknownFlags、extensions.eval、transformContext）不在销账范围，见「口径定义」排除清单。

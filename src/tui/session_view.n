@@ -196,6 +196,10 @@ pub type overlay_t = struct {
     // Pi app.tree.toggleLabelTimestamp: show each entry's timestamp next
     // to its label in the tree rows.
     bool label_timestamps
+    // Pi's startup trust prompt (formatProjectTrustPrompt): the overlay was
+    // opened automatically for an unresolved 'ask' project, so it renders
+    // the consequence description instead of the saved-source lines.
+    bool trust_prompt = false
     // Config selector state.  scope 0 is global/user resources; scope 1 is
     // project-local resources.  The query is kept on the overlay so Esc can
     // clear a search before closing, matching Pi's selector behavior.
@@ -313,6 +317,18 @@ pub type view_t = struct {
     bool session_trust_override_set
     bool session_trust_override
     string session_trust_cwd
+    // Pi caches the startup trust resolution per cwd (projectTrustByCwd):
+    // the selector opens once per project until the decision changes, and a
+    // dismissed prompt counts as the resolution (untrusted) for that cwd.
+    string trust_prompted_cwd = ''
+    // Pi main.ts autoTrustOnReloadCwd: when the launch cwd hosted no
+    // trust-requiring resources and no explicit override was given, a later
+    // /reload that observes resources appearing mid-session persists an
+    // implicit trusted decision (maybeSaveImplicitProjectTrustAfterReload).
+    string auto_trust_on_reload_cwd = ''
+    // Pi inserts a warning Text into the chat when the resolved project is
+    // untrusted; Adou keeps an equivalent banner line under the header.
+    bool show_untrusted_banner = false
     // Serialize state mutation and terminal rendering across the input loop
     // and file-watch/signal coroutines.
     ref<mutex.mutex_t> render_lock = mutex.mutex_t.new()
@@ -355,6 +371,19 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     // scope is not explicit) and the model candidate cache all derive from
     // one refresh.
     view.refresh_resource_snapshot(cwd, false)
+    // Pi main.ts: the implicit-trust-on-reload window only opens when the
+    // launch cwd had no trust-requiring resources and no override was given.
+    view.auto_trust_on_reload_cwd = !trust_override_explicit && !trust.has_trust_requiring_resources(cwd) ? cwd : ''
+    // B1.1 (docs/porting-plan-100): Pi opens the trust selector at startup
+    // when the project hosts trust-requiring resources, no explicit
+    // override applies, no decision is saved and defaultProjectTrust is
+    // 'ask'.  Dismissing leaves the project untrusted; headless modes
+    // resolve the same state to untrusted without a prompt.
+    if trust.needs_prompt(trust_override_explicit, trust_override, cwd, view.settings_snapshot.default_project_trust) {
+        view.trust_prompted_cwd = cwd
+        view.show_trust_startup_prompt()
+    }
+    view.update_untrusted_banner(cwd)
     var stored_settings = view.settings_snapshot
     theme.set_variant(active_theme_variant(stored_settings.theme))
     string theme_file = syscall.get_env('ADOU_THEME_FILE')
@@ -1411,6 +1440,20 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
     }
     if command == '/reload' {
         string cwd = self.runner.repository.cwd
+        // Pi maybeSaveImplicitProjectTrustAfterReload: when the launch cwd
+        // had no trust-requiring resources (auto-trust window open) and a
+        // reload observes them appearing mid-session, persist an implicit
+        // trusted decision so this and future runtimes keep loading them.
+        bool saved_implicit_project_trust = false
+        if self.auto_trust_on_reload_cwd == cwd {
+            self.auto_trust_on_reload_cwd = ''
+            if trust.has_trust_requiring_resources(cwd) && trust.decision(cwd) is null {
+                trust.save(cwd, true) catch error {
+                    self.chat.error_message = 'Could not save project trust after reload: ' + error.msg()
+                }
+                saved_implicit_project_trust = self.chat.error_message == ''
+            }
+        }
         bool trusted = self.trusted_for(cwd)
         if theme.loaded_path() != '' {theme.reload()}
         string theme_file = syscall.get_env('ADOU_THEME_FILE')
@@ -1470,6 +1513,9 @@ pub fn view_t.run_command(&self, string text): ref<session_stream.stream_t>? {
         self.keybindings.reload(paths.agent_dir())
         keybindings.set_current(self.keybindings)
         string reload_status = warnings.len() > 0 ? 'Project instructions reloaded with warnings' : 'Project instructions reloaded'
+        if saved_implicit_project_trust {
+            reload_status = 'Reloaded keybindings, skills, prompts, and context files; saved project trust'
+        }
         var keybinding_conflicts = self.keybindings.get_conflicts()
         if keybinding_conflicts.len() > 0 {
             [string] conflict_texts = []
@@ -1798,6 +1844,14 @@ fn view_t.rebind_project_context(&self, string cwd): void! {
     // the system prompt is rebuilt; the menu and expand use the same
     // self.prompt_templates afterwards.
     self.refresh_resource_snapshot(cwd, true)
+    // B1.1: a rebind to a project the startup resolution has not covered
+    // yet opens Pi's trust selector for an unresolved 'ask' project; a cwd
+    // already resolved (including dismissed) never re-prompts.
+    if self.trust_prompted_cwd != cwd && trust.needs_prompt(self.trust_override_explicit, self.trust_override, cwd, self.settings_snapshot.default_project_trust) {
+        self.trust_prompted_cwd = cwd
+        self.show_trust_startup_prompt()
+    }
+    self.update_untrusted_banner(cwd)
     [string] tool_names = []
     for tool in self.runner.base_context.tools {
         tool_names.push(tool.name)
@@ -2398,6 +2452,19 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
             with_header.push(line)
         }
         transcript_lines = with_header
+    }
+    // B1.1: Pi inserts an untrusted warning when the resolved project is
+    // untrusted; Adou renders the equivalent banner under the header.
+    if self.show_untrusted_banner {
+        [string] with_banner = []
+        var banner_lines = text_utils.wrap_text_with_ansi(theme.fg(theme.WARNING, 'This project is not trusted. Project .pi resources and packages are ignored. Use /trust to save a trust decision.'), width)
+        for line in banner_lines {
+            with_banner.push(line)
+        }
+        for line in transcript_lines {
+            with_banner.push(line)
+        }
+        transcript_lines = with_banner
     }
     [string] editor_lines = []
     if self.overlay is ref<overlay_t> active_overlay {
@@ -3173,6 +3240,27 @@ pub fn view_t.show_auth_overlay(&self, string provider) {
 // Interactive project-trust selector.  Persistent choices use the same
 // atomic set_many path as `/trust trust|no|parent`; session-only choices stay
 // on the view and are deliberately absent from the trust store.
+// Pi formatProjectTrustPrompt + TrustSelectorComponent: the startup selector
+// for an unresolved 'ask' project.  Lists getProjectTrustOptions with
+// session-only variants; dismissing leaves the project untrusted.
+fn view_t.show_trust_startup_prompt(&self) {
+    string cwd = self.runner.repository.cwd
+    [trust.trust_option_t] choices = trust.get_project_trust_options(cwd, true)
+    [string] labels = []
+    for choice in choices {
+        labels.push(choice.label)
+    }
+    self.overlay = new overlay_t(kind = OVERLAY_TRUST, title = 'Trust project folder?', provider = cwd, options = labels, trust_options = choices, trust_prompt = true)
+    self.chat.status = ''
+}
+
+// Pi shows an untrusted warning whenever the resolved project is untrusted:
+// "This project is not trusted. Project .pi resources and packages are
+// ignored. Use /trust to save a trust decision, then restart pi."
+fn view_t.update_untrusted_banner(&self, string cwd) {
+    self.show_untrusted_banner = !self.trusted_for(cwd) && trust.has_trust_requiring_resources(cwd)
+}
+
 pub fn view_t.show_trust_overlay(&self) {
     string cwd = self.runner.repository.cwd
     bool trusted = self.trusted_for(cwd)
@@ -3212,9 +3300,19 @@ fn view_t.apply_trust_option(&self, ref<overlay_t> overlay) {
     }
     bool trusted = self.trusted_for(overlay.provider)
     self.refresh_resource_snapshot(overlay.provider, false)
+    self.update_untrusted_banner(overlay.provider)
     self.chat.status = (trusted ? 'Project trusted' : 'Project not trusted') + (session_only ? ' for this session' : ' and saved')
     self.chat.error_message = ''
     self.overlay = null
+    // Pi resolves trust before interactive mode starts, so the first-time
+    // setup welcome follows the startup trust decision.
+    if overlay.trust_prompt {
+        string marker = path.join(paths.agent_dir(), '.adou-setup')
+        if !path_utils.exists(marker) && self.pending_initial_messages.len() == 0 {
+            self.show_setup_overlay()
+            return
+        }
+    }
     self.redraw()
 }
 
@@ -4278,6 +4376,19 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
             return
         }
         if key == 'escape' || key == 'ctrl+c' {
+            if overlay.trust_prompt {
+                // Pi's resolveProjectTrusted returns false when the selector
+                // is dismissed; cache the resolution for this cwd so a
+                // session rebind does not re-open the prompt.
+                self.trust_prompted_cwd = overlay.provider
+                self.update_untrusted_banner(overlay.provider)
+                self.overlay = null
+                string marker = path.join(paths.agent_dir(), '.adou-setup')
+                if !path_utils.exists(marker) && self.pending_initial_messages.len() == 0 {
+                    self.show_setup_overlay()
+                    return
+                }
+            }
             self.overlay = null
             self.redraw()
             return
@@ -5769,11 +5880,18 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
         return result
     }
     if overlay.kind == OVERLAY_TRUST {
-        string source = trust.decision_source(overlay.provider)
-        string source_text = source == '' ? 'none' : source
-        result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.muted_color(), 'Project: ' + overlay.provider), width))
-        result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.muted_color(), 'Saved source: ' + source_text), width))
-        result.push('')
+        if overlay.trust_prompt {
+            result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.muted_color(), 'Project: ' + overlay.provider), width))
+            result.push('')
+            result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.text(), 'This allows Adou to load .pi settings and resources.'), width))
+            result.push('')
+        } else {
+            string source = trust.decision_source(overlay.provider)
+            string source_text = source == '' ? 'none' : source
+            result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.muted_color(), 'Project: ' + overlay.provider), width))
+            result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.muted_color(), 'Saved source: ' + source_text), width))
+            result.push('')
+        }
         int trust_last = overlay.options.len()
         for int index = 0; index < trust_last; index += 1 {
             string option = overlay.options[index]

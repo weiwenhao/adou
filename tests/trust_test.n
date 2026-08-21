@@ -87,9 +87,11 @@ test 'resolve_trust applies stored decisions per cwd and explicit overrides win'
     var file = fs.open(path.join(project, '.pi', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
     file.write('x' as [u8])
     file.close()
-    assert(trust.resolve_trust(false, true, project, 'ask'))
+    assert(!trust.resolve_trust(false, true, project, 'ask'))
+    assert(trust.needs_prompt(false, true, project, 'ask'))
     trust.save(project, false) catch error {}
     assert(!trust.resolve_trust(false, true, project, 'ask'))
+    assert(!trust.needs_prompt(false, true, project, 'ask'))
     // Without trust-requiring resources the default stays trusted even when
     // a stored decision exists (Pi returns true before consulting the store).
     string plain = path.join('/tmp', 'adou-trust-plain-' + suffix())
@@ -112,12 +114,29 @@ test 'defaultProjectTrust fallback gates projects without stored decisions' {
     // No stored decision: the global settings fallback decides.
     assert(trust.resolve_trust(false, true, project, 'always'))
     assert(!trust.resolve_trust(false, true, project, 'never'))
-    assert(trust.resolve_trust(false, true, project, 'ask'))
+    // Unresolved 'ask' is untrusted (Pi returns false without a UI).
+    assert(!trust.resolve_trust(false, true, project, 'ask'))
+    assert(trust.needs_prompt(false, true, project, 'ask'))
+    assert(!trust.needs_prompt(false, true, project, 'always'))
+    assert(!trust.needs_prompt(false, true, project, 'never'))
     // A stored decision still wins over the fallback.
     trust.save(project, false) catch error {}
     assert(!trust.resolve_trust(false, true, project, 'always'))
     // Explicit overrides still win over everything.
     assert(trust.resolve_trust(true, true, project, 'never'))
+    assert(!trust.needs_prompt(true, true, project, 'ask'))
+    assert(!trust.needs_prompt(true, false, project, 'ask'))
+}
+
+test 'projects without trust-requiring resources stay trusted and never prompt' {
+    isolate_trust_store()
+    string plain = path.join('/tmp', 'adou-trust-plain2-' + suffix())
+    os.mkdirs(plain, 0o700)
+    // Pi returns true before consulting the store or the default setting,
+    // so even defaultProjectTrust 'never' keeps resource-less cwds trusted.
+    assert(trust.resolve_trust(false, true, plain, 'never'))
+    assert(trust.resolve_trust(false, true, plain, 'ask'))
+    assert(!trust.needs_prompt(false, true, plain, 'ask'))
 }
 
 fn suffix(): string {
