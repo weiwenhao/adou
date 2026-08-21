@@ -61,39 +61,3 @@ pub fn wait_for_raw_stdout_backpressure(): void! {
 pub fn flush_raw_stdout(): void! {
     wait_for_raw_stdout_backpressure()
 }
-
-pub fn takeOverStdout() {
-    take_over_stdout()
-}
-
-pub fn restoreStdout() {
-    restore_stdout()
-}
-
-pub fn isStdoutTakenOver(): bool {
-    return is_stdout_taken_over()
-}
-
-pub fn writeRawStdout(string text): void! {
-    write_raw_stdout(text)
-}
-
-pub fn writeRawStderr(string text): void! {
-    write_raw_stderr(text)
-}
-
-pub fn writeStdout(string text): void! {
-    write_stdout(text)
-}
-
-pub fn writeStderr(string text): void! {
-    write_stderr(text)
-}
-
-pub fn waitForRawStdoutBackpressure(): void! {
-    wait_for_raw_stdout_backpressure()
-}
-
-pub fn flushRawStdout(): void! {
-    flush_raw_stdout()
-}

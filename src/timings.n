@@ -101,24 +101,6 @@ pub fn namespace_timings(string namespace): [timing_t] {
     return []
 }
 
-// Pi-compatible camel-case aliases make the port easy to call from code
-// which follows the original module names.
-pub fn resetTimings() {
-    reset_timings()
-}
-
-pub fn resetTimingsNamespace(string namespace) {
-    reset_namespace(namespace)
-}
-
-pub fn timeNamespace(string namespace, string label) {
-    time_namespace(namespace, label)
-}
-
-pub fn printTimings() {
-    print_timings()
-}
-
 fn find_namespace(string namespace): ref<timing_namespace_t>? {
     for value in timing_namespaces {
         if value.name == namespace {
