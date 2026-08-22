@@ -210,6 +210,157 @@ fn trim_to_last_utf8_bytes(string value, int max_bytes): string {
     return value.slice(start, value.len())
 }
 
+// Pi's OutputAccumulator (coding-agent core/tools/output-accumulator.ts): a
+// bounded rolling output tail with true line/byte totals.  Once the limits
+// are exceeded the full stream spills into a temp file, so a long-running
+// command never grows memory unbounded while the final footer can still
+// report correct "Showing lines X-Y of TOTAL" metadata.
+pub type bash_output_accumulator_t = struct {
+    int max_lines
+    int max_bytes
+    int max_rolling_bytes
+    string tail_text
+    bool tail_starts_at_line_boundary = true
+    int total_bytes
+    int completed_lines
+    int total_lines
+    int current_line_bytes
+    bool has_open_line
+    bool finished
+    string temp_file_path
+    [string] raw_chunks
+}
+
+pub type bash_snapshot_t = struct {
+    string content
+    truncate.result_t truncation
+    string full_output_path
+}
+
+pub fn new_bash_accumulator(int max_lines, int max_bytes): ref<bash_output_accumulator_t> {
+    return new bash_output_accumulator_t(max_lines = max_lines, max_bytes = max_bytes, max_rolling_bytes = max_bytes * 2)
+}
+
+pub fn bash_output_accumulator_t.append(&self, string text): void {
+    if self.finished || text == '' {
+        return
+    }
+    int bytes = text.len()
+    self.total_bytes += bytes
+    self.tail_text += text
+    if self.tail_text.len() > self.max_rolling_bytes * 2 {
+        self.trim_tail()
+    }
+    int newlines = 0
+    int last_newline = -1
+    for int cursor = 0; cursor < text.len(); cursor += 1 {
+        if text[cursor] == '\n'.char() {
+            newlines += 1
+            last_newline = cursor
+        }
+    }
+    if newlines == 0 {
+        self.current_line_bytes += bytes
+        self.has_open_line = true
+    } else {
+        self.completed_lines += newlines
+        string open_tail = text.slice(last_newline + 1, text.len())
+        self.current_line_bytes = open_tail.len()
+        self.has_open_line = open_tail.len() > 0
+    }
+    self.total_lines = self.completed_lines + (self.has_open_line ? 1 : 0)
+    if self.temp_file_path != '' {
+        append_full_output(self.temp_file_path, text) catch error {}
+    } else if self.should_use_temp_file() {
+        self.ensure_temp_file()
+        append_full_output(self.temp_file_path, text) catch error {}
+    } else {
+        self.raw_chunks.push(text)
+    }
+}
+
+// Pi output.finish(): flush the trailing decoded text and make sure an
+// exceeded stream is fully persisted before the final snapshot.
+pub fn bash_output_accumulator_t.finish(&self): void {
+    if self.finished {
+        return
+    }
+    self.finished = true
+    if self.should_use_temp_file() && self.temp_file_path == '' {
+        self.ensure_temp_file()
+    }
+}
+
+pub fn bash_output_accumulator_t.snapshot(&self, bool persist_if_truncated): bash_snapshot_t {
+    var truncation = truncate.tail_with_limits(self.snapshot_text(), self.max_lines, self.max_bytes)
+    bool truncated = self.total_lines > self.max_lines || self.total_bytes > self.max_bytes
+    if truncated {
+        truncation.truncated = true
+        if truncation.truncated_by == '' {
+            truncation.truncated_by = self.total_bytes > self.max_bytes ? 'bytes' : 'lines'
+        }
+    }
+    truncation.total_lines = self.total_lines
+    truncation.total_bytes = self.total_bytes
+    truncation.max_lines = self.max_lines
+    truncation.max_bytes = self.max_bytes
+    if truncated && persist_if_truncated && self.temp_file_path == '' {
+        self.ensure_temp_file()
+    }
+    return bash_snapshot_t {content: truncation.content, truncation: truncation, full_output_path: self.temp_file_path,}
+}
+
+fn bash_output_accumulator_t.snapshot_text(&self): string {
+    if self.tail_starts_at_line_boundary {
+        return self.tail_text
+    }
+    int first_newline = self.tail_text.find('\n')
+    return first_newline < 0 ? self.tail_text : self.tail_text.slice(first_newline + 1, self.tail_text.len())
+}
+
+fn bash_output_accumulator_t.trim_tail(&self): void {
+    if self.tail_text.len() <= self.max_rolling_bytes {
+        return
+    }
+    int start = self.tail_text.len() - self.max_rolling_bytes
+    for start < self.tail_text.len() && self.tail_text[start] >= 0x80 && self.tail_text[start] <= 0xbf {
+        start += 1
+    }
+    self.tail_starts_at_line_boundary = start == 0 ? self.tail_starts_at_line_boundary : self.tail_text[start - 1] == '\n'.char()
+    self.tail_text = self.tail_text.slice(start, self.tail_text.len())
+}
+
+fn bash_output_accumulator_t.should_use_temp_file(&self): bool {
+    return self.total_bytes > self.max_bytes || self.total_lines > self.max_lines
+}
+
+// Pi ensureTempFile: backfill everything captured so far, then switch the
+// accumulator into streaming mode.  Persistence failures degrade to the
+// bounded tail only (Pi's captureError keeps the capture alive too).
+fn bash_output_accumulator_t.ensure_temp_file(&self): void {
+    if self.temp_file_path != '' {
+        return
+    }
+    string id = identity.uuid_v7() catch error {return}
+    string file_path = '/tmp/adou-bash-' + id + '.log'
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_EXCL, 0o600) catch error {return}
+    for chunk in self.raw_chunks {
+        [u8] bytes = chunk as [u8]
+        int offset = 0
+        for offset < bytes.len() {
+            int written = file.write(bytes.slice(offset, bytes.len())) catch error {return}
+            if written <= 0 {
+                file.close()
+                return
+            }
+            offset += written
+        }
+    }
+    file.close()
+    self.temp_file_path = file_path
+    self.raw_chunks = []
+}
+
 pub fn bash_executor_t.execute(&self, string call_id, any arguments, ref<abort.abort_t> cancellation, agent_types.tool_update_fn on_update): tool_types.tool_result_t! {
     throw_if_aborted(cancellation)
     var object = arguments as {string:any}
@@ -228,40 +379,41 @@ pub fn bash_executor_t.execute(&self, string call_id, any arguments, ref<abort.a
         }
         timeout_ms = (timeout * 1000.0) as int
     }
+    // B1.2 (docs/porting-plan-100): Pi's bash tool feeds every chunk through
+    // an OutputAccumulator — a bounded rolling tail plus true totals and
+    // temp-file spill — so streaming updates and the final result never
+    // require buffering the whole output in memory.
+    var acc = new_bash_accumulator(truncate.DEFAULT_MAX_LINES, truncate.DEFAULT_MAX_BYTES)
     var stream_state = new bash_stream_state_t(lock = mutex.mutex_t.new(), last_update_ms = 0)
     on_update(tool_types.text_result(''))
     command.output_chunk_fn on_chunk = fn(string chunk) {
+        acc.append(chunk)
         stream_state.lock.lock()
-        stream_state.output += chunk
         i64 now = time.now().ms_timestamp()
         bool publish = stream_state.last_update_ms == 0 || now - stream_state.last_update_ms >= 100
         if publish {
             stream_state.last_update_ms = now
         }
-        string snapshot = stream_state.output
         stream_state.lock.unlock()
         if publish {
-            var partial = truncate.tail(snapshot)
-            var partial_result = tool_types.text_result(partial.content)
-            if partial.truncated {
+            var partial_snapshot = acc.snapshot(true)
+            var partial_result = tool_types.text_result(partial_snapshot.content)
+            if partial_snapshot.truncation.truncated {
                 any details = null
-                details = truncation_details(partial) catch error {}
+                details = truncation_details_with_path(partial_snapshot.truncation, partial_snapshot.full_output_path) catch error {}
                 partial_result.details = details
             }
             on_update(partial_result)
         }
     }
     var output = command.shell_abortable_stream(self.cwd, script, timeout_ms, cancellation, on_chunk)
-    stream_state.lock.lock()
-    string streamed_text = stream_state.output
-    stream_state.lock.unlock()
-    string text = streamed_text != '' ? streamed_text : combine_output(output.stdout, output.stderr)
-    var truncated = truncate.tail(text)
-    string result_text = truncated.content
-    string full_output_path = ''
-    if truncated.truncated {
-        full_output_path = persist_bash_output(text)
-        result_text += bash_truncation_footer(truncated, full_output_path)
+    acc.finish()
+    var final_snapshot = acc.snapshot(true)
+    string result_text = final_snapshot.content
+    if final_snapshot.truncation.truncated {
+        // Pi formatOutput: the footer rides on the final text (and therefore
+        // on abort/timeout/exit-code messages too).
+        result_text += bash_truncation_footer(final_snapshot.truncation, final_snapshot.full_output_path)
     }
     if output.aborted {
         throw errorf('%s', append_command_status(result_text, 'Command aborted'))
@@ -275,8 +427,8 @@ pub fn bash_executor_t.execute(&self, string call_id, any arguments, ref<abort.a
     }
     // Pi's bash tool reports an empty capture as "(no output)".
     var result = tool_types.text_result(result_text == '' ? '(no output)' : result_text)
-    if truncated.truncated {
-        result.details = truncation_details_with_path(truncated, full_output_path)
+    if final_snapshot.truncation.truncated {
+        result.details = truncation_details_with_path(final_snapshot.truncation, final_snapshot.full_output_path)
     }
     on_update(result)
     return result

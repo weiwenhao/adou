@@ -1,0 +1,80 @@
+import adou.src.tools.shell_tools
+import adou.src.tools.truncate
+import fs
+import fmt
+import time
+import syscall
+
+// B1.2 (docs/porting-plan-100): the bash tool's OutputAccumulator port must
+// keep memory bounded while reporting true totals and persisting the full
+// stream, matching Pi coding-agent core/tools/output-accumulator.ts.
+
+fn unique_suffix(): string {
+    return fmt.sprintf('%d', time.now().ms_timestamp())
+}
+
+test 'small output passes through without truncation or temp files' {
+    var acc = shell_tools.new_bash_accumulator(truncate.DEFAULT_MAX_LINES, truncate.DEFAULT_MAX_BYTES)
+    acc.append('hello\n')
+    acc.append('world')
+    acc.finish()
+    var snap = acc.snapshot(true)
+    assert(snap.content == 'hello\nworld')
+    assert(!snap.truncation.truncated)
+    assert(snap.full_output_path == '')
+    assert(snap.truncation.total_lines == 2)
+    assert(snap.truncation.total_bytes == 11)
+}
+
+test 'byte overflow spills to a full output file with true totals' {
+    var acc = shell_tools.new_bash_accumulator(2000, 64)
+    // 41 bytes per chunk; the second chunk crosses the 64-byte budget.
+    string chunk = '01234567890123456789012345678901234567890\n'
+    acc.append(chunk)
+    acc.append(chunk)
+    acc.append(chunk)
+    acc.finish()
+    var snap = acc.snapshot(true)
+    assert(snap.truncation.truncated)
+    assert(snap.truncation.truncated_by == 'bytes')
+    assert(snap.truncation.total_bytes == chunk.len() * 3)
+    assert(snap.truncation.total_lines == 3)
+    assert(snap.full_output_path != '')
+    var input = fs.open(snap.full_output_path, syscall.O_RDONLY, 0)
+    string persisted = input.content()
+    input.close()
+    assert(persisted == chunk + chunk + chunk)
+    // The bounded tail still truncates to the byte limit.
+    assert(snap.content.len() <= 64)
+}
+
+test 'line overflow reports lines as the truncation reason' {
+    var acc = shell_tools.new_bash_accumulator(4, truncate.DEFAULT_MAX_BYTES)
+    for int i = 0; i < 10; i += 1 {
+        acc.append(fmt.sprintf('line-%d\n', i))
+    }
+    acc.finish()
+    var snap = acc.snapshot(false)
+    assert(snap.truncation.truncated)
+    assert(snap.truncation.truncated_by == 'lines')
+    assert(snap.truncation.total_lines == 10)
+    assert(snap.truncation.output_lines <= 4)
+}
+
+test 'tail trimming keeps utf-8 sequences intact across the rolling boundary' {
+    // 50 lines of two 3-byte characters (7 bytes each) = 350 bytes, well past
+    // the 128-byte rolling ceiling, so trim_tail must resync on a character
+    // boundary and the surviving whole lines must stay intact.
+    var acc = shell_tools.new_bash_accumulator(2000, 32)
+    for int i = 0; i < 50; i += 1 {
+        acc.append('好好\n')
+    }
+    acc.finish()
+    var snap = acc.snapshot(false)
+    assert(snap.truncation.truncated)
+    // The rolling trim and the byte-budget tail must both land on code
+    // point boundaries: the content starts and ends on a whole character.
+    assert(snap.content.starts_with('好'))
+    assert(snap.content.ends_with('好'))
+    assert(snap.content.len() <= 32)
+}
