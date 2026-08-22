@@ -43,7 +43,9 @@ test 'markdown covers chat heading list quote code emphasis and links' {
 }
 
 test 'markdown handles nested markers, strike, rules, and fenced borders' {
-    string source = '## Title\n  - nested **bold** and ~~removed~~\n_italic_\n---\n~~~nature\nlet x = 1\n~~~'
+    // A blank line keeps the --- a thematic rule (no blank line would make
+    // it a setext heading underline per CommonMark).
+    string source = '## Title\n  - nested **bold** and ~~removed~~\n_italic_\n\n---\n~~~nature\nlet x = 1\n~~~'
     var lines = markdown.render(source, 32)
     bool has_strike = false
     bool has_rule = false
