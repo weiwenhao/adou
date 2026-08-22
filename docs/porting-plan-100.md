@@ -123,6 +123,13 @@ MCP 不在范围内：Pi core 明确无内建 MCP（属扩展生态能力）。
 
 **验收门禁**：make test（全量串行）→ make e2e（64）→ make eval（3）→ make release-check → make signing-check，结果见本文件末尾追记。
 
+**B7 门禁进行中记录（2026-08-22）**：全量 make test 三轮运行暴露两处问题——
+1. 段落分支多推空行导致 chat outputPad 断言失败：已修复（fa94e4d）；
+2. editor 词边界换行的 Nature 计数型 for 循环计数器重启赋值被忽略，致 CJK 混排切分错误：改用手动索引循环修复（d008448）。
+
+当前唯一阻塞：`provider_user_images_test` Test 5 确定性段错误（连续 4 次复现；二分排除 google_messages/message_json/deferred tools，指向 B2 时期 stream_options_t 增加 `{string:string} metadata = {}` 结构字段默认空 map 后，构造路径上该字段为 nil、任何访问即触发 #302 族缺陷）。已回退 metadata 切片（types 字段 + anthropic 发射 + 测试用例），回退后待复验。下一轮专修后重跑全量门禁。
+
+
 ## 附：评估缺口 → 批次销账索引
 
 - AI 层全部缺口 → B3；Agent/core 正确性类（trust/bash/edit/原子写/SQLite）→ B1；会话格式类 → B2；Markdown/theme/终端查询/model switch → B4；selector/editor/autocomplete polish → B5；CLI/信号/settings 键/SDK/evals/server → B6。
