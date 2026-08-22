@@ -1,6 +1,7 @@
 import adou.src.ai.models
 import adou.src.ai.sse
 import adou.src.ai.streaming_json
+import adou.src.ai.providers.anthropic_request as request
 import adou.src.ai.types
 import adou.src.json_util
 
@@ -22,6 +23,9 @@ pub type processor_t = struct {
     bool started
     bool saw_message_start
     bool saw_message_stop
+    // Claude Code OAuth streams emit canonical CC tool names; mapping back
+    // needs the request's tool list.
+    [ref<types.tool_t>] tools = []
 }
 
 pub fn processor(ref<types.model_t> model, int timestamp): ref<processor_t> {
@@ -139,7 +143,10 @@ pub fn processor_t.start_block(&self, int provider_index, any block, [types.assi
         self.slots[provider_index] = slot_t {kind: SLOT_THINKING, content_index: content_index, thinking: content,}
         events.push(update_event(types.EVENT_THINKING_START, content_index, '', '', self.output))
     } else if block_type == 'tool_use' {
-        var content = new types.tool_call_t(id = required_string(block, 'id'), name = required_string(block, 'name'), partial_json = '',)
+        string streamed_name = required_string(block, 'name')
+        // Claude Code OAuth: map CC casing back to the context tool's name.
+        streamed_name = request.from_claude_code_name(streamed_name, self.tools)
+        var content = new types.tool_call_t(id = required_string(block, 'id'), name = streamed_name, partial_json = '',)
         // Anthropic includes an initial input object on tool_use blocks. Pi
         // keeps it on the tool call until input_json_delta events arrive.
         // Clone the value so the streamed output owns its arguments rather

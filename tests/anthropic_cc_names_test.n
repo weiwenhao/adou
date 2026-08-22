@@ -1,0 +1,68 @@
+import adou.src.ai.providers.anthropic_request
+import adou.src.ai.providers.anthropic_messages
+import adou.src.ai.types
+
+// B3: Claude Code OAuth (sk-ant-oat) requests normalize tool names to the
+// canonical CC casing and map streamed names back to the context's tools.
+
+fn oauth_options(): ref<types.stream_options_t> {
+    return new types.stream_options_t(api_key = 'sk-ant-oat01-xxx')
+}
+
+fn key_options(): ref<types.stream_options_t> {
+    return new types.stream_options_t(api_key = 'sk-ant-api03-xxx')
+}
+
+fn context_with_tools(): ref<types.context_t> {
+    var context = new types.context_t()
+    [ref<types.tool_t>] tools = []
+    {string:any} schema_a = {}
+    {string:any} props_a = {}
+    schema_a['type'] = 'object'
+    schema_a['properties'] = props_a
+    tools.push(new types.tool_t(name = 'read', description = 'read file', parameters = schema_a))
+    {string:any} schema_b = {}
+    {string:any} props_b = {}
+    schema_b['type'] = 'object'
+    schema_b['properties'] = props_b
+    tools.push(new types.tool_t(name = 'bash', description = 'run shell', parameters = schema_b))
+    context.tools = tools
+    return context
+}
+
+test 'is_oauth_token detects Claude Code access tokens' {
+    assert(anthropic_request.is_oauth_token('sk-ant-oat01-example'))
+    assert(!anthropic_request.is_oauth_token('sk-ant-api03-example'))
+}
+
+test 'oauth requests rename tools to CC casing; api keys keep them' {
+    string oauth_body = anthropic_request.build(
+        new types.model_t(id = 'claude-x', provider = 'anthropic', api = 'anthropic-messages'),
+        context_with_tools(), oauth_options()) catch e {'ERR'}
+    assert(oauth_body.contains('"name":"Read"'))
+    assert(oauth_body.contains('"name":"Bash"'))
+    assert(!oauth_body.contains('"name":"read"'))
+
+    string key_body = anthropic_request.build(
+        new types.model_t(id = 'claude-x', provider = 'anthropic', api = 'anthropic-messages'),
+        context_with_tools(), key_options()) catch e {'ERR'}
+    assert(key_body.contains('"name":"read"'))
+    assert(!key_body.contains('"name":"Read"'))
+}
+
+test 'outbound tool_use blocks use CC names under oauth' {
+    var context = context_with_tools()
+    [types.content_t] content = []
+    content.push(new types.tool_call_t(id = 'call1', name = 'bash'))
+    context.messages.push(new types.assistant_message_t(content = content, timestamp = 1))
+    string body = anthropic_request.build(
+        new types.model_t(id = 'claude-x', provider = 'anthropic', api = 'anthropic-messages'),
+        context, oauth_options()) catch e {'ERR'}
+    assert(body.contains('"name":"Bash"'))
+}
+
+test 'streamed CC names map back to the context tool name' {
+    var model = new types.model_t(id = 'claude-x', provider = 'anthropic', api = 'anthropic-messages')
+    var processor = anthropic_messages.processor(model, 1)
+    processor.tools = context_with_tools().tools
+}

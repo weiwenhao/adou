@@ -9,10 +9,65 @@ pub const ANTHROPIC_VERSION = '2023-06-01'
 pub const INTERLEAVED_THINKING_BETA = 'interleaved-thinking-2025-05-14'
 pub const FINE_GRAINED_TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-05-14'
 
+// Pi anthropic-messages claudeCodeTools: when the request authenticates with
+// a Claude Code OAuth token (sk-ant-oat), tool names are normalized to the
+// canonical Claude Code casing on the way out and mapped back to the
+// context's exact names on the way in.
+fn claude_code_tools(): [string] {
+    return [
+        'Read',
+        'Write',
+        'Edit',
+        'Bash',
+        'Grep',
+        'Glob',
+        'AskUserQuestion',
+        'EnterPlanMode',
+        'ExitPlanMode',
+        'KillShell',
+        'NotebookEdit',
+        'Skill',
+        'Task',
+        'TaskOutput',
+        'TodoWrite',
+        'WebFetch',
+        'WebSearch',
+    ]
+}
+
+pub fn is_oauth_token(string api_key): bool {
+    return api_key.contains('sk-ant-oat')
+}
+
+pub fn to_claude_code_name(string name): string {
+    string lower = name.to_lower()
+    for candidate in claude_code_tools() {
+        if candidate.to_lower() == lower {
+            return candidate
+        }
+    }
+    return name
+}
+
+pub fn from_claude_code_name(string name, [ref<types.tool_t>] tools): string {
+    if tools.len() > 0 {
+        string lower = name.to_lower()
+        for tool in tools {
+            if tool.name.to_lower() == lower {
+                return tool.name
+            }
+        }
+    }
+    return name
+}
+
 pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
     {string:any} body = {}
     body['model'] = model.id
-    body['messages'] = convert_messages(context.messages, cache_control(model, options))
+    // B3: Pi normalizeToolName — Claude Code OAuth (sk-ant-oat) renames
+    // tools to canonical CC casing outbound.
+    bool oauth_names = is_oauth_token(options.api_key)
+    body['messages'] = convert_messages(context.messages, cache_control(model, options), oauth_names)
     body['max_tokens'] = max_tokens(model, options)
     body['stream'] = true
     if options.temperature >= 0.0 {
@@ -32,7 +87,7 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
         body['system'] = system
     }
     if context.tools.len() > 0 {
-        body['tools'] = convert_tools(context.tools, cache, model.supports_eager_tool_streaming)
+        body['tools'] = convert_tools(context.tools, cache, model.supports_eager_tool_streaming, oauth_names)
     }
     if model.reasoning {
         {string:any} thinking = {}
@@ -143,7 +198,7 @@ fn attach_cache({string:any} target, any cache): {string:any} {
     return target
 }
 
-pub fn convert_messages([types.message_t] messages, any cache): [any]! {
+pub fn convert_messages([types.message_t] messages, any cache, bool oauth_names): [any]! {
     [any] result = []
     [any] pending_tool_results = []
     var replay = replay.tracker()
@@ -194,7 +249,7 @@ pub fn convert_messages([types.message_t] messages, any cache): [any]! {
             if assistant.stop_reason == types.STOP_ERROR || assistant.stop_reason == types.STOP_ABORTED {
                 continue
             }
-            var blocks = assistant_blocks(assistant)
+            var blocks = assistant_blocks(assistant, oauth_names)
             if blocks.len() > 0 {
                 result.push(message_item('assistant', blocks))
             }
@@ -240,7 +295,7 @@ pub fn convert_messages([types.message_t] messages, any cache): [any]! {
     return result
 }
 
-fn assistant_blocks(ref<types.assistant_message_t> message): [any]! {
+fn assistant_blocks(ref<types.assistant_message_t> message, bool oauth_names): [any]! {
     [any] result = []
     for content in message.content {
         if content is ref<types.text_content_t> text {
@@ -272,7 +327,8 @@ fn assistant_blocks(ref<types.assistant_message_t> message): [any]! {
             {string:any} block = {}
             block['type'] = 'tool_use'
             block['id'] = normalize_tool_id(tool_call.id)
-            block['name'] = tool_call.name
+            // Claude Code OAuth: outbound tool_use names use CC casing.
+            block['name'] = oauth_names ? to_claude_code_name(tool_call.name) : tool_call.name
             block['input'] = tool_call.arguments
             result.push(block)
         }
@@ -345,7 +401,7 @@ fn attach_cache_to_last_user([any] messages, any cache): void! {
     messages[messages.len() - 1] = object
 }
 
-pub fn convert_tools([ref<types.tool_t>] tools, any cache, bool eager_input_streaming): [any]! {
+pub fn convert_tools([ref<types.tool_t>] tools, any cache, bool eager_input_streaming, bool oauth_names): [any]! {
     [any] result = []
     for index, tool in tools {
         {string:any} schema = {}
@@ -364,7 +420,7 @@ pub fn convert_tools([ref<types.tool_t>] tools, any cache, bool eager_input_stre
             schema['required'] = empty_required
         }
         {string:any} item = {}
-        item['name'] = tool.name
+        item['name'] = oauth_names ? to_claude_code_name(tool.name) : tool.name
         item['description'] = tool.description
         item['input_schema'] = schema
         if eager_input_streaming {

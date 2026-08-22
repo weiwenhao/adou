@@ -35,6 +35,7 @@ pub fn stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.
 pub fn run(ref<event_stream.assistant_stream_t> stream, ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): void! {
     debug.log('provider', 'anthropic stream start model=' + model.id)
     var processor = anthropic_messages.processor(model, time.now().ms_timestamp())
+    processor.tools = context.tools
     var state = new run_state_t(stream = stream, model = model, context = context, options = options, processor = processor,)
     run_inner(stream, state) catch e {
         debug.log('provider', 'anthropic stream failure: ' + e.msg())
