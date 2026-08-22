@@ -14,7 +14,7 @@ pub fn execute(string cwd, string input_path, string content, ref<abort.abort_t>
     var acquired = mutation_queue.acquire(absolute_path)
     string key = acquired[0]
     ref<mutation_queue.entry_t> entry = acquired[1]
-    var result = execute_locked(absolute_path, input_path, content, cancellation) catch e {
+    var result = execute_without_lock(absolute_path, input_path, content, cancellation) catch e {
         mutation_queue.release(key, entry)
         throw e
     }
@@ -22,7 +22,11 @@ pub fn execute(string cwd, string input_path, string content, ref<abort.abort_t>
     return result
 }
 
-fn execute_locked(string absolute_path, string input_path, string content, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
+// The locked body of the write tool.  The edit tool runs its whole
+// read-modify-write inside one mutation-queue hold and calls this for the
+// final write so it does not re-enter the queue (Pi edit.ts wraps everything
+// in withFileMutationQueue; write.ts holds the same per-file queue).
+pub fn execute_without_lock(string absolute_path, string input_path, string content, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
     throw_if_aborted(cancellation)
     os.mkdirs(path.dir(absolute_path), 0o755)
     throw_if_aborted(cancellation)

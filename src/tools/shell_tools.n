@@ -5,6 +5,7 @@ import adou.src.ai.types as ai_types
 import adou.src.session.identity
 import adou.src.tools.command
 import adou.src.tools.managed_tools
+import adou.src.tools.mutation_queue
 import adou.src.tools.path_utils
 import adou.src.tools.truncate
 import adou.src.tools.types as tool_types
@@ -507,6 +508,23 @@ pub fn edit_executor_t.execute(&self, string call_id, any arguments, ref<abort.a
 
     string absolute_path = path_utils.resolve_to_cwd(input_path, self.cwd)
 
+    // Pi edit.ts runs the whole read-modify-write inside
+    // withFileMutationQueue.  Holding the queue only around the final write
+    // would let two concurrent edits read the same base content and silently
+    // lose one replacement set, so the read/match/apply/write sequence is
+    // one locked critical section here.
+    var acquired = mutation_queue.acquire(absolute_path)
+    string key = acquired[0]
+    ref<mutation_queue.entry_t> entry = acquired[1]
+    var result = self.execute_edit_locked(absolute_path, input_path, object, cancellation) catch e {
+        mutation_queue.release(key, entry)
+        throw e
+    }
+    mutation_queue.release(key, entry)
+    return result
+}
+
+fn edit_executor_t.execute_edit_locked(&self, string absolute_path, string input_path, {string:any} object, ref<abort.abort_t> cancellation): tool_types.tool_result_t! {
     var file = fs.open(absolute_path, syscall.O_RDONLY, 0)
 
     string raw = file.content() catch e {
@@ -547,7 +565,7 @@ pub fn edit_executor_t.execute(&self, string call_id, any arguments, ref<abort.a
         updated = '\xef\xbb\xbf' + updated
     }
     throw_if_aborted(cancellation)
-    var result = write.execute(self.cwd, input_path, updated, cancellation)
+    var result = write.execute_without_lock(absolute_path, input_path, updated, cancellation)
     result.content = [new ai_types.text_content_t(text = fmt.sprintf('Successfully replaced %d block(s) in %s.', edits.len(), input_path))]
     string diff_content = updated
     if bom {

@@ -1,0 +1,67 @@
+import adou.src.agent.types as agent_types
+import adou.src.ai.abort
+import adou.src.json_util
+import adou.src.tools.shell_tools
+import adou.src.tools.types as tool_types
+import fmt
+import fs
+import syscall
+import time
+
+// B1.3 (docs/porting-plan-100): the edit tool must run its whole
+// read-modify-write inside one file-mutation-queue hold like Pi's
+// withFileMutationQueue, so concurrent edits cannot read the same base and
+// silently lose a replacement set.
+
+pub fn value_ref(any value): any {
+    return value
+}
+
+fn unique_file(): string {
+    return '/tmp/adou-edit-lock-' + fmt.sprintf('%d', time.now().ms_timestamp()) + '.txt'
+}
+
+fn write_initial(string file_path, string content): void! {
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    file.write(content as [u8])
+    file.close()
+}
+
+fn read_all(string file_path): string! {
+    var file = fs.open(file_path, syscall.O_RDONLY, 0)
+    string raw = file.content()
+    file.close()
+    return raw
+}
+
+fn edit_once(string cwd, string file_path, string old_text, string new_text, chan<string> done) {
+    agent_types.tool_executor_t executor = shell_tools.edit_executor_t {cwd: cwd,}
+    string arguments_json = fmt.sprintf('{"path":"%s","edits":[{"oldText":"%s","newText":"%s"}]}', file_path, old_text, new_text)
+    var parsed = json_util.parse(arguments_json) catch e {
+        done.send('parse failed: ' + e.msg()) catch e2 {}
+        return
+    }
+    var arguments = value_ref(parsed)
+    string outcome = 'ok'
+    executor.execute('call', arguments, abort.new(), fn(tool_types.tool_result_t result) {
+    }) catch e {
+        outcome = e.msg()
+    }
+    done.send(outcome) catch e {}
+}
+
+test 'concurrent edits on one file both land without losing updates' {
+    string file_path = unique_file()
+    write_initial(file_path, 'alpha\nbeta\n')
+    var done = chan<string>.new(2)
+    go edit_once('/tmp', file_path, 'alpha', 'alpha-one-x', done)
+    go edit_once('/tmp', file_path, 'beta', 'beta-two-y', done)
+    string first = done.recv()
+    string second = done.recv()
+    assert(first == 'ok')
+    assert(second == 'ok')
+    string content = read_all(file_path) catch error {''}
+    // Both replacement sets must survive: a lost-update race drops one.
+    assert(content.contains('alpha-one-x'))
+    assert(content.contains('beta-two-y'))
+}
