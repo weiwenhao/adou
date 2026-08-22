@@ -6089,11 +6089,14 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
         if first > 0 {
             result.push('  ' + theme.fg(theme.dim_color(), '...'))
         }
+        string live_session_file = overlay.kind == OVERLAY_SESSION ? runner.repository.get_session_file() : ''
         for int index = first; index < last; index += 1 {
             string option = options[index]
             bool selected = index == overlay.selected
-            string prefix = selected ? theme.fg(theme.accent(), '→ ') : '  '
-            int option_width = width - 4
+            bool is_current = overlay.kind == OVERLAY_SESSION && live_session_file != '' && option == live_session_file
+            string current_mark = is_current ? theme.fg(theme.accent(), '● ') : ''
+            string prefix = (selected ? theme.fg(theme.accent(), '→ ') : '  ') + current_mark
+            int option_width = width - 4 - (is_current ? 2 : 0)
             if option_width < 1 {option_width = 1}
             string display_option = overlay.kind == OVERLAY_SESSION ? session_option_display(option, overlay.show_paths) : option
             if overlay.kind == OVERLAY_MODEL {
