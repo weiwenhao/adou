@@ -1,0 +1,19 @@
+import adou.src.tui.native_modifiers
+import syscall
+
+// B5: Apple Terminal CR normalization decision — degraded probe matches Pi
+// without the darwin prebuild.
+
+test 'apple terminal detection reads TERM_PROGRAM' {
+    syscall.set_env('TERM_PROGRAM', 'Apple_Terminal') catch e {}
+    assert(native_modifiers.is_apple_terminal_session())
+    syscall.set_env('TERM_PROGRAM', 'iTerm2') catch e {}
+    assert(!native_modifiers.is_apple_terminal_session())
+}
+
+test 'bare cr passes through while the native probe is absent' {
+    syscall.set_env('TERM_PROGRAM', 'Apple_Terminal') catch e {}
+    // Degraded probe: shift not pressed, \r stays \r (Pi's no-prebuild mode).
+    assert(native_modifiers.normalize_enter('\r') == '\r')
+    assert(native_modifiers.normalize_enter('\n') == '\n')
+}

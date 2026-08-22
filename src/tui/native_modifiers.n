@@ -1,0 +1,28 @@
+import syscall
+
+// B5 (Pi native-modifiers.ts): Apple Terminal sends a bare \r even for
+// Shift+Enter; distinguishing them needs a physical modifier probe from a
+// platform prebuild.  Pi degrades to "not pressed" when the prebuild is
+// absent — Adou mirrors that here, keeping the decision logic testable.
+
+pub fn is_apple_terminal_session(): bool {
+    return syscall.get_env('TERM_PROGRAM') == 'Apple_Terminal'
+}
+
+// Seam for the darwin prebuild probe.  Returns false until a native
+// helper exists; the CR normalization then matches Pi's degraded mode.
+pub fn is_native_modifier_pressed(string key): bool {
+    if key != 'shift' {
+        return false
+    }
+    return false
+}
+
+// Pi normalizeAppleTerminalInput decision: bare \r on Apple Terminal with
+// shift physically held becomes a Shift+Enter event (kitty encoding).
+pub fn normalize_enter(string sequence): string {
+    if sequence == '\r' && is_apple_terminal_session() && is_native_modifier_pressed('shift') {
+        return '\x1b[13;2u'
+    }
+    return sequence
+}

@@ -38,6 +38,7 @@ import adou.src.tui.chat
 import adou.src.tui.autocomplete
 import adou.src.tui.editor
 import adou.src.tui.input_buffer
+import adou.src.tui.native_modifiers
 import adou.src.tui.layout
 import adou.src.tui.unicode
 import adou.src.tui.keys
@@ -2856,8 +2857,11 @@ fn read_input(ref<view_t> view, chan<terminal_input_t> input, chan<input_t> outp
             go input_timeout(input, timeout_id)
         }
         for sequence in processed.sequences {
+            // B5: Apple Terminal  -> Shift+Enter normalization (Pi
+            // forwardInputSequence).
+            string normalized_sequence = native_modifiers.normalize_enter(sequence)
             // B4: keyboard negotiation answers never reach the key path.
-            if sequence.starts_with('\x1b[?') && sequence.ends_with('u') {
+            if normalized_sequence.starts_with('\x1b[?') && normalized_sequence.ends_with('u') {
                 // Kitty flags response: ESC [ ? <flags> u.
                 string body = sequence.slice(3, sequence.len() - 1)
                 int flags = 0
@@ -2881,26 +2885,26 @@ fn read_input(ref<view_t> view, chan<terminal_input_t> input, chan<input_t> outp
                 }
                 continue
             }
-            if sequence.starts_with('\x1b[?') && sequence.ends_with('c') && !view.kitty_negotiated {
+            if normalized_sequence.starts_with('\x1b[?') && normalized_sequence.ends_with('c') && !view.kitty_negotiated {
                 // DA sentinel arrived before any kitty answer: fall back.
                 view.terminal.write(term.MODIFY_OTHER_KEYS_ON) catch send_error {}
                 view.modify_other_keys_active = true
                 continue
             }
             // B4: consume terminal theme reports before key interpretation.
-            string report = terminal_colors.theme_from_terminal_response(sequence)
+            string report = terminal_colors.theme_from_terminal_response(normalized_sequence)
             if report != '' {
                 view.live_theme_report = report
                 view.apply_live_theme()
                 continue
             }
-            var cell_size = terminal_image.parse_csi_16t_cell_size(sequence)
+            var cell_size = terminal_image.parse_csi_16t_cell_size(normalized_sequence)
             if cell_size is terminal_image.cell_dimensions_t dimensions {
                 terminal_image.set_cell_dimensions(dimensions)
                 view.redraw()
                 continue
             }
-            output.send(input_t {data: sequence,}) catch send_error {}
+            output.send(input_t {data: normalized_sequence,}) catch send_error {}
         }
         for paste in processed.pastes {
             output.send(input_t {data: paste, paste: true,}) catch send_error {}
