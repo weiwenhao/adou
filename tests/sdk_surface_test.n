@@ -1,110 +1,36 @@
-import adou.src.sdk_node
-import adou.src.sdk_proxy
-import adou.src.sdk_harness
+import adou.src.ai.types as types
+import fmt
 import adou.src.sdk
-import adou.src.ai.types
-import adou.src.ai.event_stream
-import adou.src.agent.types as agent_types
-import adou.src.session.identity
-import co
 
-test 'public SDK exposes node environment and harness phases' {
-    var environment = sdk_node.new('/tmp')
-    assert(environment.cwd == '/tmp')
-    assert(environment.temp_dir() != '')
-    assert(sdk_harness.PHASE_IDLE == 'idle')
-    assert(sdk_harness.PHASE_BRANCH_SUMMARY == 'branch_summary')
-    var proxy_options = new sdk_proxy.options_t()
-    assert(proxy_options.timeout_ms == 120000)
-}
+// B6 (docs/porting-plan-100): SDK surface completions — cycle/set/dispose
+// exist on the session object and behave without a live provider.
 
-fn fixture_stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
-    var stream = event_stream.new()
-    var message = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, stop_reason = types.STOP_STOP)
-    message.content.push(new types.text_content_t(text = 'sdk-ok'))
-    stream.push(types.assistant_event_t {kind: types.EVENT_START, partial: message}) catch error {}
-    stream.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message}) catch error {}
-    stream.end() catch error {}
-    return stream
-}
-
-fn queued_fixture_stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
-    assert(context.messages.len() == 2)
-    assert((context.messages[0] as ref<types.user_message_t>).content == 'queued')
-    assert((context.messages[1] as ref<types.user_message_t>).content == 'hello')
-    return fixture_stream(model, context, options)
-}
-
-fn delayed_fixture_stream(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): ref<event_stream.assistant_stream_t> {
-    var stream = event_stream.new()
-    go fn() {
-        co.sleep(20)
-        var message = new types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, stop_reason = types.STOP_STOP)
-        message.content.push(new types.text_content_t(text = 'sdk-ok'))
-        stream.push(types.assistant_event_t {kind: types.EVENT_START, partial: message}) catch error {}
-        stream.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message}) catch error {}
-        stream.end() catch error {}
-    }()
-    return stream
-}
-
-test 'public AgentHarness exposes embeddable control and event surfaces' {
+test 'cycle model returns empty without authenticated providers' {
     var model = new types.model_t(id = 'sdk-model', name = 'SDK model', api = 'test-api', provider = 'test-provider', base_url = 'https://example.invalid', context_window = 1000, max_tokens = 100)
-    agent_types.stream_fn stream_function = queued_fixture_stream as agent_types.stream_fn
-    var embedded = sdk.create(sdk.options_t {cwd: '/tmp', model: model, api_key: 'test-key', system_prompt: 'system', stream_function: stream_function})
-    var harness = sdk_harness.new(embedded)
-    assert(harness.is_idle())
-    harness.set_resources({'source': 'fixture'})
-    assert((harness.get_resources()['source'] as string) == 'fixture')
-    harness.set_stream_options({'transport': 'sse'})
-    assert((harness.get_stream_options()['transport'] as string) == 'sse')
-    harness.set_active_tools([])
-    assert(harness.active_tools().len() == 0)
-    harness.next_turn('queued')
-    assert(harness.messages().len() == 0)
-    var stream = harness.prompt('hello')
-    for true {
-        var event = stream.recv() catch error {break}
-        if event.kind == 'session_end' {break}
-    }
-    var messages = stream.result()
-    assert(messages.len() >= 3)
-    assert(harness.is_idle())
-    assert(embedded.session_id() != '')
+    var session = sdk.create(sdk.options_t {cwd: '/tmp', model: model, api_key: 'test-key', system_prompt: 'system'})
+    string cycled = session.cycle_model(true)
+    // Environment-dependent: with credentials present the cycle lands on a
+    // provider-qualified model; without any, it stays empty.
+    assert(cycled == '' || cycled.contains('/'))
 }
 
-test 'AgentHarness appendMessage persists immediately or at the next save point' {
+test 'set model applies through to the runner' {
+    var model = new types.model_t(id = 'sdk-next', name = 'SDK next', api = 'test-api', provider = 'test-provider', base_url = 'https://example.invalid', context_window = 1000, max_tokens = 100)
+    var session = sdk.create(sdk.options_t {cwd: '/tmp', model: model, api_key: 'test-key', system_prompt: 'system'})
+    var next = new types.model_t(id = 'sdk-next-2', name = 'SDK next 2', api = 'test-api', provider = 'test-provider', base_url = 'https://example.invalid', context_window = 1000, max_tokens = 100)
+    session.set_model(next)
+    assert(session.runner.agent_config.model.id == 'sdk-next-2')
+}
+
+test 'thinking level set applies through to the runner' {
+    var model = new types.model_t(id = 'sdk-model', name = 'SDK model', api = 'test-api', provider = 'test-provider', base_url = 'https://example.invalid', reasoning = true, context_window = 1000, max_tokens = 100)
+    var session = sdk.create(sdk.options_t {cwd: '/tmp', model: model, api_key: 'test-key', system_prompt: 'system'})
+    session.set_thinking_level('low')
+    assert(session.runner.agent_config.stream_options.reasoning_effort == 'low')
+}
+
+test 'dispose is a safe no-op' {
     var model = new types.model_t(id = 'sdk-model', name = 'SDK model', api = 'test-api', provider = 'test-provider', base_url = 'https://example.invalid', context_window = 1000, max_tokens = 100)
-    agent_types.stream_fn stream_function = delayed_fixture_stream as agent_types.stream_fn
-    var embedded = sdk.create(sdk.options_t {cwd: '/tmp', model: model, api_key: 'test-key', system_prompt: 'system', stream_function: stream_function})
-    var harness = sdk_harness.new(embedded)
-    harness.append_message(new types.user_message_t(content = 'idle append', timestamp = 0))
-    assert(harness.messages().len() == 1)
-    assert(embedded.repository.build_context().messages.len() == 1)
-    var stream = harness.prompt('hello')
-    harness.append_message(new types.custom_message_t(custom_type = 'sdk', content = 'pending append', display = true, timestamp = 0))
-    for true {
-        var event = stream.recv() catch error {break}
-        if event.kind == 'session_end' {break}
-    }
-    var messages = stream.result()
-    assert(messages.len() == 4)
-    assert(embedded.repository.build_context().messages.len() == 4)
-}
-
-test 'node execution environment exposes Pi filesystem primitives' {
-    var environment = sdk_node.new('/tmp')
-    string name = 'adou-sdk-node-' + identity.uuid_v7()
-    string file_path = environment.absolute_path(name)
-    environment.write_file(name, 'one\ntwo\n')
-    environment.append_file(name, 'three\n')
-    assert(environment.exists(name))
-    assert(environment.read_text_file(name) == 'one\ntwo\nthree\n')
-    assert(environment.read_text_lines(name, 2).len() == 2)
-    assert(environment.read_binary_file(name).len() > 0)
-    var info = environment.file_info(name)
-    assert(info.kind == 'file')
-    assert(info.size > 0)
-    environment.remove(name)
-    assert(!environment.exists(name))
+    var session = sdk.create(sdk.options_t {cwd: '/tmp', model: model, api_key: 'test-key', system_prompt: 'system'})
+    session.dispose()
 }

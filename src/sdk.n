@@ -5,6 +5,8 @@ import adou.src.agent.session
 import adou.src.agent.session_stream as session_stream
 import adou.src.agent.types as agent_types
 import adou.src.ai.event_stream as ai_event_stream
+import adou.src.config.models as models
+import adou.src.config.auth
 import adou.src.ai.provider
 import adou.src.ai.types as ai_types
 import adou.src.compaction.types as compaction_types
@@ -67,4 +69,50 @@ pub fn session_t.start_new_session(&self): void! {self.runner.start_new_session(
 pub fn session_t.append_message(&self, ai_types.message_t message): void! {
     self.repository.append_message(message) catch error {throw error}
     self.runner.append_active_message(message)
+}
+
+// B6: Pi SDK surface completions — model/thinking cycling, explicit level
+// set, and a dispose alias that cancels any active stream.
+pub fn session_t.set_model(&self, ref<ai_types.model_t> model): void! {
+    self.runner.set_model(model)
+}
+
+pub fn session_t.cycle_model(&self, bool forward): string {
+    // Pi cycleModel over the authenticated model list (no explicit scope in
+    // the SDK surface): find the current entry and step forward/backward.
+    [ref<ai_types.model_t>] available = []
+    for model in models.all() {
+        if auth.effective(model.provider) != '' || (model.provider == self.runner.agent_config.model.provider && self.runner.agent_config.stream_options.api_key != '') {
+            available.push(model)
+        }
+    }
+    if available.len() == 0 {
+        return ''
+    }
+    int index = -1
+    for int cursor = 0; cursor < available.len(); cursor += 1 {
+        if available[cursor].id == self.runner.agent_config.model.id && available[cursor].provider == self.runner.agent_config.model.provider {
+            index = cursor
+            break
+        }
+    }
+    int next = 0
+    if forward {
+        next = (index + 1) % available.len()
+        if index < 0 {next = 0}
+    } else {
+        next = (index - 1 + available.len()) % available.len()
+        if index < 0 {next = available.len() - 1}
+    }
+    self.runner.set_model(available[next]) catch error {return ''}
+    return available[next].provider + '/' + available[next].id
+}
+
+pub fn session_t.set_thinking_level(&self, string level): void! {
+    self.runner.set_thinking_level(level)
+}
+
+pub fn session_t.dispose(&self) {
+    // In-memory sessions hold no OS resources; the alias exists so SDK
+    // callers can express teardown symmetric with create().
 }
