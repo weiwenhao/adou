@@ -329,6 +329,9 @@ pub type view_t = struct {
     // Pi inserts a warning Text into the chat when the resolved project is
     // untrusted; Adou keeps an equivalent banner line under the header.
     bool show_untrusted_banner = false
+    // B4: live terminal theme answer from OSC 11 / CSI 997 responses; empty
+    // until a report arrives (env fallback stays authoritative before that).
+    string live_theme_report = ''
     // Serialize state mutation and terminal rendering across the input loop
     // and file-watch/signal coroutines.
     ref<mutex.mutex_t> render_lock = mutex.mutex_t.new()
@@ -385,7 +388,7 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     }
     view.update_untrusted_banner(cwd)
     var stored_settings = view.settings_snapshot
-    theme.set_variant(active_theme_variant(stored_settings.theme))
+    theme.set_variant(active_theme_variant(stored_settings.theme, view.live_theme_report))
     string theme_file = syscall.get_env('ADOU_THEME_FILE')
     if theme_file != '' {theme.load_json(theme_file)}
     // Pi quietStartup suppresses the startup status lines; Adou's startup
@@ -404,12 +407,15 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
 // Pi theme values: 'light', 'dark' or an automatic 'lightTheme/darkTheme'
 // pair. Use COLORFGBG as the non-interactive fallback when no live OSC/997
 // terminal report is available.
-fn active_theme_variant(string setting): string {
+fn active_theme_variant(string setting, string live_report): string {
     if setting == 'light' {return 'light'}
     if setting.contains('/') {
         int slash = setting.find('/')
         string light_name = setting.slice(0, slash)
         string dark_name = setting.slice(slash + 1, setting.len())
+        if live_report != '' {
+            return live_report == 'light' ? light_name : dark_name
+        }
         return terminal_colors.detect_terminal_theme_from_env() == 'light' ? light_name : dark_name
     }
     return 'dark'
@@ -445,7 +451,7 @@ pub fn view_t.refresh_resource_snapshot(&self, string cwd, bool reload_auth) {
     self.chat.set_image_preferences(self.settings_snapshot.show_images, self.settings_snapshot.image_width_cells, self.settings_snapshot.auto_resize_images)
     self.chat.set_show_cache_miss_notices(self.settings_snapshot.show_cache_miss_notices)
     self.renderer.set_clear_on_shrink(self.settings_snapshot.terminal_clear_on_shrink)
-    theme.set_variant(active_theme_variant(self.settings_snapshot.theme))
+    theme.set_variant(active_theme_variant(self.settings_snapshot.theme, self.live_theme_report))
     self.runner.apply_preferences_snapshot(self.settings_snapshot)
     self.rebuild_read_tool_options(self.settings_snapshot.auto_resize_images)
     // B1-R3-05: the /scoped-models settings backing ALWAYS follows the
@@ -1184,7 +1190,7 @@ fn view_t.reenter_terminal(&self): void! {
     self.renderer.invalidate()
     self.terminal.restored = false
     self.terminal.active = true
-    self.terminal.write(term.BRACKETED_PASTE_ON + (self.settings_snapshot.show_hardware_cursor ? '' : term.CURSOR_HIDE) + term.KEYBOARD_PROTOCOL_ON) catch error {
+    self.terminal.write(term.BRACKETED_PASTE_ON + (self.settings_snapshot.show_hardware_cursor ? '' : term.CURSOR_HIDE) + term.KEYBOARD_PROTOCOL_ON + terminal_colors.background_query_sequence() + terminal_colors.color_scheme_query_sequence()) catch error {
         self.render_lock.unlock()
         throw error
     }
@@ -2792,6 +2798,13 @@ fn read_input(ref<view_t> view, chan<terminal_input_t> input, chan<input_t> outp
             go input_timeout(input, timeout_id)
         }
         for sequence in processed.sequences {
+            // B4: consume terminal theme reports before key interpretation.
+            string report = terminal_colors.theme_from_terminal_response(sequence)
+            if report != '' {
+                view.live_theme_report = report
+                view.apply_live_theme()
+                continue
+            }
             output.send(input_t {data: sequence,}) catch send_error {}
         }
         for paste in processed.pastes {
@@ -3257,6 +3270,16 @@ fn view_t.show_trust_startup_prompt(&self) {
 // Pi shows an untrusted warning whenever the resolved project is untrusted:
 // "This project is not trusted. Project .pi resources and packages are
 // ignored. Use /trust to save a trust decision, then restart pi."
+// B4: a live OSC 11 / CSI 997 answer overrides the env fallback for the
+// automatic light/dark pair and repaints once.
+fn view_t.apply_live_theme(&self) {
+    if !self.settings_snapshot.theme.contains('/') {
+        return
+    }
+    theme.set_variant(active_theme_variant(self.settings_snapshot.theme, self.live_theme_report))
+    self.redraw()
+}
+
 fn view_t.update_untrusted_banner(&self, string cwd) {
     self.show_untrusted_banner = !self.trusted_for(cwd) && trust.has_trust_requiring_resources(cwd)
 }
@@ -3769,15 +3792,15 @@ fn view_t.handle_theme_input(&self, ref<overlay_t> overlay, string key) {
 fn view_t.preview_theme_option(&self, ref<overlay_t> overlay) {
     if overlay.options.len() <= 1 {
         // Automatic pair row: preview the active variant (dark fallback).
-        theme.set_variant(active_theme_variant(overlay.theme_light + '/' + overlay.theme_dark))
+        theme.set_variant(active_theme_variant(overlay.theme_light + '/' + overlay.theme_dark, self.live_theme_report))
         return
     }
     if overlay.selected == 0 {
-        theme.set_variant(active_theme_variant(overlay.theme_light + '/' + overlay.theme_dark))
+        theme.set_variant(active_theme_variant(overlay.theme_light + '/' + overlay.theme_dark, self.live_theme_report))
         return
     }
     string name = overlay.options[overlay.selected]
-    theme.set_variant(active_theme_variant(name))
+    theme.set_variant(active_theme_variant(name, self.live_theme_report))
 }
 
 fn view_t.apply_theme_option(&self, ref<overlay_t> overlay) {
@@ -3795,7 +3818,7 @@ fn view_t.apply_theme_option(&self, ref<overlay_t> overlay) {
     }
     self.settings_snapshot = s
     self.save_preferences()
-    theme.set_variant(active_theme_variant(s.theme))
+    theme.set_variant(active_theme_variant(s.theme, self.live_theme_report))
     self.show_settings_overlay()
     self.redraw()
 }
@@ -3804,7 +3827,7 @@ fn view_t.cancel_theme_overlay(&self, ref<overlay_t> overlay) {
     var s = self.settings_snapshot
     s.theme = overlay.theme_original
     self.settings_snapshot = s
-    theme.set_variant(active_theme_variant(overlay.theme_original))
+    theme.set_variant(active_theme_variant(overlay.theme_original, self.live_theme_report))
     self.show_settings_overlay()
     self.redraw()
 }
@@ -3836,7 +3859,7 @@ fn view_t.handle_theme_auto_input(&self, ref<overlay_t> overlay, string key) {
             s.theme = overlay.theme_light + '/' + overlay.theme_dark
             self.settings_snapshot = s
             self.save_preferences()
-            theme.set_variant(active_theme_variant(s.theme))
+            theme.set_variant(active_theme_variant(s.theme, self.live_theme_report))
             self.show_settings_overlay()
             self.redraw()
         } else {
@@ -3899,7 +3922,7 @@ fn view_t.handle_theme_select_input(&self, ref<overlay_t> overlay, string key) {
 fn view_t.preview_theme_pair(&self, ref<overlay_t> overlay, string picked) {
     string light_value = overlay.theme_select_target == 'light' ? picked : overlay.theme_light
     string dark_value = overlay.theme_select_target == 'dark' ? picked : overlay.theme_dark
-    theme.set_variant(active_theme_variant(light_value + '/' + dark_value))
+    theme.set_variant(active_theme_variant(light_value + '/' + dark_value, self.live_theme_report))
 }
 
 fn split_theme_pair(string value): (string, string) {
@@ -5480,7 +5503,7 @@ pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
             s.theme = overlay.theme_light + '/' + overlay.theme_dark
             self.settings_snapshot = s
             self.save_preferences()
-            theme.set_variant(active_theme_variant(s.theme))
+            theme.set_variant(active_theme_variant(s.theme, self.live_theme_report))
             self.show_settings_overlay()
             self.redraw()
         } else {

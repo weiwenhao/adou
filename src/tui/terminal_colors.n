@@ -173,3 +173,31 @@ fn find_from(string content, string needle, int start): int {
     }
     return -1
 }
+
+
+// B4: query sequences for live terminal theme detection.  Terminals answer
+// OSC 11 with the background color and (when supported) CSI 997 with an
+// explicit light/dark report.
+pub fn background_query_sequence(): string {
+    return '\x1b]11;?\x07'
+}
+
+pub fn color_scheme_query_sequence(): string {
+    return '\x1b[?997n'
+}
+
+// Resolve 'light'/'dark' from a raw terminal response sequence.  Returns ''
+// when the data is not a recognized report so callers keep the env fallback.
+pub fn theme_from_terminal_response(string data): string {
+    string scheme = parse_terminal_color_scheme_report(data)
+    if scheme != '' {
+        return scheme
+    }
+    var color = parse_osc11_background_color(data)
+    if color is rgb_color_t rgb {
+        // ITU-R BT.601 luminance; > 50% means a light background.
+        int luminance = (rgb.r * 299 + rgb.g * 587 + rgb.b * 114) / 1000
+        return luminance > 127 ? 'light' : 'dark'
+    }
+    return ''
+}

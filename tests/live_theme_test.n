@@ -1,0 +1,27 @@
+import adou.src.tui.terminal_colors
+
+// B4 (docs/porting-plan-100): live theme detection resolves 'light'/'dark'
+// from CSI 997 reports and OSC 11 background answers, with the env fallback
+// untouched for terminals that cannot answer.
+
+test 'theme resolver reads the 997 color scheme report first' {
+    assert(terminal_colors.theme_from_terminal_response('\x1b[?997;2n') == 'light')
+    assert(terminal_colors.theme_from_terminal_response('\x1b[?997;1n') == 'dark')
+}
+
+test 'osc 11 background answers resolve via luminance' {
+    // Pure white background -> light; near-black -> dark.
+    assert(terminal_colors.theme_from_terminal_response('\x1b]11;rgb:ffff/ffff/ffff\x07') == 'light')
+    assert(terminal_colors.theme_from_terminal_response('\x1b]11;rgb:0000/0000/0000\x07') == 'dark')
+    assert(terminal_colors.theme_from_terminal_response('\x1b]11;#ffffff\x1b\\') == 'light')
+    // 50% gray sits exactly on the boundary -> dark per BT.601 at 128/255.
+    assert(terminal_colors.theme_from_terminal_response('\x1b]11;rgb:7f7f/7f7f/7f7f\x07') == 'dark')
+    assert(terminal_colors.theme_from_terminal_response('\x1b]11;rgb:4040/4040/4040\x07') == 'dark')
+}
+
+test 'unrecognized sequences resolve to empty' {
+    assert(terminal_colors.theme_from_terminal_response('\x1b[<1u') == '')
+    assert(terminal_colors.theme_from_terminal_response('plain text') == '')
+    assert(terminal_colors.background_query_sequence() == '\x1b]11;?\x07')
+    assert(terminal_colors.color_scheme_query_sequence() == '\x1b[?997n')
+}
