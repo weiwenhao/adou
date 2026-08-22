@@ -53,6 +53,26 @@ pub fn render(string markdown, int width): [string]! {
             index += 2
             continue
         }
+        // B4: paragraph soft-line joining — consecutive plain text lines are
+        // one paragraph: joined with spaces, processed by inline(), and
+        // re-wrapped as a unit (Pi/marked paragraph semantics).
+        int run_end = paragraph_run_end(lines, index)
+        if run_end > index {
+            // A run closed by a setext underline renders as a heading; the
+            // underline line itself never becomes visible text.
+            bool run_is_heading = run_end - 1 > index && is_setext_underline_line(lines[run_end - 1].trim([' ', '\t']))
+            int text_end = run_is_heading ? run_end - 1 : run_end
+            [string] run_parts = []
+            for int cursor = index; cursor < text_end; cursor += 1 {
+                run_parts.push(lines[cursor].trim([' ', '\t']))
+            }
+            string joined_paragraph = strings.join(run_parts, ' ')
+            string paragraph_styled = run_is_heading ? theme.bold(theme.fg(theme.HEADING, inline(joined_paragraph))) : inline(joined_paragraph)
+            result.append(text_utils.wrap_text_with_ansi(paragraph_styled, width > 0 ? width : 1))
+            result.push('')
+            index = run_end
+            continue
+        }
         int indent = leading_spaces(raw)
         string content = indent > 0 ? raw.slice(indent, raw.len()) : raw
         string indent_text = repeat_string(' ', indent)
@@ -514,6 +534,31 @@ fn repeat_string(string value, int count): string {
 
 // B4: setext underline detector — returns the underline length (>0) when
 // line[index] is plain text and line[index+1] is a ===/--- underline.
+// True when the line itself is a ===/--- setext underline.
+fn is_setext_underline_line(string line): bool {
+    if line.len() < 2 {
+        return false
+    }
+    bool all_equals = true
+    bool all_dashes = true
+    for int i = 0; i < line.len(); i += 1 {
+        u8 c = line[i]
+        if c == ' '.char() {
+            continue
+        }
+        if c == '='.char() {
+            all_dashes = false
+            continue
+        }
+        if c == '-'.char() {
+            all_equals = false
+            continue
+        }
+        return false
+    }
+    return all_equals || all_dashes
+}
+
 fn setext_underline([string] lines, int index): int {
     if index + 1 >= lines.len() {
         return 0
@@ -557,4 +602,62 @@ fn setext_underline([string] lines, int index): int {
         return underline.len()
     }
     return 0
+}
+
+
+// B4: paragraph run scanner — returns the exclusive end index of the run of
+// consecutive plain text lines starting at `index`.  Block starters (fences,
+// tables, rules, headings, lists, quotes) and setext underlines terminate
+// the run; an underline terminating the run upgrades it to a setext heading
+// so "a\nb\n===" renders as one heading like CommonMark.
+fn paragraph_run_end([string] lines, int index): int {
+    if setext_underline(lines, index) > 0 {
+        return index
+    }
+    string first = lines[index]
+    if first.trim([' ', '\t']) == '' {
+        return index
+    }
+    if is_block_start(first) {
+        return index
+    }
+    int end = index + 1
+    for end < lines.len() {
+        string candidate = lines[end]
+        if candidate.trim([' ', '\t']) == '' {
+            break
+        }
+        if is_block_start(candidate) {
+            break
+        }
+        if is_setext_underline_line(candidate.trim([' ', '\t'])) {
+            // The run closes with its own setext underline.
+            return end + 1
+        }
+        end += 1
+    }
+    return end
+}
+
+fn is_block_start(string line): bool {
+    string trimmed = line.trim([' ', '\t'])
+    if trimmed == '' {
+        return true
+    }
+    if trimmed.starts_with('```') || trimmed.starts_with('~~~') {
+        return true
+    }
+    if trimmed.starts_with('#') {
+        return true
+    }
+    if quote_depth(trimmed) > 0 {
+        return true
+    }
+    if unordered_prefix_end(trimmed) > 0 || ordered_prefix_end(trimmed) > 0 {
+        return true
+    }
+    if is_horizontal_rule(trimmed) {
+        return true
+    }
+    return false
 }

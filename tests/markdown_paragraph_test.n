@@ -1,0 +1,47 @@
+import adou.src.tui.markdown
+import strings
+
+// B4 (docs/porting-plan-100): consecutive plain text lines form one
+// paragraph — joined, inline-processed and re-wrapped as a unit; block
+// starters and setext underlines bound the run per CommonMark.
+
+fn joined([string] lines): string {
+    string out = ''
+    for line in lines {
+        out += line + ' | '
+    }
+    return out
+}
+
+fn nl(): string {
+    return '\n'
+}
+
+test 'wrapped source lines reflow into one paragraph' {
+    var rendered = markdown.render('The quick brown fox' + nl() + 'jumps over' + nl() + 'the lazy dog.', 80) catch e {[]}
+    string all = joined(rendered)
+    // The line break became a space: words share a single painted row.
+    assert(all.contains('fox jumps'))
+    assert(all.contains('over the lazy dog.'))
+}
+
+test 'emphasis spans across a soft line break still applies' {
+    var rendered = markdown.render('before **bold' + nl() + 'continuation** after', 80) catch e {[]}
+    string all = joined(rendered)
+    assert(all.contains('\x1b[1m'))
+}
+
+test 'a list terminates the paragraph run above it' {
+    var rendered = markdown.render('intro line' + nl() + '- item one' + nl() + '- item two', 80) catch e {[]}
+    string all = joined(rendered)
+    assert(all.contains('intro line'))
+    assert(all.contains('item one'))
+    assert(all.contains('item two'))
+}
+
+test 'setext underline closes the run as a heading' {
+    var rendered = markdown.render('alpha' + nl() + 'beta' + nl() + '===', 80) catch e {[]}
+    string all = joined(rendered)
+    assert(all.contains('alpha beta'))
+    assert(!all.contains('==='))
+}
