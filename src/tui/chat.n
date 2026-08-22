@@ -486,9 +486,42 @@ pub fn chat_t.clear(&self) {
     self.context_known = true
 }
 
+// Pi parseSkillBlock: detect a /skill expansion user message and extract
+// the invoked skill name for the collapsed invocation display.
+fn skill_invocation_name(string content): string {
+    if !content.starts_with('<skill name="') {
+        return ''
+    }
+    // find() has no start offset; scan for the closing quote manually.
+    int end_quote = -1
+    for int cursor = 13; cursor < content.len(); cursor += 1 {
+        if content[cursor] == '"'.char() {
+            end_quote = cursor
+            break
+        }
+    }
+    if end_quote < 13 {
+        return ''
+    }
+    return content.slice(13, end_quote)
+}
+
 fn render_message_lines(ai_types.message_t message, int width, bool tool_output_expanded, bool thinking_visible, int output_pad, bool show_images, int image_width_cells): [string]! {
     [string] result = vec<string>.cap_of(8)
     if message is ref<ai_types.user_message_t> user {
+        // B5: Pi SkillInvocationMessage collapsed view — a user message that
+        // is a /skill expansion renders as a compact [skill] name row on the
+        // custom-message background instead of flooding the transcript with
+        // the full skill block (which still goes to the model verbatim).
+        string skill_name = skill_invocation_name(user.content)
+        if skill_name != '' {
+            string skill_bg = theme.custom_color('customMessageBg')
+            result.push(colored_row(skill_bg, '', width) catch e {''})
+            string label = '\x1b[1m[skill]\x1b[22m'
+            result.push(colored_row(skill_bg, label + ' ' + theme.bold(skill_name), width) catch e {''})
+            result.push(colored_row(skill_bg, '', width) catch e {''})
+            return result
+        }
         // Pi renders user messages through Markdown inside a Box with one
         // column of horizontal and one row of vertical padding. Keep the
         // complete row on the user background (including blank lines).
