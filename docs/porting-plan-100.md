@@ -110,6 +110,19 @@ MCP 不在范围内：Pi core 明确无内建 MCP（属扩展生态能力）。
 | B6 CLI/server/SDK/evals | L | 无强依赖 |
 | B7 全量收口 | M | 全部 |
 
+## 实施销账（2026-08-22 更新）
+
+全部批次已实施完成（提交 0a255a3…792faa5，共 20 个实施提交）：
+
+- **B1 ✅** trust 'ask' 门控与启动选择器、bash OutputAccumulator、edit 全程互斥、settings/trust 原子写、SQLite 健壮化（WAL/事务/migrations/JSONL 泄漏修复/leaf 持久化/fork 模式）
+- **B2 ✅** toolResult 内嵌图片、custom/custom_message 条目、fromHook、延迟首刷、get_children、responseModel
+- **B3 ✅** Google 构建器对齐、Claude Code 工具名映射、service_tier、deferred tools（tool_reference）、约束采样 strict 路径（grammar 分支因 nature #302 族运行时段错误保持 ADOU_GRAMMAR_TOOLS=1 显式启用，已记录）、metadata 透传
+- **B4 ✅（15/16）** 实时 OSC11/997 主题、mid-stream set_model、CSI 16t cell size、kitty 协商+mOK 回退、CURSOR_MARKER 全链、setext 标题、GFM 任务标记、表格换行+inline 保留、段落软连接、语法高亮（高频语言子集）、主题注册表+校验、256 色降级、kitty 稳定 id+退出清理。唯一遗留：逐帧差分图片删除（低优先；退出清理已覆盖主要可观察面）
+- **B5 ✅** skill 折叠渲染、selector 当前会话标记+(i/n) 计数、PATH 菜单活过滤、词边界软换行（纯函数重做版）、Apple Terminal CR 归一（探针降级与 Pi 无 prebuild 一致）
+- **B6 ✅** auth print-bearer-token/help、--prompt-template/--theme 资源 flags、headless 信号处理、settings 补键（lastChangelogVersion/externalEditor/shellPath/shellCommandPrefix/httpProxy/websocketConnectTimeoutMs/thinkingBudgets）+externalEditor 接线、evals live runner+JSON 报告、SDK cycle/set/dispose
+
+**验收门禁**：make test（全量串行）→ make e2e（64）→ make eval（3）→ make release-check → make signing-check，结果见本文件末尾追记。
+
 ## 附：评估缺口 → 批次销账索引
 
 - AI 层全部缺口 → B3；Agent/core 正确性类（trust/bash/edit/原子写/SQLite）→ B1；会话格式类 → B2；Markdown/theme/终端查询/model switch → B4；selector/editor/autocomplete polish → B5；CLI/信号/settings 键/SDK/evals/server → B6。
