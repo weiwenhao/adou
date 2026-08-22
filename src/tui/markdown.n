@@ -217,31 +217,59 @@ fn render_table([string] lines, int index, int width): [string]! {
         }
     }
     [string] result = []
-    result.push(table_row(header_cells, widths, true))
+    // B4: the header keeps its bold marker through inline processing so
+    // emphasis inside cells survives width measurement and wrapping.
+    result.append(table_rows(header_cells, widths, true))
     result.push(table_divider(widths))
     for row in body {
-        result.push(table_row(row as [string], widths, false))
+        result.append(table_rows(row as [string], widths, false))
     }
     return result
 }
 
-fn table_row([string] cells, [int] widths, bool header): string! {
-    string line = '│ '
-    for int column = 0; column < widths.len(); column += 1 {
+// B4: Pi markdown.ts table rendering — overflowing cells wrap into extra
+// physical rows instead of truncating, and cell content keeps its inline
+// formatting (emphasis/code/strike) while staying ANSI-width aligned.
+fn table_rows([string] cells, [int] widths, bool header): [string]! {
+    int column_count = widths.len()
+    [[any]] segments = []
+    int max_rows = 1
+    for int column = 0; column < column_count; column += 1 {
         string cell = column < cells.len() ? cells[column] : ''
-        int cell_width = text_utils.visible_width(cell)
-        if cell_width > widths[column] {
-            cell = text_utils.truncate_to_width(cell, widths[column], '', false)
-            cell_width = widths[column]
+        string styled = header ? theme.bold(inline(cell)) : inline(cell)
+        var wrapped = text_utils.wrap_text_with_ansi(styled, widths[column] > 0 ? widths[column] : 1)
+        if wrapped.len() == 0 {
+            wrapped.push('')
         }
-        int padding = widths[column] - cell_width
-        if padding < 0 {
-            padding = 0
+        if wrapped.len() > max_rows {
+            max_rows = wrapped.len()
         }
-        string rendered = header ? theme.bold(cell) : cell
-        line += rendered + repeat_string(' ', padding) + ' │ '
+        [any] wrapped_any = []
+        for segment_line in wrapped {
+            wrapped_any.push(segment_line)
+        }
+        segments.push(wrapped_any)
     }
-    return line
+    [string] result = []
+    for int line_index = 0; line_index < max_rows; line_index += 1 {
+        string line = '│ '
+        for int column = 0; column < column_count; column += 1 {
+            var wrapped_any = segments[column]
+            [any] wrapped = []
+            for wrapped_item in wrapped_any {
+                wrapped.push(wrapped_item)
+            }
+            string segment = line_index < wrapped.len() ? wrapped[line_index] as string : ''
+            int segment_width = text_utils.visible_width(segment)
+            int padding = widths[column] - segment_width
+            if padding < 0 {
+                padding = 0
+            }
+            line += segment + repeat_string(' ', padding) + ' │ '
+        }
+        result.push(line)
+    }
+    return result
 }
 
 fn table_divider([int] widths): string {

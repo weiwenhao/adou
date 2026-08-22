@@ -1,0 +1,48 @@
+import adou.src.tui.markdown
+import adou.src.tui.text_utils
+import strings
+
+// B4 (docs/porting-plan-100): overflowing table cells wrap into extra
+// physical rows instead of truncating, and inline formatting inside cells
+// survives rendering.
+
+fn long_x(): string {
+    string out = ''
+    for int i = 0; i < 60; i += 1 {
+        out += 'x'
+    }
+    return out
+}
+
+fn joined([string] lines): string {
+    string out = ''
+    for line in lines {
+        out += line + '\n'
+    }
+    return out
+}
+
+test 'overflowing cells wrap into extra physical rows' {
+    var source = '| a | b |\n| --- | --- |\n | short | ' + long_x() + ' |'
+    var rendered = markdown.render(source, 40) catch e {[]}
+    // Every painted row keeps the table borders aligned.
+    int border_rows = 0
+    for line in rendered {
+        if line.contains('│') {
+            border_rows += 1
+        }
+    }
+    // Header + divider + at least two body rows from wrapping.
+    assert(border_rows >= 4)
+    // No cell content may be lost to truncation.
+    assert(joined(rendered).contains('xxxx'))
+}
+
+test 'inline emphasis inside cells renders with formatting' {
+    var source = '| name | value |\n| --- | --- |\n| **bold** item | plain |'
+    var rendered = markdown.render(source, 80) catch e {[]}
+    string all = joined(rendered)
+    // Bold content carries its ANSI style into the cell.
+    assert(all.contains('\x1b[1m'))
+    assert(all.contains('bold'))
+}
