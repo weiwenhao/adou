@@ -1,0 +1,42 @@
+import adou.src.tui.markdown
+import strings
+
+// B4 (docs/porting-plan-100): Markdown rebuild slices — setext headings and
+// GFM task-list markers join Pi markdown.ts behavior.
+
+fn joined([string] lines): string {
+    string out = ''
+    for line in lines {
+        out += line + ' | '
+    }
+    return out
+}
+
+fn nl(): string {
+    return '\n'
+}
+
+test 'setext underlines render as headings and consume the underline' {
+    var rendered = markdown.render('# Title' + nl() + nl() + 'Sub Title' + nl() + '=====' + nl() + 'body text', 80) catch e {[]}
+    string all = joined(rendered)
+    assert(all.contains('Title'))
+    assert(all.contains('Sub Title'))
+    assert(!all.contains('====='))
+    assert(all.contains('body text'))
+}
+
+test 'dash setext underlines render without becoming a horizontal rule' {
+    var rendered = markdown.render('Section' + nl() + '---' + nl() + 'after', 80) catch e {[]}
+    string all = joined(rendered)
+    assert(all.contains('Section'))
+    assert(all.contains('after'))
+}
+
+test 'task list markers join the accent-styled bullet' {
+    var rendered = markdown.render('- [x] done thing' + nl() + '- [ ] open thing', 80) catch e {[]}
+    string all = joined(rendered)
+    assert(all.contains('[x]'))
+    assert(all.contains('done thing'))
+    assert(all.contains('[ ]'))
+    assert(all.contains('open thing'))
+}

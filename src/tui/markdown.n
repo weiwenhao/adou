@@ -45,6 +45,14 @@ pub fn render(string markdown, int width): [string]! {
             index += 1
             continue
         }
+        // B4: setext headings — a non-empty text line followed by a === or
+        // --- underline renders as a level-1/2 heading (both lines consumed).
+        if setext_underline(lines, index) > 0 {
+            result.append(text_utils.wrap_text_with_ansi(theme.bold(theme.fg(theme.HEADING, inline(raw))), width > 0 ? width : 1))
+            result.push('')
+            index += 2
+            continue
+        }
         int indent = leading_spaces(raw)
         string content = indent > 0 ? raw.slice(indent, raw.len()) : raw
         string indent_text = repeat_string(' ', indent)
@@ -59,7 +67,14 @@ pub fn render(string markdown, int width): [string]! {
             string gutter = repeat_string('│ ', depth)
             styled = indent_text + theme.fg(theme.muted_color(), gutter) + inline(quote_content)
         } else if unordered_prefix_end(content) > 0 {
+            // B4: GFM task lists — "[ ] "/"[x] " after the bullet joins the
+            // accent-styled marker like Pi's bullet + taskMarker.
             int marker_end = unordered_prefix_end(content)
+            if content.len() >= marker_end + 4 && content.slice(marker_end, marker_end + 4) == '[ ] ' {
+                marker_end += 4
+            } else if content.len() >= marker_end + 4 && content.slice(marker_end, marker_end + 4) == '[x] ' {
+                marker_end += 4
+            }
             styled = indent_text + theme.fg(theme.accent(), content.slice(0, marker_end)) + inline(content.slice(marker_end, content.len()))
         } else {
             int ordered = ordered_prefix_end(content)
@@ -466,4 +481,52 @@ fn repeat_string(string value, int count): string {
         result += value
     }
     return result
+}
+
+
+// B4: setext underline detector — returns the underline length (>0) when
+// line[index] is plain text and line[index+1] is a ===/--- underline.
+fn setext_underline([string] lines, int index): int {
+    if index + 1 >= lines.len() {
+        return 0
+    }
+    string current = lines[index]
+    if current.trim([' ', '\t']) == '' {
+        return 0
+    }
+    // Lists/quotes/fences and table rows never form setext headings.
+    if current.starts_with('```') || current.starts_with('~~~') || table_delimiter_next(lines, index) {
+        return 0
+    }
+    if quote_depth(current.trim([' ', '\t'])) > 0 || unordered_prefix_end(current.trim([' ', '\t'])) > 0 || ordered_prefix_end(current.trim([' ', '\t'])) > 0 {
+        return 0
+    }
+    string underline = lines[index + 1]
+    if underline.len() < 2 {
+        return 0
+    }
+    bool all_equals = true
+    bool all_dashes = true
+    for int i = 0; i < underline.len(); i += 1 {
+        u8 c = underline[i]
+        if c == ' '.char() {
+            continue
+        }
+        if c == '='.char() {
+            all_dashes = false
+            continue
+        }
+        if c == '-'.char() {
+            all_equals = false
+            continue
+        }
+        return 0
+    }
+    if all_equals {
+        return underline.len()
+    }
+    if all_dashes {
+        return underline.len()
+    }
+    return 0
 }
