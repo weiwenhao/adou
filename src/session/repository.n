@@ -48,6 +48,10 @@ pub type manager_t = struct {
     string leaf_id
     bool needs_separator
     [string] warnings = []
+    // B1.5: 'jsonl' managers append lines through persist_line; 'sqlite'
+    // managers persist through the sqlite_repo layer and must never write
+    // JSONL bytes into the database file.
+    string storage_backend = 'jsonl'
 }
 
 pub fn default_session_dir(string cwd): string {
@@ -126,6 +130,17 @@ pub fn create_with_id_and_parent(string cwd, string session_dir, string session_
     var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved, parent_session = parent_session, raw = null)
     write_new_file(file_path, jsonl.encode_header(header) + '\n')
     return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = directory, session_file = file_path, persisted = true, header = header)
+}
+
+// B1.5: SQLite-backed sessions persist through their own storage layer, so
+// their manager is created in memory with persisted=true for lineage and no
+// JSONL header file anywhere on disk.
+pub fn create_without_jsonl(string cwd): ref<manager_t>! {
+    string resolved = path_utils.resolve_to_cwd(cwd, platform_cwd.current())
+    string timestamp = identity.iso_now()
+    string session_id = identity.uuid_v7()
+    var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved, parent_session = '', raw = null)
+    return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = '', session_file = '', persisted = true, header = header, storage_backend = 'sqlite')
 }
 
 // Pi creates an explicit --session path when it does not exist yet.  Keep
@@ -1267,7 +1282,7 @@ pub fn manager_t.append_object_locked(&self, {string:any} object): ref<types.ent
 }
 
 pub fn manager_t.persist_line(&self, string line): void! {
-    if !self.persisted {
+    if !self.persisted || self.storage_backend != 'jsonl' {
         return
     }
     var file = fs.open(self.session_file, syscall.O_WRONLY | syscall.O_APPEND, 0)

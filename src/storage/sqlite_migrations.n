@@ -1,3 +1,4 @@
+import adou.src.session.identity
 import adou.src.storage.sqlite as sqlite
 import libc
 
@@ -48,6 +49,10 @@ CREATE TABLE IF NOT EXISTS branch_entries (
 	PRIMARY KEY (session_id, branch_id, entry_id)
 ) WITHOUT ROWID;
 
+CREATE INDEX IF NOT EXISTS idx_branch_entries_session_branch ON branch_entries(session_id, branch_id);
+CREATE INDEX IF NOT EXISTS idx_branch_entries_session_branch_seq ON branch_entries(session_id, branch_id, entry_seq);
+CREATE INDEX IF NOT EXISTS idx_branch_entries_session_entry ON branch_entries(session_id, entry_id);
+
 CREATE TABLE IF NOT EXISTS session_materialized (
 	session_id TEXT PRIMARY KEY,
 	payload TEXT NOT NULL
@@ -60,17 +65,81 @@ CREATE TABLE IF NOT EXISTS entry_materialized (
 	payload TEXT NOT NULL,
 	PRIMARY KEY (session_id, entry_seq, type)
 ) WITHOUT ROWID;
+
+CREATE INDEX IF NOT EXISTS idx_entry_materialized_session_type_seq ON entry_materialized(session_id, type, entry_seq);
 `
 
-pub fn ensure_schema(ptr<sqlite.sqlite3_t> db): void! {
+// Run one SQL batch through sqlite3_exec and surface the engine error.
+pub fn exec_simple(ptr<sqlite.sqlite3_t> db, string sql_text): void! {
     ptr<libc.cstr> err_msg = null
-    var rc = sqlite.sqlite3_exec(db, SCHEMA_SQL.to_cstr(), 0, 0, &err_msg)
+    var rc = sqlite.sqlite3_exec(db, sql_text.to_cstr(), 0, 0, &err_msg)
     if rc != sqlite.SQLITE_OK {
-        var msg = 'sqlite schema error'
+        var msg = 'sqlite error'
         if err_msg != null {
             msg = (err_msg as libc.cstr).to_string()
             sqlite.sqlite3_free(err_msg as anyptr)
         }
-        throw errorf('apply migrations failed: %s', msg)
+        throw errorf('%s', msg)
     }
+}
+
+pub fn migration_applied(ptr<sqlite.sqlite3_t> db, string id): bool! {
+    string sql_text = 'SELECT 1 FROM migrations WHERE id = ?'
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare migrations lookup failed: %s', last_err(db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, id.to_cstr(), -1, 0)
+    bool found = sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW
+    sqlite.sqlite3_finalize(statement)
+    return found
+}
+
+fn record_migration(ptr<sqlite.sqlite3_t> db, string id): void! {
+    string sql_text = 'INSERT INTO migrations (id, applied_at) VALUES (?, ?)'
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare migrations insert failed: %s', last_err(db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 2, identity.iso_now().to_cstr(), -1, 0)
+    rc = sqlite.sqlite3_step(statement)
+    sqlite.sqlite3_finalize(statement)
+    if rc != sqlite.SQLITE_DONE {
+        throw errorf('record migration failed: %s', last_err(db))
+    }
+}
+
+fn last_err(ptr<sqlite.sqlite3_t> db): string! {
+    var message = sqlite.sqlite3_errmsg(db)
+    if message == 0 {
+        return 'unknown sqlite error'
+    }
+    return (message as libc.cstr).to_string()
+}
+
+// Pi's applyMigrations: a migrations table records applied ids and each
+// pending migration runs inside one transaction together with its
+// bookkeeping row.  The schema batch is idempotent, so databases created by
+// earlier Adou builds simply gain their '001_initial' row on first open.
+pub fn ensure_schema(ptr<sqlite.sqlite3_t> db): void! {
+    exec_simple(db, 'CREATE TABLE IF NOT EXISTS migrations (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);')
+    bool applied = migration_applied(db, '001_initial') catch error {
+        throw error
+    }
+    if applied {
+        return
+    }
+    exec_simple(db, 'BEGIN IMMEDIATE;')
+    exec_simple(db, SCHEMA_SQL) catch e {
+        exec_simple(db, 'ROLLBACK;') catch e2 {}
+        throw e
+    }
+    record_migration(db, '001_initial') catch e {
+        exec_simple(db, 'ROLLBACK;') catch e2 {}
+        throw e
+    }
+    exec_simple(db, 'COMMIT;')
 }

@@ -1,0 +1,109 @@
+import adou.src.ai.types as ai_types
+import adou.src.session.backend
+import adou.src.storage.sqlite as sqlite
+import adou.src.storage.sqlite_migrations
+import adou.src.storage.sqlite_repo
+import fmt
+import fs
+import libc
+import os
+import path
+import time
+
+// B1.5 (docs/porting-plan-100): SQLite backend hardening — WAL + durable
+// pragmas, a real migrations table, transactional appends, no JSONL bytes
+// or stray files from the database flow, persisted active leaf, and fork
+// entry/position selection.
+
+fn user_message(string text): ai_types.message_t {
+    return new ai_types.user_message_t(content = text)
+}
+
+int unique_counter = 0
+
+fn unique_dir(): string {
+    unique_counter += 1
+    string dir = '/tmp/adou-sqlite-hardening-' + fmt.sprintf('%d', time.now().ms_timestamp()) + '-' + fmt.sprintf('%d', unique_counter)
+    os.mkdirs(dir, 0o700) catch e {}
+    return dir
+}
+
+test 'database opens in WAL mode with the migration recorded' {
+    string db_path = path.join(unique_dir(), 'sessions.db')
+    var handle = sqlite_repo.open_db(db_path) catch error {throw error}
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, 'PRAGMA journal_mode'.to_cstr(), -1, &statement, null)
+    assert(rc == sqlite.SQLITE_OK)
+    assert(sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW)
+    string mode = (sqlite.sqlite3_column_text(statement, 0) as libc.cstr).to_string()
+    sqlite.sqlite3_finalize(statement)
+    assert(mode == 'wal')
+    bool applied = sqlite_migrations.migration_applied(handle.db, '001_initial') catch error {false}
+    assert(applied)
+    sqlite_repo.close_db(handle) catch e {}
+}
+
+test 'sqlite sessions write no jsonl bytes or stray files' {
+    string dir = unique_dir()
+    string db_path = path.join(dir, 'sessions.db')
+    var created = backend.open_sqlite('/tmp', db_path) catch error {throw error}
+    backend.append_message(created, user_message('hardening one')) catch e {throw e}
+    backend.append_message(created, user_message('hardening two')) catch e {throw e}
+    // The database keeps its engine magic: no JSONL header was prepended.
+    var input = fs.open(db_path, 0, 0) catch error {throw error}
+    string raw = input.content() catch e {
+        input.close()
+        throw e
+    }
+    input.close()
+    assert(raw.starts_with('SQLite format 3'))
+    // The old create path leaked a header-only .jsonl into the directory.
+    [string] names = os.listdir(dir) catch e {[]}
+    for name in names {
+        assert(!name.ends_with('.jsonl'))
+    }
+}
+
+test 'reopen restores the persisted active leaf' {
+    string dir = unique_dir()
+    string db_path = path.join(dir, 'sessions.db')
+    var created = backend.open_sqlite('/tmp', db_path) catch error {throw error}
+    string first_id = backend.append_message(created, user_message('leaf one')) catch e {throw e}
+    string second_id = backend.append_message(created, user_message('leaf two')) catch e {throw e}
+    var reopened = backend.open_sqlite_session('/tmp', db_path, backend.mgr(created).header.id) catch error {throw error}
+    var manager = backend.mgr(reopened)
+    assert(manager.entries.len() == 2)
+    assert(manager.has_leaf)
+    assert(manager.leaf_id == second_id)
+    assert(first_id != '')
+}
+
+test 'failed duplicate append does not advance the sequence' {
+    string db_path = path.join(unique_dir(), 'sessions.db')
+    var created = backend.open_sqlite('/tmp', db_path) catch error {throw error}
+    backend.append_message(created, user_message('original')) catch e {throw e}
+    var handle = created.sqlite_db as ref<sqlite_repo.db_t>
+    var entry = backend.mgr(created).entries[0]
+    bool threw = false
+    sqlite_repo.append_entry(handle, backend.mgr(created).header.id, entry.id, entry.parent_id, entry.kind, entry.timestamp, '{}') catch e {
+        threw = true
+    }
+    assert(threw)
+    backend.append_message(created, user_message('after failure')) catch e {throw e}
+    assert(backend.mgr(created).entries.len() == 2)
+}
+
+test 'fork selection honours entry id and position' {
+    string db_path = path.join(unique_dir(), 'sessions.db')
+    var created = backend.open_sqlite('/tmp', db_path) catch error {throw error}
+    string first_id = backend.append_message(created, user_message('fork one')) catch e {throw e}
+    string second_id = backend.append_message(created, user_message('fork two')) catch e {throw e}
+    backend.append_message(created, user_message('fork three')) catch e {throw e}
+    var at_fork = backend.fork_to_with_options(created, backend.sqlite_fork_options_t {entry_id: second_id, position: 'at', requested_id: '',}) catch error {throw error}
+    assert(backend.mgr(at_fork).entries.len() == 2)
+    var before_fork = backend.fork_to_with_options(created, backend.sqlite_fork_options_t {entry_id: second_id, position: 'before', requested_id: '',}) catch error {throw error}
+    assert(backend.mgr(before_fork).entries.len() == 1)
+    assert(backend.mgr(before_fork).entries[0].id == first_id)
+    var full_fork = backend.fork_to(created, '') catch error {throw error}
+    assert(backend.mgr(full_fork).entries.len() == 3)
+}

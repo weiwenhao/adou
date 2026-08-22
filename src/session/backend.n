@@ -46,8 +46,11 @@ pub fn open_sqlite_session(string cwd, string db_path, string session_id): backe
     var handle = sqlite_repo.open_db(db_path)
     var manager = sqlite_repo.load_manager(handle, session_id, cwd)
     manager.persisted = true
+    manager.storage_backend = 'sqlite'
     manager.session_dir = path.dir(db_path)
-    manager.session_file = db_path
+    // B1.5: no JSONL file exists for a SQLite session; pointing session_file
+    // at the database made the manager append JSONL bytes into it.
+    manager.session_file = ''
     return backend_t {kind: 'sqlite', manager: manager, session_dir: path.dir(db_path), sqlite_db: handle,}
 }
 
@@ -60,10 +63,10 @@ pub fn open_jsonl(string file_path): backend_t! {
 // SessionRepo.create: SQLite backend in a dedicated database file.
 pub fn open_sqlite(string cwd, string db_path): backend_t! {
     var handle = sqlite_repo.open_db(db_path)
-    var manager = repository.create(cwd, '')
-    manager.persisted = true
+    // B1.5: create_without_jsonl leaves no stray header file in the default
+    // session directory and keeps every byte out of the database file.
+    var manager = repository.create_without_jsonl(cwd)
     manager.session_dir = path.dir(db_path)
-    manager.session_file = db_path
     var backend_ref = backend_t {kind: 'sqlite', manager: manager, session_dir: path.dir(db_path), sqlite_db: handle,}
     persist_created(backend_ref, manager.header)
     return backend_ref
@@ -95,6 +98,21 @@ pub fn list_sessions(backend_t b): [string]! {
     return list_session_paths(b.session_dir)
 }
 
+// SessionRepo.list filtered to one project cwd (SQLite backend).
+pub fn list_sessions_in_cwd(backend_t b, string cwd): [string]! {
+    if b.kind == 'sqlite' {
+        [string] result = []
+        var rows = sqlite_repo.list_sessions_for_cwd(b.sqlite_db as ref<sqlite_repo.db_t>, cwd) catch error {
+            throw error
+        }
+        for row in rows {
+            result.push(row.id)
+        }
+        return result
+    }
+    return list_session_paths(b.session_dir)
+}
+
 // SessionRepo.delete: remove the session from its backend.
 pub fn delete_session(backend_t b, string session_id): (bool, string) {
     if b.kind == 'sqlite' {
@@ -109,13 +127,27 @@ pub fn delete_session(backend_t b, string session_id): (bool, string) {
 // Full fork within the backend: JSONL writes a new file, SQLite creates a
 // new session row with a parent lineage and copies every entry.
 pub fn fork_to(backend_t b, string requested_id): backend_t! {
+    return fork_to_with_options(b, sqlite_fork_options_t {entry_id: '', position: 'at', requested_id: requested_id,})
+}
+
+// Pi SqliteSessionRepo.fork options: an optional entryId plus position
+// 'before'|'at' select the copied prefix of the tree; an empty entryId
+// copies everything.
+pub type sqlite_fork_options_t = struct {
+    string entry_id
+    string position = 'at'
+    string requested_id
+}
+
+pub fn fork_to_with_options(backend_t b, sqlite_fork_options_t options): backend_t! {
     if b.kind == 'sqlite' {
-        string new_id = requested_id == '' ? identity.uuid_v7() : requested_id
+        string new_id = options.requested_id == '' ? identity.uuid_v7() : options.requested_id
         string timestamp = identity.iso_now()
         var handle = b.sqlite_db as ref<sqlite_repo.db_t>
         sqlite_repo.create_session(handle, new_id, timestamp, mgr(b).cwd, mgr(b).header.id)
+        [ref<session_types.entry_t>] selected = select_fork_entries(mgr(b).entries, options.entry_id, options.position)
         sqlite.sqlite3_int64_t branch_seq = 0
-        for entry in mgr(b).entries {
+        for entry in selected {
             sqlite_repo.append_entry(handle, new_id, entry.id, entry.parent_id, entry.kind, entry.timestamp, json.serialize(entry.raw))
             // Each copied entry joins the new session's main branch with an
             // entry_seq following the copy order (upstream branch-entries.ts).
@@ -124,12 +156,47 @@ pub fn fork_to(backend_t b, string requested_id): backend_t! {
         }
         var manager = sqlite_repo.load_manager(handle, new_id, mgr(b).cwd)
         manager.persisted = true
+        manager.storage_backend = 'sqlite'
         manager.session_dir = b.session_dir
-        manager.session_file = mgr(b).session_file
+        manager.session_file = ''
         return backend_t {kind: 'sqlite', manager: manager, session_dir: b.session_dir, sqlite_db: handle,}
     }
-    var forked = mgr(b).fork_to(mgr(b).cwd, b.session_dir, requested_id)
+    var forked = mgr(b).fork_to(mgr(b).cwd, b.session_dir, options.requested_id)
     return backend_t {kind: b.kind, manager: forked, session_dir: b.session_dir, sqlite_db: null,}
+}
+
+// Upstream getEntriesToFork: without an entry id the whole entry list is
+// copied; with one, only the root-to-entry chain is copied, and position
+// 'before' excludes the target itself.
+fn select_fork_entries([ref<session_types.entry_t>] entries, string entry_id, string position): [ref<session_types.entry_t>] {
+    if entry_id == '' {
+        return entries
+    }
+    {string:string} parent_of = {}
+    for entry in entries {
+        parent_of[entry.id] = entry.parent_id
+    }
+    {string:bool} keep = {}
+    string cursor = entry_id
+    for true {
+        keep[cursor] = true
+        if !parent_of.contains(cursor) || parent_of[cursor] == '' {
+            break
+        }
+        cursor = parent_of[cursor]
+    }
+    bool include_target = position != 'before'
+    [ref<session_types.entry_t>] result = []
+    for entry in entries {
+        if !keep.contains(entry.id) {
+            continue
+        }
+        if entry.id == entry_id && !include_target {
+            continue
+        }
+        result.push(entry)
+    }
+    return result
 }
 
 fn persist_created(backend_t b, ref<session_types.header_t> header): void! {

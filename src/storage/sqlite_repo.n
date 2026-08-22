@@ -37,6 +37,20 @@ pub fn open_db(string db_path): ref<db_t>! {
     if rc != sqlite.SQLITE_OK {
         throw errorf('could not open sqlite database %s: %s', db_path, errmsg(db_handle))
     }
+    // Pi repo.ts opens WAL with synchronous=FULL and a busy timeout so a
+    // second Adou process (serve child) waits instead of failing.
+    sqlite_migrations.exec_simple(db_handle, 'PRAGMA journal_mode=WAL;') catch error {
+        sqlite.sqlite3_close(db_handle)
+        throw error
+    }
+    sqlite_migrations.exec_simple(db_handle, 'PRAGMA synchronous=FULL;') catch error {
+        sqlite.sqlite3_close(db_handle)
+        throw error
+    }
+    sqlite_migrations.exec_simple(db_handle, 'PRAGMA busy_timeout=5000;') catch error {
+        sqlite.sqlite3_close(db_handle)
+        throw error
+    }
     sqlite_migrations.ensure_schema(db_handle) catch error {
         sqlite.sqlite3_close(db_handle)
         throw error
@@ -90,6 +104,17 @@ pub fn create_session(ref<db_t> handle, string session_id, string created_at, st
 // are kept in lockstep for the branch query surface; branch_entries rows
 // for forked sessions are recorded by the fork caller.
 pub fn append_entry(ref<db_t> handle, string session_id, string entry_id, string parent_id, string kind, string timestamp, string payload): void! {
+    // B1.5: the sequence read, entry insert, materialized writes and leaf
+    // update form one atomic unit exactly like an upstream append.
+    sqlite_migrations.exec_simple(handle.db, 'BEGIN IMMEDIATE;')
+    append_entry_tx(handle, session_id, entry_id, parent_id, kind, timestamp, payload) catch e {
+        sqlite_migrations.exec_simple(handle.db, 'ROLLBACK;') catch e2 {}
+        throw e
+    }
+    sqlite_migrations.exec_simple(handle.db, 'COMMIT;')
+}
+
+fn append_entry_tx(ref<db_t> handle, string session_id, string entry_id, string parent_id, string kind, string timestamp, string payload): void! {
     var seq_text = 'SELECT next_seq FROM session_sequences WHERE session_id = ?'
 
     ptr<sqlite.sqlite3_stmt_t> statement = null
@@ -166,7 +191,44 @@ pub fn load_manager(ref<db_t> handle, string session_id, string cwd): ref<reposi
     var manager = new repository.manager_t(lock = mutex.mutex_t.new(), cwd = row.cwd, session_dir = '', persisted = false, header = header)
     manager.entries = load_entries(handle, session_id)
     manager.rebuild_index()
+    // B1.5: restore the persisted active leaf (session_materialized) so a
+    // reopened SQLite session keeps its tree position like JSONL does.
+    string stored_leaf = stored_leaf_id(handle, session_id)
+    if stored_leaf != '' && manager.by_id.contains(stored_leaf) {
+        manager.has_leaf = true
+        manager.leaf_id = stored_leaf
+    }
     return manager
+}
+
+// Read the materialized {leaf} payload written by every append.
+pub fn stored_leaf_id(ref<db_t> handle, string session_id): string! {
+    string sql_text = 'SELECT payload FROM session_materialized WHERE session_id = ?'
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare session_materialized read failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    string payload = ''
+    if sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW {
+        payload = column_text(statement, 0)
+    }
+    sqlite.sqlite3_finalize(statement)
+    if payload == '' {
+        return ''
+    }
+    var parsed = json_util.parse(payload) catch error {
+        return ''
+    }
+    if !json_util.is_obj(parsed) {
+        return ''
+    }
+    {string:any} object = parsed as {string:any}
+    if object.contains('leaf') && object['leaf'] is string {
+        return object['leaf'] as string
+    }
+    return ''
 }
 
 fn load_entries(ref<db_t> handle, string session_id): [ref<session_types.entry_t>]! {
@@ -212,6 +274,25 @@ pub fn list_sessions(ref<db_t> handle): [session_row_t]! {
     return result
 }
 
+// SessionRepo.list filtered by project cwd (Pi sessions carry their cwd;
+// the resume surface filters per project).
+pub fn list_sessions_for_cwd(ref<db_t> handle, string cwd): [session_row_t]! {
+    [session_row_t] result = []
+    string sql_text = 'SELECT id, created_at, cwd, parent_session_id, active_leaf_id FROM sessions WHERE cwd = ? ORDER BY created_at DESC'
+
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare session cwd list failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, cwd.to_cstr(), -1, 0)
+    for sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW {
+        result.push(session_row_t {id: column_text(statement, 0), created_at: column_text(statement, 1), cwd: column_text(statement, 2), parent_session_id: column_text(statement, 3), active_leaf_id: column_text(statement, 4),})
+    }
+    sqlite.sqlite3_finalize(statement)
+    return result
+}
+
 // SessionRepo.delete: remove a session row and its entries.
 pub fn delete_session(ref<db_t> handle, string session_id): void! {
     string sql_text = 'DELETE FROM session_entries WHERE session_id = ?'
@@ -242,6 +323,11 @@ pub fn delete_session(ref<db_t> handle, string session_id): void! {
     sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
     sqlite.sqlite3_step(statement)
     sqlite.sqlite3_finalize(statement)
+    // Pi's storage layer surfaces a missing session as a not_found error
+    // instead of a silent success.
+    if sqlite.sqlite3_changes(handle.db) == 0 {
+        throw errorf('Session not found: %s', session_id)
+    }
 }
 
 // Record one branch link for a forked session (upstream
