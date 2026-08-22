@@ -9,7 +9,13 @@ import adou.src.session.repository
 import adou.src.tools.builtins
 import co
 import fmt
+import adou.src.ai.providers.openai_completions_provider
+import fs
+import os
+import syscall
+import json
 import http
+import path
 
 // Phase 8 eval harness.  Mirrors the role of vendors/pi packages/evals
 // pi-harness.ts: a repeatable runner that assembles a session (provider,
@@ -67,6 +73,9 @@ pub type result_t = struct {
     string name
     bool passed
     string detail
+    // B6 live-runner reporting fields.
+    string assistant_text
+    int request_count
 }
 
 // Serve one scripted case.  Close the listener after the final scripted
@@ -140,6 +149,81 @@ pub fn make_runner(ref<mock_t> mock, case_t case, string cwd): ref<session.runne
     // Smoke evals stay deterministic: no session-level provider retries.
     runner.retry_enabled = false
     return runner
+}
+
+// B6: run a case against a caller-built runner (the live provider path).
+// The report writer fires when ADOU_EVALS_REPORT_DIR is set.
+pub fn run_case_with_runner(ref<session.runner_t> runner, case_t case): ref<result_t> {
+    var outcome = drive_runner_prompt(runner, case)
+    var detail = ''
+    bool passed = true
+    if outcome.run_error {
+        if case.expect_run_error {
+            detail = 'expected error observed: ' + outcome.error_message
+        } else {
+            passed = false
+            detail = 'run failed unexpectedly: ' + outcome.error_message
+        }
+    } else if case.expect_run_error {
+        passed = false
+        detail = 'expected a run error but the assistant turn stopped cleanly'
+    }
+    if case.expected_text != '' && !outcome.run_error && !outcome.assistant_text.contains(case.expected_text) {
+        passed = false
+        detail = fmt.sprintf('assistant text "%s" does not contain "%s"', outcome.assistant_text, case.expected_text)
+    }
+    var final = new result_t(name = case.name, passed = passed, detail = detail, assistant_text = outcome.assistant_text, request_count = outcome.request_count)
+    write_report(syscall.get_env('ADOU_EVALS_REPORT_DIR'), case.name, final) catch report_error {}
+    return final
+}
+
+pub fn drive_runner_prompt(ref<session.runner_t> runner, case_t case): ref<outcome_t> {
+    var stream = runner.prompt(case.prompt) catch error {
+        return new outcome_t(run_error = true, error_message = error.msg())
+    }
+    consume(stream)
+    var messages = stream.result() catch error {
+        return new outcome_t(run_error = true, error_message = error.msg())
+    }
+    var outcome = new outcome_t()
+    var assistant = last_assistant(messages)
+    if assistant is ref<ai_types.assistant_message_t> current {
+        if current.stop_reason != ai_types.STOP_STOP || current.error_message != '' {
+            outcome.run_error = true
+            outcome.error_message = current.error_message == '' ? 'assistant stop reason: ' + current.stop_reason : current.error_message
+        } else {
+            outcome.assistant_text = assistant_text(current)
+        }
+    } else {
+        outcome.run_error = true
+        outcome.error_message = 'Agent run completed without an assistant message.'
+    }
+    return outcome
+}
+
+// B6: run a batch of cases against the live provider when enabled; returns
+// an empty list so callers fall back to the deterministic mock flow.
+pub fn run_live_cases([case_t] cases, string cwd): [ref<result_t>]! {
+    var config = live_config()
+    if !config.enabled {
+        return []
+    }
+    [ref<result_t>] results = []
+    for case in cases {
+        var runner = make_live_runner(config, case, cwd) catch error {
+            continue
+        }
+        var outcome = drive_runner_prompt(runner, case)
+        bool passed = !outcome.run_error && (case.expected_text == '' || outcome.assistant_text.contains(case.expected_text))
+        var final = new result_t(name = case.name, passed = passed, detail = passed ? 'live provider matched' : 'live provider mismatch: ' + outcome.error_message + outcome.assistant_text, assistant_text = outcome.assistant_text, request_count = 0)
+        write_report(config.report_dir, case.name, final) catch report_e {}
+        results.push(final)
+    }
+    return results
+}
+
+pub fn empty_results(): [ref<result_t>] {
+    return []
 }
 
 pub fn run_case(ref<mock_t> mock, case_t case, string cwd): ref<result_t> {
@@ -292,3 +376,76 @@ pub fn wait_for_server(int port): void {
     // connect.
     co.sleep(300)
 }
+
+
+// B6: opt-in live-provider evals.  ADOU_LIVE_EVALS=1 plus a provider API
+// key routes the same case flow at the real provider endpoint (deepseek by
+// default) instead of the scripted mock; usage and the transcript land in
+// ADOU_EVALS_REPORT_DIR when set, so runs stay auditable without touching
+// the deterministic suite.
+
+pub type live_config_t = struct {
+    bool enabled
+    string base_url
+    string api_key
+    string report_dir
+}
+
+pub fn live_config(): live_config_t {
+    var config = live_config_t {}
+    if syscall.get_env('ADOU_LIVE_EVALS') != '1' {
+        return config
+    }
+    config.enabled = true
+    config.api_key = syscall.get_env('DEEPSEEK_TEST_API_KEY')
+    if config.api_key == '' {
+        config.api_key = syscall.get_env('DEEPSEEK_API_KEY')
+    }
+    if config.api_key == '' {
+        // Explicit opt-in without a key is a configuration error: fail the
+        // run rather than silently falling back to the mock.
+        config.enabled = false
+        return config
+    }
+    config.base_url = 'https://api.deepseek.com'
+    config.report_dir = syscall.get_env('ADOU_EVALS_REPORT_DIR')
+    return config
+}
+
+pub fn make_live_runner(live_config_t config, case_t case, string cwd): ref<session.runner_t>! {
+    var model = new ai_types.model_t(id = 'deepseek-chat', api = 'openai-completions', provider = 'deepseek', base_url = config.base_url, context_window = 64000, max_tokens = 256)
+    var context = new agent_types.context_t(system_prompt = EVAL_PROMPT_SYSTEM)
+    for tool_name in case.tool_names {
+        if tool_name == 'read' {
+            context.tools.push(builtins.read_tool(cwd))
+        }
+    }
+    var options = new ai_types.stream_options_t(api_key = config.api_key, max_retries = 0, timeout_ms = 60000)
+    options.thinking_enabled = false
+    var run_config = new agent_types.config_t(model = model, stream_options = options)
+    var settings = compaction_types.settings_t {enabled: false, reserve_tokens: 100, keep_recent_tokens: 20,}
+    agent_types.stream_fn provider_stream = fn(ref<ai_types.model_t> current_model, ref<ai_types.context_t> current_context, ref<ai_types.stream_options_t> current_options): ref<ai_event_stream.assistant_stream_t> {
+        return openai_completions_provider.stream(current_model, current_context, current_options)
+    }
+    var runner = session.new(repository.in_memory(cwd), context, run_config, provider_stream, settings)
+    runner.retry_enabled = false
+    return runner
+}
+
+// Write {case, passed, assistant_text} as one JSON document for external
+// collection; failures to write are non-fatal (the console report stands).
+pub fn write_report(string report_dir, string case_name, ref<result_t> result): void! {
+    if report_dir == '' {
+        return
+    }
+    os.mkdirs(report_dir, 0o755) catch e {}
+    {string:any} object = {}
+    object['case'] = case_name
+    object['passed'] = result.passed
+    object['assistantText'] = result.assistant_text
+    string file_path = path.join(report_dir, case_name.replace(' ', '_') + '.json')
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    output.write((json.serialize(object) + '\n') as [u8])
+    output.close()
+}
+

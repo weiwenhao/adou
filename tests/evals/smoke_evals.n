@@ -33,10 +33,19 @@ fn run_cases(): [ref<harness.result_t>] {
 }
 
 fn basic_case(): ref<harness.result_t> {
+    var case = harness.case_t {name: 'basic-prompt', port: BASIC_PORT, prompt: "What's the capital of France? Respond with only the city name.", expected_text: 'Paris',}
+    // B6: opt-in live provider path; the deterministic mock remains the
+    // default so the suite never touches the network uninvited.
+    var live = harness.live_config()
+    if live.enabled {
+        [ref<harness.result_t>] live_results = harness.run_live_cases([case], '/tmp') catch e {[]}
+        if live_results.len() > 0 {
+            return live_results[0]
+        }
+    }
     var mock = new harness.mock_t(port = BASIC_PORT, sse_bodies = [harness.text_response('Paris')])
     go harness.serve_mock(mock)
     harness.wait_for_server(BASIC_PORT)
-    var case = harness.case_t {name: 'basic-prompt', port: BASIC_PORT, prompt: "What's the capital of France? Respond with only the city name.", expected_text: 'Paris',}
     return harness.run_case(mock, case, '/tmp')
 }
 
@@ -54,6 +63,15 @@ fn tool_case(): ref<harness.result_t> {
     go harness.serve_mock(mock)
     harness.wait_for_server(TOOL_PORT)
     var case = harness.case_t {name: 'tool-call-read', port: TOOL_PORT, tool_names: ['read'], prompt: 'Read fixture.txt and report what it says.', expected_text: 'Read the file.', expected_tool_result: 'hello from fixture', expected_provider_request: 'hello from fixture',}
+    // B6: the tool case needs its fixture on disk; the live runner reads it
+    // with the same builtin read tool.
+    var live = harness.live_config()
+    if live.enabled {
+        [ref<harness.result_t>] live_results = harness.run_live_cases([case], root) catch e {[]}
+        if live_results.len() > 0 {
+            return live_results[0]
+        }
+    }
     return harness.run_case(mock, case, root)
 }
 
@@ -64,5 +82,12 @@ fn error_case(): ref<harness.result_t> {
     // The mock answers HTTP 500; the provider fails its stream and the
     // harness must mark the run failed without crashing.
     var case = harness.case_t {name: 'provider-error-handling', port: ERROR_PORT, prompt: 'trigger a provider error', expect_run_error: true, expect_error_fragment: 'Anthropic API error: HTTP 500',}
+        var live = harness.live_config()
+    if live.enabled {
+        [ref<harness.result_t>] live_results = harness.run_live_cases([case], '/tmp') catch e {[]}
+        if live_results.len() > 0 {
+            return live_results[0]
+        }
+    }
     return harness.run_case(mock, case, '/tmp')
 }
