@@ -240,3 +240,16 @@ test 'omits a different-model Responses item id and hashes long message ids' {
     assert((input[0] as {string:any})['id'] as string.len() <= 64)
     assert(!(input[1] as {string:any}).contains('id'))
 }
+
+// B3: Pi OpenAIResponsesOptions.serviceTier flows into the request body and
+// stays absent when unset.
+test 'service tier is emitted only when configured' {
+    var model = new types.model_t(id = 'gpt-5.1', provider = 'openai', api = 'openai-responses')
+    var context = new types.context_t()
+    string without_tier = openai_request.build(model, context, new types.stream_options_t(api_key = 'k')) catch e {'ERR'}
+    assert(!without_tier.contains('service_tier'))
+    var opts = new types.stream_options_t(api_key = 'k')
+    opts.service_tier = 'flex'
+    string with_tier = openai_request.build(model, context, opts) catch e {'ERR'}
+    assert(with_tier.contains('"service_tier":"flex"'))
+}
