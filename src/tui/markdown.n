@@ -78,7 +78,6 @@ pub fn render(string markdown, int width): [string]! {
             string joined_paragraph = strings.join(run_parts, ' ')
             string paragraph_styled = run_is_heading ? theme.bold(theme.fg(theme.HEADING, inline(joined_paragraph))) : inline(joined_paragraph)
             result.append(text_utils.wrap_text_with_ansi(paragraph_styled, width > 0 ? width : 1))
-            result.push('')
             index = run_end
             continue
         }

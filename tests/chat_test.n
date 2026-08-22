@@ -273,6 +273,10 @@ test 'B3 outputPad 0 widens the user message content area' {
     types.message_t history = new types.user_message_t(content = wide)
     value.load_messages([history])
     var padded = value.render(20)
+    println('PADDED_ROWS: ' + fmt.sprintf('%d', padded.len()))
+    for row in padded {
+        println('ROW: [' + row + ']')
+    }
     assert(padded.len() == 4)
     value.set_output_pad(0)
     var unpadded = value.render(20)
