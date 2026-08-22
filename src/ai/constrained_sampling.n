@@ -60,6 +60,10 @@ pub fn grammar_input_buffer_t.append(&self, string input_property, string next_i
 }
 
 fn infer_grammar_input_property({string:any} schema): string! {
+    // Degenerate schemas (no keys at all) cannot carry an object type.
+    if schema.len() == 0 {
+        throw errorf('grammar constrained sampling requires an object parameter schema')
+    }
     any type_value = null
     if schema.contains('type') {
         type_value = schema['type']
@@ -138,7 +142,8 @@ pub fn resolve_grammar_sampling(string tool_name, {string:any} parameters, {stri
     string input_property = infer_grammar_input_property(parameters) catch error {
         throw errorf('Tool "%s" cannot use grammar constrained sampling: %s', tool_name, error.msg())
     }
-    return new grammar_sampling_t(format = format, definition = definition, input_property = input_property)
+    var sampling = new grammar_sampling_t(format = format, definition = definition, input_property = input_property)
+    return sampling
 }
 
 pub fn create_grammar_tool_input_properties([ref<types.tool_t>] tools, bool supports): {string:string}! {

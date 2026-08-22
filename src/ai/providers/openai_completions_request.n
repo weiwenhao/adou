@@ -1,4 +1,5 @@
 import adou.src.ai.deferred_tools
+import adou.src.ai.constrained_sampling
 import adou.src.ai.types
 import adou.src.ai.providers.decorators
 import adou.src.ai.ids
@@ -7,12 +8,20 @@ import adou.src.ai.providers.replay
 import fmt
 import json
 import strings
+import syscall
 
 
 pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+
+    // B3: Pi createGrammarToolInputProperties — grammar-constrained tools
+    // switch to OpenAI custom tool wire format for requests and replay.
+    {string:string} grammar_props = {}
+    if syscall.get_env('ADOU_GRAMMAR_TOOLS') == '1' {
+        grammar_props = constrained_sampling.create_grammar_tool_input_properties(context.tools, model.compat.supports_openai_grammar_tools) catch e {{}}
+    }
     {string:any} body = {}
     body['model'] = model.id
-    body['messages'] = convert_messages(model, context)
+    body['messages'] = convert_messages(model, context, grammar_props)
     body['stream'] = true
     if options.temperature >= 0.0 {
         body['temperature'] = options.temperature
@@ -35,7 +44,7 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
         if model.provider == 'kimi-coding' {
             request_tools = deferred_tools.filter_deferred_tools(context.tools, deferred_tools.deferred_tool_names(context.messages))
         }
-        body['tools'] = convert_tools(request_tools)
+        body['tools'] = convert_tools(request_tools, grammar_props, model.compat.supports_strict_mode, model.compat.supports_openai_grammar_tools)
     } else if has_tool_history(context) {
         // Pi keeps an explicit empty tools array when replaying tool history.
         // Some OpenAI-compatible gateways reject tool-call messages unless
@@ -145,7 +154,7 @@ pub fn authorization(ref<types.stream_options_t> options): string! {
     return 'Bearer ' + options.api_key
 }
 
-pub fn convert_messages(ref<types.model_t> model, ref<types.context_t> context): [any]! {
+pub fn convert_messages(ref<types.model_t> model, ref<types.context_t> context, {string:string} grammar_props): [any]! {
     [any] result = []
     if context.system_prompt != '' {
         {string:any} system = {}
@@ -169,7 +178,7 @@ pub fn convert_messages(ref<types.model_t> model, ref<types.context_t> context):
             if assistant.stop_reason == types.STOP_ERROR || assistant.stop_reason == types.STOP_ABORTED {
                 continue
             }
-            var item = assistant_item(model, assistant)
+            var item = assistant_item(model, assistant, grammar_props)
             if !json_util.is_null(item) {
                 result.push(item)
             }
@@ -236,7 +245,7 @@ fn user_item(ref<types.user_message_t> message): any {
     return item
 }
 
-pub fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> message): any {
+pub fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> message, {string:string} grammar_props): any {
     string text = ''
     string reasoning = ''
     [any] calls = []
@@ -246,7 +255,7 @@ pub fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> m
         } else if block is ref<types.thinking_content_t> thinking_block {
             reasoning += thinking_block.thinking
         } else if block is ref<types.tool_call_t> tool_call {
-            calls.push(tool_call_item(model, tool_call) catch e {
+            calls.push(tool_call_item(model, tool_call, grammar_props) catch e {
                 {string:any} empty = {}
                 empty
             })
@@ -271,7 +280,22 @@ pub fn assistant_item(ref<types.model_t> model, ref<types.assistant_message_t> m
     return item
 }
 
-fn tool_call_item(ref<types.model_t> model, ref<types.tool_call_t> call): any! {
+fn tool_call_item(ref<types.model_t> model, ref<types.tool_call_t> call, {string:string} grammar_props): any! {
+    // B3: grammar-constrained tools replay as OpenAI custom tool calls.
+    if grammar_props.contains(call.name) {
+        string property = grammar_props[call.name]
+        var call_arguments = call.arguments as {string:any}
+        string fallback_input = ''
+        string input = constrained_sampling.get_grammar_tool_input(call.name, call_arguments, property) catch error {fallback_input}
+        {string:any} custom = {}
+        custom['name'] = call.name
+        custom['input'] = input
+        {string:any} item = {}
+        item['id'] = normalize_tool_id(model, call.id)
+        item['type'] = 'custom'
+        item['custom'] = custom
+        return item
+    }
     {string:any} function = {}
     function['name'] = call.name
     function['arguments'] = json.serialize(call.arguments)
@@ -317,14 +341,56 @@ pub fn tool_result_item(ref<types.model_t> model, ref<types.tool_result_message_
     return item
 }
 
-pub fn convert_tools([ref<types.tool_t>] tools): [any]! {
+pub fn convert_tools([ref<types.tool_t>] tools, {string:string} grammar_props, bool supports_strict_mode, bool supports_grammar): [any]! {
     [any] result = []
     for tool in tools {
+        // B3: Pi resolveGrammarConstrainedSampling — grammar variants become
+        // custom tools with a lark/regex format definition.
+        var parameter_object = tool.parameters as {string:any}
+        ref<constrained_sampling.grammar_sampling_t>? none_value = null
+        ref<constrained_sampling.grammar_sampling_t>? grammar = none_value
+        if tool.constrained_sampling is {string:any} config {
+            if syscall.get_env('ADOU_GSKIP') != '' {
+                continue
+            }
+            grammar = constrained_sampling.resolve_grammar_sampling(tool.name, parameter_object, config, supports_grammar) catch error {none_value}
+        }
+        if grammar is ref<constrained_sampling.grammar_sampling_t> grammar_value {
+            // B3: Pi resolveGrammarConstrainedSampling — grammar variants
+            // become custom tools with a lark/regex format definition.
+            {string:any} format = {}
+            format['type'] = 'grammar'
+            {string:any} grammar_body = {}
+            grammar_body['syntax'] = grammar_value.format
+            grammar_body['definition'] = grammar_value.definition
+            format['grammar'] = grammar_body
+            {string:any} custom = {}
+            custom['name'] = tool.name
+            custom['description'] = tool.description
+            custom['format'] = format
+            {string:any} item = {}
+            item['type'] = 'custom'
+            item['custom'] = custom
+            result.push(item)
+            continue
+        }
+        bool strict = false
+        if tool.constrained_sampling is {string:any} strict_cfg {
+            if strict_cfg.contains('type') && strict_cfg['type'] is string && (strict_cfg['type'] as string) == 'json_schema' {
+                // Pi resolveJsonSchemaStrictSampling: strict on when the model
+                // supports it; require without support throws.
+                if supports_strict_mode {
+                    strict = true
+                } else if strict_cfg.contains('strict') && strict_cfg['strict'] is string && (strict_cfg['strict'] as string) == 'require' {
+                    throw errorf('Tool "%s" requires JSON-schema constrained sampling, but strict tools are unsupported.', tool.name)
+                }
+            }
+        }
         {string:any} function = {}
         function['name'] = tool.name
         function['description'] = tool.description
         function['parameters'] = tool.parameters
-        function['strict'] = false
+        function['strict'] = strict
         {string:any} item = {}
         item['type'] = 'function'
         item['function'] = function

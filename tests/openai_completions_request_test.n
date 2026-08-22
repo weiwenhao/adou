@@ -1,7 +1,12 @@
+import adou.src.ai.constrained_sampling
 import adou.src.ai.providers.openai_completions_request
 import adou.src.ai.types
 import adou.src.json_util
 import json
+
+fn empty_props(): {string:string} {
+    return {}
+}
 
 pub fn model(): ref<types.model_t> {
     var model = new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek', base_url = 'https://api.deepseek.com', reasoning = true, context_window = 1000000, max_tokens = 384000)
@@ -143,3 +148,4 @@ test 'inserts an error tool result for an orphaned Chat Completions tool call' {
     assert(tool_item['role'] as string == 'tool')
     assert(tool_item['content'] as string == 'No result provided')
 }
+
