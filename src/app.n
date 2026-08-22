@@ -103,8 +103,26 @@ pub fn run(): void! {
     var argv = os.args()
     // Pi's `auth print-api-key` surface for external clients: resolve one
     // configured credential and print it alone on stdout.
-    if argv.len() > 2 && argv[1] == 'auth' && argv[2] == 'print-api-key' {
-        run_auth_print_api_key(argv)
+    if argv.len() > 1 && argv[1] == 'auth' {
+        // B6: Pi credential-print surface — print-api-key, print-bearer-token
+        // and the auth help/usage fallback (unknown subcommand errors).
+        string auth_sub = argv.len() > 2 ? argv[2] : ''
+        if auth_sub == 'print-api-key' {
+            run_auth_print_api_key(argv)
+            return
+        }
+        if auth_sub == 'print-bearer-token' {
+            run_auth_print_bearer_token(argv)
+            return
+        }
+        if auth_sub == '' || auth_sub == 'help' || auth_sub == '--help' || auth_sub == '-h' {
+            println('Usage:')
+            println('  adou auth print-api-key --model <model> [--provider <provider>]')
+            println('  adou auth print-bearer-token --model <model> [--provider <provider>]')
+            return
+        }
+        print_auth_error('Error: Unknown auth command "' + auth_sub + '". Use "adou auth print-api-key" or "adou auth print-bearer-token".')
+        syscall.exit(1) catch exit_error {}
         return
     }
     if argv.len() > 1 && argv[1] == 'server' {
@@ -640,6 +658,48 @@ fn run_auth_print_api_key([string] argv): void! {
     // Success: the credential is the entire stdout payload so external
     // clients can pipe it directly; diagnostics stay on stderr.
     println(api_key)
+}
+
+// Pi kind="bearer_token": only OAuth credentials qualify; the printed value
+// is the stored access token (the same bearer the provider headers carry).
+fn run_auth_print_bearer_token([string] argv): void! {
+    var arguments = args.parse(argv)
+    if arguments.errors.len() > 0 {
+        print_auth_error('Error: ' + strings.join(arguments.errors, '; '))
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    if arguments.model == '' {
+        print_auth_error('Error: Credential printing requires --model <model>')
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    if arguments.api_key != '' {
+        print_auth_error('Error: Credential printing reads configured credentials; --api-key is not supported')
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    string provider = arguments.provider
+    if provider == '' && arguments.model.find('/') >= 0 {
+        provider = arguments.model.slice(0, arguments.model.find('/'))
+    }
+    if provider == '' {
+        print_auth_error('Error: Credential printing requires --provider <provider> when the model is not provider-prefixed')
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    if !auth.is_using_oauth(provider) {
+        print_auth_error('Error: Provider "' + provider + '" is not configured with an OAuth bearer token')
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    string token = auth.oauth_access(provider)
+    if token == '' {
+        print_auth_error('Error: No usable OAuth bearer token is configured')
+        syscall.exit(1) catch exit_error {}
+        return
+    }
+    println(token)
 }
 
 // Credential-print failures keep stdout empty and use the Error: prefix on
