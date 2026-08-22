@@ -1,0 +1,40 @@
+// Shared durable-write primitives over native/auth_store.o (B1.4 of
+// docs/porting-plan-100).  Pi guards settings.json and trust writes with
+// proper-lockfile plus atomic renames; the auth store already carries the
+// same fsync + rename + fcntl machinery natively, so settings and the
+// project trust store reuse those linked symbols instead of duplicating
+// another C helper.
+
+#linkid adou_auth_lock
+fn native_lock(anyptr path): i32
+#linkid adou_auth_unlock
+fn native_unlock(i32 fd): i32
+#linkid adou_auth_atomic_write
+fn native_atomic_write(anyptr path, anyptr data, i32 length): i32
+
+// Acquire an exclusive cross-process lock on `<target>.lock` and return the
+// held fd.  Blocks until the lock is available (EINTR-retried fcntl).
+pub fn acquire_lock(string target_path): i32! {
+    i32 fd = native_lock((target_path + '.lock').ref())
+    if fd < 0 {
+        throw errorf('Could not lock %s', target_path)
+    }
+    return fd
+}
+
+pub fn release_lock(i32 fd): void! {
+    i32 result = native_unlock(fd)
+    if result < 0 {
+        throw errorf('Could not release config lock')
+    }
+}
+
+// Durable replacement: unique temp file, write-all, fsync, rename onto the
+// target, then fsync of the parent directory.  A crash mid-write can never
+// leave a truncated settings.json or trust.json behind.
+pub fn write_file_atomic(string file_path, string content): void! {
+    i32 result = native_atomic_write(file_path.ref(), content.ref(), content.len() as i32)
+    if result < 0 {
+        throw errorf('Could not atomically write %s', file_path)
+    }
+}

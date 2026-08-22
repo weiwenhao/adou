@@ -1,5 +1,6 @@
 import adou.src.json_util
 import adou.src.tools.path_utils
+import adou.src.config.atomic_io
 import adou.src.config.paths
 import fs
 import json
@@ -63,9 +64,12 @@ pub fn decision_source(string cwd): string {
 
 pub fn save(string cwd, bool trusted): void! {
     string file_path = trust_path()
+    // B1.4: exclusive cross-process lock spans the whole read-modify-write;
+    // the file itself is replaced atomically (temp + fsync + rename).
+    i32 lock_fd = atomic_io.acquire_lock(file_path)
     {string:any} object = read_object(file_path)
     object[normalize(cwd)] = trusted
-    write_object(file_path, object)
+    write_object(file_path, object, lock_fd)
 }
 
 // Pi's resolveProjectTrusted re-evaluated against an arbitrary working
@@ -126,6 +130,7 @@ pub type trust_update_t = struct {
 // null decision removes the entry instead of storing null.
 pub fn set_many([trust_update_t] updates): void! {
     string file_path = trust_path()
+    i32 lock_fd = atomic_io.acquire_lock(file_path)
     {string:any} object = read_object(file_path)
     for update in updates {
         string key = normalize(update.trust_path)
@@ -138,7 +143,7 @@ pub fn set_many([trust_update_t] updates): void! {
             object[key] = value
         }
     }
-    write_object(file_path, object)
+    write_object(file_path, object, lock_fd)
 }
 
 pub fn clear(string cwd): void! {
@@ -147,7 +152,8 @@ pub fn clear(string cwd): void! {
     string key = normalize(cwd)
     if object.contains(key) {
         object.del(key)
-        write_object(file_path, object)
+        i32 lock_fd = atomic_io.acquire_lock(file_path)
+        write_object(file_path, object, lock_fd)
     }
 }
 
@@ -224,13 +230,14 @@ pub fn has_trust_requiring_resources(string cwd): bool {    [string] resources =
     return false
 }
 
-fn write_object(string file_path, {string:any} object): void! {
+fn write_object(string file_path, {string:any} object, i32 lock_fd): void! {
     os.mkdirs(path.dir(file_path), 0o700)
-    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
     string content = json.serialize(object)
-    int written = output.write(content as [u8])
-    output.close()
-    if written != content.len() {throw errorf('Could not write project trust store')}
+    atomic_io.write_file_atomic(file_path, content) catch e {
+        atomic_io.release_lock(lock_fd) catch e2 {}
+        throw e
+    }
+    atomic_io.release_lock(lock_fd) catch e2 {}
 }
 
 fn home_dir(): string {

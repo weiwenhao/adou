@@ -1,5 +1,6 @@
 import adou.src.json_util
 import adou.src.tools.path_utils
+import adou.src.config.atomic_io
 import adou.src.config.paths
 import fs
 import fmt
@@ -406,11 +407,17 @@ fn save_to(settings_t settings, string file_path): void! {
         object.del('enabledPrompts')
     }
     os.mkdirs(path.dir(file_path), 0o700)
-    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
     string content = json.serialize(object)
-    int written = output.write(content as [u8])
-    output.close()
-    if written != content.len() {throw errorf('Could not write settings')}
+    // B1.4 (docs/porting-plan-100): Pi writes settings under proper-lockfile
+    // with atomic replacement.  Hold the same exclusive lock across the
+    // write and replace the file durably (temp + fsync + rename) so a crash
+    // can never leave truncated settings behind.
+    i32 lock_fd = atomic_io.acquire_lock(file_path)
+    atomic_io.write_file_atomic(file_path, content) catch e {
+        atomic_io.release_lock(lock_fd) catch e2 {}
+        throw e
+    }
+    atomic_io.release_lock(lock_fd) catch e2 {}
 }
 
 // Pi persists the selected model immediately.  Keep this operation shared by

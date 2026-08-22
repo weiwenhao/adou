@@ -1,0 +1,72 @@
+import adou.src.config.atomic_io
+import fmt
+import fs
+import syscall
+import time
+
+// B1.4 (docs/porting-plan-100): settings and trust writes must be durable —
+// exclusive cross-process lock plus temp-file + fsync + rename replacement,
+// mirroring Pi's proper-lockfile + write-file-atomic combination.
+
+fn unique_path(string label): string {
+    return '/tmp/adou-atomic-' + label + '-' + fmt.sprintf('%d', time.now().ms_timestamp()) + '.json'
+}
+
+fn read_back(string file_path): string! {
+    var input = fs.open(file_path, syscall.O_RDONLY, 0)
+    string raw = input.content()
+    input.close()
+    return raw
+}
+
+test 'atomic write produces the exact content' {
+    string file_path = unique_path('exact')
+    atomic_io.write_file_atomic(file_path, '{"a":1}') catch e {
+        throw e
+    }
+    assert(read_back(file_path) catch error {''} == '{"a":1}')
+}
+
+test 'concurrent atomic writers leave a whole document behind' {
+    string file_path = unique_path('race')
+    var done = chan<bool>.new(8)
+    for int index = 0; index < 8; index += 1 {
+        go write_one(file_path, index, done)
+    }
+    for int index = 0; index < 8; index += 1 {
+        bool ok = done.recv() catch error {false}
+        assert(ok)
+    }
+    // The file must equal exactly one writer's payload: a torn or mixed
+    // write would fail to parse as one of the known documents.
+    string content = read_back(file_path) catch error {''}
+    bool matches_one = false
+    for int index = 0; index < 8; index += 1 {
+        if content == '{"writer":' + fmt.sprintf('%d', index) + '}' {
+            matches_one = true
+        }
+    }
+    assert(matches_one)
+}
+
+fn write_one(string file_path, int index, chan<bool> done) {
+    i32 lock_fd = atomic_io.acquire_lock(file_path) catch error {
+        done.send(false) catch e2 {}
+        return
+    }
+    atomic_io.write_file_atomic(file_path, '{"writer":' + fmt.sprintf('%d', index) + '}') catch e {
+        atomic_io.release_lock(lock_fd) catch e2 {}
+        done.send(false) catch e3 {}
+        return
+    }
+    atomic_io.release_lock(lock_fd) catch e2 {}
+    done.send(true) catch e4 {}
+}
+
+test 'lock files are reusable across sequential acquisitions' {
+    string file_path = unique_path('seq')
+    i32 first = atomic_io.acquire_lock(file_path)
+    atomic_io.release_lock(first) catch e {}
+    i32 second = atomic_io.acquire_lock(file_path)
+    atomic_io.release_lock(second) catch e {}
+}
