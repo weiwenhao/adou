@@ -190,6 +190,12 @@ pub fn processor_t.append_function_call(&self, any call, [types.assistant_event_
     if call_object.contains('args') && !json_util.is_null(call_object['args']) {
         block.arguments = call_object['args']
     }
+    // Google thought signatures ride on functionCall parts; preserve them so
+    // later turns replay the reasoning context verbatim.
+    string call_signature = opt_string(call_object, 'thoughtSignature')
+    if call_signature != '' {
+        block.thought_signature = call_signature
+    }
     types.content_t content = block
     self.output.content.push(content)
     int content_index = self.output.content.len() - 1

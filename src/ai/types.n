@@ -57,6 +57,9 @@ pub type tool_call_t = struct {
     string name
     any arguments
     string partial_json
+    // Google thought signatures ride on functionCall parts and must replay
+    // verbatim on later turns (google-shared.ts).
+    string thought_signature
 }
 pub type image_attachment_t = struct {
     string mime_type

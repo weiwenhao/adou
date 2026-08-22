@@ -1,0 +1,100 @@
+import adou.src.ai.providers.google_messages
+import adou.src.ai.types
+import adou.src.json_util
+import fmt
+import json
+
+// B3 (docs/porting-plan-100): the Google request builder mirrors Pi's
+// google-shared semantics — generationConfig.temperature, function-calling
+// config modes, thought-signature replay rules, and output/error tool
+// response payloads.
+
+fn gemini_model(string id): ref<types.model_t> {
+    return new types.model_t(id = id, provider = 'google', api = 'google-generative-ai', reasoning = true)
+}
+
+fn options(): ref<types.stream_options_t> {
+    var value = new types.stream_options_t(api_key = 'k')
+    return value
+}
+
+fn parse_body(string body): {string:any}! {
+    return json_util.parse(body) as {string:any}
+}
+
+test 'temperature is sent only when configured' {
+    var model = gemini_model('gemini-2.5-flash')
+    var context = new types.context_t()
+    string without_temperature = google_messages.build(model, context, options()) catch e {'ERR'}
+    {string:any} empty_map = {}
+    var parsed_without = parse_body(without_temperature) catch e {empty_map}
+    if parsed_without.contains('generationConfig') && parsed_without['generationConfig'] is {string:any} {
+        var gen = parsed_without['generationConfig'] as {string:any}
+        assert(!gen.contains('temperature'))
+    }
+    var opts = options()
+    opts.temperature = 0.4
+    string with_temperature = google_messages.build(model, context, opts) catch e {'ERR'}
+    var config = parse_body(with_temperature)['generationConfig'] as {string:any}
+    assert(config.contains('temperature'))
+}
+
+test 'tool choice maps to function calling modes and strict picks validated' {
+    var context = new types.context_t()
+    [ref<types.tool_t>] tools = []
+    {string:any} empty_schema = {}
+    tools.push(new types.tool_t(name = 'read', description = 'read', parameters = empty_schema))
+    context.tools = tools
+
+    var none_opts = options()
+    none_opts.tool_choice = 'none'
+    string none_body = google_messages.build(gemini_model('gemini-2.5-flash'), context, none_opts) catch e {'ERR'}
+    var none_config = (parse_body(none_body)['toolConfig'] as {string:any})['functionCallingConfig'] as {string:any}
+    assert(none_config['mode'] is string && (none_config['mode'] as string) == 'NONE')
+
+    string default_body = google_messages.build(gemini_model('gemini-2.5-flash'), context, options()) catch e {'ERR'}
+    assert(!(parse_body(default_body)).contains('toolConfig'))
+
+    [ref<types.tool_t>] strict_tools = []
+    strict_tools.push(new types.tool_t(name = 'read', description = 'read', parameters = empty_schema, constrained_sampling = true))
+    var strict_context = new types.context_t(tools = strict_tools)
+    string strict_body = google_messages.build(gemini_model('gemini-3-pro'), strict_context, options()) catch e {'ERR'}
+    var strict_config = (parse_body(strict_body)['toolConfig'] as {string:any})['functionCallingConfig'] as {string:any}
+    assert(strict_config['mode'] is string && (strict_config['mode'] as string) == 'VALIDATED')
+}
+
+test 'thinking blocks degrade for other providers and signatures replay same-provider only' {
+    var model = gemini_model('gemini-2.5-flash')
+    var context = new types.context_t()
+
+    // Same provider/model: thinking stays native and carries its signature.
+    [types.content_t] same_content = []
+    same_content.push(new types.thinking_content_t(thinking = 'hmm', thinking_signature = 'QUJD'))
+    context.messages.push(new types.assistant_message_t(content = same_content, provider = 'google', model = 'gemini-2.5-flash', timestamp = 1))
+
+    // Different model: thinking degrades to plain text without thought flag.
+    [types.content_t] other_content = []
+    other_content.push(new types.thinking_content_t(thinking = 'other', thinking_signature = 'QUJD'))
+    context.messages.push(new types.assistant_message_t(content = other_content, provider = 'anthropic', model = 'claude-x', timestamp = 2))
+
+    string body = google_messages.build(model, context, options()) catch e {'ERR'}
+    var parsed = parse_body(body)
+    [any] contents = parsed['contents'] as [any]
+    var same_parts = (contents[0] as {string:any})['parts'] as [any]
+    var first = same_parts[0] as {string:any}
+    assert(first['thought'] is bool && (first['thought'] as bool))
+    assert(first['thoughtSignature'] is string && (first['thoughtSignature'] as string) == 'QUJD')
+    var other_parts = (contents[1] as {string:any})['parts'] as [any]
+    var degraded = other_parts[0] as {string:any}
+    assert(degraded.contains('thought') == false)
+    assert(degraded.contains('thoughtSignature') == false)
+
+    // Invalid base64 signature is dropped even for the same model.
+    [types.content_t] bad_content = []
+    bad_content.push(new types.text_content_t(text = 'hi', text_signature = 'not base64!!'))
+    context.messages.push(new types.assistant_message_t(content = bad_content, provider = 'google', model = 'gemini-2.5-flash', timestamp = 3))
+    string bad_body = google_messages.build(model, context, options()) catch e {'ERR'}
+    [any] bad_contents = parse_body(bad_body)['contents'] as [any]
+    var last_parts = (bad_contents[2] as {string:any})['parts'] as [any]
+    assert((last_parts[0] as {string:any}).contains('thoughtSignature') == false)
+}

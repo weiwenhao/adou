@@ -2,6 +2,7 @@ import adou.src.ai.providers.decorators
 import adou.src.ai.providers.replay
 import adou.src.ai.types
 import adou.src.json_util
+import fmt
 import json
 import strings
 import syscall
@@ -69,7 +70,7 @@ pub fn vertex_auth_header(ref<types.stream_options_t> options): string! {
 
 pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
     {string:any} body = {}
-    [any] contents = convert_contents(context)
+    [any] contents = convert_contents(model, context)
     body['contents'] = contents
     if context.system_prompt != '' {
         {string:any} system = {}
@@ -82,8 +83,22 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
     }
     if context.tools.len() > 0 {
         body['tools'] = convert_tools(context.tools)
+        // Pi resolveGoogleFunctionCallingMode: explicit none/any wins, then
+        // VALIDATED when strict (constrained) tools meet a Gemini 3+ model,
+        // then an explicit auto, otherwise the key is omitted.
+        string mode = resolve_function_calling_mode(model, context.tools, options.tool_choice)
+        if mode != '' {
+            {string:any} calling_config = {}
+            calling_config['mode'] = mode
+            {string:any} tool_config = {}
+            tool_config['functionCallingConfig'] = calling_config
+            body['toolConfig'] = tool_config
+        }
     }
     {string:any} generation_config = {}
+    if options.temperature >= 0.0 {
+        generation_config['temperature'] = options.temperature
+    }
     int max_tokens = options.max_tokens
     if max_tokens <= 0 {
         max_tokens = model.max_tokens
@@ -97,6 +112,78 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
     }
     body['generationConfig'] = generation_config
     return json.serialize(body)
+}
+
+// Pi google-shared supportsGoogleStrictToolSampling: Gemini 3+ only.
+fn supports_strict_tool_sampling(ref<types.model_t> model): bool {
+    string id = model.id.to_lower()
+    if !id.starts_with('gemini') {
+        return true
+    }
+    // gemini-<major>... or gemini-live-<major>...
+    string stripped = id
+    if stripped.starts_with('gemini-live-') {
+        stripped = stripped.slice('gemini-live-'.len(), stripped.len())
+    } else if stripped.starts_with('gemini-') {
+        stripped = stripped.slice('gemini-'.len(), stripped.len())
+    } else {
+        return true
+    }
+    string digits = ''
+    for int i = 0; i < stripped.len(); i += 1 {
+        u8 c = stripped[i]
+        if c >= '0'.char() && c <= '9'.char() {
+            digits += stripped.slice(i, i + 1)
+            continue
+        }
+        break
+    }
+    if digits == '' {
+        return true
+    }
+    int major = 0
+    for int i = 0; i < digits.len(); i += 1 {
+        major = major * 10 + (digits[i] as int - '0'.char() as int)
+    }
+    return major >= 3
+}
+
+fn tool_strict_enabled(ref<types.tool_t> tool): bool {
+    if tool.constrained_sampling is bool {
+        return tool.constrained_sampling as bool
+    }
+    return !json_util.is_null(tool.constrained_sampling)
+}
+
+fn map_tool_choice(string choice): string {
+    if choice == 'none' {
+        return 'NONE'
+    }
+    if choice == 'any' {
+        return 'ANY'
+    }
+    return 'AUTO'
+}
+
+fn resolve_function_calling_mode(ref<types.model_t> model, [ref<types.tool_t>] tools, string tool_choice): string {
+    bool strict = supports_strict_tool_sampling(model)
+    bool use_strict = false
+    for tool in tools {
+        if strict && tool_strict_enabled(tool) {
+            use_strict = true
+            break
+        }
+    }
+    if tool_choice == 'none' || tool_choice == 'any' {
+        return map_tool_choice(tool_choice)
+    }
+    if use_strict {
+        return 'VALIDATED'
+    }
+    if tool_choice != '' {
+        return map_tool_choice(tool_choice)
+    }
+    return ''
 }
 
 // Pi google-generative-ai thinking mapping: Gemini 3 Pro/Flash and Gemma 4
@@ -195,47 +282,47 @@ fn is_gemma4(ref<types.model_t> model): bool {
     return id.contains('gemma-4') || id.contains('gemma4')
 }
 
-fn convert_contents(ref<types.context_t> context): [any] {
+fn convert_contents(ref<types.model_t> model, ref<types.context_t> context): [any] {
     [any] result = []
     var replay = replay.tracker()
     for message in context.messages {
         if message is ref<types.user_message_t> user {
             for missing in replay.before_other() {
-                result.push(tool_result_content(missing))
+                push_tool_result(model, result, missing)
             }
             result.push(user_message_content(user))
         } else if message is ref<types.assistant_message_t> assistant {
             for missing in replay.before_assistant(assistant) {
-                result.push(tool_result_content(missing))
+                push_tool_result(model, result, missing)
             }
             if assistant.stop_reason == types.STOP_ERROR || assistant.stop_reason == types.STOP_ABORTED {
                 continue
             }
-            var content = model_content(assistant)
+            var content = model_content(model, assistant)
             if !json_util.is_null(content) {
                 result.push(content)
             }
         } else if message is ref<types.tool_result_message_t> tool_result {
             replay.observe_tool_result(tool_result.tool_call_id)
-            result.push(tool_result_content(tool_result))
+            push_tool_result(model, result, tool_result)
         } else if message is ref<types.compaction_summary_message_t> summary {
             for missing in replay.before_other() {
-                result.push(tool_result_content(missing))
+                push_tool_result(model, result, missing)
             }
             result.push(user_content('The conversation history before this point was compacted into the following summary:\n\n<summary>\n' + summary.summary + '\n</summary>'))
         } else if message is ref<types.branch_summary_message_t> summary {
             for missing in replay.before_other() {
-                result.push(tool_result_content(missing))
+                push_tool_result(model, result, missing)
             }
             result.push(user_content('The following is a summary of a branch that this conversation came back from:\n\n<summary>\n' + summary.summary + '</summary>'))
         } else if message is ref<types.custom_message_t> custom {
             for missing in replay.before_other() {
-                result.push(tool_result_content(missing))
+                push_tool_result(model, result, missing)
             }
             result.push(user_content(custom.content))
         } else if message is ref<types.bash_execution_message_t> bash {
             for missing in replay.before_other() {
-                result.push(tool_result_content(missing))
+                push_tool_result(model, result, missing)
             }
             if !bash.exclude_from_context {
                 result.push(user_content(types.bash_execution_text(bash)))
@@ -243,7 +330,7 @@ fn convert_contents(ref<types.context_t> context): [any] {
         }
     }
     for missing in replay.finish() {
-        result.push(tool_result_content(missing))
+        push_tool_result(model, result, missing)
     }
     return result
 }
@@ -280,27 +367,73 @@ fn user_message_content(ref<types.user_message_t> message): any {
     return content
 }
 
-fn model_content(ref<types.assistant_message_t> message): any {
+// Pi google-shared resolveThoughtSignature: only same-provider/model
+// signatures that are valid base64 replay on later turns.
+fn valid_thought_signature(string signature): bool {
+    if signature == '' || signature.len() % 4 != 0 {
+        return false
+    }
+    for int i = 0; i < signature.len(); i += 1 {
+        u8 c = signature[i]
+        bool ok = (c >= 'A'.char() && c <= 'Z'.char()) || (c >= 'a'.char() && c <= 'z'.char()) || (c >= '0'.char() && c <= '9'.char()) || c == '+'.char() || c == '/'.char() || c == '='.char()
+        if !ok {
+            return false
+        }
+    }
+    return true
+}
+
+fn resolved_signature(bool same_provider_model, string signature): string {
+    if same_provider_model && valid_thought_signature(signature) {
+        return signature
+    }
+    return ''
+}
+
+fn model_content(ref<types.model_t> model, ref<types.assistant_message_t> message): any {
+    bool same_provider_model = message.provider == model.provider && message.model == model.id
     [any] parts = []
     for block in message.content {
         if block is ref<types.text_content_t> text_block {
+            // Skip empty text blocks like upstream.
+            if text_block.text.trim([' ', '\t', '\n', '\r']) == '' {
+                continue
+            }
             {string:any} part = {}
             part['text'] = text_block.text
+            string text_sig = resolved_signature(same_provider_model, text_block.text_signature)
+            if text_sig != '' {
+                part['thoughtSignature'] = text_sig
+            }
             parts.push(part)
         } else if block is ref<types.thinking_content_t> thinking_block {
+            if thinking_block.thinking.trim([' ', '\t', '\n', '\r']) == '' {
+                continue
+            }
             {string:any} part = {}
-            part['text'] = thinking_block.thinking
-            part['thought'] = true
+            if same_provider_model {
+                // Only same provider AND model keep native thinking blocks;
+                // everything else degrades to plain text.
+                part['text'] = thinking_block.thinking
+                part['thought'] = true
+                string think_sig = resolved_signature(same_provider_model, thinking_block.thinking_signature)
+                if think_sig != '' {
+                    part['thoughtSignature'] = think_sig
+                }
+            } else {
+                part['text'] = thinking_block.thinking
+            }
             parts.push(part)
         } else if block is ref<types.tool_call_t> tool_call {
             {string:any} function_call = {}
             function_call['name'] = tool_call.name
             function_call['args'] = tool_call.arguments
-            if tool_call.id != '' {
-                function_call['id'] = tool_call.id
-            }
             {string:any} part = {}
             part['functionCall'] = function_call
+            string call_sig = resolved_signature(same_provider_model, tool_call.thought_signature)
+            if call_sig != '' {
+                part['thoughtSignature'] = call_sig
+            }
             parts.push(part)
         }
     }
@@ -313,26 +446,131 @@ fn model_content(ref<types.assistant_message_t> message): any {
     return content
 }
 
-fn tool_result_content(ref<types.tool_result_message_t> message): any {
+fn gemini_major_version(string model_id): int {
+    string id = model_id.to_lower()
+    if id.starts_with('gemini-live-') {
+        id = id.slice('gemini-live-'.len(), id.len())
+    } else if id.starts_with('gemini-') {
+        id = id.slice('gemini-'.len(), id.len())
+    } else {
+        return 0
+    }
+    string digits = ''
+    for int i = 0; i < id.len(); i += 1 {
+        u8 c = id[i]
+        if c >= '0'.char() && c <= '9'.char() {
+            digits += id.slice(i, i + 1)
+            continue
+        }
+        break
+    }
+    if digits == '' {
+        return 0
+    }
+    int major = 0
+    for int i = 0; i < digits.len(); i += 1 {
+        major = major * 10 + (digits[i] as int - '0'.char() as int)
+    }
+    return major
+}
+
+// Pi google-shared toolResult conversion: output/error response keys,
+// Gemini 3+ nested image parts (older models get a separate user turn),
+// and consecutive function responses merged into one user turn.
+fn push_tool_result(ref<types.model_t> model, [any] contents, ref<types.tool_result_message_t> message) {
     [string] lines = []
     for block in message.content {
         lines.push(block.text)
     }
     string text = strings.join(lines, '\n')
-    if text == '' {
-        text = '(no tool output)'
+    [ref<types.image_attachment_t>] images = message.images
+    bool has_text = text != ''
+    bool has_images = images.len() > 0
+    string response_value = has_text ? text : has_images ? '(see attached image)' : ''
+    bool multimodal = gemini_major_version(model.id) >= 3
+
+    {string:any} response = {}
+    if message.is_error {
+        response['error'] = response_value
+    } else {
+        response['output'] = response_value
     }
     {string:any} function_response = {}
     function_response['name'] = message.tool_name
-    {string:any} response = {}
-    response['result'] = text
     function_response['response'] = response
+    if has_images && multimodal {
+        [any] image_parts = []
+        for image in images {
+            {string:any} inline_data = {}
+            inline_data['mimeType'] = image.mime_type
+            inline_data['data'] = image.data
+            {string:any} image_part = {}
+            image_part['inlineData'] = inline_data
+            image_parts.push(image_part)
+        }
+        function_response['parts'] = image_parts
+    }
     {string:any} part = {}
     part['functionResponse'] = function_response
+
+    // Merge into the previous user turn when it already carries function
+    // responses (Cloud Code Assist requires one combined user turn).
+    bool merged = false
+    if contents.len() > 0 {
+        var last = contents[contents.len() - 1]
+        if last is {string:any} last_content {
+            if json_util.opt_string(last_content, 'role') == 'user' && last_content.contains('parts') && last_content['parts'] is [any] {
+                [any] last_parts = last_content['parts'] as [any]
+                bool has_function_response = false
+                for existing in last_parts {
+                    if existing is {string:any} ep {
+                        if ep.contains('functionResponse') {
+                            has_function_response = true
+                            break
+                        }
+                    }
+                }
+                if has_function_response {
+                    last_parts.push(part)
+                    last_content['parts'] = last_parts
+                    merged = true
+                }
+            }
+        }
+    }
+    if merged {
+        // For pre-Gemini-3 models images ride in a separate user turn.
+        if has_images && !multimodal {
+            contents.push(image_follow_up(images))
+        }
+        return
+    }
     {string:any} content = {}
     content['role'] = 'user'
     [any] parts = []
     parts.push(part)
+    content['parts'] = parts
+    contents.push(content)
+    if has_images && !multimodal {
+        contents.push(image_follow_up(images))
+    }
+}
+
+fn image_follow_up([ref<types.image_attachment_t>] images): any {
+    {string:any} content = {}
+    content['role'] = 'user'
+    [any] parts = []
+    {string:any} label = {}
+    label['text'] = 'Tool result image:'
+    parts.push(label)
+    for image in images {
+        {string:any} inline_data = {}
+        inline_data['mimeType'] = image.mime_type
+        inline_data['data'] = image.data
+        {string:any} part = {}
+        part['inlineData'] = inline_data
+        parts.push(part)
+    }
     content['parts'] = parts
     return content
 }
