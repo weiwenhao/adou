@@ -48,6 +48,11 @@ pub type manager_t = struct {
     string leaf_id
     bool needs_separator
     [string] warnings = []
+    // B2.3: Pi defers every byte of a new JSONL session until the first
+    // assistant message (_persist): non-assistant entries buffer in memory,
+    // then header + buffer + entry flush together via an exclusive create.
+    bool session_flushed
+    [string] pending_lines = []
     // B1.5: 'jsonl' managers append lines through persist_line; 'sqlite'
     // managers persist through the sqlite_repo layer and must never write
     // JSONL bytes into the database file.
@@ -128,8 +133,8 @@ pub fn create_with_id_and_parent(string cwd, string session_dir, string session_
     string file_timestamp = timestamp.replace(':', '-').replace('.', '-')
     string file_path = path.join(directory, file_timestamp + '_' + session_id + '.jsonl')
     var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved, parent_session = parent_session, raw = null)
-    write_new_file(file_path, jsonl.encode_header(header) + '\n')
-    return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = directory, session_file = file_path, persisted = true, header = header)
+    // B2.3: header materializes on the first append (deferred first flush).
+    return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = directory, session_file = file_path, persisted = true, header = header, session_flushed = false)
 }
 
 // B1.5: SQLite-backed sessions persist through their own storage layer, so
@@ -140,7 +145,7 @@ pub fn create_without_jsonl(string cwd): ref<manager_t>! {
     string timestamp = identity.iso_now()
     string session_id = identity.uuid_v7()
     var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved, parent_session = '', raw = null)
-    return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = '', session_file = '', persisted = true, header = header, storage_backend = 'sqlite')
+    return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved, session_dir = '', session_file = '', persisted = true, header = header, storage_backend = 'sqlite', session_flushed = false)
 }
 
 // Pi creates an explicit --session path when it does not exist yet.  Keep
@@ -157,8 +162,7 @@ pub fn open_or_create(string file_path, string cwd): ref<manager_t>! {
     string timestamp = identity.iso_now()
     string session_id = identity.uuid_v7()
     var header = new types.header_t(version = types.CURRENT_VERSION, id = session_id, timestamp = timestamp, cwd = resolved_cwd, raw = null)
-    write_new_file(resolved_file, jsonl.encode_header(header) + '\n')
-    return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved_cwd, session_dir = directory, session_file = resolved_file, persisted = true, header = header)
+    return new manager_t(lock = mutex.mutex_t.new(), cwd = resolved_cwd, session_dir = directory, session_file = resolved_file, persisted = true, header = header, session_flushed = false)
 }
 
 // Pi's /import copies an external JSONL into the active session directory
@@ -200,7 +204,7 @@ pub fn open(string file_path): ref<manager_t>! {
         }
         rewrite_file(resolved_file, content)
     }
-    var manager = new manager_t(lock = mutex.mutex_t.new(), cwd = loaded.header.cwd, session_dir = path.dir(resolved_file), session_file = resolved_file, persisted = true, header = loaded.header, entries = loaded.entries, needs_separator = loaded.needs_separator, warnings = loaded.warnings)
+    var manager = new manager_t(lock = mutex.mutex_t.new(), cwd = loaded.header.cwd, session_dir = path.dir(resolved_file), session_file = resolved_file, persisted = true, header = loaded.header, entries = loaded.entries, needs_separator = loaded.needs_separator, warnings = loaded.warnings, session_flushed = true)
     manager.rebuild_index()
     return manager
 }
@@ -513,7 +517,16 @@ pub fn manager_t.append_message(&self, ai_types.message_t message): string! {
     return entry.id
 }
 
+// Pi appendCompaction(fromHook: true) variant used by hook-driven flows.
+pub fn manager_t.append_compaction_from_hook(&self, string summary, string first_kept_entry_id, int tokens_before, any details, ai_types.usage_t usage, [ai_types.message_t] retained_tail): string! {
+    return self.append_compaction_impl(summary, first_kept_entry_id, tokens_before, details, usage, retained_tail, true)
+}
+
 pub fn manager_t.append_compaction(&self, string summary, string first_kept_entry_id, int tokens_before, any details, ai_types.usage_t usage, [ai_types.message_t] retained_tail): string! {
+    return self.append_compaction_impl(summary, first_kept_entry_id, tokens_before, details, usage, retained_tail, false)
+}
+
+fn manager_t.append_compaction_impl(&self, string summary, string first_kept_entry_id, int tokens_before, any details, ai_types.usage_t usage, [ai_types.message_t] retained_tail, bool from_hook): string! {
     self.lock.lock()
     if !self.by_id.contains(first_kept_entry_id) {
         self.lock.unlock()
@@ -523,6 +536,9 @@ pub fn manager_t.append_compaction(&self, string summary, string first_kept_entr
     object['summary'] = summary
     object['firstKeptEntryId'] = first_kept_entry_id
     object['tokensBefore'] = tokens_before
+    if from_hook {
+        object['fromHook'] = true
+    }
     if !json_util.is_null(details) {
         object['details'] = details
     }
@@ -544,7 +560,16 @@ pub fn manager_t.append_compaction(&self, string summary, string first_kept_entr
     return entry.id
 }
 
+// Pi appendBranchSummary(fromHook: true) variant.
+pub fn manager_t.append_branch_summary_from_hook(&self, string from_id, string summary, any details, ai_types.usage_t usage): string! {
+    return self.append_branch_summary_impl(from_id, summary, details, usage, true)
+}
+
 pub fn manager_t.append_branch_summary(&self, string from_id, string summary, any details, ai_types.usage_t usage): string! {
+    return self.append_branch_summary_impl(from_id, summary, details, usage, false)
+}
+
+fn manager_t.append_branch_summary_impl(&self, string from_id, string summary, any details, ai_types.usage_t usage, bool from_hook): string! {
     self.lock.lock()
     if from_id != 'root' && !self.by_id.contains(from_id) {
         self.lock.unlock()
@@ -553,6 +578,9 @@ pub fn manager_t.append_branch_summary(&self, string from_id, string summary, an
     {string:any} object = self.entry_base(types.ENTRY_BRANCH_SUMMARY)
     object['fromId'] = from_id
     object['summary'] = summary
+    if from_hook {
+        object['fromHook'] = true
+    }
     if !json_util.is_null(details) {
         object['details'] = details
     }
@@ -608,6 +636,51 @@ pub fn manager_t.append_active_tools_change(&self, [string] active_tool_names): 
     }
     self.lock.unlock()
     return entry.id
+}
+
+// Pi appendCustomEntry: extension data entries ride in the file but never
+// join the LLM context.
+pub fn manager_t.append_custom_entry(&self, string custom_type, any data): string! {
+    self.lock.lock()
+    {string:any} object = self.entry_base(types.ENTRY_CUSTOM)
+    object['customType'] = custom_type
+    object['data'] = data
+    var entry = self.append_object_locked(object) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.unlock()
+    return entry.id
+}
+
+// Pi appendCustomMessageEntry: a custom message entry that participates in
+// the LLM context as role 'custom' (display only affects TUI rendering).
+pub fn manager_t.append_custom_message_entry(&self, string custom_type, any content, bool display, any details): string! {
+    self.lock.lock()
+    {string:any} object = self.entry_base(types.ENTRY_CUSTOM_MESSAGE)
+    object['customType'] = custom_type
+    object['content'] = content
+    object['display'] = display
+    object['details'] = details
+    var entry = self.append_object_locked(object) catch error {
+        self.lock.unlock()
+        throw error
+    }
+    self.lock.unlock()
+    return entry.id
+}
+
+// Pi getChildren: direct children of an entry in file order.
+pub fn manager_t.get_children(&self, string parent_id): [ref<types.entry_t>] {
+    [ref<types.entry_t>] children = []
+    self.lock.lock()
+    for entry in self.entries {
+        if entry.parent_id == parent_id {
+            children.push(entry)
+        }
+    }
+    self.lock.unlock()
+    return children
 }
 
 pub fn manager_t.append_session_info(&self, string name): string! {
@@ -953,6 +1026,16 @@ pub fn manager_t.build_context(&self): types.context_t! {
             var object = active[index].raw as {string:any}
             ai_types.message_t message = new ai_types.branch_summary_message_t(summary = json_util.required_string(object, 'summary'), from_id = json_util.required_string(object, 'fromId'), timestamp = iso_to_ms(active[index].timestamp))
             result.messages.push(message)
+        } else if active[index].kind == types.ENTRY_CUSTOM_MESSAGE {
+            var object = active[index].raw as {string:any}
+            {string:any} custom = {}
+            custom['role'] = 'custom'
+            custom['customType'] = json_util.opt_string(object, 'customType')
+            custom['content'] = json_util.clone(object['content'])
+            custom['display'] = json_util.opt_bool(object, 'display')
+            custom['details'] = object.contains('details') ? json_util.clone(object['details']) : null
+            custom['timestamp'] = iso_to_ms(active[index].timestamp)
+            result.messages.push(message_json.decode(custom))
         }
     }
     if compaction_index >= 0 {
@@ -967,6 +1050,16 @@ pub fn manager_t.build_context(&self): types.context_t! {
                 var object = active[index].raw as {string:any}
                 ai_types.message_t message = new ai_types.branch_summary_message_t(summary = json_util.required_string(object, 'summary'), from_id = json_util.required_string(object, 'fromId'), timestamp = iso_to_ms(active[index].timestamp))
                 result.messages.push(message)
+            } else if active[index].kind == types.ENTRY_CUSTOM_MESSAGE {
+                var object = active[index].raw as {string:any}
+                {string:any} custom = {}
+                custom['role'] = 'custom'
+                custom['customType'] = json_util.opt_string(object, 'customType')
+                custom['content'] = json_util.clone(object['content'])
+                custom['display'] = json_util.opt_bool(object, 'display')
+                custom['details'] = object.contains('details') ? json_util.clone(object['details']) : null
+                custom['timestamp'] = iso_to_ms(active[index].timestamp)
+                result.messages.push(message_json.decode(custom))
             }
         }
     }
@@ -1271,7 +1364,17 @@ pub fn manager_t.unique_short_id(&self): string! {
 pub fn manager_t.append_object_locked(&self, {string:any} object): ref<types.entry_t>! {
     string line = json.serialize(object)
     var entry = jsonl.parse_entry(json_util.parse(line))
-    self.persist_line(line) catch error {
+    bool is_assistant_entry = false
+    if object.contains('type') && object['type'] is string {
+        string entry_kind = object['type'] as string
+        if entry_kind == types.ENTRY_MESSAGE && object.contains('message') && object['message'] is {string:any} {
+            var nested = object['message'] as {string:any}
+            if nested.contains('role') && nested['role'] is string {
+                is_assistant_entry = (nested['role'] as string) == 'assistant'
+            }
+        }
+    }
+    self.persist_line(line, is_assistant_entry) catch error {
         throw error
     }
     self.entries.push(entry)
@@ -1281,8 +1384,31 @@ pub fn manager_t.append_object_locked(&self, {string:any} object): ref<types.ent
     return entry
 }
 
-pub fn manager_t.persist_line(&self, string line): void! {
+pub fn manager_t.persist_line(&self, string line, bool is_assistant_entry): void! {
     if !self.persisted || self.storage_backend != 'jsonl' {
+        return
+    }
+    if !self.session_flushed {
+        // Upstream _persist: hold non-assistant entries until the first
+        // assistant message arrives, then materialize everything at once.
+        if !is_assistant_entry {
+            self.pending_lines.push(line)
+            return
+        }
+        var file = fs.open(self.session_file, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_EXCL | syscall.O_APPEND, 0o600)
+        write_all(file, (jsonl.encode_header(self.header) + '\n') as [u8])
+        for pending in self.pending_lines {
+            write_all(file, (pending + '\n') as [u8])
+        }
+        write_all(file, (line + '\n') as [u8])
+        if libc.fsync(file.fd as i32) != 0 {
+            string message = libc.error_string()
+            file.close()
+            throw errorf('fsync session failed: %s', message)
+        }
+        file.close()
+        self.session_flushed = true
+        self.pending_lines = []
         return
     }
     var file = fs.open(self.session_file, syscall.O_WRONLY | syscall.O_APPEND, 0)

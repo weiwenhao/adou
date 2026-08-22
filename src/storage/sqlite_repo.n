@@ -352,7 +352,61 @@ pub fn record_branch_entry(ref<db_t> handle, string session_id, string branch_id
     }
 }
 
-// Keep entry_materialized and session_materialized in lockstep with every
+// Pi SqliteSessionMetadata carries a free-form metadata JSON blob; the
+// sessions table column exists in the shared schema, so read/write it.
+pub fn set_session_metadata(ref<db_t> handle, string session_id, string metadata_json): void! {
+    var sql_text = 'UPDATE sessions SET metadata = ? WHERE id = ?'
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare session metadata update failed: %s', errmsg(handle.db))
+    }
+    if metadata_json == '' {
+        sqlite.sqlite3_bind_null(statement, 1)
+    } else {
+        sqlite.sqlite3_bind_text(statement, 1, metadata_json.to_cstr(), -1, 0)
+    }
+    sqlite.sqlite3_bind_text(statement, 2, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_step(statement)
+    sqlite.sqlite3_finalize(statement)
+}
+
+pub fn session_metadata(ref<db_t> handle, string session_id): string! {
+    string sql_text = 'SELECT metadata FROM sessions WHERE id = ?'
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare session metadata read failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    string result = ''
+    if sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW {
+        result = column_text(statement, 0)
+    }
+    sqlite.sqlite3_finalize(statement)
+    return result
+}
+
+// branch-entries reader: the copied-entry links recorded by fork callers.
+pub fn branch_entries_for(ref<db_t> handle, string session_id, string branch_id): [[string]]! {
+    [[string]] result = []
+    string sql_text = 'SELECT entry_id, entry_seq FROM branch_entries WHERE session_id = ? AND branch_id = ? ORDER BY entry_seq'
+    ptr<sqlite.sqlite3_stmt_t> statement = null
+    var rc = sqlite.sqlite3_prepare_v2(handle.db, sql_text.to_cstr(), -1, &statement, null)
+    if rc != sqlite.SQLITE_OK {
+        throw errorf('prepare branch entries read failed: %s', errmsg(handle.db))
+    }
+    sqlite.sqlite3_bind_text(statement, 1, session_id.to_cstr(), -1, 0)
+    sqlite.sqlite3_bind_text(statement, 2, branch_id.to_cstr(), -1, 0)
+    for sqlite.sqlite3_step(statement) == sqlite.SQLITE_ROW {
+        [string] row = [column_text(statement, 0), column_text(statement, 1)]
+        result.push(row)
+    }
+    sqlite.sqlite3_finalize(statement)
+    return result
+}
+
+
 // append (upstream storage/entry-materialized.ts and
 // session-materialized.ts).  The session payload records the latest leaf
 // id so branch queries can resolve the active entry without scanning.

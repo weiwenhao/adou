@@ -58,6 +58,8 @@ fn run_contract_suite(backend.backend_t backend_ref, bool persisted): void! {
 
     // append two messages: entry order follows append order (SQLite
     // persists through the backend layer).
+    // B2.3: an assistant entry flushes JSONL sessions so list/delete see them.
+    backend.append_message(backend_ref, new ai_types.assistant_message_t(timestamp = 1)) catch e {throw e}
     string first_id = backend.append_message(backend_ref, user_message('contract first'))
     string second_id = backend.append_message(backend_ref, user_message('contract second'))
     var entries = manager.get_entries()
@@ -77,8 +79,9 @@ fn run_contract_suite(backend.backend_t backend_ref, bool persisted): void! {
             }
         }
     }
-    assert(message_kinds == 2)
-    assert(first_seen == 1 && second_seen == 2)
+    assert(message_kinds == 3)
+    // Assistant seeds position 1; the user messages follow in order.
+    assert(first_seen == 2 && second_seen == 3)
     assert(manager.get_leaf_id() == second_id)
 
     // parent lineage: the second message links to the first.

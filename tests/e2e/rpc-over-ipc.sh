@@ -118,12 +118,20 @@ def wait_child_pids(expected_count, timeout=5.0):
 
 
 def assert_session_cwd(instance, expected_cwd):
+    canonical_cwd = os.path.realpath(expected_cwd)
     session_file = instance.get("sessionFile")
-    if not session_file:
-        raise SystemExit(f"online instance missing sessionFile: {instance!r}")
+    # B2.3 deferred flush: until the child's first assistant entry the JSONL
+    # file does not exist yet (Pi _persist); the coordinator summary still
+    # carries the child's spawn cwd for verification.
+    if not session_file or not os.path.exists(session_file):
+        reported = instance.get("cwd") or ""
+        if os.path.realpath(reported) != canonical_cwd:
+            raise SystemExit(
+                f"RPC child did not enter requested cwd {canonical_cwd!r}: {instance!r}"
+            )
+        return
     with open(session_file, encoding="utf-8") as handle:
         header = json.loads(handle.readline())
-    canonical_cwd = os.path.realpath(expected_cwd)
     if header.get("cwd") != canonical_cwd:
         raise SystemExit(
             f"RPC child did not enter requested cwd {canonical_cwd!r}: {header!r}"
@@ -180,14 +188,17 @@ try:
     pid_b = next(iter(new_children))
     id_a, id_b = inst_a["id"], inst_b["id"]
     sess_a, sess_b = online_a["sessionId"], online_b["sessionId"]
+    # B2.3 deferred flush: without an assistant entry the children's session
+    # files stay unmaterialized (Pi _persist); the coordinator itself must
+    # never own a session file either.
     session_files = [
         name
         for name in os.listdir(os.path.join(root, "sessions"))
         if name.endswith(".jsonl")
     ]
-    if len(session_files) != 2:
+    if session_files:
         raise SystemExit(
-            f"server coordinator must not create its own session: {session_files!r}"
+            f"server coordinator or idle children flushed a session file: {session_files!r}"
         )
 
     # list: two instances with both ids.

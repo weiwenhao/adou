@@ -200,6 +200,9 @@ fn encode_assistant(ref<types.assistant_message_t> message): any! {
     if message.response_id != '' {
         object['responseId'] = message.response_id
     }
+    if message.response_model != '' {
+        object['responseModel'] = message.response_model
+    }
     object['usage'] = encode_usage(message.usage)
     object['stopReason'] = message.stop_reason
     if message.error_message != '' {
@@ -214,17 +217,16 @@ pub fn encode_tool_result(ref<types.tool_result_message_t> message): any! {
     object['role'] = 'toolResult'
     object['toolCallId'] = message.tool_call_id
     object['toolName'] = message.tool_name
-    object['content'] = encode_text_blocks(message.content)
-    if message.images.len() > 0 {
-        [any] images = []
-        for image in message.images {
-            {string:any} item = {}
-            item['mimeType'] = image.mime_type
-            item['data'] = image.data
-            images.push(item)
-        }
-        object['images'] = images
+    // Pi stores tool-result images as ImageContent items inside content.
+    [any] content_items = encode_text_blocks(message.content) as [any]
+    for image in message.images {
+        {string:any} item = {}
+        item['type'] = 'image'
+        item['mimeType'] = image.mime_type
+        item['data'] = image.data
+        content_items.push(item)
     }
+    object['content'] = content_items
     if !json_util.is_null(message.details) {
         object['details'] = message.details
     }
@@ -315,16 +317,32 @@ fn decode_assistant({string:any} object): types.message_t! {
     if object.contains('usage') && object['usage'] is {string:any} {
         usage = decode_usage(object['usage'])
     }
-    types.message_t result = new types.assistant_message_t(content = content, api = json_util.opt_string(object, 'api'), provider = json_util.opt_string(object, 'provider'), model = json_util.opt_string(object, 'model'), response_id = json_util.opt_string(object, 'responseId'), usage = usage, stop_reason = optional_string_default(object, 'stopReason', types.STOP_STOP), error_message = json_util.opt_string(object, 'errorMessage'), timestamp = json_util.opt_int(object, 'timestamp'))
+    types.message_t result = new types.assistant_message_t(content = content, api = json_util.opt_string(object, 'api'), provider = json_util.opt_string(object, 'provider'), model = json_util.opt_string(object, 'model'), response_id = json_util.opt_string(object, 'responseId'), response_model = json_util.opt_string(object, 'responseModel'), usage = usage, stop_reason = optional_string_default(object, 'stopReason', types.STOP_STOP), error_message = json_util.opt_string(object, 'errorMessage'), timestamp = json_util.opt_int(object, 'timestamp'))
     return result
 }
 
 fn decode_tool_result({string:any} object): types.message_t! {
     [ref<types.text_content_t>] content = []
-    if object.contains('content') && object['content'] is [any] {
-        content = decode_text_blocks(object['content'])
-    }
     [ref<types.image_attachment_t>] images = []
+    if object.contains('content') && object['content'] is [any] {
+        for item_value in object['content'] as [any] {
+            if !(item_value is {string:any}) {
+                continue
+            }
+            var block = item_value as {string:any}
+            string kind = json_util.opt_string(block, 'type')
+            if kind == 'text' {
+                content.push(new types.text_content_t(text = json_util.opt_string(block, 'text')))
+            } else if kind == 'image' {
+                string mime = json_util.opt_string(block, 'mimeType')
+                string data = json_util.opt_string(block, 'data')
+                if mime != '' && data != '' {
+                    images.push(new types.image_attachment_t(mime_type = mime, data = data))
+                }
+            }
+        }
+    }
+    // Older Adou files kept a separate top-level images key; still read it.
     if object.contains('images') && object['images'] is [any] {
         for raw_image in object['images'] as [any] {
             if raw_image is {string:any} image {

@@ -70,6 +70,9 @@ pub type assistant_message_t = struct {
     string provider
     string model
     string response_id
+    // Pi-ai AssistantMessage.responseModel: the concrete chunk.model when it
+    // differs from the requested model (e.g. OpenRouter 'auto').
+    string response_model
     usage_t usage
     string stop_reason = STOP_PENDING
     string error_message

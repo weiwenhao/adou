@@ -705,7 +705,10 @@ fn open_repository(config_types.config_t config, string cwd): ref<repository.man
     }
     if config.session_path != '' {
         if config.session_path.find('/') >= 0 || config.session_path.find('\\') >= 0 || config.session_path.to_lower().ends_with('.jsonl') || config.session_path.starts_with('~') {
-            return repository.open(config.session_path)
+            // Pi _setSessionFile: an explicit --session path that does not
+            // exist yet is created lazily at that path (deferred first
+            // flush), not an error.
+            return repository.open_or_create(config.session_path, cwd)
         }
         return repository.open_reference(cwd, config.session_dir, config.session_path)
     }

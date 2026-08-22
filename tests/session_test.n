@@ -63,6 +63,8 @@ test 'new sessions preserve an explicit Pi parentSession in persisted and in-mem
     string parent = root + '/previous.jsonl'
     var persisted = repository.create_with_parent(root, root + '/sessions', parent)
     assert(persisted.header.parent_session == parent)
+    // B2.3: materialize before reopening from disk.
+    persisted.append_message(new ai_types.assistant_message_t(timestamp = 1))
     var reopened = repository.open(persisted.get_session_file())
     assert(reopened.header.parent_session == parent)
     string encoded = jsonl.encode_header(reopened.header)
@@ -182,15 +184,18 @@ test 'bash execution messages round-trip and preserve context exclusion' {
     string root = '/tmp/adou-session-test-bash'
     os.rmdir(root, true) catch error {}
     var session = repository.create(root, root + '/sessions')
+    // B2.3: materialize before reopening from disk.
+    session.append_message(new ai_types.assistant_message_t(timestamp = 1))
     ai_types.message_t included = new ai_types.bash_execution_message_t(command = 'pwd', output = '/tmp/project', exit_code = 0, timestamp = 100)
     ai_types.message_t excluded = new ai_types.bash_execution_message_t(command = 'env', output = 'SECRET=value', exit_code = 0, exclude_from_context = true, timestamp = 200)
     session.append_message(included)
     session.append_message(excluded)
     var reopened = repository.open(session.get_session_file())
     var context = reopened.build_context()
-    assert(context.messages.len() == 2)
-    assert(text_of(context.messages[0]).contains('Ran `pwd`'))
-    var hidden = context.messages[1] as ref<ai_types.bash_execution_message_t>
+    assert(context.messages.len() == 3)
+    assert(text_of(context.messages[0]) == '')
+    assert(text_of(context.messages[1]).contains('Ran `pwd`'))
+    var hidden = context.messages[2] as ref<ai_types.bash_execution_message_t>
     assert(hidden.exclude_from_context)
     os.rmdir(root, true)
 }
@@ -309,6 +314,8 @@ test 'branch summary entries participate in Pi context and survive reopen' {
     string root = '/tmp/adou-session-test-branch-summary'
     os.rmdir(root, true) catch error {}
     var session = repository.create(root, root + '/sessions')
+    // B2.3: materialize before reopening from disk.
+    session.append_message(new ai_types.assistant_message_t(timestamp = 1))
     string root_id = session.append_message(new ai_types.user_message_t(content = 'start', timestamp = 1))
     string abandoned_id = session.append_message(new ai_types.user_message_t(content = 'abandoned', timestamp = 2))
     session.set_leaf(root_id)
@@ -316,9 +323,10 @@ test 'branch summary entries participate in Pi context and survive reopen' {
     session.append_message(new ai_types.user_message_t(content = 'new direction', timestamp = 3))
     var reopened = repository.open(session.get_session_file())
     var context = reopened.build_context()
-    assert(context.messages.len() == 3)
-    assert(text_of(context.messages[1]) == types.BRANCH_SUMMARY_PREFIX + 'Tried the abandoned approach' + types.BRANCH_SUMMARY_SUFFIX)
-    assert(text_of(context.messages[2]) == 'new direction')
+    assert(context.messages.len() == 4)
+    assert(text_of(context.messages[0]) == '')
+    assert(text_of(context.messages[2]) == types.BRANCH_SUMMARY_PREFIX + 'Tried the abandoned approach' + types.BRANCH_SUMMARY_SUFFIX)
+    assert(text_of(context.messages[3]) == 'new direction')
     os.rmdir(root, true)
 }
 
@@ -326,6 +334,8 @@ test 'labels are append-only metadata and the latest change wins after reopen' {
     string root = '/tmp/adou-session-test-label'
     os.rmdir(root, true) catch error {}
     var session = repository.create(root, root + '/sessions')
+    // B2.3: materialize with a first assistant entry.
+    session.append_message(new ai_types.assistant_message_t(timestamp = 1))
     string message_id = session.append_message(new ai_types.user_message_t(content = 'checkpoint', timestamp = 1))
     session.append_label_change(message_id, 'first')
     session.append_label_change(message_id, 'important')
@@ -334,7 +344,7 @@ test 'labels are append-only metadata and the latest change wins after reopen' {
     assert(reopened.get_label_timestamp(message_id) != '')
     reopened.append_label_change(message_id, '')
     assert(reopened.get_label(message_id) == '')
-    assert(reopened.build_context().messages.len() == 1)
+    assert(reopened.build_context().messages.len() == 2)
     os.rmdir(root, true)
 }
 
@@ -367,6 +377,8 @@ test 'compaction preserves JSONL history and rebuilds summary plus kept tail' {
     string root = '/tmp/adou-session-test-compaction'
     os.rmdir(root, true) catch error {}
     var session = repository.create(root, root + '/sessions')
+    // B2.3: materialize with a first assistant entry.
+    session.append_message(new ai_types.assistant_message_t(timestamp = 25))
     ai_types.message_t first = new ai_types.user_message_t(content = 'old', timestamp = 100)
     session.append_message(first)
     ai_types.message_t kept = new ai_types.user_message_t(content = 'keep', timestamp = 200)
@@ -377,12 +389,13 @@ test 'compaction preserves JSONL history and rebuilds summary plus kept tail' {
     session.append_message(after)
     assert(session.get_entries().len() == before + 2)
     var context = session.build_context()
+    // The seeded assistant precedes the compaction cut and stays excluded.
     assert(context.messages.len() == 3)
     assert(text_of(context.messages[0]).contains('<summary>\nsummary text\n</summary>'))
     assert(text_of(context.messages[1]) == 'keep')
     assert(text_of(context.messages[2]) == 'after')
     var loaded = jsonl.load(session.get_session_file())
-    assert(loaded.entries.len() == 4)
+    assert(loaded.entries.len() == 5)
     os.rmdir(root, true)
 }
 
@@ -390,6 +403,8 @@ test 'incomplete trailing JSONL record is reported and future appends stay parse
     string root = '/tmp/adou-session-test-recovery'
     os.rmdir(root, true) catch error {}
     var session = repository.create(root, root + '/sessions')
+    // B2.3: flush with a first assistant entry before raw byte writes.
+    session.append_message(new ai_types.assistant_message_t(timestamp = 50))
     ai_types.message_t first = new ai_types.user_message_t(content = 'one', timestamp = 100)
     session.append_message(first)
     string file_path = session.get_session_file()
@@ -400,8 +415,8 @@ test 'incomplete trailing JSONL record is reported and future appends stay parse
     recovered.append_message(second)
     var loaded = repository.open(file_path)
     var context = loaded.build_context()
-    assert(context.messages.len() == 2)
-    assert(text_of(context.messages[1]) == 'two')
+    assert(context.messages.len() == 3)
+    assert(text_of(context.messages[2]) == 'two')
     os.rmdir(root, true)
 }
 
@@ -409,18 +424,20 @@ test 'unknown v3 entries remain in the append-only log and do not break known co
     string root = '/tmp/adou-session-test-unknown'
     os.rmdir(root, true) catch error {}
     var session = repository.create(root, root + '/sessions')
+    // B2.3: flush with a first assistant entry before raw byte writes.
+    session.append_message(new ai_types.assistant_message_t(timestamp = 60))
     ai_types.message_t first = new ai_types.user_message_t(content = 'one', timestamp = 100)
     string first_id = session.append_message(first)
     append_bytes(session.get_session_file(), '{"type":"future_entry","id":"future01","parentId":"' + first_id + '","timestamp":"2026-07-30T00:00:00.000Z","payload":{"keep":true}}\n')
     var reopened = repository.open(session.get_session_file())
-    assert(reopened.get_entries().len() == 2)
+    assert(reopened.get_entries().len() == 3)
     ai_types.message_t second = new ai_types.user_message_t(content = 'two', timestamp = 200)
     reopened.append_message(second)
     var final_session = repository.open(session.get_session_file())
-    assert(final_session.get_entries().len() == 3)
-    assert(final_session.get_entries()[1].kind == 'future_entry')
+    assert(final_session.get_entries().len() == 4)
+    assert(final_session.get_entries()[2].kind == 'future_entry')
     var context = final_session.build_context()
-    assert(context.messages.len() == 2 && text_of(context.messages[1]) == 'two')
+    assert(context.messages.len() == 3 && text_of(context.messages[2]) == 'two')
     os.rmdir(root, true)
 }
 
@@ -428,6 +445,8 @@ test 'session file is private and concurrent records never interleave' {
     string root = '/tmp/adou-session-test-concurrent'
     os.rmdir(root, true) catch error {}
     var session = repository.create(root, root + '/sessions')
+    // B2.3: materialize with a first assistant entry before stat.
+    session.append_message(new ai_types.assistant_message_t(timestamp = 1))
     var stat = syscall.stat(session.get_session_file())
     assert((stat.mode & 0o777) == 0o600)
     chan<int> done = chan<int>.new(2)
@@ -436,7 +455,7 @@ test 'session file is private and concurrent records never interleave' {
     done.recv()
     done.recv()
     var reopened = repository.open(session.get_session_file())
-    assert(reopened.get_entries().len() == 2)
+    assert(reopened.get_entries().len() == 3)
     assert(reopened.get_warnings().len() == 0)
     os.rmdir(root, true)
 }
@@ -447,9 +466,11 @@ test 'continue recent selects the newest session for the same cwd' {
     var first = repository.create(root, root + '/sessions')
     ai_types.message_t message = new ai_types.user_message_t(content = 'saved', timestamp = 100)
     first.append_message(message)
+    // B2.3: an assistant turn flushes the session so continue finds it.
+    first.append_message(new ai_types.assistant_message_t(timestamp = 200))
     var recent = repository.continue_recent(root, root + '/sessions')
     assert(recent.get_session_id() == first.get_session_id())
-    assert(recent.build_context().messages.len() == 1)
+    assert(recent.build_context().messages.len() == 2)
     os.rmdir(root, true)
 }
 
@@ -459,8 +480,10 @@ test 'session id lookup opens an exact or unique prefixed Pi session id' {
     var created = repository.create(root, root + '/sessions')
     string id = created.get_session_id()
     created.append_message(new ai_types.user_message_t(content = 'by id', timestamp = 100))
+    // B2.3: an assistant turn flushes the file for id lookup.
+    created.append_message(new ai_types.assistant_message_t(timestamp = 200))
     var exact = repository.open_by_id(root, root + '/sessions', id)
-    assert(exact.get_session_id() == id && exact.build_context().messages.len() == 1)
+    assert(exact.get_session_id() == id && exact.build_context().messages.len() == 2)
     string prefix = id.slice(0, 8)
     var partial = repository.open_by_id(root, root + '/sessions', prefix)
     assert(partial.get_session_id() == id)
@@ -488,11 +511,14 @@ test 'import copies an external Pi session into the active session directory' {
     string target_root = root + '/target'
     var source = repository.create(source_root, source_root + '/sessions')
     source.append_message(new ai_types.user_message_t(content = 'import me', timestamp = 100))
+    // B2.3: an assistant turn flushes the source file for import.
+    source.append_message(new ai_types.assistant_message_t(timestamp = 150))
     var target = repository.create(target_root, target_root + '/sessions')
     var imported = target.import_file(source.get_session_file())
     assert(imported.get_session_file() != source.get_session_file())
     assert(imported.get_session_file().starts_with(target_root + '/sessions/'))
-    assert(imported.build_context().messages.len() == 1)
+    // Buffered user lines precede the flushing assistant entry on disk.
+    assert(imported.build_context().messages.len() == 2)
     assert(text_of(imported.build_context().messages[0]) == 'import me')
     os.rmdir(root, true)
 }
@@ -504,10 +530,15 @@ test 'explicit session paths and ids follow Pi create-or-open semantics' {
     var by_path = repository.open_or_create(explicit_path, root)
     assert(by_path.persisted && by_path.get_session_file() == explicit_path)
     string first_id = by_path.get_session_id()
-    var reopened = repository.open_or_create(explicit_path, root)
-    assert(reopened.get_session_id() == first_id)
+    // B2.3 deferred flush: nothing is on disk before the first assistant
+    // entry, matching Pi's _persist. Flush, then reopen the same path.
+    by_path.append_message(new ai_types.assistant_message_t(timestamp = 5))
+    var flushed_reopened = repository.open_or_create(explicit_path, root)
+    assert(flushed_reopened.get_session_id() == first_id)
     var by_id = repository.open_by_id_or_create(root, root + '/sessions', 'fixed-session')
     assert(by_id.get_session_id() == 'fixed-session')
+    // B2.3: flush so the prefixed reference finds it on disk.
+    by_id.append_message(new ai_types.assistant_message_t(timestamp = 6))
     var by_prefix = repository.open_reference(root, root + '/sessions', 'fixed-ses')
     assert(by_prefix.get_session_id() == 'fixed-session')
     os.rmdir(root, true)
@@ -522,10 +553,12 @@ test 'session references fall back to other projects in a shared session directo
     var source = repository.create(source_root, shared)
     string id = source.get_session_id()
     source.append_message(new ai_types.user_message_t(content = 'global id', timestamp = 100))
+    // B2.3: an assistant turn flushes the shared file.
+    source.append_message(new ai_types.assistant_message_t(timestamp = 150))
     var selected = repository.open_reference(target_root, shared, id.slice(0, 8))
     assert(selected.get_session_id() == id)
     assert(selected.cwd == source_root)
-    assert(selected.build_context().messages.len() == 1)
+    assert(selected.build_context().messages.len() == 2)
     os.rmdir(root, true)
 }
 
@@ -536,10 +569,13 @@ test 'continue recent uses file modification time instead of header timestamp' {
     string older_file = older.get_session_file()
     string older_timestamp = older.header.timestamp
     older.append_message(new ai_types.user_message_t(content = 'older', timestamp = 100))
+    // B2.3: assistant turns flush both files for mtime ordering.
+    older.append_message(new ai_types.assistant_message_t(timestamp = 150))
     var newer = repository.create(root, root + '/sessions')
     string newer_file = newer.get_session_file()
     string newer_timestamp = newer.header.timestamp
     newer.append_message(new ai_types.user_message_t(content = 'newer', timestamp = 200))
+    newer.append_message(new ai_types.assistant_message_t(timestamp = 250))
     replace_header_timestamp(older_file, older_timestamp, '2030-01-01T00:00:00.000Z')
     co.sleep(20)
     replace_header_timestamp(newer_file, newer_timestamp, '2020-01-01T00:00:00.000Z')
