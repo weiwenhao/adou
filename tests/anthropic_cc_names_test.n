@@ -66,3 +66,13 @@ test 'streamed CC names map back to the context tool name' {
     var processor = anthropic_messages.processor(model, 1)
     processor.tools = context_with_tools().tools
 }
+
+test 'metadata user id is emitted as request metadata' {
+    var context = new types.context_t()
+    var options = new types.stream_options_t(api_key = 'key')
+    options.metadata['user_id'] = 'user_abc'
+    string body = anthropic_request.build(
+        new types.model_t(id = 'claude-x', provider = 'anthropic', api = 'anthropic-messages'),
+        context, options) catch e {'ERR'}
+    assert(body.contains('"metadata":{"user_id":"user_abc"}'))
+}

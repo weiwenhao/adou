@@ -237,6 +237,9 @@ pub type stream_options_t = struct {
     // OpenAI Responses service_tier ('auto'|'default'|'flex'|...); empty
     // leaves the key unset like upstream's undefined.
     string service_tier
+    // Pi StreamOptions.metadata passthrough; Anthropic emits
+    // metadata.user_id when present.
+    {string:string} metadata = {}
     bool block_images
     // Pi's transport option for the Codex Responses provider: 'auto'
     // (default), 'sse', 'websocket' or 'websocket-cached'.  'websocket-cached'
