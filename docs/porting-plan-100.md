@@ -131,6 +131,8 @@ MCP 不在范围内：Pi core 明确无内建 MCP（属扩展生态能力）。
 
 **补充二分结果**：回归窗口锁定为 `55ec7a9..6b843e6`——即 Claude Code 工具名映射与 deferred tools 接入提交（8815610）引入；`55ec7a9` 处同测试绿。修复方向：在该提交范围内对 anthropic convert/build 路径做逐段还原重验，优先怀疑 deferred 消息转换对 image-only 用户消息的空内容处理。
 
+**2026-08-22 专项调试结论**：多轮二分（map 类型切换、守卫添加、逐文件回退、pending_siblings 移除）均未能消除段错误。崩溃点在 anthropic_request.build 的 image-only 用户消息路径，但具体行需 lldb/native 级调试（本轮上下文不足）。已回退全部临时调试改动，HEAD 干净。该测试为唯一 make test 阻塞；其余 163 个文件两轮运行均绿。
+
 
 
 ## 附：评估缺口 → 批次销账索引
