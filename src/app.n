@@ -47,6 +47,8 @@ import fs
 import os
 import strings
 import syscall
+import os
+import os.signal
 import adou.src.tui.term
 import adou.src.tui.theme as tui_theme
 import path
@@ -815,6 +817,8 @@ fn open_repository(config_types.config_t config, string cwd): ref<repository.man
 // its parked terminal reader).  The guard channel is not used for a full
 // handshake; a timed-out process exits before the normal path can send.
 fn run_headless(ref<session.runner_t> runner, [string] prompts, [ref<ai_types.image_attachment_t>] initial_images, bool plain, bool json_mode): void! {
+    // B6: deterministic termination for print/json one-shot flows.
+    go exit_on_termination_signal()
     if json_mode {
         run_headless_with_watchdog(runner, prompts, initial_images, true)
         return
@@ -1031,8 +1035,34 @@ fn server_executable(): string! {
     return path.join(platform_cwd.current(), executable)
 }
 
+// B6: Pi registers SIGINT/SIGTERM/SIGHUP handlers for headless modes so
+// external termination exits deterministically instead of leaving children
+// or half-flushed stdout behind.
+fn watch_termination_signals(): chan<signal.sig_t> {
+    var sig_ch = chan<signal.sig_t>.new(4)
+    signal.notify(sig_ch, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+    return sig_ch
+}
+
+fn exit_on_termination_signal(): void! {
+    var sig_ch = watch_termination_signals()
+    var received = sig_ch.recv() catch error {return}
+    debug.log('signal', 'headless termination: ' + fmt.sprintf('%d', received))
+    syscall.exit(1) catch exit_error {}
+}
+
+fn serve_signal_watcher(ref<ipc_supervisor.supervisor_t> sup): void! {
+    var sig_ch = watch_termination_signals()
+    var received = sig_ch.recv() catch error {return}
+    debug.log('signal', 'serve termination: ' + fmt.sprintf('%d', received))
+    sup.shutdown() catch shutdown_error {}
+    syscall.exit(0) catch exit_error {}
+}
+
 fn run_serve(int port, bool offline): void! {
     var sup = ipc_supervisor.new(server_executable(), offline)
+    // B6: graceful SIGINT/SIGTERM/SIGHUP — dispose children and presence.
+    go serve_signal_watcher(sup)
     sup.start_presence()
     ipc_server.connection_handler_t handler = fn(ref<tcp.conn_t> conn): void {
         serve_connection(sup, conn) catch error {
@@ -1338,6 +1368,8 @@ fn rpc_dispatch(ref<session.runner_t> runner, {string:any} object, string comman
 }
 
 fn run_rpc(ref<session.runner_t> runner, bool no_context_files, string system_prompt_override, [string] append_system_prompts, [string] model_scope_patterns, config_types.skills_options_t skills_options): void! {
+    // B6: deterministic termination for the JSONL command loop.
+    go exit_on_termination_signal()
     var input = fs.stdin()
     var reader = new buf.reader<ref<fs.file_t>>(rd = input)
     var sink = stdout_rpc_sink()
