@@ -1,3 +1,4 @@
+import adou.src.tui.syntax
 import adou.src.tui.text_utils
 import adou.src.tui.unicode
 import adou.src.tui.theme
@@ -7,6 +8,8 @@ pub fn render(string markdown, int width): [string]! {
     [string] result = vec<string>.cap_of(16)
     var lines = split_lines(markdown)
     bool fenced = false
+    string fence_language = ''
+    bool highlighted_fence = false
     int index = 0
     for index < lines.len() {
         string raw = lines[index]
@@ -14,17 +17,23 @@ pub fn render(string markdown, int width): [string]! {
             string fence = raw.slice(0, 3)
             if !fenced {
                 fenced = true
+                fence_language = raw.slice(3, raw.len()).trim([' '])
+                highlighted_fence = syntax.supports(fence_language)
                 result.push(theme.fg(theme.CODE_BLOCK_BORDER, raw))
             } else {
                 result.push(theme.fg(theme.CODE_BLOCK_BORDER, fence))
                 fenced = false
+                highlighted_fence = false
+                fence_language = ''
                 result.push('')
             }
             index += 1
             continue
         }
         if fenced {
-            var code_line = text_utils.wrap_text_with_ansi(theme.fg(theme.CODE_BLOCK, '  ' + raw), width > 0 ? width : 1)
+            // B4: supported languages get keyword/string/comment coloring.
+            string code_text = highlighted_fence ? syntax.highlight_line(raw, fence_language) : raw
+            var code_line = text_utils.wrap_text_with_ansi(theme.fg(theme.CODE_BLOCK, '  ' + code_text), width > 0 ? width : 1)
             result.append(code_line)
             index += 1
             continue

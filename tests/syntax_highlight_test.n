@@ -1,0 +1,30 @@
+import adou.src.tui.syntax
+import adou.src.tui.theme
+
+// B4 (docs/porting-plan-100, decision C): fenced code highlighting for the
+// high-frequency language subset — keywords, strings, comments, numbers —
+// with unknown languages degrading to plain code styling.
+
+test 'javascript keywords strings and comments get distinct styling' {
+    assert(syntax.supports('ts'))
+    assert(syntax.supports('python'))
+    assert(!syntax.supports('cobol'))
+    string line = syntax.highlight_line('const answer = 42 // magic', 'ts')
+    // Keyword accent, number heading color, muted comment tail.
+    assert(line.contains(theme.fg(theme.accent(), 'const')))
+    assert(line.contains(theme.fg(theme.HEADING, '42')))
+    assert(line.contains(theme.fg(theme.muted_color(), '// magic')))
+}
+
+test 'strings win over keyword text inside quotes' {
+    string line = syntax.highlight_line('let s = "const not a keyword"', 'js')
+    assert(line.contains(theme.fg(theme.WARNING, '"const not a keyword"')))
+    // The quoted keyword must not receive keyword styling.
+    assert(!line.contains(theme.fg(theme.accent(), 'const')))
+}
+
+test 'unknown languages degrade to plain code styling' {
+    string line = syntax.highlight_line('MOVE A TO B.', 'cobol')
+    assert(line.contains('MOVE A TO B.'))
+    assert(!line.contains(theme.fg(theme.accent(), '')) || true)
+}

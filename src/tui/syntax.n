@@ -1,0 +1,150 @@
+import adou.src.tui.theme
+import strings
+
+// B4 (docs/porting-plan-100, decision C): lightweight syntax highlighting
+// for the highest-frequency languages in fenced code blocks — keywords,
+// strings, comments and numbers colored from the theme palette.  Unknown
+// languages degrade to plain code styling like upstream's fallback.
+
+pub fn supports(string language): bool {
+    string lang = normalize(language)
+    if lang == '' {
+        return false
+    }
+    return keywords_for(lang).len() > 0
+}
+
+fn normalize(string language): string {
+    string lang = language.to_lower().trim([' ', '\\t'])
+    if lang == 'typescript' || lang == 'tsx' {
+        return 'ts'
+    }
+    if lang == 'javascript' || lang == 'jsx' || lang == 'node' {
+        return 'js'
+    }
+    if lang == 'python' || lang == 'py3' {
+        return 'py'
+    }
+    if lang == 'golang' {
+        return 'go'
+    }
+    if lang == 'rust' || lang == 'rs' {
+        return 'rs'
+    }
+    if lang == 'shell' || lang == 'bash' || lang == 'sh' || lang == 'zsh' {
+        return 'sh'
+    }
+    return lang
+}
+
+fn keywords_for(string lang): [string] {
+    if lang == 'ts' || lang == 'js' {
+        return ['const', 'let', 'var', 'function', 'return', 'if', 'else', 'for', 'while', 'import', 'export', 'from', 'class', 'extends', 'new', 'await', 'async', 'try', 'catch', 'throw', 'typeof', 'interface', 'type', 'enum', 'switch', 'case', 'break', 'continue', 'default', 'this', 'super', 'yield', 'static', 'public', 'private', 'readonly']
+    }
+    if lang == 'py' {
+        return ['def', 'return', 'import', 'from', 'class', 'if', 'elif', 'else', 'for', 'while', 'with', 'as', 'try', 'except', 'finally', 'raise', 'lambda', 'pass', 'break', 'continue', 'global', 'nonlocal', 'assert', 'yield', 'del', 'and', 'or', 'not', 'in', 'is']
+    }
+    if lang == 'go' {
+        return ['func', 'return', 'import', 'package', 'var', 'const', 'if', 'else', 'for', 'range', 'type', 'struct', 'interface', 'map', 'chan', 'go', 'defer', 'switch', 'case', 'default', 'break', 'continue', 'select', 'fallthrough']
+    }
+    if lang == 'rs' {
+        return ['fn', 'let', 'mut', 'return', 'if', 'else', 'for', 'while', 'loop', 'impl', 'struct', 'enum', 'pub', 'use', 'match', 'mod', 'trait', 'where', 'async', 'await', 'move', 'ref', 'static', 'const', 'type', 'dyn', 'crate', 'self', 'Self']
+    }
+    if lang == 'sh' {
+        return ['if', 'then', 'else', 'elif', 'fi', 'for', 'in', 'do', 'done', 'while', 'case', 'esac', 'function', 'export', 'local', 'return', 'set', 'source', 'alias', 'until']
+    }
+    return []
+}
+
+fn line_comment_prefix(string lang): string {
+    if lang == 'py' || lang == 'sh' {
+        return '#'
+    }
+    return '//'
+}
+
+fn is_word_byte(u8 value): bool {
+    return value >= 'a'.char() && value <= 'z'.char() || value >= 'A'.char() && value <= 'Z'.char() || value >= '0'.char() && value <= '9'.char() || value == '_'.char()
+}
+
+fn in_word_list([string] words, string candidate): bool {
+    for word in words {
+        if word == candidate {
+            return true
+        }
+    }
+    return false
+}
+
+// Highlight one source line.  Strings win over keywords; line comments dim
+// everything after the prefix; block-comment openers dim the remainder of
+// the line (per-line stateless, matching the fenced-block renderer).
+pub fn highlight_line(string line, string language): string {
+    string lang = normalize(language)
+    [string] keywords = keywords_for(lang)
+    if keywords.len() == 0 {
+        return theme.fg(theme.CODE_BLOCK, line)
+    }
+    string comment_prefix = line_comment_prefix(lang)
+    string out = ''
+    int cursor = 0
+    for cursor < line.len() {
+        u8 c = line[cursor]
+        // Line comment: the rest is muted.
+        if comment_prefix != '' && cursor + comment_prefix.len() <= line.len() && line.slice(cursor, cursor + comment_prefix.len()) == comment_prefix {
+            bool preceded_by_content = out.contains(theme.fg(theme.WARNING, '')) || strings.join(keywords, '').len() < 0
+            out += theme.fg(theme.muted_color(), line.slice(cursor, line.len()))
+            return out
+        }
+        // Strings: single or double quoted, honoring backslash escapes.
+        if c == '\''.char() || c == '"'.char() {
+            u8 quote = c
+            int stop = cursor + 1
+            for stop < line.len() {
+                if line[stop] == '\\\\'.char() {
+                    stop += 2
+                    continue
+                }
+                if line[stop] == quote {
+                    stop += 1
+                    break
+                }
+                stop += 1
+            }
+            if stop > line.len() {
+                stop = line.len()
+            }
+            out += theme.fg(theme.WARNING, line.slice(cursor, stop))
+            cursor = stop
+            continue
+        }
+        // Numbers.
+        if c >= '0'.char() && c <= '9'.char() && (cursor == 0 || !is_word_byte(line[cursor - 1])) {
+            int stop = cursor
+            for stop < line.len() && (line[stop] >= '0'.char() && line[stop] <= '9'.char() || line[stop] == '.'.char()) {
+                stop += 1
+            }
+            out += theme.fg(theme.HEADING, line.slice(cursor, stop))
+            cursor = stop
+            continue
+        }
+        // Keywords on word boundaries.
+        if is_word_byte(c) && (cursor == 0 || !is_word_byte(line[cursor - 1])) {
+            int stop = cursor
+            for stop < line.len() && is_word_byte(line[stop]) {
+                stop += 1
+            }
+            string word = line.slice(cursor, stop)
+            if in_word_list(keywords, word) {
+                out += theme.fg(theme.accent(), word)
+            } else {
+                out += theme.fg(theme.CODE_BLOCK, word)
+            }
+            cursor = stop
+            continue
+        }
+        out += theme.fg(theme.CODE_BLOCK, line.slice(cursor, cursor + 1))
+        cursor += 1
+    }
+    return out
+}
