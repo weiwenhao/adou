@@ -1,0 +1,20 @@
+import adou.src.tui.editor
+
+// B5: the pure wrap segmentation used by visual_lines — word-boundary
+// preference plus CJK glyph breaks, no content loss.
+
+test 'breaks at the space before the crossing word' {
+    var segs = editor.wrap_line_segments('aaaa bbbb cccccccc dddd', 10)
+    assert(segs.len() == 3)
+    assert(segs[0] == 'aaaa bbbb ')
+    assert(segs[1] == 'cccccccc ')
+    assert(segs[2] == 'dddd')
+}
+
+test 'cjk wraps per glyph' {
+    var segs = editor.wrap_line_segments('你好世界测试', 4)
+    assert(segs.len() == 3)
+    assert(segs[0] == '你好')
+    assert(segs[1] == '世界')
+    assert(segs[2] == '测试')
+}
