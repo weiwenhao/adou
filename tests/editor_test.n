@@ -1,3 +1,4 @@
+import fmt
 import adou.src.tui.editor
 import adou.src.tui.keybindings
 
@@ -208,6 +209,7 @@ test 'visual wrapping keeps wide CJK graphemes intact' {
     // than splitting a multi-byte character (terminal word-wrap behavior).
     editor.width = 6
     var narrow = editor.visual_lines()
+    println('NARROW: ' + narrow[0].text + '|' + narrow[1].text + '|' + (narrow.len() > 2 ? narrow[2].text : ''))
     assert(narrow.len() == 3)
     assert(narrow[0].text == '你好世')
     assert(narrow[1].text == '界hell')

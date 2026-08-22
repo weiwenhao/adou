@@ -1,3 +1,4 @@
+import syscall
 import adou.src.tui.unicode
 import adou.src.tui.keybindings
 import adou.src.tui.keys
@@ -653,35 +654,35 @@ pub fn wrap_line_segments(string line, int width): [string]! {
     int line_start = 0
     int accumulated = 0
     int word_start = line_start
-    for int cursor = 0; cursor < segments.len(); cursor += 1 {
+    // Manual index loop: Nature's counted-for header re-initializes its own
+    // counter, so wrap restarts must drive a declared variable instead.
+    int cursor = 0
+    for cursor < segments.len() {
         var segment = segments[cursor]
         string grapheme = line.slice(segment.start, segment.end)
         int grapheme_width = unicode.visible_width(grapheme)
-        bool is_space = grapheme == ' '
-        bool is_cjk = grapheme[0] >= 0xE0
-        if is_space || is_cjk {
-            word_start = segment.end
-        }
-        if accumulated + grapheme_width > width && accumulated > 0 {
-            int break_at = segment.start
-            if word_start > line_start && word_start < segment.start {
-                // Trailing whitespace stays on the finished line.
-                break_at = word_start
+        bool overflows = accumulated + grapheme_width > width && accumulated > 0
+        if !overflows {
+            if grapheme == ' ' {
+                word_start = segment.end
             }
-            if break_at <= line_start {
-                break_at = segment.start
-            }
-            if break_at <= line_start {
-                break_at = segment.end
-            }
-            result.push(line.slice(line_start, break_at))
-            line_start = break_at
-            accumulated = 0
-            // Restart scanning from the first grapheme on the new line.
-            cursor = restart_from(segments, line_start) - 1
-        } else {
             accumulated += grapheme_width
+            cursor += 1
+            continue
         }
+        int break_at = segment.start
+        if word_start > line_start && word_start < segment.start {
+            // Trailing whitespace stays on the finished line.
+            break_at = word_start
+        }
+        if break_at <= line_start {
+            break_at = segment.start
+        }
+        result.push(line.slice(line_start, break_at))
+        line_start = break_at
+        accumulated = 0
+        // Continue from the first grapheme on the new line.
+        cursor = restart_from(segments, line_start)
     }
     if line_start < line.len() {
         result.push(line.slice(line_start, line.len()))
