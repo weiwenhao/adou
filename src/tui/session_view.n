@@ -393,6 +393,9 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     }
     view.update_untrusted_banner(cwd)
     var stored_settings = view.settings_snapshot
+    // B4: named custom themes resolve from the registry before the
+    // light/dark/pair fallback decides a variant.
+    theme.ensure_named_loaded(cwd, stored_settings.theme)
     theme.set_variant(active_theme_variant(stored_settings.theme, view.live_theme_report))
     string theme_file = syscall.get_env('ADOU_THEME_FILE')
     if theme_file != '' {theme.load_json(theme_file)}

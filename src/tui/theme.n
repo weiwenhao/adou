@@ -1,5 +1,6 @@
 import adou.src.tui.text_utils
 import adou.src.json_util
+import adou.src.config.paths
 import adou.src.tools.path_utils
 import fs
 import fmt
@@ -58,11 +59,55 @@ pub fn load_json(string file_path): bool {
     if root.contains('colors') && json_util.is_obj(root['colors']) {colors = root['colors']}
     if !(colors is {string:any}) {return false}
     var object = colors as {string:any}
+    // B4: minimal schema validation — a theme must style at least one
+    // recognized color key (or define vars it derives colors from).
+    bool recognized = theme_vars.len() > 0
+    for name, value in object {
+        if value is string && is_known_color_name(name) {
+            recognized = true
+            break
+        }
+    }
+    if !recognized {return false}
     for name, value in object {
         if value is string {set_custom_color(name, parse_color(value as string, is_background_name(name)))}
     }
     loaded_theme_path = path_utils.expand_path(file_path)
     return true
+}
+
+// B4: named-theme registry — custom themes resolve from the project's
+// .pi/themes/<name>.json then the agent dir's themes/, nearest first.
+string loaded_theme_name = ''
+
+pub fn loaded_name(): string {
+    return loaded_theme_name
+}
+
+pub fn is_builtin_name(string name): bool {
+    return name == 'light' || name == 'dark' || name.contains('/')
+}
+
+// Resolve and load <name>.json when `name` refers to a registered custom
+// theme.  Built-in names and already-loaded themes are no-ops.
+pub fn ensure_named_loaded(string cwd, string name): bool {
+    if name == '' || is_builtin_name(name) {
+        return false
+    }
+    if name == loaded_theme_name && loaded_theme_path != '' {
+        return true
+    }
+    [string] candidates = [
+        path_utils.resolve_to_cwd('.pi/themes/' + name + '.json', cwd),
+        path.join(paths.agent_dir(), 'themes', name + '.json'),
+    ]
+    for candidate in candidates {
+        if load_json(candidate) {
+            loaded_theme_name = name
+            return true
+        }
+    }
+    return false
 }
 
 pub fn reload(): bool {return loaded_theme_path != '' && load_json(loaded_theme_path)}
@@ -87,6 +132,29 @@ fn resolve_theme_value(string value, int depth): string {
     string raw = value.trim([' ', '\t', '\n', '\r'])
     if depth >= 8 || !theme_vars.contains(raw) {return raw}
     return resolve_theme_value(theme_vars[raw] as string, depth + 1)
+}
+
+pub fn is_known_color_name(string name): bool {
+    if is_background_name(name) {
+        return true
+    }
+    // Foreground names consumed by theme.fg/custom_color lookups.
+    return match name {
+        'text' -> true
+        'muted' -> true
+        'dim' -> true
+        'accent' -> true
+        'border' -> true
+        'error' -> true
+        'warning' -> true
+        'success' -> true
+        'heading' -> true
+        'codeBlock' -> true
+        'code_block' -> true
+        'codeBlockBorder' -> true
+        'code_block_border' -> true
+        _ -> false
+    }
 }
 
 fn is_background_name(string name): bool {

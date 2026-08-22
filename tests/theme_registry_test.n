@@ -1,0 +1,69 @@
+import adou.src.tui.theme
+import adou.src.config.paths
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+// B4 (docs/porting-plan-100): named custom themes resolve from a registry
+// (project .pi/themes then agent themes/), with schema validation rejecting
+// payloads that style no recognized color.
+
+fn isolate(): string {
+    string dir = '/tmp/adou-theme-registry-' + fmt.sprintf('%d', time.now().ms_timestamp())
+    os.mkdirs(dir, 0o700) catch e {}
+    syscall.set_env('ADOU_CODING_AGENT_DIR', dir) catch e {}
+    return dir
+}
+
+fn write_file(string file_path, string content): void! {
+    os.mkdirs(path.dir(file_path), 0o755) catch e {}
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    file.write(content as [u8])
+    file.close()
+}
+
+test 'named themes resolve from the project registry and validate' {
+    string root = isolate()
+    string project = path.join(root, 'project')
+    string theme_dir = path.join(project, '.pi', 'themes')
+    os.mkdirs(theme_dir, 0o755) catch e {}
+    write_file(path.join(theme_dir, 'solarized.json'), '{"colors":{"text":"#073642","accent":"#268bd2"}}')
+
+    assert(theme.ensure_named_loaded(project, 'solarized'))
+    assert(theme.loaded_name() == 'solarized')
+    assert(theme.loaded_path().contains('solarized.json'))
+
+    // Unknown names fail without clobbering the loaded theme.
+    assert(!theme.ensure_named_loaded(project, 'missing'))
+    assert(theme.loaded_name() == 'solarized')
+
+    // Built-ins are never registry lookups.
+    assert(!theme.ensure_named_loaded(project, 'light'))
+    assert(!theme.ensure_named_loaded(project, 'dark'))
+}
+
+test 'themes without recognized colors fail validation' {
+    string root = isolate()
+    string project = path.join(root, 'p2')
+    string theme_dir = path.join(project, '.pi', 'themes')
+    os.mkdirs(theme_dir, 0o755) catch e {}
+    write_file(path.join(theme_dir, 'garbage.json'), '{"colors":{"notAColorKey":"#fff"}}')
+
+    assert(!theme.ensure_named_loaded(project, 'garbage'))
+    assert(theme.loaded_name() != 'garbage')
+}
+
+test 'the agent dir registry is the fallback location' {
+    string root = isolate()
+    string agent_themes = path.join(paths.agent_dir(), 'themes')
+    os.mkdirs(agent_themes, 0o755) catch e {}
+    write_file(path.join(agent_themes, 'agenttheme.json'), '{"vars":{"accent":"#123456"},"colors":{"accent":"{accent}"}}')
+
+    string project = path.join(root, 'proj')
+    os.mkdirs(project, 0o755) catch e {}
+    assert(theme.ensure_named_loaded(project, 'agenttheme'))
+    assert(theme.loaded_path().contains('agenttheme.json'))
+}
