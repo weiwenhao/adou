@@ -310,6 +310,10 @@ pub type view_t = struct {
     // --session rebind to another project uses that project's decision.
     [string] skill_paths = []
     bool no_skills
+    // B6: Pi resource-discovery flags (--prompt-template/--no-prompt-templates).
+    [string] prompt_template_paths = []
+    bool no_prompt_templates
+    bool no_themes
     bool trust_override
     bool trust_override_explicit
     // A trust choice made for this TUI session must not mutate CLI override
@@ -353,7 +357,7 @@ pub type view_t = struct {
     ref<keybindings.keybindings_t> keybindings = keybindings.current()
 }
 
-pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model, string cwd, [string] skill_paths, bool no_skills, bool trust_override, bool trust_override_explicit, [string] initial_model_scope_patterns, bool model_scope_explicit, string system_prompt_override, [string] append_system_prompts, bool no_context_files): ref<view_t> {
+pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string model, string cwd, [string] skill_paths, bool no_skills, bool trust_override, bool trust_override_explicit, [string] initial_model_scope_patterns, bool model_scope_explicit, string system_prompt_override, [string] append_system_prompts, bool no_context_files, [string] prompt_template_paths, bool no_prompt_templates, bool no_themes): ref<view_t> {
     // CLI options land on the view BEFORE the first resource snapshot so
     // the initial model-candidate cache and the menu already honor them
     // (B1-R2-06 scope timing: no naked post-construction assignments in
@@ -362,7 +366,7 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     // before the view is built so the editor resolves the same instance.
     var keybinding_registry = keybindings.create(paths.agent_dir())
     keybindings.set_current(keybinding_registry)
-    var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, autocomplete = new autocomplete.autocomplete_state_t (), kitty_protocol = true, skill_paths = skill_paths, no_skills = no_skills, trust_override = trust_override, trust_override_explicit = trust_override_explicit, session_trust_override_set = false, session_trust_override = false, session_trust_cwd = cwd, model_scope_patterns = initial_model_scope_patterns, model_scope_explicit = model_scope_explicit, system_prompt_override = system_prompt_override, append_system_prompts = append_system_prompts, no_context_files = no_context_files, keybindings = keybinding_registry)
+    var view = new view_t(terminal = terminal, runner = runner, chat = chat.new(model, cwd), editor = editor.new(), input_buffer = input_buffer.new(), renderer = renderer.new(), input_events = chan<input_t>.new(64), signals = chan<signal.sig_t>.new(8), active_stream = null, overlay = null, autocomplete = new autocomplete.autocomplete_state_t (), kitty_protocol = true, skill_paths = skill_paths, no_skills = no_skills, prompt_template_paths = prompt_template_paths, no_prompt_templates = no_prompt_templates, no_themes = no_themes, trust_override = trust_override, trust_override_explicit = trust_override_explicit, session_trust_override_set = false, session_trust_override = false, session_trust_cwd = cwd, model_scope_patterns = initial_model_scope_patterns, model_scope_explicit = model_scope_explicit, system_prompt_override = system_prompt_override, append_system_prompts = append_system_prompts, no_context_files = no_context_files, keybindings = keybinding_registry)
     string thinking = runner.agent_config.stream_options.reasoning_effort
     if !runner.agent_config.stream_options.thinking_enabled {
         thinking = 'off'
@@ -395,8 +399,10 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     view.update_untrusted_banner(cwd)
     var stored_settings = view.settings_snapshot
     // B4: named custom themes resolve from the registry before the
-    // light/dark/pair fallback decides a variant.
-    theme.ensure_named_loaded(cwd, stored_settings.theme)
+    // light/dark/pair fallback decides a variant (--no-themes disables).
+    if !view.no_themes {
+        theme.ensure_named_loaded(cwd, stored_settings.theme)
+    }
     theme.set_variant(active_theme_variant(stored_settings.theme, view.live_theme_report))
     string theme_file = syscall.get_env('ADOU_THEME_FILE')
     if theme_file != '' {theme.load_json(theme_file)}
@@ -441,7 +447,8 @@ pub fn view_t.refresh_resource_snapshot(&self, string cwd, bool reload_auth) {
     bool trusted = self.trusted_for(cwd)
     self.settings_snapshot = config_settings.load_trusted_for(cwd, trusted)
     [string] no_extra = []
-    var templates = prompt_templates.load_prompt_templates(cwd, paths.agent_dir(), no_extra, true, trusted)
+    var template_extras = self.prompt_template_paths
+    var templates = prompt_templates.load_prompt_templates(cwd, paths.agent_dir(), template_extras, !self.no_prompt_templates, trusted)
     var skills_result = skills.load_skills(cwd, paths.agent_dir(), self.skill_paths, !self.no_skills, trusted) catch error {
         skills.load_skills_result_t {}
     }
@@ -2857,8 +2864,7 @@ fn read_input(ref<view_t> view, chan<terminal_input_t> input, chan<input_t> outp
             go input_timeout(input, timeout_id)
         }
         for sequence in processed.sequences {
-            // B5: Apple Terminal  -> Shift+Enter normalization (Pi
-            // forwardInputSequence).
+            // B5: Apple Terminal CR to Shift+Enter normalization (Pi forwardInputSequence).
             string normalized_sequence = native_modifiers.normalize_enter(sequence)
             // B4: keyboard negotiation answers never reach the key path.
             if normalized_sequence.starts_with('\x1b[?') && normalized_sequence.ends_with('u') {
