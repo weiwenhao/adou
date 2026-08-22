@@ -1,0 +1,34 @@
+import adou.src.tui.text_utils
+
+// B4 (docs/porting-plan-100): the editor embeds Pi's CURSOR_MARKER at the
+// input cursor; the renderer must resolve it to a row/column inside the
+// visible viewport, strip it from the painted line, and ignore stale
+// markers above the fold.
+
+test 'finds and strips the marker computing its visual column' {
+    [string] lines = ['assistant reply', 'prompt> ', '$']
+    // Marker sits after 'prompt> ' on the middle line; height 2 hides line 0.
+    lines[1] = 'prompt> ' + text_utils.CURSOR_MARKER
+    var hit = text_utils.find_cursor_marker(lines, 2) catch e {text_utils.cursor_hit_t{row: -1, col: -1}}
+    assert(hit.row == 1)
+    assert(hit.col == 8)
+    assert(lines[1] == 'prompt> ')
+}
+
+test 'wide characters count as their terminal columns' {
+    [string] lines = []
+    lines.push('你好')
+    lines.push('你好' + text_utils.CURSOR_MARKER)
+    var hit = text_utils.find_cursor_marker(lines, 2) catch e {text_utils.cursor_hit_t{row: -1, col: -1}}
+    assert(hit.row == 1)
+    // Each CJK character is two columns.
+    assert(hit.col == 4)
+}
+
+test 'markers above the viewport are ignored and left intact' {
+    [string] lines = ['x' + text_utils.CURSOR_MARKER]
+    lines.push('tail')
+    var hit = text_utils.find_cursor_marker(lines, 1) catch e {text_utils.cursor_hit_t{row: -1, col: -1}}
+    assert(hit.row == -1)
+    assert(lines[0].contains('pi:c'))
+}

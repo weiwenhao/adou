@@ -770,3 +770,38 @@ pub fn truncate_visual_lines(string text, int width, int max_visual_lines): (str
     }
     return (strings.join(tail, '\n'), total - max_visual_lines)
 }
+
+
+// Pi tui.ts CURSOR_MARKER: a focused component embeds this sentinel where
+// the hardware cursor belongs; the renderer locates it, converts the prefix
+// width to a visual column, and strips it before painting.
+pub const CURSOR_MARKER = '\x1b_pi:c\x07'
+
+pub type cursor_hit_t = struct {
+    int row
+    int col
+}
+
+// Scan the visible viewport (bottom `height` lines of `lines`) from the
+// bottom up for the marker; return its row and visual column with the
+// marker stripped out of `lines`.  Returns an empty hit when absent.
+pub fn find_cursor_marker([string] lines, int height): cursor_hit_t! {
+    cursor_hit_t miss = cursor_hit_t {row: -1, col: -1}
+    if height <= 0 || lines.len() == 0 {
+        return miss
+    }
+    int viewport_top = 0
+    if lines.len() > height {
+        viewport_top = lines.len() - height
+    }
+    for int row = lines.len() - 1; row >= viewport_top; row -= 1 {
+        int index = lines[row].find(CURSOR_MARKER)
+        if index < 0 {
+            continue
+        }
+        var hit = cursor_hit_t {row: row, col: visible_width(lines[row].slice(0, index))}
+        lines[row] = lines[row].slice(0, index) + lines[row].slice(index + CURSOR_MARKER.len(), lines[row].len())
+        return hit
+    }
+    return miss
+}
