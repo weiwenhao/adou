@@ -44,6 +44,7 @@ env.update(
 argv = [
     binary,
     "--offline",
+    "--approve",
     "--no-context-files",
     "--no-session",
     "--provider",
