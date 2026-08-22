@@ -173,6 +173,9 @@ pub type compat_t = struct {
     bool zai_tool_stream
     bool supports_strict_mode
     bool supports_openai_grammar_tools
+    // Anthropic tool_reference blocks (Pi supportsToolReferences): first-party
+    // Claude Opus/Sonnet/Fable 4.5+ except Haiku.
+    bool supports_tool_references
     bool send_session_affinity_headers
     string cache_control_format
 }

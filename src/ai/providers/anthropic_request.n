@@ -1,3 +1,4 @@
+import adou.src.ai.deferred_tools
 import adou.src.ai.types
 import adou.src.ai.providers.decorators
 import adou.src.ai.providers.replay
@@ -13,6 +14,58 @@ pub const FINE_GRAINED_TOOL_STREAMING_BETA = 'fine-grained-tool-streaming-2025-0
 // a Claude Code OAuth token (sk-ant-oat), tool names are normalized to the
 // canonical Claude Code casing on the way out and mapped back to the
 // context's exact names on the way in.
+// Pi defaultSupportsToolReferences: first-party Anthropic Opus/Sonnet/Fable
+// 4.5+ except Haiku and pre-tool-search models.
+pub fn default_supports_tool_references(ref<types.model_t> model): bool {
+    if model.provider != 'anthropic' || model.id.contains('haiku') {
+        return false
+    }
+    string probe = model.id.to_lower()
+    [string] families = ['claude-opus-', 'claude-sonnet-', 'claude-fable-']
+    for int f = 0; f < families.len(); f += 1 {
+        if !probe.starts_with(families[f]) {
+            continue
+        }
+        string rest = probe.slice(families[f].len(), probe.len())
+        string major_digits = ''
+        for int i = 0; i < rest.len(); i += 1 {
+            u8 c = rest[i]
+            if c >= '0'.char() && c <= '9'.char() {
+                major_digits += rest.slice(i, i + 1)
+                continue
+            }
+            break
+        }
+        if major_digits == '' {
+            return false
+        }
+        int major = 0
+        for int i = 0; i < major_digits.len(); i += 1 {
+            major = major * 10 + (major_digits[i] as int - '0'.char() as int)
+        }
+        int minor = 0
+        if rest.len() > major_digits.len() && rest[major_digits.len()] == '-'.char() {
+            string tail = rest.slice(major_digits.len() + 1, rest.len())
+            string minor_digits = ''
+            for int i = 0; i < tail.len(); i += 1 {
+                u8 c = tail[i]
+                if c >= '0'.char() && c <= '9'.char() {
+                    minor_digits += tail.slice(i, i + 1)
+                    continue
+                }
+                break
+            }
+            if minor_digits != '' && minor_digits.len() < 8 {
+                for int i = 0; i < minor_digits.len(); i += 1 {
+                    minor = minor * 10 + (minor_digits[i] as int - '0'.char() as int)
+                }
+            }
+        }
+        return major > 4 || (major == 4 && minor >= 5)
+    }
+    return false
+}
+
 fn claude_code_tools(): [string] {
     return [
         'Read',
@@ -67,7 +120,26 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
     // B3: Pi normalizeToolName — Claude Code OAuth (sk-ant-oat) renames
     // tools to canonical CC casing outbound.
     bool oauth_names = is_oauth_token(options.api_key)
-    body['messages'] = convert_messages(context.messages, cache_control(model, options), oauth_names)
+    // B3: Pi computes splitDeferredTools before converting messages — the
+    // deferred names drive tool_reference blocks inside those messages.
+    var placement = deferred_tools.split_deferred_tools(context, model.compat.supports_tool_references || default_supports_tool_references(model))
+    [ref<types.tool_t>] immediate_tools = placement.immediate
+    {string:ref<types.tool_t>} deferred_map = placement.deferred
+    if immediate_tools.len() == 0 && deferred_map.len() > 0 {
+        for _name, tool in deferred_map {
+            immediate_tools.push(tool)
+        }
+        deferred_map = {}
+    }
+    [string] deferred_names_list = []
+    for name, tool in deferred_map {
+        deferred_names_list.push(name)
+    }
+    {string:bool} deferred_tool_names = {}
+    for name in deferred_names_list {
+        deferred_tool_names[name] = true
+    }
+    body['messages'] = convert_messages(context.messages, cache_control(model, options), oauth_names, deferred_tool_names)
     body['max_tokens'] = max_tokens(model, options)
     body['stream'] = true
     if options.temperature >= 0.0 {
@@ -87,7 +159,16 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
         body['system'] = system
     }
     if context.tools.len() > 0 {
-        body['tools'] = convert_tools(context.tools, cache, model.supports_eager_tool_streaming, oauth_names)
+        // B3: re-admit deferred tools with defer_loading after the immediate set.
+        [any] tool_items = convert_tools(immediate_tools, cache, model.supports_eager_tool_streaming, oauth_names, false)
+        [ref<types.tool_t>] deferred_values = []
+        for name in deferred_names_list {
+            deferred_values.push(deferred_map[name])
+        }
+        for item in convert_tools(deferred_values, cache, model.supports_eager_tool_streaming, oauth_names, true) {
+            tool_items.push(item)
+        }
+        body['tools'] = tool_items
     }
     if model.reasoning {
         {string:any} thinking = {}
@@ -198,14 +279,23 @@ fn attach_cache({string:any} target, any cache): {string:any} {
     return target
 }
 
-pub fn convert_messages([types.message_t] messages, any cache, bool oauth_names): [any]! {
+pub fn convert_messages([types.message_t] messages, any cache, bool oauth_names, {string:bool} deferred_tool_names): [any]! {
     [any] result = []
     [any] pending_tool_results = []
+    [any] pending_siblings = []
+    {string:bool} loaded_tools = {}
     var replay = replay.tracker()
     for message in messages {
         if message is ref<types.tool_result_message_t> tool_result {
             replay.observe_tool_result(tool_result.tool_call_id)
-            pending_tool_results.push(tool_result_block(tool_result))
+            // B3: Pi convertToolResult — the first occurrence of each deferred
+            // addedToolName becomes an Anthropic tool_reference block; the
+            // ordinary content moves into sibling blocks after the results.
+            var parts = tool_result_parts(tool_result, deferred_tool_names, loaded_tools, oauth_names)
+            pending_tool_results.push(parts[0])
+            for sibling in parts[1] as [any] {
+                pending_siblings.push(sibling)
+            }
             continue
         }
         [ref<types.tool_result_message_t>] missing = []
@@ -218,8 +308,16 @@ pub fn convert_messages([types.message_t] messages, any cache, bool oauth_names)
             pending_tool_results.push(tool_result_block(item))
         }
         if pending_tool_results.len() > 0 {
-            result.push(message_item('user', pending_tool_results))
+            [any] combined = []
+            for block in pending_tool_results {
+                combined.push(block)
+            }
+            for sibling in pending_siblings {
+                combined.push(sibling)
+            }
+            result.push(message_item('user', combined))
             pending_tool_results = []
+            pending_siblings = []
         }
         if message is ref<types.user_message_t> user {
             if user.content != '' || user.images.len() > 0 {
@@ -288,8 +386,15 @@ pub fn convert_messages([types.message_t] messages, any cache, bool oauth_names)
     for item in replay.finish() {
         pending_tool_results.push(tool_result_block(item))
     }
-    if pending_tool_results.len() > 0 {
-        result.push(message_item('user', pending_tool_results))
+    if pending_tool_results.len() > 0 || pending_siblings.len() > 0 {
+        [any] combined = []
+        for block in pending_tool_results {
+            combined.push(block)
+        }
+        for sibling in pending_siblings {
+            combined.push(sibling)
+        }
+        result.push(message_item('user', combined))
     }
     attach_cache_to_last_user(result, cache)
     return result
@@ -334,6 +439,72 @@ fn assistant_blocks(ref<types.assistant_message_t> message, bool oauth_names): [
         }
     }
     return result
+}
+
+// B3: Pi convertToolResult — deferred addedToolNames become a single
+// tool_result block whose content is the tool_reference list (first
+// occurrence only); the ordinary text content moves into sibling blocks so
+// Anthropic never mixes references with regular content.
+fn tool_result_parts(ref<types.tool_result_message_t> message, {string:bool} deferred_tool_names, {string:bool} loaded_tools, bool oauth_names): [any]! {
+    [any] converted_content = []
+    [string] text = []
+    for block in message.content {
+        text.push(block.text)
+    }
+    string output = strings.join(text, '\n')
+    if output == '' {
+        output = '(no tool output)'
+    }
+    // Same content shape as tool_result_block: optional leading text plus
+    // any base64 image blocks.
+    if output != '' {
+        {string:any} text_block = {}
+        text_block['type'] = 'text'
+        text_block['text'] = output
+        converted_content.push(text_block)
+    }
+    for image in message.images {
+        {string:any} source = {}
+        source['type'] = 'base64'
+        source['media_type'] = image.mime_type
+        source['data'] = image.data
+        {string:any} image_block = {}
+        image_block['type'] = 'image'
+        image_block['source'] = source
+        converted_content.push(image_block)
+    }
+    [any] references = []
+    for name in message.added_tool_names {
+        if !deferred_tool_names.contains(name) || loaded_tools.contains(name) {
+            continue
+        }
+        loaded_tools[name] = true
+        {string:any} reference = {}
+        reference['type'] = 'tool_reference'
+        reference['tool_name'] = oauth_names ? to_claude_code_name(name) : name
+        references.push(reference)
+    }
+    {string:any} block = {}
+    block['type'] = 'tool_result'
+    block['tool_use_id'] = normalize_tool_id(message.tool_call_id)
+    block['is_error'] = message.is_error
+    if references.len() > 0 {
+        block['content'] = references
+    } else if message.images.len() == 0 {
+        block['content'] = output
+    } else {
+        block['content'] = converted_content
+    }
+    [any] parts = []
+    parts.push(block)
+    [any] siblings = []
+    if references.len() > 0 {
+        for sibling in converted_content {
+            siblings.push(sibling)
+        }
+    }
+    parts.push(siblings)
+    return parts
 }
 
 fn tool_result_block(ref<types.tool_result_message_t> message): any {
@@ -401,7 +572,7 @@ fn attach_cache_to_last_user([any] messages, any cache): void! {
     messages[messages.len() - 1] = object
 }
 
-pub fn convert_tools([ref<types.tool_t>] tools, any cache, bool eager_input_streaming, bool oauth_names): [any]! {
+pub fn convert_tools([ref<types.tool_t>] tools, any cache, bool eager_input_streaming, bool oauth_names, bool defer_loading): [any]! {
     [any] result = []
     for index, tool in tools {
         {string:any} schema = {}
@@ -422,6 +593,10 @@ pub fn convert_tools([ref<types.tool_t>] tools, any cache, bool eager_input_stre
         {string:any} item = {}
         item['name'] = oauth_names ? to_claude_code_name(tool.name) : tool.name
         item['description'] = tool.description
+        if defer_loading {
+            // Pi convertTools(deferLoading): marks the entry as loaded on demand.
+            item['defer_loading'] = true
+        }
         item['input_schema'] = schema
         if eager_input_streaming {
             item['eager_input_streaming'] = true

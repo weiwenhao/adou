@@ -1,3 +1,4 @@
+import adou.src.ai.providers.anthropic_request
 import adou.src.ai.types
 
 // Runtime equivalent of Pi's compat detection (vendors/pi/packages/ai/scripts/
@@ -52,6 +53,9 @@ pub fn apply(ref<types.model_t> model) {
     model.compat.thinking_format = thinking_format
     model.compat.zai_tool_stream = false
     model.compat.supports_strict_mode = !(is_moonshot || is_together || is_cloudflare_ai_gateway || is_nvidia)
+    // Pi defaultSupportsToolReferences lives on the request side so
+    // hand-built models get the same fallback as catalog entries.
+    model.compat.supports_tool_references = anthropic_request.default_supports_tool_references(model)
     model.compat.supports_openai_grammar_tools = false
     model.compat.send_session_affinity_headers = false
     if is_openrouter && (model.id.starts_with('~anthropic/') || model.id.starts_with('anthropic/')) {

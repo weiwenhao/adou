@@ -1,0 +1,89 @@
+import adou.src.ai.providers.anthropic_request
+import adou.src.ai.types
+import adou.src.json_util
+
+// B3 (docs/porting-plan-100): Pi splitDeferredTools on Anthropic — tools
+// announced by addedToolNames leave the immediate set, serialize with
+// defer_loading, and the announcing tool result carries a tool_reference
+// block whose ordinary content moves into siblings.
+
+fn schema(): any {
+    {string:any} parameters = {}
+    {string:any} properties = {}
+    parameters['type'] = 'object'
+    parameters['properties'] = properties
+    return parameters
+}
+
+fn reference_model(): ref<types.model_t> {
+    // Claude Opus 4.5+ enables tool references by default.
+    return new types.model_t(id = 'claude-opus-4-5', provider = 'anthropic', api = 'anthropic-messages')
+}
+
+test 'deferred tools serialize with defer_loading and announce via tool_reference' {
+    var context = new types.context_t()
+    [ref<types.tool_t>] tools = []
+    tools.push(new types.tool_t(name = 'always', description = 'immediate tool', parameters = schema()))
+    tools.push(new types.tool_t(name = 'later', description = 'deferred tool', parameters = schema()))
+    context.tools = tools
+
+    string assistant_id = 'assistant-entry'
+    [types.content_t] calls = []
+    calls.push(new types.tool_call_t(id = 'call-1', name = 'always'))
+    context.messages.push(new types.assistant_message_t(content = calls, timestamp = 1))
+    context.messages.push(new types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'always', content = [new types.text_content_t(text = 'done')], added_tool_names = ['later'], is_error = false))
+
+    var body = json_util.parse(anthropic_request.build(reference_model(), context, new types.stream_options_t(api_key = 'key'))) as {string:any}
+    [any] sent_tools = body['tools'] as [any]
+    assert(sent_tools.len() == 2)
+    bool saw_immediate = false
+    bool saw_deferred = false
+    for item in sent_tools {
+        var entry = item as {string:any}
+        if entry['name'] is string && (entry['name'] as string) == 'always' {
+            saw_immediate = true
+            assert(!entry.contains('defer_loading'))
+        }
+        if entry['name'] is string && (entry['name'] as string) == 'later' {
+            saw_deferred = true
+            assert(entry.contains('defer_loading'))
+        }
+    }
+    assert(saw_immediate && saw_deferred)
+
+    // The announcing tool result becomes a tool_reference block; its text
+    // content follows as a sibling block inside the same user message.
+    [any] messages = body['messages'] as [any]
+    // References and displaced siblings share the announcing user turn.
+    var user_message = (messages[1] as {string:any})
+    [any] content = user_message['content'] as [any]
+    var first_block = content[0] as {string:any}
+    assert(first_block['type'] is string && (first_block['type'] as string) == 'tool_result')
+    var result_content = (content[0] as {string:any})['content'] as [any]
+    assert(result_content.len() == 1)
+    var reference = result_content[0] as {string:any}
+    assert(reference['type'] is string && (reference['type'] as string) == 'tool_reference')
+    assert(reference['tool_name'] is string && (reference['tool_name'] as string) == 'later')
+    var sibling_block = content[1] as {string:any}
+    assert(sibling_block['type'] is string && (sibling_block['type'] as string) == 'text')
+}
+
+test 'models without tool references keep every tool immediate' {
+    var context = new types.context_t()
+    [ref<types.tool_t>] tools = []
+    tools.push(new types.tool_t(name = 'later', description = 'deferred tool', parameters = schema()))
+    context.tools = tools
+
+    string assistant_id = 'a'
+    [types.content_t] calls = []
+    calls.push(new types.tool_call_t(id = 'call-1', name = 'other'))
+    context.messages.push(new types.assistant_message_t(content = calls, timestamp = 1))
+    context.messages.push(new types.tool_result_message_t(tool_call_id = 'call-1', tool_name = 'other', added_tool_names = ['later'], is_error = false))
+
+    var haiku = new types.model_t(id = 'claude-haiku-4-5', provider = 'anthropic', api = 'anthropic-messages')
+    var body = json_util.parse(anthropic_request.build(haiku, context, new types.stream_options_t(api_key = 'key'))) as {string:any}
+    [any] sent_tools = body['tools'] as [any]
+    assert(sent_tools.len() == 1)
+    var only = sent_tools[0] as {string:any}
+    assert(only['name'] is string && (only['name'] as string) == 'later' && !only.contains('defer_loading'))
+}
