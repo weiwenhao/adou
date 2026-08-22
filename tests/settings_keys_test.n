@@ -1,0 +1,44 @@
+import adou.src.config.paths
+import adou.src.config.settings
+import fmt
+import os
+import syscall
+import time
+
+// B6 (docs/porting-plan-100): the remaining Pi settings keys persist and
+// round-trip through the durable writer.
+
+fn isolate(): string {
+    string dir = '/tmp/adou-settings-keys-' + fmt.sprintf('%d', time.now().ms_timestamp())
+    os.mkdirs(dir, 0o700) catch e {}
+    syscall.set_env('ADOU_CODING_AGENT_DIR', dir) catch e {}
+    return dir
+}
+
+test 'new pi keys round-trip through save and load' {
+    isolate()
+    var value = settings.settings_t {}
+    value.last_changelog_version = '0.82.1'
+    value.external_editor = 'code -w'
+    value.shell_path = '/bin/zsh'
+    value.shell_command_prefix = 'shopt -s expand_aliases'
+    value.http_proxy = 'http://127.0.0.1:8080'
+    value.websocket_connect_timeout_ms = 5000
+    value.thinking_budgets['medium'] = '4096'
+    settings.save(value) catch e {throw e}
+
+    var loaded = settings.load()
+    assert(loaded.last_changelog_version == '0.82.1')
+    assert(loaded.external_editor == 'code -w')
+    assert(loaded.shell_path == '/bin/zsh')
+    assert(loaded.shell_command_prefix == 'shopt -s expand_aliases')
+    assert(loaded.http_proxy == 'http://127.0.0.1:8080')
+    assert(loaded.websocket_connect_timeout_ms == 5000)
+    assert(loaded.thinking_budgets.len() == 1)
+}
+
+test 'changelog dismissal setter persists the version' {
+    isolate()
+    settings.set_last_changelog_version('0.83.0') catch e {throw e}
+    assert(settings.load().last_changelog_version == '0.83.0')
+}

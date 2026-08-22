@@ -1275,7 +1275,11 @@ pub fn view_t.restore_terminal_sync(&self): void! {
 // user's editor owns the terminal, then the edited file is read back into the
 // multiline prompt and raw mode is enabled again.
 fn view_t.open_external_editor(&self) {
-    string editor_command = syscall.get_env('VISUAL')
+    // Pi: the externalEditor setting takes precedence over VISUAL/EDITOR.
+    string editor_command = self.settings_snapshot.external_editor
+    if editor_command == '' {
+        editor_command = syscall.get_env('VISUAL')
+    }
     if editor_command == '' {
         editor_command = syscall.get_env('EDITOR')
     }

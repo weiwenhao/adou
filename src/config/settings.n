@@ -78,6 +78,14 @@ pub type settings_t = struct {
     bool block_images
     // Pi settings.warnings.anthropicExtraUsage.
     bool warnings_anthropic_extra_usage = true
+    // B6: remaining Pi keys with Adou consumers or persistence parity.
+    string last_changelog_version
+    string external_editor
+    string shell_path
+    string shell_command_prefix
+    string http_proxy
+    int websocket_connect_timeout_ms = 30000
+    {string:string} thinking_budgets = {}
 }
 
 pub fn load(): settings_t {
@@ -174,6 +182,22 @@ fn load_file(string file_path, settings_t initial): settings_t {
     result = load_terminal(object, result)
     result = load_images(object, result)
     result = load_warnings(object, result)
+    result.last_changelog_version = string_value(object, 'lastChangelogVersion', result.last_changelog_version)
+    result.external_editor = string_value(object, 'externalEditor', result.external_editor)
+    result.shell_path = string_value(object, 'shellPath', result.shell_path)
+    result.shell_command_prefix = string_value(object, 'shellCommandPrefix', result.shell_command_prefix)
+    result.http_proxy = string_value(object, 'httpProxy', result.http_proxy)
+    result.websocket_connect_timeout_ms = positive_int(object, 'websocketConnectTimeoutMs', result.websocket_connect_timeout_ms)
+    if object.contains('thinkingBudgets') && json_util.is_obj(object['thinkingBudgets']) {
+        var budgets = object['thinkingBudgets'] as {string:any}
+        for level, budget in budgets {
+            if budget is string {
+                result.thinking_budgets[level] = budget as string
+            } else if budget is f64 {
+                result.thinking_budgets[level] = fmt.sprintf('%d', budget as f64 as int)
+            }
+        }
+    }
     if object.contains('enabledModels') && object['enabledModels'] is [any] {
         // An explicitly configured project array replaces the global scope;
         // it is not appended to it.
@@ -379,6 +403,31 @@ fn save_to(settings_t settings, string file_path): void! {
     {string:any} warnings_object = json_util.opt_obj(object, 'warnings')
     warnings_object['anthropicExtraUsage'] = settings.warnings_anthropic_extra_usage
     object['warnings'] = warnings_object
+    if settings.last_changelog_version != '' {
+        object['lastChangelogVersion'] = settings.last_changelog_version
+    }
+    if settings.external_editor != '' {
+        object['externalEditor'] = settings.external_editor
+    }
+    if settings.shell_path != '' {
+        object['shellPath'] = settings.shell_path
+    }
+    if settings.shell_command_prefix != '' {
+        object['shellCommandPrefix'] = settings.shell_command_prefix
+    }
+    if settings.http_proxy != '' {
+        object['httpProxy'] = settings.http_proxy
+    }
+    if object.contains('websocketConnectTimeoutMs') || settings.websocket_connect_timeout_ms != 30000 {
+        object['websocketConnectTimeoutMs'] = settings.websocket_connect_timeout_ms
+    }
+    if settings.thinking_budgets.len() > 0 {
+        {string:any} budgets_object = {}
+        for level, budget in settings.thinking_budgets {
+            budgets_object[level] = budget
+        }
+        object['thinkingBudgets'] = budgets_object
+    }
     if settings.enabled_models_configured {
         [any] enabled = []
         for model_id in settings.enabled_model_ids {
@@ -566,6 +615,13 @@ pub fn set_terminal_clear_on_shrink(bool enabled): void! {
 pub fn set_terminal_progress(bool enabled): void! {
     var settings = load()
     settings.terminal_progress = enabled
+    save(settings)
+}
+
+// Pi markChangelogSeen: the /changelog dismissal loop records the version.
+pub fn set_last_changelog_version(string version): void! {
+    var settings = load()
+    settings.last_changelog_version = version
     save(settings)
 }
 
