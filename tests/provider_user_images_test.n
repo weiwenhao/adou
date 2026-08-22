@@ -56,21 +56,32 @@ test 'bedrock encodes user images as converse image blocks' {
     assert(body.contains('"text":"inspect"'))
 }
 
-test 'native providers omit empty text blocks for image-only users' {
+test 'google omits empty text for image-only users' {
     var google_model = new types.model_t(id = 'gemini-test', api = 'google-generative-ai', provider = 'google', base_url = 'https://example.test', max_tokens = 16)
     assert(!google_messages.build(google_model, image_only_context(), new types.stream_options_t()).contains('"text":""'))
-    assert(!json.serialize(mistral_messages.convert_messages(image_only_context())).contains('"text":""'))
+}
 
+test 'mistral omits empty text for image-only users' {
+    assert(!json.serialize(mistral_messages.convert_messages(image_only_context())).contains('"text":""'))
+}
+
+test 'codex omits empty text for image-only users' {
     var codex_model = new types.model_t(id = 'gpt-test', api = 'openai-codex-responses', provider = 'openai-codex', base_url = 'https://example.test', max_tokens = 16)
     var codex_options = new types.stream_options_t(api_key = 'eyJhbGciOiJIUzI1NiJ9.eyJodHRwczovL2FwaS5vcGVuYWkuY29tL2F1dGgiOnsiY2hhdGdwdF9hY2NvdW50X2lkIjoiYWNjdC0xMjMifX0.signature')
     assert(!codex_messages.build(codex_model, image_only_context(), codex_options).contains('"text":""'))
+}
 
+test 'bedrock omits empty text for image-only users' {
     var bedrock_model = new types.model_t(id = 'anthropic.claude-test', api = 'bedrock-converse-stream', provider = 'amazon-bedrock', base_url = 'https://example.test', max_tokens = 16)
     assert(!bedrock_messages.build(bedrock_model, image_only_context(), new types.stream_options_t()).contains('"text":""'))
+}
 
+test 'openai omits empty text for image-only users' {
     var openai_model = new types.model_t(id = 'gpt-test', api = 'openai-responses', provider = 'openai', base_url = 'https://example.test', max_tokens = 16)
     assert(!openai_request.build(openai_model, image_only_context(), new types.stream_options_t()).contains('"text":""'))
+}
 
+test 'anthropic omits empty text for image-only users' {
     var anthropic_model = new types.model_t(id = 'claude-test', api = 'anthropic-messages', provider = 'anthropic', base_url = 'https://example.test', max_tokens = 16)
     assert(!anthropic_request.build(anthropic_model, image_only_context(), new types.stream_options_t()).contains('"text":""'))
 }
