@@ -191,6 +191,7 @@ pub fn render_image(string base64_data, image_dimensions_t image, int max_width_
     var size = calculate_image_cell_size(image, max_width_cells, max_height_cells, cell)
     if caps[0] == 'kitty' {
         int id = image_id > 0 ? image_id : allocate_image_id()
+        record_kitty_placement(id)
         return image_render_result_t {sequence: encode_kitty(base64_data, size[0], size[1], id, move_cursor), rows: size[1], image_id: id,}
     }
     if caps[0] == 'iterm2' {
@@ -499,4 +500,51 @@ pub fn parse_csi_16t_cell_size(string data): cell_dimensions_t? {
 
 pub fn cell_size_query_sequence(): string {
     return '\x1b[16t'
+}
+
+
+// B4: stable kitty image ids.  Deriving the placement id from the payload
+// keeps redraws from reallocating a new placement for identical content,
+// which is what upstream's placed-image tracking guarantees.
+pub fn image_id_for(string base64_data): int {
+    u32 hash = 2166136261
+    for byte in base64_data as [u8] {
+        hash ^= byte as u32
+        hash *= 16777619
+    }
+    int id = hash as int
+    if id < 0 {
+        id = -id
+    }
+    if id == 0 {
+        id = 1
+    }
+    return id
+}
+
+// Live-placement registry: every kitty placement records its id here;
+// restore/teardown clears the screen's placements explicitly.
+{int:bool} live_kitty_placements = {}
+
+pub fn record_kitty_placement(int image_id) {
+    if image_id > 0 {
+        live_kitty_placements[image_id] = true
+    }
+}
+
+pub fn kitty_placement_count(): int {
+    return live_kitty_placements.len()
+}
+
+// Pi deleteChangedKittyImages teardown half: remove every recorded
+// placement from the terminal (used on restore/quit boundaries).
+pub fn clear_kitty_placements(): string {
+    string out = ''
+    for id, present in live_kitty_placements {
+        if present {
+            out += delete_kitty_image(id)
+        }
+    }
+    live_kitty_placements = {}
+    return out
 }

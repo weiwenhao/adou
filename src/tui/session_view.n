@@ -1222,6 +1222,11 @@ fn view_t.restore_terminal(&self): void! {
 // propagate like the previous direct terminal.restore() calls; the app
 // decides whether to ignore them (error-exit path) or surface them.
 pub fn view_t.restore_terminal_sync(&self): void! {
+    // B4: remove kitty placements so no image artifacts survive exit.
+    string kitty_clear = terminal_image.clear_kitty_placements()
+    if kitty_clear != '' {
+        self.terminal.write(kitty_clear) catch error {}
+    }
     if self.modify_other_keys_active {
         self.modify_other_keys_active = false
         self.terminal.write(term.MODIFY_OTHER_KEYS_OFF) catch error {}

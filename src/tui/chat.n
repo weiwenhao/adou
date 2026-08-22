@@ -535,7 +535,7 @@ fn render_tool_images(ai_types.tool_result_message_t tool, int width, bool show_
         }
         var dimensions = terminal_image.get_image_dimensions(image.data, image.mime_type)
         if dimensions is terminal_image.image_dimensions_t known {
-            var rendered = terminal_image.render_image(image.data, known, image_width_cells < width ? image_width_cells : width, 0, 0, true)
+            var rendered = terminal_image.render_image(image.data, known, image_width_cells < width ? image_width_cells : width, terminal_image.image_id_for(image.data), true)
             if rendered is terminal_image.image_render_result_t image_result {
                 result.push(image_result.sequence)
                 for int row = 1; row < image_result.rows; row += 1 {

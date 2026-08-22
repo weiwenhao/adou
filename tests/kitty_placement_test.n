@@ -1,0 +1,29 @@
+import adou.src.tui.terminal_image
+import fmt
+
+// B4 (docs/porting-plan-100): kitty placements get stable content-derived
+// ids, are recorded for tracking, and clear_kitty_placements emits one
+// delete per placement before emptying the registry.
+
+test 'placement ids are stable across calls and nonzero' {
+    int first = terminal_image.image_id_for('aGVsbG8=')
+    int second = terminal_image.image_id_for('aGVsbG8=')
+    assert(first == second)
+    assert(first > 0)
+    assert(terminal_image.image_id_for('other') != first)
+}
+
+test 'clear emits one delete per placement and resets the registry' {
+    int id_a = terminal_image.image_id_for('img-a')
+    int id_b = terminal_image.image_id_for('img-b')
+    terminal_image.record_kitty_placement(id_a)
+    terminal_image.record_kitty_placement(id_b)
+    assert(terminal_image.kitty_placement_count() >= 2)
+    string cleared = terminal_image.clear_kitty_placements()
+    assert(cleared.contains('a=d,d=I'))
+    string id_a_text = fmt.sprintf('%d', id_a)
+    string id_b_text = fmt.sprintf('%d', id_b)
+    assert(cleared.contains('i=' + id_a_text))
+    assert(cleared.contains('i=' + id_b_text))
+    assert(terminal_image.kitty_placement_count() == 0)
+}
