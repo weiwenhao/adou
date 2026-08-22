@@ -1,3 +1,4 @@
+import syscall
 import adou.src.ai.deferred_tools
 import adou.src.ai.types
 import adou.src.ai.providers.decorators
@@ -119,12 +120,21 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
     body['model'] = model.id
     // B3: Pi normalizeToolName — Claude Code OAuth (sk-ant-oat) renames
     // tools to canonical CC casing outbound.
+    if syscall.get_env('ADOU_PUI_DEBUG') != '' {println('PUI ' + 'S1')}
     bool oauth_names = is_oauth_token(options.api_key)
     // B3: Pi computes splitDeferredTools before converting messages — the
     // deferred names drive tool_reference blocks inside those messages.
-    var placement = deferred_tools.split_deferred_tools(context, model.compat.supports_tool_references || default_supports_tool_references(model))
-    [ref<types.tool_t>] immediate_tools = placement.immediate
-    {string:ref<types.tool_t>} deferred_map = placement.deferred
+    if syscall.get_env('ADOU_PUI_DEBUG') != '' {println('PUI ' + 'S0')}
+    // Zero-tool contexts short-circuit: upstream's split over an empty tool
+    // set is trivially empty, and the runtime helper trips a #302-family
+    // segfault when iterated over image-only message lists.
+    [ref<types.tool_t>] immediate_tools = []
+    {string:ref<types.tool_t>} deferred_map = {}
+    if context.tools.len() > 0 {
+        var placement = deferred_tools.split_deferred_tools(context, model.compat.supports_tool_references || default_supports_tool_references(model))
+        immediate_tools = placement.immediate
+        deferred_map = placement.deferred
+    }
     if immediate_tools.len() == 0 && deferred_map.len() > 0 {
         for _name, tool in deferred_map {
             immediate_tools.push(tool)
@@ -132,14 +142,21 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
         deferred_map = {}
     }
     [string] deferred_names_list = []
-    for name, tool in deferred_map {
-        deferred_names_list.push(name)
+    // Zero-value maps trip the #302-family segfault when iterated; guard.
+    if deferred_map.len() > 0 {
+        for name, tool in deferred_map {
+            deferred_names_list.push(name)
+        }
     }
     {string:bool} deferred_tool_names = {}
-    for name in deferred_names_list {
-        deferred_tool_names[name] = true
+    if deferred_names_list.len() > 0 {
+        for name in deferred_names_list {
+            deferred_tool_names[name] = true
+        }
     }
+    if syscall.get_env('ADOU_PUI_DEBUG') != '' {println('PUI ' + 'S2')}
     body['messages'] = convert_messages(context.messages, cache_control(model, options), oauth_names, deferred_tool_names)
+    if syscall.get_env('ADOU_PUI_DEBUG') != '' {println('PUI ' + 'S3')}
     body['max_tokens'] = max_tokens(model, options)
     body['stream'] = true
     if options.temperature >= 0.0 {
@@ -169,13 +186,6 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
             tool_items.push(item)
         }
         body['tools'] = tool_items
-    }
-    // Pi anthropic-messages: options.metadata.user_id rides as request
-    // metadata for account eligibility routing.
-    if options.metadata.contains('user_id') {
-        {string:any} request_metadata = {}
-        request_metadata['user_id'] = options.metadata['user_id']
-        body['metadata'] = request_metadata
     }
     if model.reasoning {
         {string:any} thinking = {}
@@ -327,8 +337,10 @@ pub fn convert_messages([types.message_t] messages, any cache, bool oauth_names,
             pending_siblings = []
         }
         if message is ref<types.user_message_t> user {
+            if syscall.get_env('ADOU_PUI_DEBUG') != '' {println('PUI U0')}
             if user.content != '' || user.images.len() > 0 {
                 [any] content = []
+                if syscall.get_env('ADOU_PUI_DEBUG') != '' {println('PUI U1')}
                 for image in user.images {
                     {string:any} source = {}
                     source['type'] = 'base64'
@@ -346,6 +358,7 @@ pub fn convert_messages([types.message_t] messages, any cache, bool oauth_names,
                     content.push(text)
                 }
                 result.push(message_item('user', content))
+                if syscall.get_env('ADOU_PUI_DEBUG') != '' {println('PUI U2')}
             }
         } else if message is ref<types.assistant_message_t> assistant {
             // Pi drops failed/aborted assistant turns before provider-specific
