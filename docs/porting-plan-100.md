@@ -129,6 +129,9 @@ MCP 不在范围内：Pi core 明确无内建 MCP（属扩展生态能力）。
 
 当前唯一阻塞：`provider_user_images_test` Test 5 确定性段错误（连续 4 次复现；二分排除 google_messages/message_json/deferred tools，指向 B2 时期 stream_options_t 增加 `{string:string} metadata = {}` 结构字段默认空 map 后，构造路径上该字段为 nil、任何访问即触发 #302 族缺陷）。已回退 metadata 切片（types 字段 + anthropic 发射 + 测试用例），回退后待复验。下一轮专修后重跑全量门禁。
 
+**补充二分结果**：回归窗口锁定为 `55ec7a9..6b843e6`——即 Claude Code 工具名映射与 deferred tools 接入提交（8815610）引入；`55ec7a9` 处同测试绿。修复方向：在该提交范围内对 anthropic convert/build 路径做逐段还原重验，优先怀疑 deferred 消息转换对 image-only 用户消息的空内容处理。
+
+
 
 ## 附：评估缺口 → 批次销账索引
 
