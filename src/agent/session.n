@@ -468,17 +468,9 @@ pub fn runner_t.set_model(&self, ref<ai_types.model_t> model): void! {
     if api_key == '' {
         throw errorf('%s', auth_guidance.format_no_api_key_found_message(model.provider))
     }
-    self.lock.lock()
-    if self.busy {
-        self.lock.unlock()
-        throw errorf('Agent session is already running')
-    }
-    self.busy = true
-    self.lock.unlock()
+    // Pi setModel has no streaming guard: the running request keeps its own
+    // captured configuration and the swap lands on the next turn.
     self.repository.append_model_change(model.provider, model.id) catch error {
-        self.lock.lock()
-        self.busy = false
-        self.lock.unlock()
         throw error
     }
     self.lock.lock()
@@ -486,13 +478,12 @@ pub fn runner_t.set_model(&self, ref<ai_types.model_t> model): void! {
     self.agent_config.stream_options.api_key = api_key
     self.agent_config.stream_options.max_tokens = model.max_tokens
     string thinking = self.agent_config.stream_options.thinking_enabled ? self.agent_config.stream_options.reasoning_effort : 'off'
-    self.busy = false
     self.lock.unlock()
     settings.set_default_model(model.provider, model.id)
     // Pi re-clamps the session thinking preference whenever the model
     // changes.  This matters for non-reasoning providers and for models that
     // expose only a subset of the extended levels.
-    self.set_thinking_level(thinking)
+    self.apply_thinking_level(thinking, false)
     self.sync_agent_environment()
 }
 
@@ -529,11 +520,17 @@ pub fn runner_t.sync_agent_environment(&self) {
 }
 
 pub fn runner_t.set_thinking_level(&self, string level): void! {
+    self.apply_thinking_level(level, true)
+}
+
+// Shared body: Pi's setThinkingLevel/setModel chain has no streaming guard —
+// a change while streaming lands on the next turn.
+fn runner_t.apply_thinking_level(&self, string level, bool enforce_busy): void! {
     if level != 'off' && level != 'minimal' && level != 'low' && level != 'medium' && level != 'high' && level != 'xhigh' && level != 'max' {
         throw errorf('Invalid thinking level "%s". Valid values: off, minimal, low, medium, high, xhigh, max', level)
     }
     self.lock.lock()
-    if self.busy {
+    if enforce_busy && self.busy {
         self.lock.unlock()
         throw errorf('Agent session is already running')
     }

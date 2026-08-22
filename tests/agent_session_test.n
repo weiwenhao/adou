@@ -776,3 +776,20 @@ test 'abort_bash only cancels the active bash stream' {
     assert(bash_stream.cancellation.is_aborted())
     runner.end_operation()
 }
+
+// B4: Pi setModel has no streaming guard — a mid-stream swap lands on the
+// next turn instead of throwing.
+test 'set model applies while a stream is marked busy' {
+    isolate_agent_dir()
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t()
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    runner.agent_config.stream_options.api_key = 'runtime-key'
+    var next = new ai_types.model_t(id = 'mock-busy', api = 'mock', provider = 'mock', base_url = 'http://example.invalid', reasoning = true, context_window = 1000, max_tokens = 100)
+    runner.busy = true
+    runner.set_model(next) catch e {
+        assert(false)
+    }
+    runner.busy = false
+    assert(runner.agent_config.model.id == 'mock-busy')
+}
