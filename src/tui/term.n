@@ -31,6 +31,12 @@ pub const TUI_IO_RESTORE = 'restore'
 pub const TUI_IO_QUIT = 'quit'
 
 pub const KEYBOARD_PROTOCOL_ON = '\x1b[>1u'
+// B4: Pi terminal.ts negotiation — push flags, query current, DA sentinel
+// for terminals without kitty support, plus the modifyOtherKeys fallback.
+pub const KEYBOARD_NEGOTIATION_QUERY = '\x1b[>1u\x1b[?u\x1b[c'
+pub const MODIFY_OTHER_KEYS_ON = '\x1b[>4;2m'
+pub const MODIFY_OTHER_KEYS_OFF = '\x1b[>4m'
+pub const KEYBOARD_PROTOCOL_POP = '\x1b[<u'
 pub const KEYBOARD_PROTOCOL_OFF = '\x1b[<u'
 pub const BRACKETED_PASTE_ON = '\x1b[?2004h'
 pub const BRACKETED_PASTE_OFF = '\x1b[?2004l'

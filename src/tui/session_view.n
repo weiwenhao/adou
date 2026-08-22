@@ -332,6 +332,11 @@ pub type view_t = struct {
     // B4: live terminal theme answer from OSC 11 / CSI 997 responses; empty
     // until a report arrives (env fallback stays authoritative before that).
     string live_theme_report = ''
+    // B4: keyboard negotiation results (Pi terminal.ts).  kitty_negotiated
+    // means the terminal answered the flags query with a non-zero mask;
+    // modify_other_keys_active mirrors _modifyOtherKeysActive for teardown.
+    bool kitty_negotiated
+    bool modify_other_keys_active
     // Serialize state mutation and terminal rendering across the input loop
     // and file-watch/signal coroutines.
     ref<mutex.mutex_t> render_lock = mutex.mutex_t.new()
@@ -1190,7 +1195,7 @@ fn view_t.reenter_terminal(&self): void! {
     self.renderer.invalidate()
     self.terminal.restored = false
     self.terminal.active = true
-    self.terminal.write(term.BRACKETED_PASTE_ON + (self.settings_snapshot.show_hardware_cursor ? '' : term.CURSOR_HIDE) + term.KEYBOARD_PROTOCOL_ON + terminal_colors.background_query_sequence() + terminal_colors.color_scheme_query_sequence() + terminal_image.cell_size_query_sequence()) catch error {
+    self.terminal.write(term.BRACKETED_PASTE_ON + (self.settings_snapshot.show_hardware_cursor ? '' : term.CURSOR_HIDE) + term.KEYBOARD_NEGOTIATION_QUERY + terminal_colors.background_query_sequence() + terminal_colors.color_scheme_query_sequence() + terminal_image.cell_size_query_sequence()) catch error {
         self.render_lock.unlock()
         throw error
     }
@@ -1214,6 +1219,10 @@ fn view_t.restore_terminal(&self): void! {
 // propagate like the previous direct terminal.restore() calls; the app
 // decides whether to ignore them (error-exit path) or surface them.
 pub fn view_t.restore_terminal_sync(&self): void! {
+    if self.modify_other_keys_active {
+        self.modify_other_keys_active = false
+        self.terminal.write(term.MODIFY_OTHER_KEYS_OFF) catch error {}
+    }
     self.render_lock.lock()
     self.terminal.restore() catch error {
         self.render_lock.unlock()
@@ -2798,6 +2807,37 @@ fn read_input(ref<view_t> view, chan<terminal_input_t> input, chan<input_t> outp
             go input_timeout(input, timeout_id)
         }
         for sequence in processed.sequences {
+            // B4: keyboard negotiation answers never reach the key path.
+            if sequence.starts_with('\x1b[?') && sequence.ends_with('u') {
+                // Kitty flags response: ESC [ ? <flags> u.
+                string body = sequence.slice(3, sequence.len() - 1)
+                int flags = 0
+                for int i = 0; i < body.len(); i += 1 {
+                    u8 c = body[i]
+                    if c >= '0'.char() && c <= '9'.char() {
+                        flags = flags * 10 + (c as int - '0'.char() as int)
+                        continue
+                    }
+                    break
+                }
+                if flags != 0 {
+                    view.kitty_negotiated = true
+                    if view.modify_other_keys_active {
+                        view.terminal.write(term.MODIFY_OTHER_KEYS_OFF) catch send_error {}
+                        view.modify_other_keys_active = false
+                    }
+                } else if !view.modify_other_keys_active {
+                    view.terminal.write(term.MODIFY_OTHER_KEYS_ON) catch send_error {}
+                    view.modify_other_keys_active = true
+                }
+                continue
+            }
+            if sequence.starts_with('\x1b[?') && sequence.ends_with('c') && !view.kitty_negotiated {
+                // DA sentinel arrived before any kitty answer: fall back.
+                view.terminal.write(term.MODIFY_OTHER_KEYS_ON) catch send_error {}
+                view.modify_other_keys_active = true
+                continue
+            }
             // B4: consume terminal theme reports before key interpretation.
             string report = terminal_colors.theme_from_terminal_response(sequence)
             if report != '' {
