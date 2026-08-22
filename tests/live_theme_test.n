@@ -1,4 +1,5 @@
 import adou.src.tui.terminal_colors
+import adou.src.tui.terminal_image
 
 // B4 (docs/porting-plan-100): live theme detection resolves 'light'/'dark'
 // from CSI 997 reports and OSC 11 background answers, with the env fallback
@@ -24,4 +25,19 @@ test 'unrecognized sequences resolve to empty' {
     assert(terminal_colors.theme_from_terminal_response('plain text') == '')
     assert(terminal_colors.background_query_sequence() == '\x1b]11;?\x07')
     assert(terminal_colors.color_scheme_query_sequence() == '\x1b[?997n')
+}
+
+// B4: CSI 16 t responses update the image cell geometry like Pi's
+// consumeCellSizeResponse.
+test 'cell size queries parse and reject malformed answers' {
+    assert(terminal_image.parse_csi_16t_cell_size('\x1b[6;18;9t') is terminal_image.cell_dimensions_t)
+    var size = terminal_image.parse_csi_16t_cell_size('\x1b[6;18;9t')
+    if size is terminal_image.cell_dimensions_t value {
+        assert(value.height_px == 18 && value.width_px == 9)
+    }
+    var zero_result = terminal_image.parse_csi_16t_cell_size('\x1b[6;0;9t')
+    var alpha_result = terminal_image.parse_csi_16t_cell_size('\x1b[6;a;bt')
+    assert(!(zero_result is terminal_image.cell_dimensions_t))
+    assert(!(alpha_result is terminal_image.cell_dimensions_t))
+    assert(terminal_image.cell_size_query_sequence() == '\x1b[16t')
 }

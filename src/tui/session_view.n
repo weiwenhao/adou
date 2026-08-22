@@ -1190,7 +1190,7 @@ fn view_t.reenter_terminal(&self): void! {
     self.renderer.invalidate()
     self.terminal.restored = false
     self.terminal.active = true
-    self.terminal.write(term.BRACKETED_PASTE_ON + (self.settings_snapshot.show_hardware_cursor ? '' : term.CURSOR_HIDE) + term.KEYBOARD_PROTOCOL_ON + terminal_colors.background_query_sequence() + terminal_colors.color_scheme_query_sequence()) catch error {
+    self.terminal.write(term.BRACKETED_PASTE_ON + (self.settings_snapshot.show_hardware_cursor ? '' : term.CURSOR_HIDE) + term.KEYBOARD_PROTOCOL_ON + terminal_colors.background_query_sequence() + terminal_colors.color_scheme_query_sequence() + terminal_image.cell_size_query_sequence()) catch error {
         self.render_lock.unlock()
         throw error
     }
@@ -2803,6 +2803,12 @@ fn read_input(ref<view_t> view, chan<terminal_input_t> input, chan<input_t> outp
             if report != '' {
                 view.live_theme_report = report
                 view.apply_live_theme()
+                continue
+            }
+            var cell_size = terminal_image.parse_csi_16t_cell_size(sequence)
+            if cell_size is terminal_image.cell_dimensions_t dimensions {
+                terminal_image.set_cell_dimensions(dimensions)
+                view.redraw()
                 continue
             }
             output.send(input_t {data: sequence,}) catch send_error {}

@@ -457,3 +457,46 @@ fn read_uint32_be([u8] bytes, int offset): int {
 fn fmt_int(int value): string {
     return fmt.sprintf('%d', value)
 }
+
+
+// Pi tui.ts consumeCellSizeResponse: ESC [ 6 ; height ; width t reports the
+// cell size in pixels after a CSI 16 t query.
+pub fn parse_csi_16t_cell_size(string data): cell_dimensions_t? {
+    if !data.starts_with('\x1b[6;') || !data.ends_with('t') {
+        return null
+    }
+    string payload = data.slice(4, data.len() - 1)
+    int sep = payload.find(';')
+    if sep < 0 {
+        return null
+    }
+    string height_text = payload.slice(0, sep)
+    string width_text = payload.slice(sep + 1, payload.len())
+    if height_text.len() == 0 || width_text.len() == 0 {
+        return null
+    }
+    int height = 0
+    for int i = 0; i < height_text.len(); i += 1 {
+        u8 c = height_text[i]
+        if c < '0'.char() || c > '9'.char() {
+            return null
+        }
+        height = height * 10 + (c as int - '0'.char() as int)
+    }
+    int width = 0
+    for int i = 0; i < width_text.len(); i += 1 {
+        u8 c = width_text[i]
+        if c < '0'.char() || c > '9'.char() {
+            return null
+        }
+        width = width * 10 + (c as int - '0'.char() as int)
+    }
+    if height <= 0 || width <= 0 {
+        return null
+    }
+    return cell_dimensions_t {width_px: width, height_px: height}
+}
+
+pub fn cell_size_query_sequence(): string {
+    return '\x1b[16t'
+}
