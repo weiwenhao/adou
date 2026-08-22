@@ -1037,6 +1037,30 @@ fn view_t.handle_tab_completion(&self) {
             column = 0
         }
         if column > lines[cursor.line].len() {
+    // B5: Pi live-refilters an open path menu as the query grows.  A Tab-
+    // opened PATH menu previously cancelled on the next keystroke because no
+    // branch re-derived its candidates; keep it alive while the anchor holds.
+    if self.autocomplete.active && self.autocomplete.mode == autocomplete.autocomplete_mode_t.PATH {
+        if cursor.line == self.autocomplete.anchor_line && column >= self.autocomplete.anchor_column {
+            int start_col = self.autocomplete.anchor_column
+            if start_col > lines[cursor.line].len() {start_col = lines[cursor.line].len()}
+            string prefix = lines[cursor.line].slice(start_col, column)
+            string home = syscall.get_env('HOME')
+            var items = path_completion.get_file_suggestions(prefix, self.runner.repository.cwd, home)
+            [autocomplete.autocomplete_item_t] mapped = []
+            for item in items {
+                mapped.push(self.path_item(item))
+            }
+            if mapped.len() > 0 {
+                self.autocomplete.begin(autocomplete.autocomplete_mode_t.PATH, generation_next(self), prefix, prefix, mapped, self.resolved_max_visible())
+                self.autocomplete.anchor_line = cursor.line
+                self.autocomplete.anchor_column = column
+                return
+            }
+        }
+        self.autocomplete.cancel()
+        return
+    }
             column = lines[cursor.line].len()
         }
         before = lines[cursor.line].slice(0, column)
@@ -3148,6 +3172,14 @@ fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autoco
 // (IP-001).  B1-R4-02/04: @ attachments join the same state machine on ANY
 // line; Pi checks extractAtPrefix before the slash context, and a natural
 // (non-explicit) request opens the SelectList even with a single candidate.
+fn generation_next(ref<view_t> view): int {
+    return view.autocomplete.generation + 1
+}
+
+fn column_still_anchored(ref<view_t> view, int column): bool {
+    return column >= view.autocomplete.anchor_column
+}
+
 pub fn view_t.update_autocomplete_state(&self) {
     var cursor = self.editor.get_cursor()
     var lines = self.editor.get_lines()
@@ -3161,6 +3193,30 @@ pub fn view_t.update_autocomplete_state(&self) {
     }
     if column > lines[cursor.line].len() {
         column = lines[cursor.line].len()
+    }
+    // B5: Pi live-refilters an open path menu as the query grows.  A Tab-
+    // opened PATH menu previously cancelled on the next keystroke because no
+    // branch re-derived its candidates; keep it alive while the anchor holds.
+    if self.autocomplete.active && self.autocomplete.mode == autocomplete.autocomplete_mode_t.PATH {
+        if cursor.line == self.autocomplete.anchor_line && column >= self.autocomplete.anchor_column {
+            int start_col = self.autocomplete.anchor_column
+            if start_col > lines[cursor.line].len() {start_col = lines[cursor.line].len()}
+            string prefix = lines[cursor.line].slice(start_col, column)
+            string home = syscall.get_env('HOME')
+            var items = path_completion.get_file_suggestions(prefix, self.runner.repository.cwd, home)
+            [autocomplete.autocomplete_item_t] mapped = []
+            for item in items {
+                mapped.push(self.path_item(item))
+            }
+            if mapped.len() > 0 {
+                self.autocomplete.begin(autocomplete.autocomplete_mode_t.PATH, generation_next(self), prefix, prefix, mapped, self.resolved_max_visible())
+                self.autocomplete.anchor_line = cursor.line
+                self.autocomplete.anchor_column = column
+                return
+            }
+        }
+        self.autocomplete.cancel()
+        return
     }
     string before = lines[cursor.line].slice(0, column)
     int generation = self.autocomplete.generation + 1

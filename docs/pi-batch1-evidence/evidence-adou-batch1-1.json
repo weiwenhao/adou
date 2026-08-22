@@ -2,9 +2,9 @@
   "case": "slash-menu",
   "side": "adou",
   "fixture": "batch1",
-  "adou_head": "a45911ec3477bf58979bb30583ada970adb6e804",
-  "binary_sha256": "344beda435df2f7d1b6c10e2ac61d2b5638e9a36ef626e1c351dd6267f5a466e",
-  "source_fingerprint": "06e2359219ec04303a7f50a9c4b11d6cb3a927a9cb57dafa1fcdf661878f5f1d",
+  "adou_head": "76c438777b84feec6cf810c80455be795325a0f1",
+  "binary_sha256": "d2374fb0699712463606865bb2ae045d693936c96b0344dafeef6ad97cf8496c",
+  "source_fingerprint": "a92e614f0494379030c8f64b170aa23b7ab210b72e2a4d4b5888d78945a9a4c1",
   "run": 1,
   "terminal": {
     "rows": 24,
