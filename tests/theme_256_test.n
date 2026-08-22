@@ -1,0 +1,22 @@
+import adou.src.tui.theme
+import syscall
+
+// B4: non-truecolor terminals receive the nearest xterm-256 palette entry
+// at theme-parse time; truecolor keeps direct RGB.
+
+test 'truecolor terminals keep direct rgb' {
+    syscall.set_env('COLORTERM', 'truecolor') catch e {}
+    theme.reset_color_mode_cache()
+    assert(theme.parse_color('#ff0000', false) == '\x1b[38;2;255;0;0m')
+}
+
+test '256 color terminals get the nearest palette entry' {
+    syscall.set_env('COLORTERM', '') catch e {}
+    theme.reset_color_mode_cache()
+    // Pure red maps to cube corner 196; grayscale endpoints to 16/231.
+    // Green 128 rounds to cube level 3 -> index 34.
+    assert(theme.parse_color('#ff0000', false) == '\x1b[38;5;196m')
+    assert(theme.parse_color('#000000', false) == '\x1b[38;5;16m')
+    assert(theme.parse_color('#ffffff', false) == '\x1b[38;5;231m')
+    assert(theme.parse_color('#008000', true) == '\x1b[48;5;34m')
+}
