@@ -2485,7 +2485,7 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     if self.overlay is ref<overlay_t> active_overlay {
         editor_lines = render_overlay(active_overlay, width, self.runner.repository.session_dir, self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id, self.runner)
     } else {
-        editor_lines = render_editor(self.editor, width, self.autocomplete, self.chat.thinking, height, self.editor_padding_x)
+        editor_lines = render_editor(self.editor, width, self.autocomplete, self.chat.thinking, height, self.editor_padding_x, self.settings_snapshot.show_hardware_cursor)
     }
     [string] footer_lines = self.chat.render_footer(width)
     return layout.compose_interactive(transcript_lines, editor_lines, footer_lines)
@@ -2494,6 +2494,23 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
 pub fn view_t.render(&self): void! {
     var size = self.terminal.size()
     var lines = self.render_lines(size.columns, size.rows)
+    // B4: Pi extractCursorPosition — resolve the focused editor's marker to
+    // a hardware cursor position (IME) before painting the frame.
+    string position_suffix = ''
+    if self.settings_snapshot.show_hardware_cursor {
+        var hit = text_utils.find_cursor_marker(lines, size.rows) catch e {
+            text_utils.cursor_hit_t {row: -1, col: -1}
+        }
+        if hit.row >= 0 {
+            int viewport_top = 0
+            if lines.len() > size.rows {
+                viewport_top = lines.len() - size.rows
+            }
+            int screen_row = hit.row - viewport_top
+            if screen_row < 0 {screen_row = 0}
+            position_suffix = fmt.sprintf('\x1b[%d;%dH', screen_row + 1, hit.col + 1)
+        }
+    }
     bool has_overlay = self.overlay is ref<overlay_t>
     bool has_transient_ui = has_overlay || self.autocomplete.active
     renderer.result_t result = renderer.result_t {}
@@ -2502,7 +2519,7 @@ pub fn view_t.render(&self): void! {
     } else {
         result = self.renderer.render(lines, size.columns, size.rows)
     }
-    self.write_terminal(result.output)
+    self.write_terminal(result.output + position_suffix)
     self.transient_ui_rendered = has_transient_ui
 }
 
@@ -3026,7 +3043,7 @@ fn codepoint_boundary(string value, int offset): (int, int) {
     return (start, end)
 }
 
-fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autocomplete_state_t> autocomplete_state, string thinking, int terminal_rows, int padding_x): [string]! {
+fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autocomplete_state_t> autocomplete_state, string thinking, int terminal_rows, int padding_x, bool emit_cursor_marker): [string]! {
     [string] result = vec<string>.cap_of(16)
     bool bash_mode = editor.get_text().starts_with('!')
     result.push(theme.editor_border_line(thinking, bash_mode, width))
@@ -3068,7 +3085,12 @@ fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autoco
             }
             int glyph_start = cursor_offset
             int glyph_end = cursor_offset
-            if cursor_offset < value.len() {
+            if emit_cursor_marker {
+                // B4: Pi CURSOR_MARKER — the focused editor embeds the
+                // sentinel at the caret; the renderer strips it and drives
+                // the real hardware cursor (IME) instead of an inverse cell.
+                display = value.slice(0, glyph_start) + text_utils.CURSOR_MARKER + value.slice(glyph_end, value.len())
+            } else if cursor_offset < value.len() {
                 var segments = unicode.graphemes(value) catch error {[]}
                 bool found = false
                 for segment in segments {
@@ -3087,6 +3109,8 @@ fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autoco
                     glyph_end = safe_end
                 }
                 display = value.slice(0, glyph_start) + theme.cursor(value.slice(glyph_start, glyph_end)) + value.slice(glyph_end, value.len())
+            } else if emit_cursor_marker {
+                display += text_utils.CURSOR_MARKER
             } else {
                 // Cursor at EOL: render a space, never touch the text.
                 display += theme.cursor(' ')
