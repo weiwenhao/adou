@@ -144,6 +144,8 @@ MCP 不在范围内：Pi core 明确无内建 MCP（属扩展生态能力）。
 
 **✅ metadata 切片已重新落地（df472cc）**：nature #318 由 PR #319 修复后编译器更新至 v0.7.4 build 2026-08-23，metadata 字段与 Anthropic 发射块安全恢复。
 
+**Herdr 真实用户模拟测试（2026-08-23）**：在 Herdr PTY 窗格中以 DeepSeek API 启动 adou TUI，模拟真实用户构建台风监测网页。验证了：TUI 启动 ✅、DeepSeek API 连接 ✅、模型读文件+分析 ✅、bash 工具检查目录 ✅。发现 Nature 运行时 `page_alloc_grow` 内存分配器断言崩溃（allocator.c:637）——生成大型 HTML 文件时内存耗尽，属 nature 运行时限制非 Adou 逻辑缺陷。
+
 
 
 ## 附：评估缺口 → 批次销账索引
