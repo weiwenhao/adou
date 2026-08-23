@@ -121,11 +121,12 @@ MCP 不在范围内：Pi core 明确无内建 MCP（属扩展生态能力）。
 - **B5 ✅** skill 折叠渲染、selector 当前会话标记+(i/n) 计数、PATH 菜单活过滤、词边界软换行（纯函数重做版）、Apple Terminal CR 归一（探针降级与 Pi 无 prebuild 一致）
 - **B6 ✅** auth print-bearer-token/help、--prompt-template/--theme 资源 flags、headless 信号处理、settings 补键（lastChangelogVersion/externalEditor/shellPath/shellCommandPrefix/httpProxy/websocketConnectTimeoutMs/thinkingBudgets）+externalEditor 接线、evals live runner+JSON 报告、SDK cycle/set/dispose
 
-**验收门禁进度**：
+**验收门禁全部通过（2026-08-23）**：
+- make test: ✅ 183 文件 0 失败（编译器 v0.7.4 build 2026-08-23）
 - make e2e: ✅ 64 脚本全绿
 - make eval: ✅ 3/3
-- make test: 🔄 运行中（编译器更新至 v0.7.4 build 2026-08-23 后全量验证）
-- make release-check / signing-check: ⏳ 排队
+- make release-check: ✅ build+eval+dist+pkg+artifacts+ipc+bash OK
+- make signing-check: ✅ dist+pkg+package/signing workflows OK
 
 **B7 门禁进行中记录（2026-08-22）**：全量 make test 三轮运行暴露两处问题——
 1. 段落分支多推空行导致 chat outputPad 断言失败：已修复（fa94e4d）；
