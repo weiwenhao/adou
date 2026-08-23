@@ -90,6 +90,9 @@ fn claude_code_tools(): [string] {
 }
 
 pub fn is_oauth_token(string api_key): bool {
+    if api_key.len() == 0 {
+        return false
+    }
     return api_key.contains('sk-ant-oat')
 }
 

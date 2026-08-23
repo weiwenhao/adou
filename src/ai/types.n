@@ -220,7 +220,7 @@ pub type provider_def_t = struct {
     bool supports_oauth
 }
 pub type stream_options_t = struct {
-    string api_key
+    string api_key = ''
     int timeout_ms = 120000
     int max_tokens
     int max_retries = 2
