@@ -73,7 +73,7 @@ env.update({
 
 pid, fd = pty.fork()
 if pid == 0:
-    os.execvpe(binary, [binary, "--offline", "--no-context-files", "--session", session_file, "--provider", "deepseek", "--model", "deepseek-v4-flash"], env)
+    os.execvpe(binary, [binary, "--offline", "--approve", "--no-context-files", "--session", session_file, "--provider", "deepseek", "--model", "deepseek-v4-flash"], env)
 
 output = bytearray()
 status = None
