@@ -49,6 +49,8 @@ test 'match_session scores phrases and fuzzy tokens like Pi' {
 
 test 'search text covers name messages and cwd like Pi' {
     var manager = repository.create('/tmp/session-search-project', path.join(temp_dir(), 'sessions'))
+    // B2 deferred flush: seed assistant entry.
+    manager.append_message(new ai_types.assistant_message_t(timestamp = 1))
     manager.append_session_info('searchable-name')
     var user = new ai_types.user_message_t(content = 'find this phrase inside')
     manager.append_message(user)
@@ -66,13 +68,17 @@ test 'filter_and_sort_sessions ranks relevance and respects name filter' {
     first.append_session_info('alpha session')
     var user_a = new ai_types.user_message_t(content = 'deploy the gateway')
     first.append_message(user_a)
+    // B2 deferred flush: seed an assistant entry so the file materializes.
+    first.append_message(new ai_types.assistant_message_t(timestamp = 1))
     var second = repository.create('/tmp/project-b', sessions)
     second.append_session_info('beta session')
     var user_b = new ai_types.user_message_t(content = 'refactor the parser')
     second.append_message(user_b)
+    second.append_message(new ai_types.assistant_message_t(timestamp = 2))
     var third = repository.create('/tmp/project-c', sessions)
     var user_c = new ai_types.user_message_t(content = 'alpha deploy check')
     third.append_message(user_c)
+    third.append_message(new ai_types.assistant_message_t(timestamp = 3))
     var names = os.listdir(sessions) catch error {[]}
     [string] paths = []
     for name in names {
@@ -102,6 +108,9 @@ test 'threaded ordering groups children under their parent session' {
     // Parent session with a child fork.
     var parent = repository.create('/tmp/project-p', sessions)
     parent.append_session_info('parent session')
+    // B2 deferred flush: seed assistant entry so the file exists.
+    parent.append_message(new ai_types.user_message_t(content = 'start', timestamp = 1))
+    parent.append_message(new ai_types.assistant_message_t(timestamp = 2))
     var parent_file = parent.get_session_file()
     // Fork into a new persisted session to get a parentSessionPath link.
     var child = parent.fork_at(parent.get_leaf_id()) catch error {
@@ -135,6 +144,8 @@ test 'threaded ordering groups children under their parent session' {
 
 test 'regex queries match against the full search text like Pi' {
     var manager = repository.create('/tmp/regex-project', path.join(temp_dir(), 'sessions'))
+    // B2 deferred flush: seed assistant entry.
+    manager.append_message(new ai_types.assistant_message_t(timestamp = 1))
     manager.append_session_info('regex target')
     var user = new ai_types.user_message_t(content = 'deploy error 42 occurred')
     manager.append_message(user)
