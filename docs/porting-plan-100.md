@@ -146,6 +146,8 @@ MCP 不在范围内：Pi core 明确无内建 MCP（属扩展生态能力）。
 
 **Herdr 真实用户模拟测试（2026-08-23）**：在 Herdr PTY 窗格中以 DeepSeek API 启动 adou TUI，模拟真实用户构建台风监测网页。验证了：TUI 启动 ✅、DeepSeek API 连接 ✅、模型读文件+分析 ✅、bash 工具检查目录 ✅。发现 Nature 运行时 `page_alloc_grow` 内存分配器断言崩溃（allocator.c:637）——生成大型 HTML 文件时内存耗尽，属 nature 运行时限制非 Adou 逻辑缺陷。已最小复现（/tmp/nature-oom-repro/repro.n：持有 >16GiB 活内存即触发）并提交上游 issue：https://github.com/nature-lang/nature/issues/320（硬性 16GiB 堆上限，根因：page_alloc_grow 断言写死检查 summaries[0] 而非新 arena 所在区域）。
 
+**adou 内存暴涨根因已定位（2026-08-23）**：非 Adou 逻辑缺陷，而是 nature 运行时 **GC 完全失效**——官方 GC 测试用例（vendors/nature_cases/20230502_00_gc_large.n，断言 GC 后 malloc_bytes < 2000）直接 panic；丢弃数组循环中显式 runtime.gc() 20 次零回收（每次迭代 malloc_bytes 精确 +8.4MB 线性增长）；`s += delta` 拼接循环 4 秒内堆单调涨到 16GiB 触发 #320 崩溃。adou 的流式输出路径 `content.text += delta`（src/sdk_proxy.n:126）即此模式：concat 每次分配新缓冲区（O(n²) 复制），中间字符串永不回收。已提交上游 issue：https://github.com/nature-lang/nature/issues/322。同时发现编译器对超大固定数组类型（如 [i64; 16384] 起）编译时间/内存超线性爆炸：https://github.com/nature-lang/nature/issues/321。**后续**：上游修复 GC 后需回归验证 adou 长会话/大输出场景。
+
 
 
 ## 附：评估缺口 → 批次销账索引
