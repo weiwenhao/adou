@@ -133,6 +133,8 @@ MCP 不在范围内：Pi core 明确无内建 MCP（属扩展生态能力）。
 
 **2026-08-22 专项调试结论**：多轮二分（map 类型切换、守卫添加、逐文件回退、pending_siblings 移除）均未能消除段错误。崩溃点在 anthropic_request.build 的 image-only 用户消息路径，但具体行需 lldb/native 级调试（本轮上下文不足）。已回退全部临时调试改动，HEAD 干净。该测试为唯一 make test 阻塞；其余 163 个文件两轮运行均绿。
 
+**✅ 已修复（39e015f）**：根因是 `stream_options_t.api_key` 无默认值——`new types.stream_options_t()` 构造时 Nature 字符串 data 指针为 nil，B3 新增的 `is_oauth_token()` 调用 `.contains('sk-ant-oat')` 时 strstr(NULL,...) 段错误。修复：api_key 默认值 `= ''` + is_oauth_token 空 len 守卫。修复后 pui 10/10 绿、anthropic 四套件全绿。
+
 **上游 issue 已提交**：nature-lang/nature#318（https://github.com/nature-lang/nature/issues/318）——空 map struct 字段默认值在 new() 构造路径上为 nil，任何访问即段错误。待上游修复后重新落地 metadata 切片。
 
 
