@@ -142,6 +142,8 @@ MCP 不在范围内：Pi core 明确无内建 MCP（属扩展生态能力）。
 
 **上游 issue 已提交**：nature-lang/nature#318（https://github.com/nature-lang/nature/issues/318）——空 map struct 字段默认值在 new() 构造路径上为 nil，任何访问即段错误。待上游修复后重新落地 metadata 切片。
 
+**✅ metadata 切片已重新落地（df472cc）**：nature #318 由 PR #319 修复后编译器更新至 v0.7.4 build 2026-08-23，metadata 字段与 Anthropic 发射块安全恢复。
+
 
 
 ## 附：评估缺口 → 批次销账索引
