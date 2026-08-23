@@ -234,6 +234,10 @@ pub type stream_options_t = struct {
     string cache_retention = 'short'
     float temperature = -1.0
     string tool_choice
+    // Pi StreamOptions.metadata passthrough; Anthropic emits
+    // metadata.user_id when present.  Nature #318 (nil map data) is fixed
+    // in v0.7.4 build 2026-08-23 (PR #319).
+    {string:string} metadata = {}
     // OpenAI Responses service_tier ('auto'|'default'|'flex'|...); empty
     // leaves the key unset like upstream's undefined.
     string service_tier

@@ -190,6 +190,13 @@ pub fn build(ref<types.model_t> model, ref<types.context_t> context, ref<types.s
         }
         body['tools'] = tool_items
     }
+    // Pi anthropic-messages: options.metadata.user_id rides as request
+    // metadata for account eligibility routing.
+    if options.metadata.len() > 0 && options.metadata.contains('user_id') {
+        {string:any} request_metadata = {}
+        request_metadata['user_id'] = options.metadata['user_id']
+        body['metadata'] = request_metadata
+    }
     if model.reasoning {
         {string:any} thinking = {}
         if options.thinking_enabled {
