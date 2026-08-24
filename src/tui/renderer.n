@@ -44,6 +44,33 @@ pub fn renderer_t.set_clear_on_shrink(&self, bool enabled) {
     self.clear_on_shrink = enabled
 }
 
+// Move the terminal cursor from the renderer's actual post-frame position to
+// the editor marker and retain that row as the origin of the next
+// differential frame.  Pi keeps this movement inside its renderer for the
+// same reason: moving the cursor externally while leaving hardware_cursor_row
+// at the bottom of the painted frame makes the next relative update target
+// the wrong row and leaves duplicate editor content behind.
+pub fn renderer_t.position_hardware_cursor(&self, int row, int col, int total_lines): string {
+    if row < 0 || total_lines <= 0 {
+        return ''
+    }
+    int target_row = row
+    if target_row >= total_lines {
+        target_row = total_lines - 1
+    }
+    int target_col = col > 0 ? col : 0
+    int difference = target_row - self.hardware_cursor_row
+    string output = ''
+    if difference > 0 {
+        output += csi_move(difference, 'B')
+    } else if difference < 0 {
+        output += csi_move(-difference, 'A')
+    }
+    output += '\x1b[' + int_string(target_col + 1) + 'G'
+    self.hardware_cursor_row = target_row
+    return output
+}
+
 pub fn renderer_t.render(&self, [string] input_lines, int width, int height): result_t! {
     return self.render_frame(input_lines, width, height, false)
 }

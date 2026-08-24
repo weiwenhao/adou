@@ -2552,29 +2552,12 @@ pub fn view_t.render(&self): void! {
     var lines = self.render_lines(size.columns, size.rows)
     // B4: Pi extractCursorPosition — resolve the focused editor's marker to
     // a hardware cursor position (IME) before painting the frame.
-    string position_suffix = ''
     // Pi always extracts and positions CURSOR_MARKER, even while the
     // hardware cursor is hidden. macOS/terminal IMEs use that hidden cursor
     // location to place and paint their preedit text over the software
     // cursor cell. showHardwareCursor controls visibility only.
     var hit = text_utils.find_cursor_marker(lines, size.rows) catch e {
         text_utils.cursor_hit_t {row: -1, col: -1}
-    }
-    if hit.row >= 0 {
-        int viewport_top = 0
-        if lines.len() > size.rows {
-            viewport_top = lines.len() - size.rows
-        }
-        int screen_row = hit.row - viewport_top
-        if screen_row < 0 {screen_row = 0}
-        position_suffix = fmt.sprintf('\x1b[%d;%dH', screen_row + 1, hit.col + 1)
-        if self.settings_snapshot.show_hardware_cursor {
-            position_suffix += term.CURSOR_SHOW
-        }
-    } else if self.settings_snapshot.show_hardware_cursor {
-        // Pi hides a visible hardware cursor whenever the focused component
-        // does not publish a cursor marker (for example, a selector overlay).
-        position_suffix = term.CURSOR_HIDE
     }
     bool has_overlay = self.overlay is ref<overlay_t>
     bool has_transient_ui = has_overlay || self.autocomplete.active
@@ -2583,6 +2566,18 @@ pub fn view_t.render(&self): void! {
         result = self.renderer.render_transient_frame(lines, size.columns, size.rows)
     } else {
         result = self.renderer.render(lines, size.columns, size.rows)
+    }
+    // Position from the renderer's committed post-frame row and update that
+    // row for the next differential redraw.  An absolute cursor suffix here
+    // would move the terminal without updating renderer state, causing the
+    // next edit to repaint from the wrong row and duplicate the input area.
+    string position_suffix = self.renderer.position_hardware_cursor(hit.row, hit.col, lines.len())
+    if hit.row >= 0 && self.settings_snapshot.show_hardware_cursor {
+        position_suffix += term.CURSOR_SHOW
+    } else if hit.row < 0 && self.settings_snapshot.show_hardware_cursor {
+        // Pi hides a visible hardware cursor whenever the focused component
+        // does not publish a cursor marker (for example, a selector overlay).
+        position_suffix = term.CURSOR_HIDE
     }
     self.write_terminal(result.output + position_suffix)
     self.transient_ui_rendered = has_transient_ui

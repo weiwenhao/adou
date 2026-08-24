@@ -28,6 +28,23 @@ test 'ordinary update clears and replaces only changed range' {
     assert(screen[0] == 'one' && screen[1] == 'TWO' && screen[2] == 'three')
 }
 
+test 'editor cursor positioning remains the origin of the next diff' {
+    var value = renderer.new()
+    var terminal = virtual_terminal.new(20, 6)
+    var first = value.render(['startup', 'help', '', 'input ', 'border', 'footer'], 20, 6)
+    terminal.write(first.output)
+    // The editor marker is on row 3 while painting ended on row 5.  Moving
+    // there must update renderer state as well as emit the terminal motion.
+    terminal.write(value.position_hardware_cursor(3, 6, 6))
+    var changed = value.render(['startup', 'help', '', 'input x', 'border', 'footer'], 20, 6)
+    assert(changed.strategy == renderer.STRATEGY_DIFF)
+    terminal.write(changed.output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'startup')
+    assert(screen[3] == 'input x')
+    assert(screen[4] == 'border' && screen[5] == 'footer')
+}
+
 test 'width height and changes above viewport force full redraw' {
     var width_value = renderer.new()
     width_value.render(['a'], 20, 5)

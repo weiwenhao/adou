@@ -130,8 +130,13 @@ try:
         raise SystemExit(f"expected a single ?25l at startup, got {raw.count(b'\x1b[?25l')}")
     if re.search(rb"\x1b\[[0-9;?]* ?q", raw):
         raise SystemExit("DECSCUSR sequence emitted (not part of the contract)")
-    if not re.search(rb"\x1b\[[0-9]+;[0-9]+H", raw):
+    # Pi moves from the renderer's tracked row with A/B and then selects the
+    # marker column with G.  An external absolute H move desynchronizes the
+    # next differential frame and was the cause of duplicated editor rows.
+    if not re.search(rb"(?:\x1b\[[0-9]+[AB])?\x1b\[[0-9]+G", raw):
         raise SystemExit("hidden hardware cursor was not positioned at the editor marker")
+    if re.search(rb"\x1b\[[0-9]+;[0-9]+H", raw):
+        raise SystemExit("editor cursor used an out-of-band absolute position")
 
     # Typing: each rendered frame carries at most one inverse cursor cell.
     # Frames are split on the sync-off boundary (every frame ends with
@@ -146,8 +151,10 @@ try:
             inverse_blocks = part.count(b"\x1b[7m")
             if inverse_blocks > 1:
                 raise SystemExit(f"frame carries more than one inverse cell: {inverse_blocks}")
-        if not re.search(rb"\x1b\[[0-9]+;[0-9]+H", frame):
+        if not re.search(rb"(?:\x1b\[[0-9]+[AB])?\x1b\[[0-9]+G", frame):
             raise SystemExit("editing frame did not reposition the hidden IME cursor")
+        if re.search(rb"\x1b\[[0-9]+;[0-9]+H", frame):
+            raise SystemExit("editing frame used an out-of-band absolute position")
         if frame.count(b"\x1b[?25h") != 0:
             raise SystemExit("hardware cursor shown during editing")
 
