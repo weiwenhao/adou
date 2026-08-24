@@ -578,6 +578,9 @@ fn provider_context(ref<agent_types.context_t> context, bool block_images): ref<
 }
 
 fn copy_context(ref<agent_types.context_t> source): ref<agent_types.context_t> {
+    // Standalone loop callers can bypass session.new; establish the same
+    // schema ownership boundary before the first provider coroutine starts.
+    agent_types.snapshot_tool_schemas(source.tools) catch error {}
     var result = new agent_types.context_t(system_prompt = source.system_prompt, tools = source.tools)
     for message in source.messages {
         result.messages.push(message)

@@ -1,6 +1,7 @@
 import adou.src.ai.abort
 import adou.src.ai.event_stream
 import adou.src.ai.types
+import adou.src.json_util
 import adou.src.tools.types as tool_types
 import co
 import co.mutex
@@ -52,6 +53,21 @@ pub type agent_tool_t = struct {
     string render_shell = 'default'
     bool has_render_call
     bool has_render_result
+}
+
+// Nature stores JSON containers inside `any`.  Keep one serialized snapshot
+// on every tool definition so provider turns never clone a schema graph that
+// may have been traversed or collected by an earlier coroutine.
+pub fn agent_tool_t.snapshot_schema(&self): void! {
+    if self.parameters_json == '' {
+        self.parameters_json = json_util.stringify(self.parameters)
+    }
+}
+
+pub fn snapshot_tool_schemas([ref<agent_tool_t>] tools): void! {
+    for tool in tools {
+        tool.snapshot_schema()
+    }
 }
 
 pub type context_t = struct {

@@ -81,11 +81,7 @@ pub type tree_target_t = struct {
 pub fn new(ref<repository.manager_t> session_repository, ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function, compaction_types.settings_t settings): ref<runner_t>! {
     var stored = session_repository.build_context()
     config.await_message_end_ack = true
-    for tool in context.tools {
-        if tool.parameters_json == '' {
-            tool.parameters_json = json_util.stringify(tool.parameters)
-        }
-    }
+    agent_types.snapshot_tool_schemas(context.tools)
     [string] active_names = stored.active_tool_names.len() > 0 ? stored.active_tool_names : tool_names(context.tools)
     var runner = new runner_t(lock = mutex.mutex_t.new(), repository = session_repository, base_context = context, all_tools = context.tools.slice(0, context.tools.len()), active_tool_names = active_names, agent_config = config, stream_function = stream_function, compaction_settings = settings, active_messages = stored.messages)
     runner.base_context.tools = filter_tools(runner.all_tools, active_names)
@@ -307,7 +303,8 @@ pub fn runner_t.set_rpc_snapshot(&self, ref<resource_snapshot.resource_snapshot_
 // Readers therefore observe either the complete previous binding or the
 // complete replacement: command discovery, prompt expansion, system prompt,
 // tools and trust-aware runtime preferences cannot be mixed across versions.
-pub fn runner_t.publish_rpc_resources(&self, ref<resource_snapshot.resource_snapshot_t> snapshot, string system_prompt, [ref<agent_types.agent_tool_t>] tools, bool apply_preferences) {
+pub fn runner_t.publish_rpc_resources(&self, ref<resource_snapshot.resource_snapshot_t> snapshot, string system_prompt, [ref<agent_types.agent_tool_t>] tools, bool apply_preferences): void! {
+    agent_types.snapshot_tool_schemas(tools)
     var context = new agent_types.context_t(system_prompt = system_prompt, tools = tools)
     self.lock.lock()
     self.all_tools = tools.slice(0, tools.len())

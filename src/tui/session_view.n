@@ -3839,6 +3839,10 @@ fn view_t.rebuild_read_tool_options(&self, bool auto_resize_images) {
         self.chat.error_message = 'Could not apply image settings: ' + error.msg()
         return
     }
+    agent_types.snapshot_tool_schemas(rebuilt) catch error {
+        self.chat.error_message = 'Could not snapshot tool schemas: ' + error.msg()
+        return
+    }
     self.runner.base_context.tools = rebuilt
 }
 
