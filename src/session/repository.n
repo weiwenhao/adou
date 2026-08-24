@@ -310,10 +310,10 @@ pub fn open_reference(string cwd, string session_dir, string reference): ref<man
     return local
 }
 
-// Pi resolves --session/--fork id prefixes across all project directories
+// Adou resolves --session/--fork id prefixes across all project directories
 // when the reference is not found in the current project.  A custom
 // --session-dir is a flat lookup root; the default store is grouped by
-// encoded cwd, so scan one directory level below ~/.pi/agent/sessions.
+// encoded cwd, so scan one directory level below the Adou sessions root.
 fn find_global_reference(string session_dir, string reference): [string] {
     [string] matches = []
     if session_dir != '' {

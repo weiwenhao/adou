@@ -107,11 +107,11 @@ test 'collision diagnostics report name conflicts across sources' {
     string project_dir = path.join(root, 'project')
     string home = path.join(root, 'home')
     write_file(path.join(user_dir, 'skills', 'SKILL.md'), '---\nname: shared\ndescription: User version\n---\n\nx')
-    write_file(path.join(project_dir, '.pi', 'skills', 'SKILL.md'), '---\nname: shared\ndescription: Project version\n---\n\nx')
+    write_file(path.join(project_dir, '.adou', 'skills', 'SKILL.md'), '---\nname: shared\ndescription: Project version\n---\n\nx')
     write_file(path.join(project_dir, '.git', 'HEAD'), '')
     [string] extra = []
     // Pi's resourcePrecedenceRank puts trusted project auto (rank 1) above
-    // user auto (rank 3), so the project .pi/skills version wins the name.
+    // user auto (rank 3), so the project .adou/skills version wins the name.
     // load_skills_full keeps home isolated (load_skills would read the real
     // HOME's ~/.agents/skills and leak user skills into this fixture).
     var result = skills.load_skills_full(project_dir, user_dir, home, extra, true, true)
@@ -120,7 +120,7 @@ test 'collision diagnostics report name conflicts across sources' {
     assert(result.skills[0].source_info.scope == 'project')
     assert(result.diagnostics.len() == 1)
     assert(result.diagnostics[0].kind == 'collision')
-    assert(result.diagnostics[0].collision_winner == path.join(project_dir, '.pi', 'skills', 'SKILL.md'))
+    assert(result.diagnostics[0].collision_winner == path.join(project_dir, '.adou', 'skills', 'SKILL.md'))
     assert(result.diagnostics[0].collision_loser == path.join(user_dir, 'skills', 'SKILL.md'))
     os.rmdir(root, true)
 }
@@ -131,7 +131,7 @@ test 'project auto beats user auto and agent_dir beats home .agents' {
     string agent = path.join(root, 'agent')
     string project = path.join(root, 'proj')
     write_file(path.join(project, '.git', 'HEAD'), '')
-    write_file(path.join(project, '.pi', 'skills', 'ranked', 'SKILL.md'), '---\nname: ranked\ndescription: Project .pi version\n---\n\nx')
+    write_file(path.join(project, '.adou', 'skills', 'ranked', 'SKILL.md'), '---\nname: ranked\ndescription: Project .adou version\n---\n\nx')
     write_file(path.join(agent, 'skills', 'ranked', 'SKILL.md'), '---\nname: ranked\ndescription: Agent dir version\n---\n\nx')
     write_file(path.join(agent, 'skills', 'user-beats-home', 'SKILL.md'), '---\nname: user-beats-home\ndescription: Agent dir version\n---\n\nx')
     write_file(path.join(home, '.agents', 'skills', 'user-beats-home', 'SKILL.md'), '---\nname: user-beats-home\ndescription: Home .agents version\n---\n\nx')
@@ -141,13 +141,13 @@ test 'project auto beats user auto and agent_dir beats home .agents' {
     for skill in result.skills {
         by_name[skill.name] = skill.description
     }
-    assert(by_name['ranked'] == 'Project .pi version')
+    assert(by_name['ranked'] == 'Project .adou version')
     assert(by_name['user-beats-home'] == 'Agent dir version')
     assert(result.skills.len() == 2)
     assert(result.diagnostics.len() == 2)
     for diagnostic in result.diagnostics {
         assert(diagnostic.kind == 'collision')
-        assert(diagnostic.collision_winner == path.join(project, '.pi', 'skills', 'ranked', 'SKILL.md') || diagnostic.collision_winner == path.join(agent, 'skills', 'user-beats-home', 'SKILL.md'))
+        assert(diagnostic.collision_winner == path.join(project, '.adou', 'skills', 'ranked', 'SKILL.md') || diagnostic.collision_winner == path.join(agent, 'skills', 'user-beats-home', 'SKILL.md'))
     }
     os.rmdir(root, true)
 }
@@ -158,8 +158,8 @@ test 'agents discovery mode ignores root md files while pi mode loads them' {
     string agent = path.join(root, 'agent')
     string project = path.join(root, 'proj')
     write_file(path.join(project, '.git', 'HEAD'), '')
-    write_file(path.join(project, '.pi', 'skills', 'root-skill.md'), '---\nname: root-skill\ndescription: .pi root md\n---\n\nx')
-    write_file(path.join(project, '.pi', 'skills', 'nested', 'SKILL.md'), '---\nname: pi-nested\ndescription: .pi nested SKILL.md\n---\n\nx')
+    write_file(path.join(project, '.adou', 'skills', 'root-skill.md'), '---\nname: root-skill\ndescription: .adou root md\n---\n\nx')
+    write_file(path.join(project, '.adou', 'skills', 'nested', 'SKILL.md'), '---\nname: pi-nested\ndescription: .adou nested SKILL.md\n---\n\nx')
     write_file(path.join(project, '.agents', 'skills', 'ignored-root.md'), '---\nname: ignored-root\ndescription: .agents root md\n---\n\nx')
     write_file(path.join(project, '.agents', 'skills', 'agents-nested', 'SKILL.md'), '---\nname: agents-nested\ndescription: .agents nested SKILL.md\n---\n\nx')
     [string] extra = []
@@ -226,7 +226,7 @@ test 'discovers user skills, home .agents/skills and project layers in Pi order'
     write_file(path.join(project, '.git', 'HEAD'), '')
     write_file(path.join(agent, 'skills', 'agent-only', 'SKILL.md'), '---\nname: agent-only\ndescription: From agent dir\n---\n\nx')
     write_file(path.join(home, '.agents', 'skills', 'home-only', 'SKILL.md'), '---\nname: home-only\ndescription: From home .agents\n---\n\nx')
-    write_file(path.join(project, '.pi', 'skills', 'pi-only', 'SKILL.md'), '---\nname: pi-only\ndescription: From .pi/skills\n---\n\nx')
+    write_file(path.join(project, '.adou', 'skills', 'pi-only', 'SKILL.md'), '---\nname: pi-only\ndescription: From .adou/skills\n---\n\nx')
     write_file(path.join(project, '.agents', 'skills', 'agents-only', 'SKILL.md'), '---\nname: agents-only\ndescription: From project .agents\n---\n\nx')
     [string] extra = []
     var result = skills.load_skills_full(project, agent, home, extra, true, true)
@@ -265,19 +265,19 @@ test '.agents/skills layers walk up to the git root, nearest layer wins' {
     os.rmdir(root, true)
 }
 
-test '.pi/skills beats .agents/skills at the same level' {
+test '.adou/skills beats .agents/skills at the same level' {
     string root = path.join('/tmp', 'adou-skills-pi-wins-' + random_suffix())
     string home = path.join(root, 'home')
     string agent = path.join(root, 'agent')
     write_file(path.join(root, '.git', 'HEAD'), '')
-    write_file(path.join(root, '.pi', 'skills', 'shared', 'SKILL.md'), '---\nname: shared\ndescription: .pi version\n---\n\nx')
+    write_file(path.join(root, '.adou', 'skills', 'shared', 'SKILL.md'), '---\nname: shared\ndescription: .adou version\n---\n\nx')
     write_file(path.join(root, '.agents', 'skills', 'shared', 'SKILL.md'), '---\nname: shared\ndescription: .agents version\n---\n\nx')
     [string] extra = []
     var result = skills.load_skills_full(root, agent, home, extra, true, true)
     assert(result.skills.len() == 1)
-    assert(result.skills[0].description == '.pi version')
+    assert(result.skills[0].description == '.adou version')
     assert(result.diagnostics.len() == 1)
-    assert(result.diagnostics[0].collision_winner == path.join(root, '.pi', 'skills', 'shared', 'SKILL.md'))
+    assert(result.diagnostics[0].collision_winner == path.join(root, '.adou', 'skills', 'shared', 'SKILL.md'))
     os.rmdir(root, true)
 }
 
@@ -288,13 +288,13 @@ test 'untrusted projects skip project layers but keep user and explicit skills' 
     string project = path.join(root, 'proj')
     write_file(path.join(project, '.git', 'HEAD'), '')
     write_file(path.join(agent, 'skills', 'user-skill', 'SKILL.md'), '---\nname: user-skill\ndescription: User level\n---\n\nx')
-    write_file(path.join(project, '.pi', 'skills', 'project-skill', 'SKILL.md'), '---\nname: project-skill\ndescription: Project level\n---\n\nx')
+    write_file(path.join(project, '.adou', 'skills', 'project-skill', 'SKILL.md'), '---\nname: project-skill\ndescription: Project level\n---\n\nx')
     write_file(path.join(project, '.agents', 'skills', 'agents-skill', 'SKILL.md'), '---\nname: agents-skill\ndescription: Agents level\n---\n\nx')
     [string] extra = []
     var result = skills.load_skills_full(project, agent, home, extra, true, false)
     assert(result.skills.len() == 1)
     assert(result.skills[0].name == 'user-skill')
-    [string] explicit = [path.join(project, '.pi', 'skills')]
+    [string] explicit = [path.join(project, '.adou', 'skills')]
     var explicit_result = skills.load_skills_full(project, agent, home, explicit, false, false)
     assert(explicit_result.skills.len() == 1)
     assert(explicit_result.skills[0].name == 'project-skill')
@@ -308,7 +308,7 @@ test 'no-skills disables default discovery while explicit paths still load' {
     string agent = path.join(root, 'agent')
     string project = path.join(root, 'proj')
     write_file(path.join(project, '.git', 'HEAD'), '')
-    write_file(path.join(project, '.pi', 'skills', 'default-skill', 'SKILL.md'), '---\nname: default-skill\ndescription: Default discovery\n---\n\nx')
+    write_file(path.join(project, '.adou', 'skills', 'default-skill', 'SKILL.md'), '---\nname: default-skill\ndescription: Default discovery\n---\n\nx')
     write_file(path.join(project, 'explicit-skill', 'SKILL.md'), '---\nname: explicit-skill\ndescription: Explicit path\n---\n\nx')
     [string] none = []
     var result = skills.load_skills_full(project, agent, home, none, false, true)

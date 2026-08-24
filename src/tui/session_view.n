@@ -1937,7 +1937,7 @@ fn view_t.rebind_project_context(&self, string cwd): void! {
     }
     // B1-R3-02: same trust-gated system/append resolution as startup and
     // /reload — CLI overrides win, otherwise a trusted target cwd's
-    // .pi/SYSTEM.md and .pi/APPEND_SYSTEM.md are discovered and applied.
+    // .adou/SYSTEM.md and .adou/APPEND_SYSTEM.md are discovered and applied.
     string resolved_system_prompt = self.system_prompt_override
     if resolved_system_prompt == '' && trusted {
         var discovered_system = project.system_prompt_file(cwd, '')
@@ -2528,7 +2528,7 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     // untrusted; Adou renders the equivalent banner under the header.
     if self.show_untrusted_banner {
         [string] with_banner = []
-        var banner_lines = text_utils.wrap_text_with_ansi(theme.fg(theme.warning(), 'This project is not trusted. Project .pi resources and packages are ignored. Use /trust to save a trust decision.'), width)
+        var banner_lines = text_utils.wrap_text_with_ansi(theme.fg(theme.warning(), 'This project is not trusted. Project .adou resources and .agents skills are ignored. Use /trust to save a trust decision.'), width)
         for line in banner_lines {
             with_banner.push(line)
         }
@@ -2541,7 +2541,7 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     if self.overlay is ref<overlay_t> active_overlay {
         editor_lines = render_overlay(active_overlay, width, self.runner.repository.session_dir, self.runner.agent_config.model.provider + '/' + self.runner.agent_config.model.id, self.runner)
     } else {
-        editor_lines = render_editor(self.editor, width, self.autocomplete, self.chat.thinking, height, self.editor_padding_x, self.settings_snapshot.show_hardware_cursor)
+        editor_lines = render_editor(self.editor, width, self.autocomplete, self.chat.thinking, height, self.editor_padding_x)
     }
     [string] footer_lines = self.chat.render_footer(width)
     return layout.compose_interactive(transcript_lines, editor_lines, footer_lines)
@@ -2553,19 +2553,28 @@ pub fn view_t.render(&self): void! {
     // B4: Pi extractCursorPosition — resolve the focused editor's marker to
     // a hardware cursor position (IME) before painting the frame.
     string position_suffix = ''
-    if self.settings_snapshot.show_hardware_cursor {
-        var hit = text_utils.find_cursor_marker(lines, size.rows) catch e {
-            text_utils.cursor_hit_t {row: -1, col: -1}
+    // Pi always extracts and positions CURSOR_MARKER, even while the
+    // hardware cursor is hidden. macOS/terminal IMEs use that hidden cursor
+    // location to place and paint their preedit text over the software
+    // cursor cell. showHardwareCursor controls visibility only.
+    var hit = text_utils.find_cursor_marker(lines, size.rows) catch e {
+        text_utils.cursor_hit_t {row: -1, col: -1}
+    }
+    if hit.row >= 0 {
+        int viewport_top = 0
+        if lines.len() > size.rows {
+            viewport_top = lines.len() - size.rows
         }
-        if hit.row >= 0 {
-            int viewport_top = 0
-            if lines.len() > size.rows {
-                viewport_top = lines.len() - size.rows
-            }
-            int screen_row = hit.row - viewport_top
-            if screen_row < 0 {screen_row = 0}
-            position_suffix = fmt.sprintf('\x1b[%d;%dH', screen_row + 1, hit.col + 1)
+        int screen_row = hit.row - viewport_top
+        if screen_row < 0 {screen_row = 0}
+        position_suffix = fmt.sprintf('\x1b[%d;%dH', screen_row + 1, hit.col + 1)
+        if self.settings_snapshot.show_hardware_cursor {
+            position_suffix += term.CURSOR_SHOW
         }
+    } else if self.settings_snapshot.show_hardware_cursor {
+        // Pi hides a visible hardware cursor whenever the focused component
+        // does not publish a cursor marker (for example, a selector overlay).
+        position_suffix = term.CURSOR_HIDE
     }
     bool has_overlay = self.overlay is ref<overlay_t>
     bool has_transient_ui = has_overlay || self.autocomplete.active
@@ -3101,7 +3110,7 @@ fn codepoint_boundary(string value, int offset): (int, int) {
     return (start, end)
 }
 
-fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autocomplete_state_t> autocomplete_state, string thinking, int terminal_rows, int padding_x, bool emit_cursor_marker): [string]! {
+fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autocomplete_state_t> autocomplete_state, string thinking, int terminal_rows, int padding_x): [string]! {
     [string] result = vec<string>.cap_of(16)
     bool bash_mode = editor.get_text().starts_with('!')
     result.push(theme.editor_border_line(thinking, bash_mode, width))
@@ -3143,12 +3152,7 @@ fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autoco
             }
             int glyph_start = cursor_offset
             int glyph_end = cursor_offset
-            if emit_cursor_marker {
-                // B4: Pi CURSOR_MARKER — the focused editor embeds the
-                // sentinel at the caret; the renderer strips it and drives
-                // the real hardware cursor (IME) instead of an inverse cell.
-                display = value.slice(0, glyph_start) + text_utils.CURSOR_MARKER + value.slice(glyph_end, value.len())
-            } else if cursor_offset < value.len() {
+            if cursor_offset < value.len() {
                 var segments = unicode.graphemes(value) catch error {[]}
                 bool found = false
                 for segment in segments {
@@ -3166,12 +3170,13 @@ fn render_editor(ref<editor.editor_t> editor, int width, ref<autocomplete.autoco
                     glyph_start = safe_start
                     glyph_end = safe_end
                 }
-                display = value.slice(0, glyph_start) + theme.cursor(value.slice(glyph_start, glyph_end)) + value.slice(glyph_end, value.len())
-            } else if emit_cursor_marker {
-                display += text_utils.CURSOR_MARKER
+                // Pi emits the zero-width IME marker immediately before the
+                // inverse-video software cursor; neither replaces the other.
+                display = value.slice(0, glyph_start) + text_utils.CURSOR_MARKER + theme.cursor(value.slice(glyph_start, glyph_end)) + value.slice(glyph_end, value.len())
             } else {
-                // Cursor at EOL: render a space, never touch the text.
-                display += theme.cursor(' ')
+                // Cursor at EOL: marker plus a software cursor space. The
+                // hidden terminal cursor is positioned on the same cell.
+                display += text_utils.CURSOR_MARKER + theme.cursor(' ')
             }
         }
         string line = padding + display
@@ -3427,9 +3432,9 @@ fn view_t.show_trust_startup_prompt(&self) {
     self.chat.status = ''
 }
 
-// Pi shows an untrusted warning whenever the resolved project is untrusted:
-// "This project is not trusted. Project .pi resources and packages are
-// ignored. Use /trust to save a trust decision, then restart pi."
+// Adou shows an untrusted warning whenever the resolved project is untrusted:
+// "This project is not trusted. Project .adou resources and .agents skills
+// are ignored. Use /trust to save a trust decision."
 // B4: a live OSC 11 / CSI 997 answer overrides the env fallback for the
 // automatic light/dark pair and repaints once.
 fn view_t.apply_live_theme(&self) {
@@ -6142,7 +6147,7 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
         if overlay.trust_prompt {
             result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.muted_color(), 'Project: ' + overlay.provider), width))
             result.push('')
-            result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.text(), 'This allows Adou to load .pi settings and resources.'), width))
+            result.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.text(), 'This allows Adou to load .adou resources and project .agents skills.'), width))
             result.push('')
         } else {
             string source = trust.decision_source(overlay.provider)

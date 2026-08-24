@@ -259,7 +259,7 @@ pub fn load_template_from_file(string file_path, string source): ref<prompt_temp
 
 // Load prompt templates with an explicit trust gate (B1-R2-06): default
 // discovery ALWAYS includes the user agent_dir/prompts, but the project
-// cwd/.pi/prompts directory is only loaded when project_trusted is true.
+// cwd/.adou/prompts directory is only loaded when project_trusted is true.
 // Explicit prompt_paths always load.  An untrusted project therefore never
 // loads, advertises or executes project prompt templates.
 pub fn load_prompt_templates(string cwd, string agent_dir, [string] prompt_paths, bool include_defaults, bool project_trusted): [ref<prompt_template_t>] {

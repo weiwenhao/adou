@@ -97,7 +97,7 @@ test 'B1-R2-06 load_prompt_templates trust gate: untrusted loads only user templ
     string agent_dir = path.join('/tmp', 'adou-prompts-trust-agent-' + fmt_suffix())
     string cwd = path.join('/tmp', 'adou-prompts-trust-cwd-' + fmt_suffix())
     write_file(path.join(agent_dir, 'prompts', 'user-prompt.md'), '---\ndescription: User prompt\n---\n\nUser body $@')
-    write_file(path.join(cwd, '.pi', 'prompts', 'project-prompt.md'), '---\ndescription: Project prompt\nargument-hint: <project-arg>\n---\n\nProject body $@')
+    write_file(path.join(cwd, '.adou', 'prompts', 'project-prompt.md'), '---\ndescription: Project prompt\nargument-hint: <project-arg>\n---\n\nProject body $@')
     [string] no_extra = []
     // Untrusted: only the user prompt; the project one is never loaded,
     // advertised or executable.
@@ -120,7 +120,7 @@ test 'B1-R2-06 load_prompt_templates trust gate: untrusted loads only user templ
     assert(saw_project)
     assert(prompt_templates.expand_prompt_template('/project-prompt x', trusted) == 'Project body x')
     // Explicit prompt_paths always load, even for an untrusted cwd.
-    var explicit = prompt_templates.load_prompt_templates(cwd, agent_dir, [path.join(cwd, '.pi', 'prompts', 'project-prompt.md')], false, false)
+    var explicit = prompt_templates.load_prompt_templates(cwd, agent_dir, [path.join(cwd, '.adou', 'prompts', 'project-prompt.md')], false, false)
     assert(explicit.len() == 1)
     assert(explicit[0].name == 'project-prompt')
     os.rmdir(agent_dir, true)

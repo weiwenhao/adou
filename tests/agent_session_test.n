@@ -281,7 +281,7 @@ test 'B1-R3-04 replace_repository leaves preferences untouched; the boundary app
     syscall.set_env('ADOU_CODING_AGENT_DIR', path.join(root, 'agent'))
     write_settings_file(path.join(root, 'agent/settings.json'), '{"autoCompaction":false,"steeringMode":"one-at-a-time","followUpMode":"one-at-a-time","retryEnabled":true,"retryMaxAttempts":8,"retryBaseDelayMs":4000}')
     string project = path.join(root, 'project')
-    write_settings_file(path.join(project, '.pi/settings.json'), '{"autoCompaction":true,"steeringMode":"all","followUpMode":"all","retryEnabled":false,"retryMaxAttempts":2,"retryBaseDelayMs":17}')
+    write_settings_file(path.join(project, '.adou/settings.json'), '{"autoCompaction":true,"steeringMode":"all","followUpMode":"all","retryEnabled":false,"retryMaxAttempts":2,"retryBaseDelayMs":17}')
     var manager = repository.in_memory('/tmp/adou-session-old-project')
     var fixture = new provider_fixture_t()
     var runner = make_runner(manager, fixture, 1000, 100, 20)

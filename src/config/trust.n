@@ -204,8 +204,8 @@ pub fn trust_parent_path(string cwd): string {
     return parent
 }
 
-// Pi's hasTrustRequiringProjectResources: project-local .pi resources or a
-// non-user .agents/skills directory in cwd or an ancestor require trust.
+// Project-local .adou resources or a non-user .agents/skills directory in cwd
+// or an ancestor require trust.
 pub fn has_trust_requiring_resources(string cwd): bool {    [string] resources = ['settings.json', 'extensions', 'skills', 'prompts', 'themes', 'SYSTEM.md', 'APPEND_SYSTEM.md']
     string current = normalize(cwd)
     string config_dir = path.join(current, CONFIG_DIR_NAME)
@@ -244,7 +244,7 @@ fn home_dir(): string {
     return syscall.get_env('HOME')
 }
 
-pub const CONFIG_DIR_NAME = '.pi'
+pub const CONFIG_DIR_NAME = '.adou'
 
 fn read_object(string file_path): {string:any} {
     if !path_utils.exists(file_path) {return {}}

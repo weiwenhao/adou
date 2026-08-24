@@ -25,7 +25,7 @@
 
 - `packages/coding-agent/src/core/extensions/**`、`src/extensions/**`：TypeScript extension ABI、加载器、事件总线和扩展 UI。早期 QuickJS 实验源码暂留，但生产入口、TUI/RPC 接线和默认链接已停用。
 - `packages/coding-agent/src/extensions/**`：Llama 等扩展 provider。
-- 动态 `.pi/extensions` 资源加载和扩展包管理。`.pi/skills`、`.pi/prompts`、slash commands 已作为核心功能实现，不属于本排除项。
+- 动态 `.adou/extensions` 资源加载和扩展包管理。`.adou/skills`、`.adou/prompts`、slash commands 已作为核心功能实现，不属于本排除项。
 - `packages/server/**` 的核心 remote viewer artifact/URL 已通过真实 Gist 与 `pi.dev` viewer；Radius 的公开 discovery/web endpoint 已 live 验证。Radius 页面只提供 Email/Google，是否创建第三方账号是外部账号状态，不是 Adou 代码缺口。
 - Pi 图片链路已覆盖类型检测、PNG/JPEG/GIF/WebP/BMP、resize、macOS clipboard、CLI/RPC/session、全部原生 provider、SDK/HTML、Kitty/iTerm2 和 plain fallback。
 

@@ -7,7 +7,7 @@ import os
 import path
 import syscall
 
-// Persistent server records mirror Pi's ~/.pi/server/instances.json.  The
+// Persistent server records live below Adou's server state directory. The
 // records are intentionally separate from the live child-process table: a
 // restart can report stopped historical instances without pretending their
 // PIDs are still attached.

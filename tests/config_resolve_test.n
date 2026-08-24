@@ -132,15 +132,15 @@ test 'B3 defaultProjectTrust decides projects without stored decisions' {
     file.write('{"defaultProjectTrust":"never"}' as [u8])
     file.close()
     string project = path.join('/tmp', 'adou-resolve-trust-' + fmt.sprintf('%d', time.now().ms_timestamp()))
-    os.mkdirs(path.join(project, '.pi', 'skills'), 0o700)
-    var skill = fs.open(path.join(project, '.pi', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    os.mkdirs(path.join(project, '.adou', 'skills'), 0o700)
+    var skill = fs.open(path.join(project, '.adou', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
     skill.write('x' as [u8])
     skill.close()
     var never_config = resolve.resolve(args.parse(['adou']), project)
     assert(!never_config.project_trusted)
     // Global-only: a project settings file cannot override the trust mode.
-    os.mkdirs(path.join(project, '.pi'), 0o700) catch error {}
-    var project_settings = fs.open(path.join(project, '.pi', 'settings.json'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    os.mkdirs(path.join(project, '.adou'), 0o700) catch error {}
+    var project_settings = fs.open(path.join(project, '.adou', 'settings.json'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
     project_settings.write('{"defaultProjectTrust":"always"}' as [u8])
     project_settings.close()
     var still_never = resolve.resolve(args.parse(['adou']), project)

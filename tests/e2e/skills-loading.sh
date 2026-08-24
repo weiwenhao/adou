@@ -26,8 +26,8 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-mkdir -p "$project_dir/.pi/skills/demo"
-cat > "$project_dir/.pi/skills/demo/SKILL.md" <<'MD'
+mkdir -p "$project_dir/.adou/skills/demo"
+cat > "$project_dir/.adou/skills/demo/SKILL.md" <<'MD'
 ---
 name: demo
 description: A demo skill injected into the system prompt
@@ -54,7 +54,7 @@ run_case() {
     expected_index=$2
     shift 2
     output=$(cd "$project_dir" && HOME="$home_dir" \
-        ADOU_CODING_AGENT_DIR="$home_dir/.pi/agent" \
+        ADOU_CODING_AGENT_DIR="$home_dir/.adou/agent" \
         DEEPSEEK_API_KEY=skills-e2e-key \
         "$binary" --provider deepseek --model deepseek/deepseek-v4-flash \
         --base-url "http://127.0.0.1:$port" --max-tokens 128 --no-session -p "hi" "$@" 2>&1)
@@ -87,7 +87,7 @@ sys.stdout.write(system_text)
     echo "e2e: $name fixture round-trip OK"
 }
 
-# 1. Trusted project: the .pi/skills/demo skill is injected.  The fixture
+# 1. Trusted project: the .adou/skills/demo skill is injected.  The fixture
 # hosts trust-requiring resources with no saved decision, so an explicit
 # --approve mirrors Pi's startup selector outcome (headless 'ask' resolves
 # untrusted).
@@ -116,7 +116,7 @@ if rg -q '<available_skills>' "${server_log}.body"; then
 fi
 
 # 4. Explicit --skill paths pierce --no-skills.
-run_case "explicit path with no-skills" 4 --no-skills --skill "$project_dir/.pi/skills/demo"
+run_case "explicit path with no-skills" 4 --no-skills --skill "$project_dir/.adou/skills/demo"
 if ! rg -q '<available_skills>' "${server_log}.body" || ! rg -q '<name>demo</name>' "${server_log}.body"; then
     echo "e2e: explicit --skill with --no-skills did not inject the skill" >&2
     exit 1

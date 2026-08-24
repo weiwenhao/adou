@@ -62,7 +62,7 @@ def test_env_isolation() -> list[str]:
     os.environ.update(SENTINELS)
     try:
         fixture_home = "/tmp/pty-protocol-test-home"
-        fixture_agent = "/tmp/pty-protocol-test-home/.pi/agent"
+        fixture_agent = "/tmp/pty-protocol-test-home/.adou/agent"
         env = fixed_oracle_env(fixture_home, agent_dir=fixture_agent)
         case = PtyCase(["/usr/bin/env", "-0"], env, "/tmp")
         case.start()

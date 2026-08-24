@@ -8,9 +8,8 @@ import os
 import path
 import syscall
 
-// Pi's startup migrations, scoped to Adou's own agent directory.  We do not
-// inspect ~/.pi: Adou and Pi deliberately own separate credential/session
-// stores.
+// Startup migrations are scoped to Adou's own agent directory. They never
+// inspect another agent's credential or session store.
 pub type report_t = struct {
     [string] migrated_auth_providers = []
     int migrated_sessions

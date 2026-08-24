@@ -8,7 +8,7 @@ import strings
 import syscall
 
 // Port of vendors/pi/packages/coding-agent/src/core/skills.ts plus the
-// frontmatter/ignore helpers it depends on.  .pi/skills discovery follows the
+// frontmatter/ignore helpers it depends on.  .adou/skills discovery follows the
 // Agent Skills spec: SKILL.md roots, direct .md children, ignore rules,
 // validation diagnostics and XML prompt formatting.
 
@@ -45,7 +45,7 @@ pub type load_skills_result_t = struct {
 
 pub const MAX_NAME_LENGTH = 64
 pub const MAX_DESCRIPTION_LENGTH = 1024
-pub const CONFIG_DIR_NAME = '.pi'
+pub const CONFIG_DIR_NAME = '.adou'
 
 // Parse a minimal YAML frontmatter block of `key: value` scalar lines.
 // Covers the Agent Skills fields (name/description/disable-model-invocation)
@@ -281,9 +281,9 @@ pub fn load_skills(string cwd, string agent_dir, [string] skill_paths, bool incl
 // ~/.agents/skills layer.  Default discovery order (first wins on collision)
 // mirrors Pi's package-manager resourcePrecedenceRank: project auto (rank 1)
 // beats user auto (rank 3), and a stable sort keeps insertion order within a
-// rank, so `.pi/skills` beats project `.agents` layers and nearest `.agents`
+// rank, so `.adou/skills` beats project `.agents` layers and nearest `.agents`
 // layers beat farther ones:
-//   1. project (trusted only): <cwd>/.pi/skills
+//   1. project (trusted only): <cwd>/.adou/skills
 //   2. project (trusted only): <cwd>/.agents/skills, then each parent layer
 //      up to and including the git root (nearest layer wins; the user's own
 //      ~/.agents/skills is never a project layer even when cwd lives under
@@ -291,12 +291,12 @@ pub fn load_skills(string cwd, string agent_dir, [string] skill_paths, bool incl
 //   3. user:  <agent_dir>/skills
 //   4. user:  <home>/.agents/skills
 // `.agents` layers use the "agents" discovery mode (recursive SKILL.md roots
-// only, root *.md ignored); `.pi/skills` and the user agent dir use the "pi"
+// only, root *.md ignored); `.adou/skills` and the user agent dir use the "pi"
 // mode (direct root *.md children also load).
 // Explicit --skill paths always load afterwards (they pierce --no-skills and
 // the project trust gate).  When defaults are disabled the explicit path
 // keeps Pi's source attribution: a path under <agent_dir>/skills or
-// <cwd>/.pi/skills still resolves to user/project scope.
+// <cwd>/.adou/skills still resolves to user/project scope.
 pub fn load_skills_full(string cwd, string agent_dir, string home, [string] skill_paths, bool include_defaults, bool project_trusted): load_skills_result_t {
     load_skills_result_t result = load_skills_result_t {}
     {string:ref<skill_t>} skill_map = {}

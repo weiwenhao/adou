@@ -108,7 +108,7 @@ pub fn load_trusted_for(string cwd, bool trusted): settings_t {
     return load_for(cwd)
 }
 
-// Pi keeps a global settings file and a project-local .pi/settings.json. The
+// Adou keeps a global settings file and a project-local .adou/settings.json. The
 // project object is a partial override: fields absent from the project file
 // retain their global values, while arrays such as enabledModels replace the
 // corresponding global array when explicitly present.  defaultProjectTrust

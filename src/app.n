@@ -290,8 +290,8 @@ pub fn run(): void! {
     // against the session cwd; an explicit --approve/--no-approve still wins.
     config.project_trusted = trust.resolve_trust(config.trust_override_explicit, config.trust_override, session_cwd, config.default_project_trust)
     // Resolve cwd-bound settings after opening the session.  A --session or
-    // --resume target may belong to another project, and Pi binds its runtime
-    // to that target's .pi/settings.json rather than the launch directory.
+    // --resume target may belong to another project, and the runtime binds to
+    // that target's .adou/settings.json rather than the launch directory.
     // Untrusted projects only get the global settings.
     var session_preferences = config.project_trusted ? settings.load_for(session_cwd) : settings.load()
     config.steering_mode = session_preferences.steering_mode
@@ -455,7 +455,7 @@ pub fn run(): void! {
     if config.mode == 'rpc' {
         // Keep the original CLI overrides for later RPC session switches;
         // an empty value means the new session should rediscover its own
-        // project .pi SYSTEM.md/APPEND_SYSTEM.md files.  The trust override
+        // project .adou SYSTEM.md/APPEND_SYSTEM.md files.  The trust override
         // fields travel with the options so get_commands can re-resolve the
         // decision against each session's project cwd.
         debug.log('mode', 'starting rpc loop')

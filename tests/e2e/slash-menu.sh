@@ -44,6 +44,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import sys
 import time
 
@@ -67,14 +68,14 @@ ADOU_READY = b"\x1b[>1u"
 # agent settings.json differs), so the path/@ completion milestones see the
 # same project files while autocompleteMaxVisible 3/20 boundaries are
 # asserted per variant.
-FIXTURES = {
+PI_FIXTURES = {
     "batch1": os.path.join(ROOT, "tests", "e2e", "lib", "pi-oracle", "fixtures", "batch1"),
     "batch1-max3": os.path.join(ROOT, "tests", "e2e", "lib", "pi-oracle", "fixtures", "batch1-max3"),
     "batch1-max20": os.path.join(ROOT, "tests", "e2e", "lib", "pi-oracle", "fixtures", "batch1-max20"),
 }
-FIXTURE = FIXTURES["batch1"]
+FIXTURE = PI_FIXTURES["batch1"]
 HOME = os.path.join(FIXTURE, "home")
-AGENT = os.path.join(HOME, ".pi", "agent")
+AGENT = os.path.join(HOME, ".adou", "agent")
 CWD = os.path.join(FIXTURE, "cwd")
 MAX_VISIBLE = 5  # parsed from the selected fixture settings.json in main()
 
@@ -133,7 +134,7 @@ MILESTONE_KEYS = {
     "at-active-tab": ["\t"],
     "at-clear-2": ["\x03"],
     # A single directory candidate applies without a trailing space.
-    "at-dir-apply": list("@.pi") + ["\t"],
+    "at-dir-apply": list("@.adou") + ["\t"],
     "at-clear-3": ["\x03"],
     # B1-R4-03: no candidate -> editor untouched (never an indent).
     "at-no-candidate-tab": list("zzzz-no-such-entry") + ["\t"],
@@ -562,14 +563,14 @@ def validate_at_active_tab(milestone: dict) -> list[str]:
     if errors:
         return errors
     row = input_row(screen)
-    if not row or not row.startswith("@.pi/prompts/"):
-        errors.append(f"at-active-tab: input row is {row!r}, want a relative '@.pi/prompts/...' value")
+    if not row or not row.startswith("@.adou/prompts/"):
+        errors.append(f"at-active-tab: input row is {row!r}, want a relative '@.adou/prompts/...' value")
     elif os.path.isabs(row[1:]) or "//" in row[1:]:
         errors.append(f"at-active-tab: absolute cwd leaked into the editor: {row!r}")
-    elif row != "@.pi/prompts/code-review.md":
+    elif row != "@.adou/prompts/code-review.md":
         errors.append(
             "at-active-tab: input row is "
-            f"{row!r}, want '@.pi/prompts/code-review.md'"
+            f"{row!r}, want '@.adou/prompts/code-review.md'"
         )
     residue = esc_residue_rows(screen)
     if residue:
@@ -579,13 +580,13 @@ def validate_at_active_tab(milestone: dict) -> list[str]:
 
 def validate_at_dir_apply(milestone: dict) -> list[str]:
     """B1-R4-12: a single directory candidate applies WITHOUT a trailing
-    space ('@.pi/')."""
+    space ('@.adou/')."""
     screen = milestone.get("screen")
     joined, errors = _joined(screen, "at-dir-apply")
     if errors:
         return errors
-    if input_row(screen) != "@.pi/":
-        errors.append(f"at-dir-apply: input row is {input_row(screen)!r}, want '@.pi/'")
+    if input_row(screen) != "@.adou/":
+        errors.append(f"at-dir-apply: input row is {input_row(screen)!r}, want '@.adou/'")
     residue = esc_residue_rows(screen)
     if residue:
         errors.append(f"at-dir-apply: menu residue after Tab: {residue!r}")
@@ -608,14 +609,14 @@ def validate_at_no_candidate(milestone: dict) -> list[str]:
 
 
 def validate_at_blank_tab(milestone: dict) -> list[str]:
-    """B1-R4-03: blank Tab with a single root candidate ('.pi/') applies it
-    directly (Pi 0.82.1 oracle: '.pi/', cursor column 4)."""
+    """B1-R4-03: blank Tab with a single root candidate ('.adou/') applies
+    the Adou namespace counterpart of Pi's project directory."""
     screen = milestone.get("screen")
     joined, errors = _joined(screen, "at-blank-tab-single")
     if errors:
         return errors
-    if input_row(screen) != ".pi/":
-        errors.append(f"at-blank-tab-single: input row is {input_row(screen)!r}, want '.pi/'")
+    if input_row(screen) != ".adou/":
+        errors.append(f"at-blank-tab-single: input row is {input_row(screen)!r}, want '.adou/'")
     residue = esc_residue_rows(screen)
     if residue:
         errors.append(f"at-blank-tab-single: menu residue after Tab: {residue!r}")
@@ -883,9 +884,30 @@ def adou_argv() -> list[str]:
     ]
 
 
-def fixture_max_visible(name: str) -> int:
+def prepare_adou_fixture(name: str) -> str:
+    """Stage the immutable Pi oracle input under Adou's namespace.
+
+    The upstream fixtures intentionally remain `.pi` because the Pi oracle
+    consumes them.  Adou never runs against those paths directly: this copy
+    renames both the project and user resource roots to `.adou` first.
+    """
+    stage = os.path.join(ROOT, "build", f"slash-menu-{os.getpid()}", "fixtures", "batch1")
+    stage_parent = os.path.dirname(os.path.dirname(stage))
+    shutil.rmtree(stage_parent, ignore_errors=True)
+    shutil.copytree(PI_FIXTURES["batch1"], stage)
+    if name != "batch1":
+        shutil.rmtree(os.path.join(stage, "home"))
+        shutil.copytree(os.path.join(PI_FIXTURES[name], "home"), os.path.join(stage, "home"))
+    os.rename(os.path.join(stage, "cwd", ".pi"), os.path.join(stage, "cwd", ".adou"))
+    os.makedirs(os.path.join(stage, "home", ".adou"), exist_ok=True)
+    os.rename(os.path.join(stage, "home", ".pi", "agent"), os.path.join(stage, "home", ".adou", "agent"))
+    shutil.rmtree(os.path.join(stage, "home", ".pi"))
+    return stage
+
+
+def fixture_max_visible(fixture: str) -> int:
     """Parse autocompleteMaxVisible from the fixture's settings.json."""
-    settings_path = os.path.join(FIXTURES[name], "home", ".pi", "agent", "settings.json")
+    settings_path = os.path.join(fixture, "home", ".adou", "agent", "settings.json")
     try:
         with open(settings_path) as fh:
             data = json.load(fh)
@@ -1055,7 +1077,7 @@ def main() -> int:
     global FIXTURE, HOME, AGENT, CWD, MAX_VISIBLE
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=3)
-    parser.add_argument("--fixture", default="batch1", choices=list(FIXTURES.keys()),
+    parser.add_argument("--fixture", default="batch1", choices=list(PI_FIXTURES.keys()),
                         help="batch1 (max 5) or the autocompleteMaxVisible 3/20 variants")
     parser.add_argument("--out", default=None)
     parser.add_argument("--self-test", action="store_true", help="run the pure validator self-tests without a PTY")
@@ -1072,11 +1094,11 @@ def main() -> int:
     if validate_runs(args.runs):
         parser.error(f"--runs must be >= {MIN_RUNS} (three-round gate), got {args.runs}")
 
-    FIXTURE = FIXTURES[args.fixture]
+    FIXTURE = prepare_adou_fixture(args.fixture)
     HOME = os.path.join(FIXTURE, "home")
-    AGENT = os.path.join(HOME, ".pi", "agent")
+    AGENT = os.path.join(HOME, ".adou", "agent")
     CWD = os.path.join(FIXTURE, "cwd")
-    MAX_VISIBLE = fixture_max_visible(args.fixture)
+    MAX_VISIBLE = fixture_max_visible(FIXTURE)
 
     out_dir = args.out or os.path.join(ROOT, "docs", "pi-batch1-evidence")
     os.makedirs(out_dir, exist_ok=True)
@@ -1295,10 +1317,10 @@ def _valid_record() -> dict:
         ("commit-msg", "[p] Deterministic fixture prompt commit-msg for parity run"),
     ]
     at_two_candidates = [
-        ("code-review.md", ".pi/prompts/code-review.md"),
-        ("commit-msg.md", ".pi/prompts/commit-msg.md"),
+        ("code-review.md", ".adou/prompts/code-review.md"),
+        ("commit-msg.md", ".adou/prompts/commit-msg.md"),
     ]
-    at_one_candidates = [("commit-msg.md", ".pi/prompts/commit-msg.md")]
+    at_one_candidates = [("commit-msg.md", ".adou/prompts/commit-msg.md")]
     login_candidates = [("deepseek", "DeepSeek · API key")]
     empty_editor = _make_screen("", editor_before=["", ""])
     return {
@@ -1334,13 +1356,13 @@ def _valid_record() -> dict:
             _milestone("at-backspace-requery", _make_screen("@co", candidates=at_two_candidates, selected="code-review.md")),
             _milestone("at-wrap-up", _make_screen("@co", candidates=at_two_candidates, selected="commit-msg.md")),
             _milestone("at-wrap-down", _make_screen("@co", candidates=at_two_candidates, selected="code-review.md")),
-            _milestone("at-active-tab", _make_screen("@.pi/prompts/code-review.md")),
+            _milestone("at-active-tab", _make_screen("@.adou/prompts/code-review.md")),
             _milestone("at-clear-2", empty_editor),
-            _milestone("at-dir-apply", _make_screen("@.pi/")),
+            _milestone("at-dir-apply", _make_screen("@.adou/")),
             _milestone("at-clear-3", empty_editor),
             _milestone("at-no-candidate-tab", _make_screen("zzzz-no-such-entry")),
             _milestone("at-clear-4", empty_editor),
-            _milestone("at-blank-tab-single", _make_screen(".pi/")),
+            _milestone("at-blank-tab-single", _make_screen(".adou/")),
             _milestone("at-clear-5", empty_editor),
             _milestone("slash-prompt-filter", _make_screen("/code-r", candidates=[("code-review", "[p] Deterministic fixture prompt code-review for parity")], selected="code-review")),
             _milestone("at-esc-1", _make_screen("/code-r")),
@@ -1491,18 +1513,18 @@ def self_test() -> int:
 
     # negative: typing requery must narrow to a single candidate
     record = _valid_record()
-    record["milestones"][18]["screen"][4] = "  code-review.md       .pi/prompts/code-review.md"
-    record["milestones"][18]["screen"][5] = "  commit-msg.md        .pi/prompts/commit-msg.md"
+    record["milestones"][18]["screen"][4] = "  code-review.md       .adou/prompts/code-review.md"
+    record["milestones"][18]["screen"][5] = "  commit-msg.md        .adou/prompts/commit-msg.md"
     expect_error("requery no shrink", record, "want ['commit-msg.md']")
 
     # negative: wrap-up must land on the LAST candidate
     record = _valid_record()
-    record["milestones"][20]["screen"][4] = "→ code-review.md      .pi/prompts/code-review.md"
+    record["milestones"][20]["screen"][4] = "→ code-review.md      .adou/prompts/code-review.md"
     expect_error("wrap-up wrong selection", record, "selected")
 
     # negative: active Tab must insert a relative value (no absolute cwd)
     record = _valid_record()
-    record["milestones"][22]["screen"][2] = "@.pi/prompts//Users/someone/x"
+    record["milestones"][22]["screen"][2] = "@.adou/prompts//Users/someone/x"
     expect_error("active-tab absolute leak", record, "absolute cwd leaked")
 
     # negative: no-candidate Tab must leave the text untouched
@@ -1510,10 +1532,10 @@ def self_test() -> int:
     record["milestones"][26]["screen"][2] = "zzzz-no-such-entryX"
     expect_error("no-candidate text changed", record, "want 'zzzz-no-such-entry'")
 
-    # negative: blank Tab single candidate must apply '.pi/'
+    # negative: blank Tab single candidate must apply '.adou/'
     record = _valid_record()
     record["milestones"][28]["screen"][2] = ""
-    expect_error("blank-tab no apply", record, "want '.pi/'")
+    expect_error("blank-tab no apply", record, "want '.adou/'")
 
     # negative: login must never show the OAuth-only provider
     record = _valid_record()

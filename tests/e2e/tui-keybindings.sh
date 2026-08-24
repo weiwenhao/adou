@@ -46,7 +46,7 @@ store_fixture = os.path.join(
     "fixtures",
     "batch1",
     "home",
-    ".pi",
+    ".adou",
     "agent",
     "models-store.json",
 )

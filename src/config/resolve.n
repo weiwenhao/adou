@@ -11,7 +11,7 @@ import syscall
 
 // Pi's resolveProjectTrusted: an explicit --approve/--no-approve wins,
 // otherwise a stored decision applies, and untrusted projects skip their
-// local .pi settings overlay entirely.
+// local .adou settings overlay entirely.
 // Relative --skill paths are fixed against the launch cwd right here: a
 // resumed --session or /import can bind the runtime to a different project
 // later, and the explicit paths must not drift with it.
@@ -68,7 +68,7 @@ pub fn resolve(types.cli_args_t arguments, string cwd): types.config_t! {
     // Pi considers enabledModels a model scope, so it wins over the saved
     // default model for a fresh session.  The saved default is considered
     // only when it is itself in the scope; otherwise the first scoped model
-    // is selected.  This ordering is also what lets a project .pi/settings
+    // is selected.  This ordering is also what lets a project .adou/settings
     // file override a conflicting user-level defaultModel.
     if requested_model == '' && preferences.default_model != '' && (preferences.default_provider == '' || stored_provider_supported) {
         requested_model = preferences.default_model

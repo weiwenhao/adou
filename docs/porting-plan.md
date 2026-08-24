@@ -9,7 +9,7 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 ## 2026-08-20 非 Extension 差异补齐批次
 
 - **阶段 1 已完成（当前收口提交 `ef85ac3`、`3ea1405`）**：对照 `vendors/pi/packages/coding-agent/src/migrations.ts`、`utils/version-check.ts`、`utils/changelog.ts` 和 `utils/tools-manager.ts`，新增并收口 `src/config/migrations.n`、`src/config/version_check.n`、`src/config/changelog.n`、`src/tools/managed_tools.n`。
-- 启动期迁移已覆盖旧 `oauth.json`、settings 中 `apiKeys`、agent 根目录旧 JSONL session、旧 `tools/{rg,fd}`；迁移范围严格限制在 `ADOU_CODING_AGENT_DIR`，不改写 `~/.pi`。
+- 启动期迁移已覆盖旧 `oauth.json`、settings 中 `apiKeys`、agent 根目录旧 JSONL session、旧 `tools/{rg,fd}`；迁移范围严格限制在 `ADOU_CODING_AGENT_DIR`，不改写其他 agent 的状态目录。
 - `/changelog` 已改为解析真实 `CHANGELOG.md`，并按 Pi 规则把相对链接固定到对应 release tag；路径按 `ADOU_CHANGELOG_PATH`、当前目录、可执行文件相邻目录和安装 share 目录顺序解析。启动版本检查请求 `https://pi.dev/api/latest-version`，支持 SemVer 预发布比较、`ADOU_VERSION_CHECK_URL` 测试端点和 `ADOU_OFFLINE` / `ADOU_SKIP_VERSION_CHECK` 守卫；检查在 TUI 启动后异步完成，不阻塞首屏。
 - `rg` / `fd` 已具备本机查找、`fdfind` 兼容、GitHub release 查询/下载/解包/安装路径；离线模式支持 `1/true/yes`，平台/架构按运行时识别，Android 明确提示走 Termux 包，安装采用临时目录和原子发布。
 - 证据：`make build` 通过；`tests/startup_migrations_test.n` 6/6、`tests/version_check_test.n` 3/3、`tests/managed_tools_test.n` 4/4。覆盖 SemVer、真实响应解析、release asset 矩阵、未知工具拒绝、平台/架构 override 和离线无网络；tar/pkg/install 产物均携带真实 `CHANGELOG.md`。
@@ -52,7 +52,7 @@ RC 稳定性门禁：2026-08-12 已跑（完整 `make e2e`、`make eval`、`make
 - **本批已闭合**：真实 provider OAuth/live recovery、用户图片附件与 provider 传递、跨终端交互式图片 UI、SDK/HTML/RPC 图片 API、Radius 公开 web/discovery、远程 share/viewer 以及长历史/重复交互证据。
 - **平台工作**：Linux 构建、交叉编译、签名/公证属于发布工程，不改变 Pi 行为 parity 的目标。
 
-`.pi/skills`、`.pi/prompts`、slash commands、项目上下文和信任门控属于核心功能，已经实现，不在排除范围。
+`.adou/skills`、`.adou/prompts`、slash commands、项目上下文和信任门控属于核心功能，已经实现，不在排除范围。
 
 2026-08-20 四个收口批次包括：
 
@@ -214,8 +214,8 @@ Phase 8 验收结果（2026-08-12 关闭）：`make build` 退出 0；`make eval
 已落地：
 
 - CLI：`--skill` 可重复收集并在启动 cwd 立即解析为绝对路径，后续 `--session`/`--resume`/session rebind 不漂移；`--no-skills` 只关 default discovery（显式路径仍加载），HELP 文本同步说明；HELP/`help-matrix.sh` 同步 `--skill`、`--no-skills`、`-ns`。
-- 发现顺序（name collision 先加载者胜）：可信项目优先于用户：`<cwd>/.pi/skills` → `<cwd>` 至 git root 的各层 `.agents/skills`（近层优先）→ `<agent_dir>/skills` → `~/.agents/skills`。
-  - `.pi/skills` 与 agent_dir 使用 pi mode（允许根部 `*.md`），`.agents/skills` 与 `~/.agents/skills` 使用 agents mode（只识别子目录 `SKILL.md`）。
+- 发现顺序（name collision 先加载者胜）：可信项目优先于用户：`<cwd>/.adou/skills` → `<cwd>` 至 git root 的各层 `.agents/skills`（近层优先）→ `<agent_dir>/skills` → `~/.agents/skills`。
+  - `.adou/skills` 与 agent_dir 使用 pi mode（允许根部 `*.md`），`.agents/skills` 与 `~/.agents/skills` 使用 agents mode（只识别子目录 `SKILL.md`）。
   - git root 只按 `.git` marker 存在性封顶（不要求 HEAD）；`~/.agents/skills` 只作为 user 层，不作为 project 层重复（cwd 在 HOME 下同样适用）。
 - trust：共享 `trust.resolve_trust`（显式 `--approve`/`--no-approve` 最高优先级）；启动打开最终 repository 后按 repository cwd 重解析，serve spawn cwd、TUI `/open`/`/import`/session rebind、RPC `get_commands` 均按各自项目 cwd 重解析。
 - system prompt：仅 read 工具可用时注入 `<available_skills>`；`/reload`、session rebind、serve 实例重建、RPC `get_commands` 复用同一技能集合与 `enabledSkills` 过滤。
@@ -226,7 +226,7 @@ Phase 8 验收结果（2026-08-12 关闭）：`make build` 退出 0；`make eval
 - `run_rpc` 的 skills options 改用 `resolve.skills_options_for`（携带 trust override），直接 RPC `get_commands` 不再丢失显式 `--no-approve`。
 - TUI `view_t` 保存 trust override 字段并新增 `trusted_for(cwd)`；`/open`、`/import`、session rebind 跨项目时按新 cwd 重解析 trust。
 - `config_context_test.n` 改为断言相对 skill 路径在 resolve 时固化为启动 cwd 绝对路径、绝对路径原样保留。
-- `skills_test.n` collision case 改为 project-first（`.pi/skills` 胜 user），并补齐同名 winner 断言；新增项目胜用户、pi mode/agents mode、above-repo 不加载、HOME 下 `.agents` 单层加载等 case（22/22 绿）。
+- `skills_test.n` collision case 改为 project-first（`.adou/skills` 胜 user），并补齐同名 winner 断言；新增项目胜用户、pi mode/agents mode、above-repo 不加载、HOME 下 `.agents` 单层加载等 case（22/22 绿）。
 - `skills-loading.sh`/`skills-reload.sh` 隔离 HOME/agent/session（HOME 隔离防止未信任分支误载入真实 `~/.agents/skills`），改用随机空闲端口；`skills-reload.sh` 增加 child chdir project、completion 输入校验与 fixture 多请求计数校验。
 
 验证结果（2026-08-13，全部串行、不调用真实模型）：
@@ -325,7 +325,7 @@ selector`），单独复跑 3 次全绿；第四次（最终，全部改动落�
 
 ## 2026-08-13 大请求 TLS EOF 与退出时 double-free 闭环
 
-- 复现场景：项目同时发现 `.pi/skills` / `.agents/skills` 后，完整 system prompt 与
+- 复现场景：项目同时发现 `.adou/skills` / `.agents/skills` 后，完整 system prompt 与
   用户消息形成约 19 KiB 的 DeepSeek HTTPS 请求；服务端尚未返回事件时客户端报
   `TLS read failed: end of file`。随后 TUI redraw 触发 `malloc: double free` 并
   SIGABRT。

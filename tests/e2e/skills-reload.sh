@@ -202,7 +202,7 @@ try:
 
     # Phase B: create a valid skill, /reload, then verify discovery, the
     # completion entry, the injected system prompt and the expansion.
-    skill_dir = os.path.join(project, ".pi", "skills", "demo")
+    skill_dir = os.path.join(project, ".adou", "skills", "demo")
     os.makedirs(skill_dir)
     with open(os.path.join(skill_dir, "SKILL.md"), "w") as fh:
         fh.write(

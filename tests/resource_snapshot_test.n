@@ -44,8 +44,8 @@ test 'B1-R4-10 snapshot is trust-aware and no-reload disk changes never alter co
     string cwd = path.join('/tmp', 'adou-rpc-snapshot-cwd-' + suffix())
     write_file(path.join(agent_dir, 'prompts', 'user-prompt.md'), '---\ndescription: User prompt\n---\n\nUser body $@')
     write_file(path.join(agent_dir, 'skills', 'user-skill', 'SKILL.md'), '---\nname: user-skill\ndescription: User skill\n---\n\nbody')
-    write_file(path.join(cwd, '.pi', 'prompts', 'project-prompt.md'), '---\ndescription: Project prompt\n---\n\nProject body $@')
-    write_file(path.join(cwd, '.pi', 'skills', 'project-skill', 'SKILL.md'), '---\nname: project-skill\ndescription: Project skill\n---\n\nbody')
+    write_file(path.join(cwd, '.adou', 'prompts', 'project-prompt.md'), '---\ndescription: Project prompt\n---\n\nProject body $@')
+    write_file(path.join(cwd, '.adou', 'skills', 'project-skill', 'SKILL.md'), '---\nname: project-skill\ndescription: Project skill\n---\n\nbody')
     [string] no_paths = []
 
     var snapshot = new resource_snapshot.resource_snapshot_t()
@@ -66,8 +66,8 @@ test 'B1-R4-10 snapshot is trust-aware and no-reload disk changes never alter co
 
     // No-reload drift: add a project prompt + skill on disk AFTER the
     // refresh; the wire commands must stay exactly as refreshed.
-    write_file(path.join(cwd, '.pi', 'prompts', 'late-prompt.md'), '---\ndescription: Late\n---\n\nLate body')
-    write_file(path.join(cwd, '.pi', 'skills', 'late-skill', 'SKILL.md'), '---\nname: late-skill\ndescription: Late\n---\n\nbody')
+    write_file(path.join(cwd, '.adou', 'prompts', 'late-prompt.md'), '---\ndescription: Late\n---\n\nLate body')
+    write_file(path.join(cwd, '.adou', 'skills', 'late-skill', 'SKILL.md'), '---\nname: late-skill\ndescription: Late\n---\n\nbody')
     write_file(path.join(agent_dir, 'prompts', 'user-prompt.md'), '---\ndescription: Changed\n---\n\nChanged body $@')
     var unchanged = resource_snapshot.commands_json(snapshot)
     assert(unchanged.len() == 4)

@@ -67,24 +67,36 @@ test 'trust_parent_path returns the parent directory like Pi' {
     assert(trust.trust_parent_path('/') == '')
 }
 
-test 'has_trust_requiring_resources detects .pi resources and agents skills' {
+test 'has_trust_requiring_resources detects .adou resources and agents skills' {
     isolate_trust_store()
     string root = path.join('/tmp', 'adou-trust-res-' + suffix())
-    os.mkdirs(path.join(root, '.pi'), 0o700)
+    os.mkdirs(path.join(root, '.adou'), 0o700)
     assert(!trust.has_trust_requiring_resources(root))
+    os.mkdirs(path.join(root, '.adou', 'skills'), 0o700)
+    var file = fs.open(path.join(root, '.adou', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    file.write('x' as [u8])
+    file.close()
+    assert(trust.has_trust_requiring_resources(root))
+}
+
+test 'legacy .pi resources do not trigger Adou project trust' {
+    isolate_trust_store()
+    string root = path.join('/tmp', 'adou-trust-legacy-pi-' + suffix())
     os.mkdirs(path.join(root, '.pi', 'skills'), 0o700)
     var file = fs.open(path.join(root, '.pi', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
     file.write('x' as [u8])
     file.close()
-    assert(trust.has_trust_requiring_resources(root))
+    assert(!trust.has_trust_requiring_resources(root))
+    assert(trust.resolve_trust(false, true, root, 'ask'))
+    assert(!trust.needs_prompt(false, true, root, 'ask'))
 }
 
 test 'resolve_trust applies stored decisions per cwd and explicit overrides win' {
     isolate_trust_store()
     // A project with trust-requiring resources picks up its stored decision.
     string project = path.join('/tmp', 'adou-trust-res-' + suffix())
-    os.mkdirs(path.join(project, '.pi', 'skills'), 0o700)
-    var file = fs.open(path.join(project, '.pi', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    os.mkdirs(path.join(project, '.adou', 'skills'), 0o700)
+    var file = fs.open(path.join(project, '.adou', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
     file.write('x' as [u8])
     file.close()
     assert(!trust.resolve_trust(false, true, project, 'ask'))
@@ -107,8 +119,8 @@ test 'resolve_trust applies stored decisions per cwd and explicit overrides win'
 test 'defaultProjectTrust fallback gates projects without stored decisions' {
     isolate_trust_store()
     string project = path.join('/tmp', 'adou-trust-default-' + suffix())
-    os.mkdirs(path.join(project, '.pi', 'skills'), 0o700)
-    var file = fs.open(path.join(project, '.pi', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
+    os.mkdirs(path.join(project, '.adou', 'skills'), 0o700)
+    var file = fs.open(path.join(project, '.adou', 'skills', 'SKILL.md'), syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
     file.write('x' as [u8])
     file.close()
     // No stored decision: the global settings fallback decides.

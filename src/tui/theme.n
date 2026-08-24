@@ -299,7 +299,7 @@ pub fn register_path(string entry, string cwd): bool {
 }
 
 // B4: named-theme registry — custom themes resolve from the project's
-// .pi/themes/<name>.json then the agent dir's themes/, nearest first.
+// .adou/themes/<name>.json then the agent dir's themes/, nearest first.
 
 pub fn loaded_name(): string {
     return loaded_theme_name
@@ -322,7 +322,7 @@ pub fn ensure_named_loaded(string cwd, string name): bool {
         return true
     }
     [string] candidates = [
-        path_utils.resolve_to_cwd('.pi/themes/' + name + '.json', cwd),
+        path_utils.resolve_to_cwd('.adou/themes/' + name + '.json', cwd),
         path.join(paths.agent_dir(), 'themes', name + '.json'),
     ]
     for candidate in candidates {
@@ -334,7 +334,7 @@ pub fn ensure_named_loaded(string cwd, string name): bool {
     // Registered project resources can therefore be selected even when the
     // resource file uses a different basename.
     [string] directories = [
-        path_utils.resolve_to_cwd('.pi/themes', cwd),
+        path_utils.resolve_to_cwd('.adou/themes', cwd),
         path.join(paths.agent_dir(), 'themes'),
     ]
     for directory in directories {
@@ -356,7 +356,7 @@ pub fn available_names(string cwd): [string] {
         if name != '' && !contains_name(result, name) {result.push(name)}
     }
     [string] directories = [
-        path_utils.resolve_to_cwd('.pi/themes', cwd),
+        path_utils.resolve_to_cwd('.adou/themes', cwd),
         path.join(paths.agent_dir(), 'themes'),
     ]
     for directory in directories {

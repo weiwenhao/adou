@@ -1,9 +1,9 @@
 import path
 import syscall
 
-// Adou keeps its own user-level agent state below ~/.adou/agent, isolated
-// from Pi's ~/.pi/agent so neither tool can clobber the other's credentials,
-// sessions, or extension data. An explicit ADOU_CODING_AGENT_DIR selects the
+// Adou keeps all user-level agent state below ~/.adou/agent so credentials,
+// sessions, and extension data stay in the Adou namespace. An explicit
+// ADOU_CODING_AGENT_DIR selects the
 // agent state directory. Keep path resolution in one module so auth, settings, trust,
 // sessions, and global context files cannot silently drift apart.
 
@@ -30,7 +30,7 @@ pub fn settings_path(): string {return path.join(agent_dir(), 'settings.json')}
 pub fn trust_path(): string {return path.join(agent_dir(), 'trust.json')}
 pub fn debug_log_path(): string {return path.join(agent_dir(), 'adou-debug.log')}
 pub fn crash_log_path(): string {return path.join(agent_dir(), 'adou-crash.log')}
-pub fn project_settings_path(string cwd): string {return path.join(cwd, '.pi/settings.json')}
+pub fn project_settings_path(string cwd): string {return path.join(cwd, '.adou/settings.json')}
 
 fn expand_home(string value): string {
     if value == '~' {

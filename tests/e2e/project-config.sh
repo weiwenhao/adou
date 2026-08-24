@@ -27,13 +27,13 @@ project_dir="$tmp_dir/project"
 request_file="$tmp_dir/request.json"
 port_file="$tmp_dir/port"
 
-mkdir -p "$project_dir/.pi"
+mkdir -p "$project_dir/.adou"
 mkdir -p "$agent_dir"
 printf '%s' '{"defaultProvider":"openai","defaultModel":"gpt-5.1-codex","defaultThinkingLevel":"high"}' > "$agent_dir/settings.json"
 printf '%s' 'GLOBAL_SYSTEM' > "$agent_dir/SYSTEM.md"
-printf '%s' 'PROJECT_SYSTEM' > "$project_dir/.pi/SYSTEM.md"
-printf '%s' 'PROJECT_APPEND' > "$project_dir/.pi/APPEND_SYSTEM.md"
-printf '%s' '{"defaultProvider":"anthropic","defaultModel":"claude-sonnet-4-5","defaultThinkingLevel":"off","enabledModels":["openai/gpt-5.1-codex:high","deepseek/deepseek-v4-flash:low"]}' > "$project_dir/.pi/settings.json"
+printf '%s' 'PROJECT_SYSTEM' > "$project_dir/.adou/SYSTEM.md"
+printf '%s' 'PROJECT_APPEND' > "$project_dir/.adou/APPEND_SYSTEM.md"
+printf '%s' '{"defaultProvider":"anthropic","defaultModel":"claude-sonnet-4-5","defaultThinkingLevel":"off","enabledModels":["openai/gpt-5.1-codex:high","deepseek/deepseek-v4-flash:low"]}' > "$project_dir/.adou/settings.json"
 
 python3 - "$port_file" "$request_file" <<'PY' &
 import json
@@ -111,7 +111,7 @@ PY
 # Switch back to the project default before the provider request so this test
 # can continue to exercise the DeepSeek OpenAI-compatible transport and the
 # project SYSTEM.md precedence in the same invocation.
-printf '%s' '{"defaultProvider":"deepseek","defaultModel":"deepseek-v4-flash","defaultThinkingLevel":"off"}' > "$project_dir/.pi/settings.json"
+printf '%s' '{"defaultProvider":"deepseek","defaultModel":"deepseek-v4-flash","defaultThinkingLevel":"off"}' > "$project_dir/.adou/settings.json"
 
 output_file="$tmp_dir/output"
 if ! (cd "$project_dir" && \
@@ -119,12 +119,12 @@ if ! (cd "$project_dir" && \
     ADOU_CODING_AGENT_DIR="$agent_dir" \
     ADOU_SESSION_DIR="$tmp_dir/sessions-prompt" \
     "$binary" --base-url "http://127.0.0.1:$port/v1" --print --no-session --approve project-prompt > "$output_file" 2>&1); then
-    echo 'e2e: project .pi prompt invocation failed' >&2
+    echo 'e2e: project .adou prompt invocation failed' >&2
     cat "$output_file" >&2
     exit 1
 fi
 if [ "$(cat "$output_file")" != 'project-config-ok' ]; then
-    echo 'e2e: project .pi prompt did not complete with the expected response' >&2
+    echo 'e2e: project .adou prompt did not complete with the expected response' >&2
     cat "$output_file" >&2
     exit 1
 fi
@@ -149,4 +149,4 @@ if body.get("model") != "deepseek-v4-flash":
     raise SystemExit(f"project model was not used for the provider request: {body!r}")
 PY
 
-echo 'e2e: project .pi settings and system prompt precedence OK'
+echo 'e2e: project .adou settings and system prompt precedence OK'

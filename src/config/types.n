@@ -132,7 +132,7 @@ pub type config_t = struct {
 // Skills options shared by every runtime entry that rebuilds project-bound
 // resources (session context, spawned serve instances, RPC get_commands).
 // Explicit --skill paths always load; no_skills only gates default discovery;
-// project_trusted gates project-scope discovery (.pi/skills, .agents/skills).
+// project_trusted gates project-scope discovery (.adou/skills, .agents/skills).
 // The trust override fields are carried so the decision can be re-resolved
 // per project cwd (a spawn or session rebind may leave the launch cwd).
 pub type skills_options_t = struct {

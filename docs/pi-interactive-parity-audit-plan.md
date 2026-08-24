@@ -679,7 +679,7 @@ rebind 代码。主代理继续以 vendored Pi `0.82.1` 为源码权威，并检
 | ID | 级别 | 源码/实测证据与当前偏差 | 修正和验收要求 |
 |---|---|---|---|
 | B1-R3-01 | P0 | `session_view.apply_path_completion()` 仍调用 `editor.set_text_at()`。该 API 会重建整个 editor、清空 `pastes/paste_counter`，而调用方传入的又只是当前单行；因此 Tab 文件补全或 `@` 补全仍会删除其他逻辑行和 large-paste registry。slash 补全虽已改用 range API，但同一 Pi `CombinedAutocompleteProvider.applyCompletion()` 的 path/attachment 分支没有接上。 | 扩展/复用保留全部 lines、paste registry、kill/history 状态的原子 range completion API；文件和 `@` 补全不得再走 `set_text_at()`。用真实 `handle_paste(>1000 chars)` marker + 多行 + suffix + 单步 undo 覆盖生产所用 API。 |
-| B1-R3-02 | P0 | TUI `rebind_project_context()` 在刷新 snapshot 后直接以 CLI `system_prompt_override` 和 `append_system_prompts` 重建 prompt；当 CLI 未显式提供时，没有像 startup 和 `/reload` 那样发现目标 cwd 的 `.pi/SYSTEM.md` / `.pi/APPEND_SYSTEM.md`。切换 session 后菜单来自新项目，system prompt 却缺少新项目文件。 | rebind 与 startup/reload 使用同一 trust-gated system/append resolution；untrusted 不发现项目文件，trusted 目标 cwd 发现并应用，CLI override 继续优先。 |
+| B1-R3-02 | P0 | TUI `rebind_project_context()` 在刷新 snapshot 后直接以 CLI `system_prompt_override` 和 `append_system_prompts` 重建 prompt；当 CLI 未显式提供时，没有像 startup 和 `/reload` 那样发现目标 cwd 的 `.adou/SYSTEM.md` / `.adou/APPEND_SYSTEM.md`。切换 session 后菜单来自新项目，system prompt 却缺少新项目文件。 | rebind 与 startup/reload 使用同一 trust-gated system/append resolution；untrusted 不发现项目文件，trusted 目标 cwd 发现并应用，CLI override 继续优先。 |
 | B1-R3-03 | P0 | RPC `rebind_rpc_context()` 虽新增 trust gate，却没有重新加载/过滤 skills，也没有把 `format_skills_for_prompt()` 注入重建后的 system prompt；startup runner 原有 skills block 会在 `switch_session` 后消失。 | RPC rebind 使用目标 cwd 的 trust-aware merged settings 和同一 filtered skills snapshot；仅在 `read` tool 存在时注入 skills，规则与 fresh/spawned/TUI 完全相同。 |
 | B1-R3-04 | P0 | `runner.replace_repository()` 在外层知道目标 cwd trust 之前无条件调用 `settings.load_for(next.cwd)`，项目的 queue/compaction/retry settings 已先写入 runner；随后 TUI/RPC resource rebind 的 trust gate无法撤销这次泄漏。 | session replacement 的 preference 应用必须接收/使用目标 cwd 的 trust-aware snapshot，不能在 core 内无条件读 project settings。更新 TUI、RPC、clone/fork 和对应 tests，保证 untrusted 只用 global、trusted 才 merge project。 |
 | B1-R3-05 | P0 | 新 `refresh_resource_snapshot()` 会读取目标 cwd settings，但 `model_scope_patterns`、`scoped_model_ids/active` 仍保持启动项目的值；`refresh_model_argument_cache()` 因而只是用旧 scope 重新扫描。B1-R2-08 所要求的 rebind model candidate snapshot 尚未实现。 | 明确保存 CLI `--models` 是否显式：显式 scope 跨 rebind 保持；否则 init/reload/rebind 从 trust-aware `enabledModels` 原子更新 scope/selector backing state，再重建候选。 |
@@ -1393,7 +1393,7 @@ docs/pi-batch3-evidence/herdr-keybindings-parity-summary.json。
   header/item 列表、j/k 与方向键、PageUp/PageDown、Space/Enter toggle、
   Tab scope 切换，以及 Esc 先清 query、再关闭的生命周期。显式空
   `enabledSkills`/`enabledPrompts` 会保留为“全部禁用”，资源仍留在列表中
-  可重新启用；项目写入 `.pi/settings.json`，全局写入用户 settings。
+  可重新启用；项目写入 `.adou/settings.json`，全局写入用户 settings。
 - Auth API-key：provider 选择来自运行时 registry，带名称和搜索；logout
   只显示已保存的 API-key provider，并在无凭据时给出状态。空 key 提交会
   留在 overlay 展示错误，Esc 后可重新打开；OAuth 流程本批未实现，现作为

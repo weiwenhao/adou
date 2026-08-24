@@ -267,15 +267,15 @@ test 'project context loads global then root-to-leaf with Pi candidate precedenc
     os.rmdir(root, true)
 }
 
-test 'project .pi system files override user files with user fallback' {
+test 'project .adou system files override user files with user fallback' {
     string root = '/tmp/adou-project-prompt-' + identity.short_id()
     string agent_dir = path.join(root, 'agent')
     string project_dir = path.join(root, 'project')
     string nested_dir = path.join(project_dir, 'src')
     write_file(path.join(agent_dir, 'SYSTEM.md'), 'global system')
     write_file(path.join(agent_dir, 'APPEND_SYSTEM.md'), 'global append')
-    write_file(path.join(nested_dir, '.pi/SYSTEM.md'), 'project system')
-    write_file(path.join(nested_dir, '.pi/APPEND_SYSTEM.md'), 'project append')
+    write_file(path.join(nested_dir, '.adou/SYSTEM.md'), 'project system')
+    write_file(path.join(nested_dir, '.adou/APPEND_SYSTEM.md'), 'project append')
     os.mkdirs(nested_dir, 0o700)
     var system = project.system_prompt_file(nested_dir, agent_dir)
     var append = project.append_system_prompt_file(nested_dir, agent_dir)
@@ -287,7 +287,7 @@ test 'project .pi system files override user files with user fallback' {
     if append is ref<project.file_t> append_file {
         assert(append_file.content == 'project append')
     }
-    os.rmdir(path.join(nested_dir, '.pi'), true)
+    os.rmdir(path.join(nested_dir, '.adou'), true)
     var fallback = project.system_prompt_file(nested_dir, agent_dir)
     var append_fallback = project.append_system_prompt_file(nested_dir, agent_dir)
     assert(fallback is ref<project.file_t>)

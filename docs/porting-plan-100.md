@@ -33,7 +33,7 @@ MCP 不在范围内：Pi core 明确无内建 MCP（属扩展生态能力）。
 
 | # | 工作项 | 源码定位 | 验收门槛 |
 |---|---|---|---|
-| 1.1 | trust `'ask'` 门控：启动时未知项目弹信任 overlay（TUI）；headless 拒绝加载项目资源并输出提示；显式 `--approve/--no-approve` 与已保存决定优先级不变 | `src/config/trust.n:96`（`'ask'` 现静默返回 true）、`src/app.n:270` | 未信任项目拒载 `.pi/skills`、项目层 settings 的 e2e；TUI overlay 触发路径 PTY e2e |
+| 1.1 | trust `'ask'` 门控：启动时未知项目弹信任 overlay（TUI）；headless 拒绝加载项目资源并输出提示；显式 `--approve/--no-approve` 与已保存决定优先级不变 | `src/config/trust.n:96`（`'ask'` 现静默返回 true）、`src/app.n:270` | 未信任项目拒载 `.adou/skills`、项目层 settings 的 e2e；TUI overlay 触发路径 PTY e2e |
 | 1.2 | bash 生产路径接入有界捕获（现仅测试使用），替换无界输出缓冲 | `src/tools/shell_tools.n:235` ← `:71` | >10MB 输出压测内存有界；截断标记与 Pi 一致 |
 | 1.3 | edit 读改写全程互斥（mutation queue 覆盖整个操作而非仅最终写入） | `src/tools/shell_tools.n:358→398` | 并发双 edit 定向测试连续 10 轮不丢失 |
 | 1.4 | settings.json/trust.json 原子写：temp+rename+fsync + fcntl 锁（复用 `native/auth_store.c` 先例） | `src/config/settings.n:408-413`、`trust.n` 写盘路径 | kill 注入中断写入后文件不损坏 |

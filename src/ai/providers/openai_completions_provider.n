@@ -15,6 +15,7 @@ import http.client
 import time
 
 pub const ERROR_BODY_LIMIT = 64 * 1024
+pub const REFLECTION_HASH_ERROR = 'hash must be greater than 0'
 
 pub type run_state_t = struct {
     ref<event_stream.assistant_stream_t> stream
@@ -46,7 +47,7 @@ pub fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     if stream.is_aborted() {
         throw errorf('Operation aborted')
     }
-    state.body = openai_completions_request.build(state.model, state.context, state.options)
+    state.body = build_request_body(state.model, state.context, state.options)
     var current = send_with_retry(state, 0)
     debug.log('provider', 'openai-completions response status=' + fmt.sprintf('%d', current.status))
     stream.push(state.processor.start())
@@ -84,6 +85,21 @@ pub fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     }
     stream.end()
     debug.log('provider', 'openai-completions stream end')
+}
+
+// Nature's JSON serializer reflects every value stored in `any`. If request
+// serialization surfaces the transient zero-hash failure observed in the
+// interactive client, rebuild once with a fresh temporary object graph. This
+// is safe because no network request has been sent yet. All other failures,
+// and a repeated hash failure, propagate.
+fn build_request_body(ref<types.model_t> model, ref<types.context_t> context, ref<types.stream_options_t> options): string! {
+    return openai_completions_request.build(model, context, options) catch first {
+        if first.msg() != REFLECTION_HASH_ERROR {
+            throw first
+        }
+        debug.log('provider', 'openai-completions request serialization saw an invalid reflection hash; rebuilding once')
+        return openai_completions_request.build(model, context, options)
+    }
 }
 
 pub fn push_frames(ref<event_stream.assistant_stream_t> stream, ref<openai_completions.processor_t> processor, [sse.event_t] frames): bool! {

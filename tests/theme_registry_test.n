@@ -8,7 +8,7 @@ import syscall
 import time
 
 // B4 (docs/porting-plan-100): named custom themes resolve from a registry
-// (project .pi/themes then agent themes/), with schema validation rejecting
+// (project .adou/themes then agent themes/), with schema validation rejecting
 // payloads that style no recognized color.
 
 fn isolate(): string {
@@ -41,7 +41,7 @@ fn replace_color(string document, string name, string json_value): string {
 test 'named themes resolve from the project registry and validate' {
     string root = isolate()
     string project = path.join(root, 'project')
-    string theme_dir = path.join(project, '.pi', 'themes')
+    string theme_dir = path.join(project, '.adou', 'themes')
     os.mkdirs(theme_dir, 0o755) catch e {}
     string solarized = replace_color(replace_color(full_theme('solarized'), 'text', '"#073642"'), 'accent', '"#268bd2"')
     write_file(path.join(theme_dir, 'solarized.json'), solarized)
@@ -62,7 +62,7 @@ test 'named themes resolve from the project registry and validate' {
 test 'themes without recognized colors fail validation' {
     string root = isolate()
     string project = path.join(root, 'p2')
-    string theme_dir = path.join(project, '.pi', 'themes')
+    string theme_dir = path.join(project, '.adou', 'themes')
     os.mkdirs(theme_dir, 0o755) catch e {}
     write_file(path.join(theme_dir, 'garbage.json'), '{"colors":{"notAColorKey":"#fff"}}')
 
@@ -86,7 +86,7 @@ test 'the agent dir registry is the fallback location' {
 test 'available themes use JSON names and switch cleanly back to built-ins' {
     string root = isolate()
     string project = path.join(root, 'project-names')
-    string theme_dir = path.join(project, '.pi', 'themes')
+    string theme_dir = path.join(project, '.adou', 'themes')
     os.mkdirs(theme_dir, 0o755) catch e {}
     write_file(path.join(theme_dir, 'different-file.json'), replace_color(full_theme('amber'), 'accent', '"#010203"'))
 

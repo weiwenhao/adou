@@ -2,11 +2,11 @@
 set -eu
 
 # UX-003 evidence harness: the interactive input area must draw exactly one
-# inverse cursor cell per frame, keep the hardware cursor hidden by default
-# (no ?25h, a single ?25l at startup, no DECSCUSR), and never leave a stale
-# reverse-video block after cursor movement or menu open/close.  Raw PTY
-# bytes only, so terminal-side rendering cannot be confused with the byte
-# stream.
+# inverse cursor cell per frame, keep the hardware cursor hidden by default,
+# position that hidden cursor at Pi's CURSOR_MARKER for IME preedit placement,
+# and never leave a stale reverse-video block after cursor movement or menu
+# open/close. Raw PTY bytes only, so terminal-side rendering cannot be
+# confused with the byte stream.
 binary=${ADOU_BIN:-$(CDPATH= cd -- "$(dirname -- "$0")/../../build/bin" && pwd)/adou}
 if [ ! -x "$binary" ]; then
     echo "e2e: Adou binary not found: $binary" >&2
@@ -119,6 +119,9 @@ try:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
     if not collect(0, timeout=15.0, until=b"\x1b[>1u"):
         raise SystemExit("TUI did not become ready")
+    # KEYBOARD_NEGOTIATION_QUERY is emitted before the first painted frame;
+    # collect that frame before asserting its resolved cursor marker.
+    collect(len(output), timeout=2.0)
 
     raw = bytes(output)
     if raw.count(b"\x1b[?25h") != 0:
@@ -127,6 +130,8 @@ try:
         raise SystemExit(f"expected a single ?25l at startup, got {raw.count(b'\x1b[?25l')}")
     if re.search(rb"\x1b\[[0-9;?]* ?q", raw):
         raise SystemExit("DECSCUSR sequence emitted (not part of the contract)")
+    if not re.search(rb"\x1b\[[0-9]+;[0-9]+H", raw):
+        raise SystemExit("hidden hardware cursor was not positioned at the editor marker")
 
     # Typing: each rendered frame carries at most one inverse cursor cell.
     # Frames are split on the sync-off boundary (every frame ends with
@@ -141,6 +146,8 @@ try:
             inverse_blocks = part.count(b"\x1b[7m")
             if inverse_blocks > 1:
                 raise SystemExit(f"frame carries more than one inverse cell: {inverse_blocks}")
+        if not re.search(rb"\x1b\[[0-9]+;[0-9]+H", frame):
+            raise SystemExit("editing frame did not reposition the hidden IME cursor")
         if frame.count(b"\x1b[?25h") != 0:
             raise SystemExit("hardware cursor shown during editing")
 

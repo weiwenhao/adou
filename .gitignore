@@ -12,4 +12,5 @@ __pycache__/
 /.env
 /.env.local
 /auth.json
+/.adou/agent/auth.json
 /config.local.json

@@ -85,11 +85,11 @@ with open(path, "w", encoding="utf-8") as stream:
     stream.write(json.dumps(header) + "\n")
     stream.write(json.dumps(message) + "\n")
 
-os.makedirs(os.path.join(project_cwd, ".pi"), exist_ok=True)
-os.makedirs(os.path.join(project_cwd, ".pi", "prompts"), exist_ok=True)
-with open(os.path.join(project_cwd, ".pi", "prompts", "project-only.md"), "w", encoding="utf-8") as stream:
+os.makedirs(os.path.join(project_cwd, ".adou"), exist_ok=True)
+os.makedirs(os.path.join(project_cwd, ".adou", "prompts"), exist_ok=True)
+with open(os.path.join(project_cwd, ".adou", "prompts", "project-only.md"), "w", encoding="utf-8") as stream:
     stream.write("---\ndescription: Project-only prompt\n---\n\nPROJECT $@")
-with open(os.path.join(project_cwd, ".pi", "settings.json"), "w", encoding="utf-8") as stream:
+with open(os.path.join(project_cwd, ".adou", "settings.json"), "w", encoding="utf-8") as stream:
     json.dump(
         {
             "autoCompaction": False,
@@ -209,11 +209,11 @@ if 'project-only' not in project_command_names:
     raise SystemExit(f'RPC project switch did not publish the target resource snapshot: {commands_project!r}')
 project_state = state3.get('data', {})
 if project_state.get('autoCompactionEnabled') is not False or project_state.get('steeringMode') != 'all' or project_state.get('followUpMode') != 'all':
-    raise SystemExit(f'project .pi settings were not reloaded during session switch: {project_state!r}')
+    raise SystemExit(f'project .adou settings were not reloaded during session switch: {project_state!r}')
 
 startup_project_state = state4.get('data', {})
 if startup_project_state.get('autoCompactionEnabled') is not False or startup_project_state.get('steeringMode') != 'all' or startup_project_state.get('followUpMode') != 'all':
-    raise SystemExit(f'project .pi settings were not loaded from a selected session cwd at startup: {startup_project_state!r}')
+    raise SystemExit(f'project .adou settings were not loaded from a selected session cwd at startup: {startup_project_state!r}')
 
 # The new session's parentSession lineage stays observable via state.
 if os.path.exists(new_file):

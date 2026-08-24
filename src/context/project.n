@@ -65,8 +65,8 @@ pub fn load(string cwd, string agent_dir): load_result_t! {
     return result
 }
 
-// Pi treats the project .pi system prompt as a project-scoped override, with
-// the user's ~/.pi/agent file as the fallback. These files are distinct from
+// Adou treats the project .adou system prompt as a project-scoped override,
+// with the user agent-dir file as the fallback. These files are distinct from
 // AGENTS.md/CLAUDE.md context discovery and are loaded for the active session
 // cwd only.
 pub fn system_prompt_file(string cwd, string agent_dir): ref<file_t>? {
@@ -78,7 +78,7 @@ pub fn system_prompt_file(string cwd, string agent_dir): ref<file_t>? {
     } else {
         resolved_agent_dir = path_utils.resolve_to_cwd(resolved_agent_dir, resolved_cwd)
     }
-    ref<file_t>? project_file = read_named_file(path.join(resolved_cwd, '.pi/SYSTEM.md'))
+    ref<file_t>? project_file = read_named_file(path.join(resolved_cwd, '.adou/SYSTEM.md'))
     if project_file is ref<file_t> found_project {
         return found_project
     }
@@ -94,7 +94,7 @@ pub fn append_system_prompt_file(string cwd, string agent_dir): ref<file_t>? {
     } else {
         resolved_agent_dir = path_utils.resolve_to_cwd(resolved_agent_dir, resolved_cwd)
     }
-    ref<file_t>? project_file = read_named_file(path.join(resolved_cwd, '.pi/APPEND_SYSTEM.md'))
+    ref<file_t>? project_file = read_named_file(path.join(resolved_cwd, '.adou/APPEND_SYSTEM.md'))
     if project_file is ref<file_t> found_project {
         return found_project
     }

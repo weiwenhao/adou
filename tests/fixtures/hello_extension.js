@@ -1,4 +1,4 @@
-// Adou JS extension example.  Drop this file into .pi/extensions (project) or
+// Adou JS extension example.  Drop this file into .adou/extensions (project) or
 // ~/.adou/agent/extensions (user) to make its commands, tools and event
 // handlers visible to the agent runtime.
 //

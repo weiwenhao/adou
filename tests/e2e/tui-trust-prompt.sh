@@ -29,8 +29,8 @@ import time
 binary = os.environ["ADOU_BIN"]
 root = tempfile.mkdtemp(prefix="adou-tui-trust-")
 project = os.path.join(root, "project")
-os.makedirs(os.path.join(project, ".pi", "skills", "demo"))
-with open(os.path.join(project, ".pi", "skills", "demo", "SKILL.md"), "w", encoding="utf-8") as handle:
+os.makedirs(os.path.join(project, ".adou", "skills", "demo"))
+with open(os.path.join(project, ".adou", "skills", "demo", "SKILL.md"), "w", encoding="utf-8") as handle:
     handle.write("---\nname: demo\ndescription: demo skill\n---\nbody\n")
 agent_dir = os.path.join(root, "agent")
 
@@ -130,8 +130,8 @@ try:
         fcntl.ioctl(session.fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
         if not ready(session) or not session.collect(b"Trust project folder?", timeout=5.0):
             raise SystemExit("startup trust prompt did not open for an ask project")
-        session.collect(b"This allows Adou to load .pi settings and resources.", timeout=3.0)
-        if b"This allows Adou to load .pi settings and resources." not in session.output:
+        session.collect(b"This allows Adou to load .adou resources and project .agents skills.", timeout=3.0)
+        if b"This allows Adou to load .adou resources and project .agents skills." not in session.output:
             raise SystemExit("trust prompt consequence description missing")
         session.collect(timeout=0.5)
         for label in (b"Trust parent folder", b"Trust (this session only)", b"Do not trust"):
