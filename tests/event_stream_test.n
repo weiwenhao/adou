@@ -15,6 +15,7 @@ pub fn produce_events(ref<event_stream.assistant_stream_t> stream, ref<types.ass
         kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,
     }
     stream.push(done)
+    stream.end()
 }
 pub fn produce_done_later(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message): void! {
     co.sleep(20)
@@ -31,6 +32,17 @@ pub fn mutate_after_start(ref<event_stream.assistant_stream_t> stream, ref<types
     message.content.push(new types.text_content_t(text = 'mutated after start'))
     mutated.send(1)
     stream.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,})
+    stream.end()
+}
+pub fn publish_terminal_then_wait(ref<event_stream.assistant_stream_t> stream, ref<types.assistant_message_t> message, chan<u8> terminal_sent, chan<u8> release): void! {
+    stream.push(types.assistant_event_t {kind: types.EVENT_DONE, reason: types.STOP_STOP, message: message,})
+    terminal_sent.send(1)
+    release.recv()
+    stream.end()
+}
+pub fn await_result(ref<event_stream.assistant_stream_t> stream, chan<u8> completed): void! {
+    stream.result()
+    completed.send(1)
 }
 test 'bounded assistant stream preserves event order and final result' {
     var stream = event_stream.with_capacity(1)
@@ -66,6 +78,23 @@ test 'result waiting before terminal is awakened by channel close' {
     assert(stream.result().model == 'delayed')
     assert(stream.recv().kind == types.EVENT_DONE)
     stream.end()
+}
+test 'result waits for provider teardown after receiving terminal event' {
+    var stream = event_stream.new()
+    var message = new types.assistant_message_t(model = 'teardown-barrier')
+    chan<u8> terminal_sent = chan<u8>.new(1)
+    chan<u8> release = chan<u8>.new(1)
+    chan<u8> completed = chan<u8>.new(1)
+    go publish_terminal_then_wait(stream, message, terminal_sent, release)
+    terminal_sent.recv()
+    assert(stream.recv().kind == types.EVENT_DONE)
+    go await_result(stream, completed)
+    co.sleep(10)
+    var (early, received_early) = completed.try_recv()
+    assert(!received_early)
+    release.send(1)
+    completed.recv()
+    assert(stream.result().model == 'teardown-barrier')
 }
 test 'stream snapshots provider messages before the provider mutates them' {
     var stream = event_stream.new()
@@ -114,10 +143,10 @@ test 'aborted stream drops late deltas and coerces a late normal terminal' {
     assert(started.kind == types.EVENT_START)
     assert(done.kind == types.EVENT_DONE)
     assert(done.reason == types.STOP_ABORTED)
+    stream.end()
     var final_message = stream.result()
     assert(final_message.stop_reason == types.STOP_ABORTED)
     assert(final_message.error_message == 'Operation aborted')
     var (ignored, received) = stream.events.try_recv()
     assert(!received)
-    stream.end()
 }

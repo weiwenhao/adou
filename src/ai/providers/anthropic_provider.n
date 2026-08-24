@@ -75,8 +75,8 @@ pub fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
         push_frames(stream, state.processor, decoder.finish_pending())
     }
     stream.push(state.processor.finish())
-    stream.end()
     debug.log('provider', 'anthropic stream end')
+    stream.end()
 }
 
 pub fn push_frames(ref<event_stream.assistant_stream_t> stream, ref<anthropic_messages.processor_t> processor, [sse.event_t] frames): bool! {

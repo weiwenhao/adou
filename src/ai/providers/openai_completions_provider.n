@@ -83,8 +83,12 @@ pub fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     for event in done {
         stream.push(event)
     }
-    stream.end()
     debug.log('provider', 'openai-completions stream end')
+    // end() releases result() waiters and must therefore be the provider
+    // coroutine's final touch.  Starting the tool follow-up while this turn
+    // still logs or tears down stream state can corrupt Nature reflection
+    // metadata under the next request serializer.
+    stream.end()
 }
 
 // Nature's JSON serializer reflects every value stored in `any`. If request

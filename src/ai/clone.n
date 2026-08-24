@@ -1,7 +1,13 @@
 import adou.src.ai.types
+import adou.src.json_util
 
 pub fn assistant(ref<types.assistant_message_t> source): ref<types.assistant_message_t> {
-    var result = new types.assistant_message_t(role = source.role, api = source.api, provider = source.provider, model = source.model, response_id = source.response_id, usage = source.usage, stop_reason = source.stop_reason, error_message = source.error_message, timestamp = source.timestamp)
+    [any] diagnostics = []
+    for diagnostic in source.diagnostics {
+        any copied_diagnostic = json_util.clone(diagnostic) catch e {{}}
+        diagnostics.push(copied_diagnostic)
+    }
+    var result = new types.assistant_message_t(role = source.role, api = source.api, provider = source.provider, model = source.model, response_id = source.response_id, response_model = source.response_model, usage = source.usage, stop_reason = source.stop_reason, error_message = source.error_message, diagnostics = diagnostics, timestamp = source.timestamp)
     for block in source.content {
         if block is ref<types.text_content_t> text {
             types.content_t copied = new types.text_content_t(text = text.text, text_signature = text.text_signature)
@@ -10,7 +16,12 @@ pub fn assistant(ref<types.assistant_message_t> source): ref<types.assistant_mes
             types.content_t copied = new types.thinking_content_t(thinking = thinking.thinking, thinking_signature = thinking.thinking_signature, redacted = thinking.redacted)
             result.content.push(copied)
         } else if block is ref<types.tool_call_t> call {
-            types.content_t copied = new types.tool_call_t(id = call.id, name = call.name, arguments = call.arguments, partial_json = call.partial_json)
+            // Tool arguments are arbitrary JSON stored in `any`.  A shallow
+            // copy makes the session writer and the next provider request
+            // reflect over the same runtime object graph from two coroutines.
+            // Nature's serializer requires an isolated JSON value here.
+            any arguments = json_util.clone(call.arguments) catch e {{}}
+            types.content_t copied = new types.tool_call_t(id = call.id, name = call.name, arguments = arguments, partial_json = call.partial_json)
             result.content.push(copied)
         }
     }
@@ -39,7 +50,11 @@ pub fn message(types.message_t source): types.message_t {
         for image in tool.images {
             images.push(new types.image_attachment_t(mime_type = image.mime_type, data = image.data))
         }
-        types.message_t result = new types.tool_result_message_t(role = tool.role, tool_call_id = tool.tool_call_id, tool_name = tool.tool_name, content = content, images = images, details = tool.details, usage = tool.usage, added_tool_names = tool.added_tool_names, is_error = tool.is_error, timestamp = tool.timestamp)
+        any details = null
+        if !json_util.is_null(tool.details) {
+            details = json_util.clone(tool.details) catch e {{}}
+        }
+        types.message_t result = new types.tool_result_message_t(role = tool.role, tool_call_id = tool.tool_call_id, tool_name = tool.tool_name, content = content, images = images, details = details, usage = tool.usage, added_tool_names = tool.added_tool_names, is_error = tool.is_error, timestamp = tool.timestamp)
         return result
     }
     if source is ref<types.compaction_summary_message_t> summary {
@@ -51,7 +66,11 @@ pub fn message(types.message_t source): types.message_t {
         return result
     }
     if source is ref<types.custom_message_t> custom {
-        types.message_t result = new types.custom_message_t(role = custom.role, custom_type = custom.custom_type, content = custom.content, display = custom.display, details = custom.details, timestamp = custom.timestamp)
+        any details = null
+        if !json_util.is_null(custom.details) {
+            details = json_util.clone(custom.details) catch e {{}}
+        }
+        types.message_t result = new types.custom_message_t(role = custom.role, custom_type = custom.custom_type, content = custom.content, display = custom.display, details = details, timestamp = custom.timestamp)
         return result
     }
     var bash = source as ref<types.bash_execution_message_t>

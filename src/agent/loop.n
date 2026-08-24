@@ -5,6 +5,7 @@ import adou.src.ai.abort
 import adou.src.ai.clone
 import adou.src.ai.event_stream as assistant_stream
 import adou.src.ai.types
+import adou.src.json_util
 import adou.src.tools.types as tool_types
 import co.mutex
 import json
@@ -229,7 +230,11 @@ fn stream_assistant(ref<run_state_t> state): ref<types.assistant_message_t>! {
                 types.message_t snapshot = clone.assistant(final_message)
                 emit_message(state, agent_types.EVENT_MESSAGE_START, snapshot, types.assistant_event_t{})
             }
-            types.message_t final_event_message = final_message
+            // Session persistence consumes this event on another coroutine
+            // while the loop may immediately serialize final_message into a
+            // tool follow-up request.  Publish a deep snapshot so both paths
+            // never reflect over the same `any` tool-argument graph.
+            types.message_t final_event_message = clone.assistant(final_message)
             emit_message(state, agent_types.EVENT_MESSAGE_END, final_event_message, types.assistant_event_t{})
             observe_provider_response(state, final_message)
             return final_message
@@ -241,7 +246,7 @@ fn stream_assistant(ref<run_state_t> state): ref<types.assistant_message_t>! {
         types.message_t snapshot = clone.assistant(final_message)
         emit_message(state, agent_types.EVENT_MESSAGE_START, snapshot, types.assistant_event_t{})
     }
-    types.message_t final_event_message = final_message
+    types.message_t final_event_message = clone.assistant(final_message)
     emit_message(state, agent_types.EVENT_MESSAGE_END, final_event_message, types.assistant_event_t{})
     observe_provider_response(state, final_message)
     return final_message
@@ -300,7 +305,11 @@ fn execute_parallel(ref<run_state_t> state, ref<types.assistant_message_t> assis
     [ref<prepared_t>] prepared_calls = []
     [ref<finalized_t>] finalized = []
     int launched = 0
-    var completions = chan<anyptr>.new(calls.len() + 1)
+    // Keep the GC-visible reference type in the channel.  Passing a heap
+    // object through anyptr lets the producing coroutine exit while the
+    // collector still sees only an untyped address, which can leave the
+    // consumer with a dangling finalized_t during the next provider turn.
+    var completions = chan<ref<finalized_t>?>.new(calls.len() + 1)
     for int i = 0; i < calls.len(); i += 1 {
         emit_tool_start(state, calls[i])
         var prepared = prepare_call(state, assistant_message, calls[i], i)
@@ -323,9 +332,11 @@ fn execute_parallel(ref<run_state_t> state, ref<types.assistant_message_t> assis
         }
     }
     for int i = 0; i < launched; i += 1 {
-        ref<finalized_t> outcome = completions.recv() as ref<finalized_t>
-        finalized[outcome.index] = outcome
-        emit_tool_end(state, outcome)
+        ref<finalized_t>? received = completions.recv()
+        if received is ref<finalized_t> outcome {
+            finalized[outcome.index] = outcome
+            emit_tool_end(state, outcome)
+        }
     }
     [ref<types.tool_result_message_t>] messages = []
     for outcome in finalized {
@@ -336,9 +347,9 @@ fn execute_parallel(ref<run_state_t> state, ref<types.assistant_message_t> assis
     return batch_t {messages: messages, terminate: should_terminate(finalized),}
 }
 
-fn execute_parallel_one(ref<run_state_t> state, ref<types.assistant_message_t> assistant_message, ref<prepared_t> prepared, chan<anyptr> completions): void! {
+fn execute_parallel_one(ref<run_state_t> state, ref<types.assistant_message_t> assistant_message, ref<prepared_t> prepared, chan<ref<finalized_t>?> completions): void! {
     var outcome = execute_prepared(state, assistant_message, prepared)
-    completions.send(outcome as anyptr)
+    completions.send(outcome)
 }
 
 fn prepare_call(ref<run_state_t> state, ref<types.assistant_message_t> assistant_message, ref<types.tool_call_t> call, int index): ref<prepared_t> {
@@ -362,7 +373,11 @@ fn prepare_call(ref<run_state_t> state, ref<types.assistant_message_t> assistant
             return prepared
         }
     }
-    var validated = schema.validate_and_coerce(found.name, found.parameters, raw_arguments) catch e {
+    any parameter_schema = found.parameters
+    if found.parameters_json != '' {
+        parameter_schema = json_util.parse(found.parameters_json) catch e {found.parameters}
+    }
+    var validated = schema.validate_and_coerce(found.name, parameter_schema, raw_arguments) catch e {
         prepared.immediate = true
         prepared.is_error = true
         prepared.result = error_result(e.msg())
@@ -519,7 +534,17 @@ fn should_stop(ref<run_state_t> state, ref<types.assistant_message_t> message, [
 fn provider_context(ref<agent_types.context_t> context, bool block_images): ref<types.context_t> {
     var result = new types.context_t(system_prompt = context.system_prompt, messages = context.messages)
     for tool in context.tools {
-        result.tools.push(new types.tool_t(name = tool.name, description = tool.description, parameters = tool.parameters, sequential = tool.execution_mode == agent_types.EXECUTION_SEQUENTIAL))
+        // The request body owns this schema for the lifetime of one provider
+        // coroutine.  Do not alias the agent tool's long-lived `any` map: a
+        // collected request graph can otherwise invalidate the schema before
+        // tool validation on the following turn.
+        any parameters = {}
+        if tool.parameters_json != '' {
+            parameters = json_util.parse(tool.parameters_json) catch error {{}}
+        } else {
+            parameters = json_util.clone(tool.parameters) catch error {{}}
+        }
+        result.tools.push(new types.tool_t(name = tool.name, description = tool.description, parameters = parameters, sequential = tool.execution_mode == agent_types.EXECUTION_SEQUENTIAL))
     }
     if block_images {
         result.messages = []
@@ -627,7 +652,15 @@ fn emit_message(ref<run_state_t> state, string kind, types.message_t message, ty
     } else if message is ref<types.tool_result_message_t> tool {
         event.tool_message = tool
     }
+    ref<agent_types.message_end_ack_t>? ack = null
+    if kind == agent_types.EVENT_MESSAGE_END && state.config.await_message_end_ack {
+        ack = new agent_types.message_end_ack_t()
+        event.message_end_ack = ack
+    }
     state.stream.push(event)
+    if ack is ref<agent_types.message_end_ack_t> pending {
+        pending.wait()
+    }
 }
 
 fn emit_turn_end(ref<run_state_t> state, ref<types.assistant_message_t> message, [ref<types.tool_result_message_t>] results): void! {
@@ -657,7 +690,9 @@ fn emit_tool_end(ref<run_state_t> state, ref<finalized_t> outcome): void! {
 }
 
 fn emit_tool_result(ref<run_state_t> state, ref<types.tool_result_message_t> message): void! {
-    types.message_t result = message
+    // Keep the persisted/event copy independent from the provider context.
+    types.message_t source = message
+    types.message_t result = clone.message(source)
     emit_message(state, agent_types.EVENT_MESSAGE_START, result, types.assistant_event_t{})
     emit_message(state, agent_types.EVENT_MESSAGE_END, result, types.assistant_event_t{})
 }

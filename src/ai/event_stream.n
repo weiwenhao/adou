@@ -84,16 +84,21 @@ pub fn assistant_stream_t.recv(&self): types.assistant_event_t! {
 // finish events after the terminal event and then calls stream.end()).
 pub fn assistant_stream_t.result(&self): ref < types.assistant_message_t > ! {
     self.lock.lock()
-    bool ready = self.terminal
+    // A terminal event only publishes the final message.  The provider may
+    // still be unwinding its decoder/HTTP state after that event is received,
+    // and the agent can immediately start a tool-follow-up request.  Wait for
+    // end() so those two provider turns never overlap over Nature-managed
+    // object graphs.
+    bool ended = self.ended
     self.lock.unlock()
-    if!ready {
+    if !ended {
         self.done.recv() catch e {
             0
         }
     }
     self.lock.lock()
     var result = self.final_message
-    ready = self.terminal
+    bool ready = self.terminal
     self.lock.unlock()
     if!ready {
         throw errorf('assistant stream ended without a terminal event')

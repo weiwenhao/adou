@@ -87,8 +87,8 @@ pub fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     for event in done {
         stream.push(event)
     }
-    stream.end()
     debug.log('provider', 'google stream end')
+    stream.end()
 }
 
 pub fn send_with_retry(ref<run_state_t> state, int retry_index): ref<client.response_t>! {

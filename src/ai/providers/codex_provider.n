@@ -185,8 +185,8 @@ fn run_sse(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state):
         }
     }
     state.processor.finish()
-    stream.end()
     debug.log('provider', 'codex stream end')
+    stream.end()
 }
 
 // try_websocket runs the WebSocket path and reports whether it completed.
@@ -354,8 +354,8 @@ fn run_websocket(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     } else {
         conn.close()
     }
-    stream.end()
     debug.log('provider', 'codex websocket stream end')
+    stream.end()
 }
 
 // A failed WebSocket must never leave a cached entry marked busy. Evicting the

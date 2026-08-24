@@ -389,7 +389,11 @@ pub fn convert_tools([ref<types.tool_t>] tools, {string:string} grammar_props, b
         {string:any} function = {}
         function['name'] = tool.name
         function['description'] = tool.description
-        function['parameters'] = tool.parameters
+        // Keep the serialized body independent from the provider context's
+        // schema object.  Nature stores JSON containers indirectly inside
+        // `any`; sharing one across nested object graphs can leave a dangling
+        // dynamic value when the temporary request body is reclaimed.
+        function['parameters'] = json_util.clone(tool.parameters)
         function['strict'] = strict
         {string:any} item = {}
         item['type'] = 'function'

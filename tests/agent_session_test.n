@@ -239,6 +239,28 @@ test 'tool prompt forwards complete agent and session lifecycle in Pi order' {
     assert(agent_end >= 0 && settled > agent_end && session_end > settled)
 }
 
+test 'session snapshots tool schemas for later provider turns and validation' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant_tool('stable-schema-call'), assistant('final answer', ai_types.STOP_STOP, '', 2, 3)])
+    var tool = session_echo_tool()
+    var context = new agent_types.context_t(system_prompt = 'coding agent', tools = [tool,])
+    var config = new agent_types.config_t(model = model(1000), stream_options = new ai_types.stream_options_t(api_key = 'fixture-key', max_retries = 0))
+    var runner = session.new(manager, context, config, provider_fn(fixture), compaction_types.settings_t {reserve_tokens: 100, keep_recent_tokens: 20,})
+    assert(tool.parameters_json.contains('"required":["value"]'))
+    // The stable snapshot, rather than this GC-sensitive dynamic field, is
+    // the source for both request construction and schema validation.
+    tool.parameters = {}
+    var result = consume(runner.prompt('use the cached tool schema'))
+    assert(fixture.agent_calls == 2)
+    assert(result[1].len() == 4)
+    if result[1][2] is ref<ai_types.tool_result_message_t> tool_result {
+        assert(!tool_result.is_error)
+        assert(tool_result.content[0].text == 'echoed from tool')
+    } else {
+        assert(false)
+    }
+}
+
 test 'sequential prompts can start after the previous session_end' {
     var manager = repository.in_memory('/tmp')
     var fixture = new provider_fixture_t(agent_responses = [assistant('first answer', ai_types.STOP_STOP, '', 1, 2), assistant('second answer', ai_types.STOP_STOP, '', 1, 2)])
@@ -329,6 +351,23 @@ test 'prompt rejects missing authentication before starting an operation' {
     assert(message.starts_with('No API key found for mock.'))
     assert(message.contains('Use /login to log into a provider via OAuth or API key.'))
     assert(!runner.busy && fixture.agent_calls == 0 && runner.active_messages.len() == 0)
+}
+
+test 'non-retryable provider errors settle without a secondary repository decode failure' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant('', ai_types.STOP_ERROR, '401 unauthorized', 0, 0)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    runner.retry_enabled = false
+    var result = consume(runner.prompt('surface the provider error'))
+    assert(fixture.agent_calls == 1)
+    assert(count_kind(result[0], session_stream.EVENT_AGENT_SETTLED) == 1)
+    assert(result[1].len() == 2)
+    if result[1][1] is ref<ai_types.assistant_message_t> failed {
+        assert(failed.stop_reason == ai_types.STOP_ERROR)
+        assert(failed.error_message == '401 unauthorized')
+    } else {
+        assert(false)
+    }
 }
 
 test 'threshold compaction runs after a successful turn without retrying' {

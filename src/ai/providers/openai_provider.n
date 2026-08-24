@@ -87,8 +87,8 @@ pub fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
         }
     }
     state.processor.finish()
-    stream.end()
     debug.log('provider', 'openai-responses stream end')
+    stream.end()
 }
 pub fn send_with_retry(ref<run_state_t> state, int retry_index): ref < client.response_t > ! {
     var stream = state.stream

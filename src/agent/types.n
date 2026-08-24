@@ -2,6 +2,7 @@ import adou.src.ai.abort
 import adou.src.ai.event_stream
 import adou.src.ai.types
 import adou.src.tools.types as tool_types
+import co
 import co.mutex
 import json
 
@@ -36,6 +37,10 @@ pub type agent_tool_t = struct {
     string label
     string description
     any parameters
+    // Stable ownership for a schema that otherwise lives in an indirect
+    // `any` container. Provider turns and validation parse fresh maps from
+    // this snapshot instead of retaining a GC-sensitive alias.
+    string parameters_json
     optional_prepare_arguments_fn prepare_arguments = null
     string execution_mode = EXECUTION_PARALLEL
     tool_executor_t executor
@@ -233,6 +238,33 @@ pub type config_t = struct {
     optional_should_stop_after_turn_fn should_stop_after_turn = null
     optional_before_provider_request_fn before_provider_request = null
     optional_after_provider_response_fn after_provider_response = null
+    // Session runners acknowledge message_end only after the append-only
+    // repository has encoded the message.  Standalone agent-loop consumers
+    // leave this off and retain the original fire-and-forget event protocol.
+    bool await_message_end_ack
+}
+
+pub type message_end_ack_t = struct {
+    ref<mutex.mutex_t> lock = mutex.mutex_t.new()
+    bool completed
+}
+
+pub fn message_end_ack_t.wait(&self): void! {
+    for true {
+        self.lock.lock()
+        bool ready = self.completed
+        self.lock.unlock()
+        if ready {
+            return
+        }
+        co.sleep(1)
+    }
+}
+
+pub fn message_end_ack_t.complete(&self): void! {
+    self.lock.lock()
+    self.completed = true
+    self.lock.unlock()
 }
 
 pub type agent_event_t = struct {
@@ -248,6 +280,13 @@ pub type agent_event_t = struct {
     any args
     tool_types.tool_result_t tool_result
     bool is_error
+    ref<message_end_ack_t>? message_end_ack = null
+}
+
+pub fn agent_event_t.acknowledge_message_end(self): void! {
+    if self.message_end_ack is ref<message_end_ack_t> ack {
+        ack.complete()
+    }
 }
 
 pub fn agent_event_t.message(self): types.message_t! {

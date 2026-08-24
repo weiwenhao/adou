@@ -79,8 +79,8 @@ pub fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> s
     for event in done {
         stream.push(event)
     }
-    stream.end()
     debug.log('provider', 'pi-messages stream end')
+    stream.end()
 }
 
 pub fn push_frames(ref<event_stream.assistant_stream_t> stream, ref<pi_messages.processor_t> processor, [sse.event_t] frames): bool! {

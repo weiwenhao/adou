@@ -80,6 +80,12 @@ pub type tree_target_t = struct {
 
 pub fn new(ref<repository.manager_t> session_repository, ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function, compaction_types.settings_t settings): ref<runner_t>! {
     var stored = session_repository.build_context()
+    config.await_message_end_ack = true
+    for tool in context.tools {
+        if tool.parameters_json == '' {
+            tool.parameters_json = json_util.stringify(tool.parameters)
+        }
+    }
     [string] active_names = stored.active_tool_names.len() > 0 ? stored.active_tool_names : tool_names(context.tools)
     var runner = new runner_t(lock = mutex.mutex_t.new(), repository = session_repository, base_context = context, all_tools = context.tools.slice(0, context.tools.len()), active_tool_names = active_names, agent_config = config, stream_function = stream_function, compaction_settings = settings, active_messages = stored.messages)
     runner.base_context.tools = filter_tools(runner.all_tools, active_names)
@@ -1131,8 +1137,12 @@ pub fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output,
         debug.log('agent', 'provider event=' + event.kind)
         if event.kind == agent_types.EVENT_MESSAGE_END {
             var message = event.message()
-            self.repository.append_message(message)
+            self.repository.append_message(message) catch error {
+                event.acknowledge_message_end() catch ack_error {}
+                throw error
+            }
             self.append_active_message(message)
+            event.acknowledge_message_end()
             if message is ref<ai_types.assistant_message_t> assistant {
                 last_assistant = assistant
             }
@@ -1232,13 +1242,17 @@ pub fn runner_t.should_threshold_compact(&self, ref<ai_types.assistant_message_t
     int direct_tokens = token_estimate.calculate_context_tokens(assistant.usage)
     int context_tokens = direct_tokens
     if assistant.stop_reason == ai_types.STOP_ERROR || direct_tokens == 0 {
-        var context = self.repository.build_context()
-        var estimate = token_estimate.estimate_context_tokens(context.messages)
+        // The active in-memory messages are already the canonical context for
+        // this runner. Re-decoding the just-appended JSON entry on an error
+        // turn can surface a secondary Nature `any` ownership failure and
+        // replace the provider error with "json object missing role".
+        var messages = self.copy_active_messages()
+        var estimate = token_estimate.estimate_context_tokens(messages)
         if estimate.last_usage_index < 0 {
             return false
         }
         if latest_compaction is ref<session_types.entry_t> compact_entry {
-            var usage_message = context.messages[estimate.last_usage_index]
+            var usage_message = messages[estimate.last_usage_index]
             if usage_message is ref<ai_types.assistant_message_t> usage_assistant {
                 if usage_assistant.timestamp <= repository.timestamp_ms(compact_entry.timestamp) {
                     return false

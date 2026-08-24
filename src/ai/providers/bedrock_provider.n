@@ -231,8 +231,8 @@ fn run_inner(ref<event_stream.assistant_stream_t> stream, ref<run_state_t> state
     for event in done {
         stream.push(event)
     }
-    stream.end()
     debug.log('provider', 'bedrock stream end')
+    stream.end()
 }
 
 fn decode_frames(ref<processor_t> processor, [u8] accumulator): [types.assistant_event_t]! {
