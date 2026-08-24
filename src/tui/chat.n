@@ -821,8 +821,8 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
                 index += 1
             }
             if thinking_blocks.len() > 0 {
-                string value = thinking_visible ? strings.join(thinking_blocks, '\n\n') : 'Thinking...'
-                result.append(render_padded_text(theme.italic(theme.fg(theme.thinking_text(), value)), width, output_pad))
+                string value = thinking_visible ? (thinking_blocks.len() == 1 ? thinking_blocks[0] : strings.join(thinking_blocks, '\n\n')) : 'Thinking...'
+                result.append(render_padded_thinking(value, width, output_pad))
                 had_content = true
                 bool has_visible_after = false
                 for int after = index; after < assistant.content.len(); after += 1 {
@@ -905,6 +905,31 @@ fn render_padded_text(string value, int width, int output_pad): [string]! {
     return result
 }
 
+fn render_padded_thinking(string value, int width, int output_pad): [string]! {
+    int content_width = width - 2 * output_pad
+    if content_width < 1 {
+        content_width = 1
+    }
+    // Wrapping a single ANSI-decorated copy of the complete reasoning text
+    // forces the generic wrapper to parse style state and Unicode segments
+    // from byte zero on every streamed update. Wrap the plain text first and
+    // decorate each finished row instead. The terminal output is identical,
+    // while temporary allocation is proportional to the rendered rows.
+    var wrapped = text_utils.wrap_text_with_ansi(value, content_width)
+    [string] result = vec<string>.cap_of(wrapped.len())
+    string prefix = strings.join([text_utils.spaces(output_pad), theme.ITALIC, theme.thinking_text()], '')
+    string suffix = '\x1b[39m\x1b[23m'
+    for line in wrapped {
+        int remaining = width - text_utils.visible_width(line) - output_pad * 2
+        if remaining < 0 {remaining = 0}
+        // Construct a finished row once. The generic style/pad helpers are
+        // convenient for short labels, but compose several intermediate
+        // strings and repeat ANSI-aware width scans for every transcript row.
+        result.push(strings.join([prefix, line, suffix, text_utils.spaces(output_pad + remaining)], ''))
+    }
+    return result
+}
+
 // Pi outputPad: one column of horizontal padding (1, default) or none (0).
 fn pad_sides(string value, int output_pad): string {
     return output_pad == 0 ? value : ' ' + value + ' '
@@ -964,11 +989,7 @@ fn format_percent(int tokens, int context_window): string {
 }
 
 fn repeat_spaces(int count): string {
-    string result = ''
-    for int index = 0; index < count; index += 1 {
-        result += ' '
-    }
-    return result
+    return text_utils.spaces(count)
 }
 
 fn wrapped_lines(string text, int width): [string]! {

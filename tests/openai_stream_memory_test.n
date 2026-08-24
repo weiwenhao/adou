@@ -1,0 +1,62 @@
+import adou.src.agent.session_stream
+import adou.src.agent.types as agent_types
+import adou.src.ai.providers.openai_completions
+import adou.src.ai.sse
+import adou.src.ai.types
+import adou.src.tui.chat
+import co
+import runtime
+
+fn model(): ref<types.model_t> {
+    return new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek')
+}
+
+fn frame(string data): sse.event_t {
+    return sse.event_t {data: data,}
+}
+
+fn render_long_reasoning_stream(): int! {
+    var processor = openai_completions.processor(model(), 1)
+    processor.start()
+    var view = chat.new('deepseek-v4-flash', '/tmp/project')
+    string chunk = 'reasoning words for a long streamed response, with punctuation and spaces; keep rendering safely. reasoning words. '
+    int emitted = 0
+    int rendered_rows = 0
+    for int index = 0; index < 2048; index += 1 {
+        var events = processor.feed(frame('{"choices":[{"delta":{"reasoning_content":"' + chunk + '"},"finish_reason":null}]}'))
+        for event in events {
+            emitted += 1
+            if event.partial is ref<types.assistant_message_t> partial {
+                var update = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, assistant_message: partial, assistant_event: event,}
+                view.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, has_agent_event: true, agent_event: update,})
+                rendered_rows = view.render(120).len()
+            }
+        }
+    }
+    processor.feed(frame('{"choices":[{"delta":{},"finish_reason":"stop"}]}'))
+    var done = processor.finish()
+    if done[done.len() - 1].message is ref<types.assistant_message_t> message {
+        assert((message.content[0] as ref<types.thinking_content_t>).thinking.len() == chunk.len() * 2048)
+    } else {
+        assert(false)
+    }
+    assert(rendered_rows > 0)
+    return emitted
+}
+
+test 'long DeepSeek reasoning keeps snapshot and TUI allocation bounded' {
+    i64 before = runtime.malloc_bytes()
+    int emitted = render_long_reasoning_stream()
+    assert(emitted < 24)
+    // GC is asynchronous. Repeat the same bounded wait used by Nature's
+    // Darwin heap-footprint regression so the assertion observes settled
+    // live data instead of an in-progress collection.
+    for int round = 0; round < 5; round += 1 {
+        runtime.gc()
+        co.sleep(500)
+    }
+    // The processor, event snapshots and rendered rows are out of scope.
+    // A generous live-heap ceiling catches retention regressions without
+    // depending on allocator page-size details.
+    assert(runtime.malloc_bytes() < before + 256 * 1024 * 1024)
+}

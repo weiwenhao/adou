@@ -104,3 +104,27 @@ test 'coalesces tiny text deltas without losing the final message' {
         assert(false)
     }
 }
+
+test 'adapts snapshot batches for long reasoning streams' {
+    var processor = openai_completions.processor(model(), 1)
+    processor.start()
+    string chunk = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
+    int emitted = 0
+    int chunks = 8192
+    for int index = 0; index < chunks; index += 1 {
+        var events = processor.feed(frame('{"choices":[{"delta":{"reasoning_content":"' + chunk + '"},"finish_reason":null}]}'))
+        emitted += events.len()
+    }
+    processor.feed(frame('{"choices":[{"delta":{},"finish_reason":"stop"}]}'))
+    var done = processor.finish()
+    // A fixed 256-byte batch emits about 4,096 full-message snapshots for
+    // this 1 MiB response. Adaptive batching keeps the expensive snapshots
+    // bounded while preserving the complete final reasoning block.
+    assert(emitted < 32)
+    if done[done.len() - 1].message is ref<types.assistant_message_t> message {
+        assert(message.content.len() == 1)
+        assert((message.content[0] as ref<types.thinking_content_t>).thinking.len() == chunk.len() * chunks)
+    } else {
+        assert(false)
+    }
+}

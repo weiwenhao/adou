@@ -254,58 +254,63 @@ fn viewport_top(int line_count, int height): int {
 }
 
 fn full_output([string] lines, bool clear, string kitty_deletes, int height): string {
-    string output = SYNC_START
+    [string] output = vec<string>.cap_of(lines.len() * 2 + 8)
+    output.push(SYNC_START)
     if clear {
-        output += kitty_deletes
-        output += '\x1b[2J\x1b[H\x1b[3J'
+        output.push(kitty_deletes)
+        output.push('\x1b[2J\x1b[H\x1b[3J')
     }
     int index = 0
     for index < lines.len() {
-        if index > 0 {output += '\r\n'}
+        if index > 0 {output.push('\r\n')}
         string line = lines[index]
         int image_reserved_rows = terminal_image.is_image_line(line) ? kitty_image_reserved_rows(lines, index, lines.len() - 1) : 1
         if image_reserved_rows > 1 && image_reserved_rows <= height {
             for int row = 1; row < image_reserved_rows; row += 1 {
-                output += '\r\n'
+                output.push('\r\n')
             }
-            output += csi_move(image_reserved_rows - 1, 'A')
-            output += line
-            output += csi_move(image_reserved_rows - 1, 'B')
+            output.push(csi_move(image_reserved_rows - 1, 'A'))
+            output.push(line)
+            output.push(csi_move(image_reserved_rows - 1, 'B'))
             index += image_reserved_rows
             continue
         }
-        output += line
+        output.push(line)
         index += 1
     }
-    return output + SYNC_END
+    output.push(SYNC_END)
+    return strings.join(output, '')
 }
 
 fn differential_output([string] previous, [string] lines, int hardware_cursor_row, int previous_viewport_top, int height, int first_changed, int last_changed, string kitty_deletes): string {
-    string output = SYNC_START + kitty_deletes
+    [string] output = vec<string>.cap_of((last_changed - first_changed + 1) * 2 + 16)
+    output.push(SYNC_START)
+    output.push(kitty_deletes)
     // When every changed line was deleted, there is no replacement line to
     // render.  Pi clears the rows after the new content separately, starting
     // one row below the new last line, then returns the cursor to that line.
     if first_changed >= lines.len() {
         int target = lines.len() > 0 ? lines.len() - 1 : 0
         int difference = target - hardware_cursor_row
-        if difference > 0 {output += csi_move(difference, 'B')} else if difference < 0 {output += csi_move(-difference, 'A')}
-        output += '\r'
+        if difference > 0 {output.push(csi_move(difference, 'B'))} else if difference < 0 {output.push(csi_move(-difference, 'A'))}
+        output.push('\r')
         int extra = previous.len() - lines.len()
         int clear_start = lines.len() == 0 ? 0 : 1
         if extra > 0 && clear_start > 0 {
-            output += csi_move(clear_start, 'B')
+            output.push(csi_move(clear_start, 'B'))
         }
         for int index = 0; index < extra; index += 1 {
-            output += '\r\x1b[2K'
+            output.push('\r\x1b[2K')
             if index < extra - 1 {
-                output += csi_move(1, 'B')
+                output.push(csi_move(1, 'B'))
             }
         }
         int move_back = extra - 1 + clear_start
         if move_back > 0 {
-            output += csi_move(move_back, 'A')
+            output.push(csi_move(move_back, 'A'))
         }
-        return output + SYNC_END
+        output.push(SYNC_END)
+        return strings.join(output, '')
     }
     bool append_at_end = first_changed == previous.len() && lines.len() > previous.len() && first_changed > 0
     int target = append_at_end ? first_changed - 1 : first_changed
@@ -317,41 +322,42 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
         if current_screen_row >= height {current_screen_row = height - 1}
         int move_to_bottom = height - 1 - current_screen_row
         if move_to_bottom > 0 {
-            output += csi_move(move_to_bottom, 'B')
+            output.push(csi_move(move_to_bottom, 'B'))
         }
         int scroll = target - previous_bottom
-        output += repeat_newlines(scroll)
+        output.push(repeat_newlines(scroll))
         viewport_top += scroll
         hardware_cursor_row = target
     }
     int difference = (target - viewport_top) - (hardware_cursor_row - viewport_top)
-    if difference > 0 {output += csi_move(difference, 'B')} else if difference < 0 {output += csi_move(-difference, 'A')}
-    output += append_at_end ? '\r\n' : '\r'
+    if difference > 0 {output.push(csi_move(difference, 'B'))} else if difference < 0 {output.push(csi_move(-difference, 'A'))}
+    output.push(append_at_end ? '\r\n' : '\r')
     int render_end = last_changed < lines.len() ? last_changed : lines.len() - 1
     int index = first_changed
     for index <= render_end && index >= 0 {
         if index > first_changed {
-            output += '\r\n'
+            output.push('\r\n')
         }
         string line = lines[index]
         int image_reserved_rows = terminal_image.is_image_line(line) ? kitty_image_reserved_rows(lines, index, render_end) : 1
         if image_reserved_rows > 1 {
-            output += '\x1b[2K'
+            output.push('\x1b[2K')
             for int row = 1; row < image_reserved_rows; row += 1 {
-                output += '\r\n\x1b[2K'
+                output.push('\r\n\x1b[2K')
             }
-            output += csi_move(image_reserved_rows - 1, 'A')
-            output += line
-            output += csi_move(image_reserved_rows - 1, 'B')
+            output.push(csi_move(image_reserved_rows - 1, 'A'))
+            output.push(line)
+            output.push(csi_move(image_reserved_rows - 1, 'B'))
             index += image_reserved_rows
             continue
         }
-        output += '\x1b[2K' + line
+        output.push('\x1b[2K')
+        output.push(line)
         index += 1
     }
     if previous.len() > lines.len() {
         if render_end < lines.len() - 1 {
-            output += csi_move(lines.len() - 1 - render_end, 'B')
+            output.push(csi_move(lines.len() - 1 - render_end, 'B'))
         }
         int extra = previous.len() - lines.len()
         if extra > 0 {
@@ -360,14 +366,15 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
             // newly rendered content when the changed range ends at the
             // final line (for example, a tool shrinking from running to
             // complete).
-            output += '\r\n\x1b[2K'
+            output.push('\r\n\x1b[2K')
             for int index = 1; index < extra; index += 1 {
-                output += '\r\n\x1b[2K'
+                output.push('\r\n\x1b[2K')
             }
-            output += csi_move(extra, 'A')
+            output.push(csi_move(extra, 'A'))
         }
     }
-    return output + SYNC_END
+    output.push(SYNC_END)
+    return strings.join(output, '')
 }
 
 fn kitty_image_range_would_scroll([string] lines, int first_changed, int render_end, int viewport_top, int height): bool {
@@ -427,11 +434,11 @@ fn contains_id([int] ids, int id): bool {
 }
 
 fn delete_kitty_image_ids([int] ids): string {
-    string output = ''
+    [string] output = vec<string>.cap_of(ids.len())
     for id in ids {
-        output += terminal_image.delete_kitty_image(id)
+        output.push(terminal_image.delete_kitty_image(id))
     }
-    return output
+    return strings.join(output, '')
 }
 
 fn expand_changed_range_for_kitty_images([string] previous, [string] lines, int first_changed, int last_changed): (int, int) {
@@ -481,11 +488,12 @@ fn csi_move(int count, string direction): string {
 }
 
 fn repeat_newlines(int count): string {
-    string result = ''
+    [u8] result = vec<u8>.cap_of(count * 2)
     for int index = 0; index < count; index += 1 {
-        result += '\r\n'
+        result.push('\r'.char())
+        result.push('\n'.char())
     }
-    return result
+    return result as string
 }
 
 fn int_string(int value): string {

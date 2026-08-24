@@ -8,11 +8,13 @@ import strings
 pub const SLOT_TEXT = 'text'
 pub const SLOT_THINKING = 'thinking'
 pub const SLOT_TOOL_CALL = 'toolCall'
-// Provider deltas can arrive one byte at a time in practice (and in the
-// memory regression fixture).  Keep the public partial-message snapshots,
-// but publish them in bounded batches so a long response does not allocate a
-// full message for every byte.
-const STREAM_TEXT_FLUSH_BYTES = 256
+// Every public update carries the complete partial message and causes a TUI
+// redraw. A fixed-size batch therefore still does quadratic work for long
+// reasoning responses. Keep short responses responsive, then grow the batch
+// with the committed output so each doubling publishes about one snapshot.
+const STREAM_FLUSH_MIN_BYTES = 256
+const STREAM_FLUSH_MAX_BYTES = 1024 * 1024
+const STREAM_FLUSHES_PER_DOUBLING = 1
 
 pub type slot_t = struct {
     string kind
@@ -31,9 +33,11 @@ pub type processor_t = struct {
     [string] text_chunks = []
     [string] text_pending_parts = []
     int text_pending_bytes
+    int text_committed_bytes
     [string] thinking_chunks = []
     [string] thinking_pending_parts = []
     int thinking_pending_bytes
+    int thinking_committed_bytes
     bool started
     bool saw_finish_reason
     bool saw_terminal
@@ -154,7 +158,7 @@ pub fn processor_t.append_text(&self, string value, [types.assistant_event_t] ev
         index = self.content_index(existing)
         self.text_pending_parts.push(value)
         self.text_pending_bytes += value.len()
-        if self.text_pending_bytes >= STREAM_TEXT_FLUSH_BYTES {
+        if self.text_pending_bytes >= stream_flush_bytes(self.text_committed_bytes) {
             string flushed = self.flush_text()
             if flushed != '' {
                 events.push(update_event(types.EVENT_TEXT_DELTA, index, flushed, '', self.output))
@@ -169,6 +173,7 @@ pub fn processor_t.append_text(&self, string value, [types.assistant_event_t] ev
         self.text_chunks = [value]
         self.text_pending_parts = []
         self.text_pending_bytes = 0
+        self.text_committed_bytes = value.len()
         events.push(update_event(types.EVENT_TEXT_START, index, '', '', self.output))
         started_block = true
     }
@@ -186,7 +191,7 @@ pub fn processor_t.append_thinking(&self, string value, [types.assistant_event_t
         index = self.content_index_thinking(existing)
         self.thinking_pending_parts.push(value)
         self.thinking_pending_bytes += value.len()
-        if self.thinking_pending_bytes >= STREAM_TEXT_FLUSH_BYTES {
+        if self.thinking_pending_bytes >= stream_flush_bytes(self.thinking_committed_bytes) {
             string flushed = self.flush_thinking()
             if flushed != '' {
                 events.push(update_event(types.EVENT_THINKING_DELTA, index, flushed, '', self.output))
@@ -201,6 +206,7 @@ pub fn processor_t.append_thinking(&self, string value, [types.assistant_event_t
         self.thinking_chunks = [value]
         self.thinking_pending_parts = []
         self.thinking_pending_bytes = 0
+        self.thinking_committed_bytes = value.len()
         events.push(update_event(types.EVENT_THINKING_START, index, '', '', self.output))
         started_block = true
     }
@@ -375,7 +381,13 @@ pub fn processor_t.flush_text(&self): string {
         self.text_pending_parts = []
     }
     if self.output.content[self.text_index] is ref<types.text_content_t> text {
-        text.text = strings.join(self.text_chunks, '')
+        string joined = strings.join(self.text_chunks, '')
+        text.text = joined
+        // Only the joined immutable prefix is needed by the next flush.
+        // Keeping every historical chunk doubles live data and makes later
+        // joins traverse an ever-growing vector.
+        self.text_chunks = [joined]
+        self.text_committed_bytes = joined.len()
         self.text_pending_bytes = 0
     }
     return flushed
@@ -392,10 +404,24 @@ pub fn processor_t.flush_thinking(&self): string {
         self.thinking_pending_parts = []
     }
     if self.output.content[self.thinking_index] is ref<types.thinking_content_t> thinking {
-        thinking.thinking = strings.join(self.thinking_chunks, '')
+        string joined = strings.join(self.thinking_chunks, '')
+        thinking.thinking = joined
+        self.thinking_chunks = [joined]
+        self.thinking_committed_bytes = joined.len()
         self.thinking_pending_bytes = 0
     }
     return flushed
+}
+
+pub fn stream_flush_bytes(int committed_bytes): int {
+    int target = committed_bytes / STREAM_FLUSHES_PER_DOUBLING
+    if target < STREAM_FLUSH_MIN_BYTES {
+        return STREAM_FLUSH_MIN_BYTES
+    }
+    if target > STREAM_FLUSH_MAX_BYTES {
+        return STREAM_FLUSH_MAX_BYTES
+    }
+    return target
 }
 
 pub fn processor_t.content_index(&self, ref<types.text_content_t> target): int {

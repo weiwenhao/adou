@@ -281,6 +281,15 @@ fn wrap_single_line(string line, int width): [string]! {
     if visible_width(line) <= width {
         return [line]
     }
+    // Streaming reasoning is commonly a long ASCII paragraph. The generic
+    // tokenizer materializes one string object per word/space token and then
+    // concatenates those tokens into rows. On Nature that creates enormous
+    // transient allocator pressure even though each final row is short.
+    // ASCII word wrapping only needs byte offsets, so emit final row slices
+    // directly without an intermediate token vector.
+    if line.find('\x1b') < 0 && line.find('\t') < 0 && is_ascii_text(line) {
+        return wrap_ascii_line(line, width)
+    }
     // A long unbroken UTF-8 word is common while an assistant streams a
     // token at a time.  The general tokenizer appends every grapheme to a
     // growing string, which makes each redraw increasingly expensive.  Slice
@@ -339,6 +348,68 @@ fn wrap_single_line(string line, int width): [string]! {
         result[index] = trim_spaces_end(result[index])
     }
     return result
+}
+
+fn wrap_ascii_line(string line, int width): [string] {
+    [string] result = vec<string>.cap_of((line.len() + width - 1) / width)
+    int row_start = -1
+    int row_end = -1
+    int row_width = 0
+    int cursor = 0
+    for cursor < line.len() {
+        int token_start = cursor
+        bool whitespace = line[cursor] == ' '.char()
+        for cursor < line.len() && (line[cursor] == ' '.char()) == whitespace {
+            cursor += 1
+        }
+        int token_end = cursor
+        int token_width = token_end - token_start
+        if token_width > width && !whitespace {
+            if row_start >= 0 {
+                result.push(ascii_trimmed_slice(line, row_start, row_end))
+                row_start = -1
+                row_end = -1
+                row_width = 0
+            }
+            int word_cursor = token_start
+            for word_cursor + width < token_end {
+                result.push(line.slice(word_cursor, word_cursor + width))
+                word_cursor += width
+            }
+            row_start = word_cursor
+            row_end = token_end
+            row_width = token_end - word_cursor
+            continue
+        }
+        if row_width + token_width > width && row_width > 0 {
+            result.push(ascii_trimmed_slice(line, row_start, row_end))
+            row_start = -1
+            row_end = -1
+            row_width = 0
+            // Match the generic wrapper: whitespace that crosses a visual
+            // boundary is consumed instead of starting the next row.
+            if whitespace {
+                continue
+            }
+        }
+        if row_start < 0 {
+            row_start = token_start
+        }
+        row_end = token_end
+        row_width += token_width
+    }
+    if row_start >= 0 {
+        result.push(ascii_trimmed_slice(line, row_start, row_end))
+    }
+    return result.len() > 0 ? result : ['']
+}
+
+fn ascii_trimmed_slice(string line, int start, int end): string {
+    int trimmed_end = end
+    for trimmed_end > start && line[trimmed_end - 1] == ' '.char() {
+        trimmed_end -= 1
+    }
+    return line.slice(start, trimmed_end)
 }
 
 fn break_plain_word(string word, int width): [string]! {
@@ -721,11 +792,14 @@ fn trim_spaces_end(string text): string {
 }
 
 pub fn spaces(int count): string {
-    string result = ''
-    for int index = 0; index < count; index += 1 {
-        result += ' '
+    if count <= 0 {
+        return ''
     }
-    return result
+    [u8] result = vec<u8>.cap_of(count)
+    for int index = 0; index < count; index += 1 {
+        result.push(' '.char())
+    }
+    return result as string
 }
 
 fn parse_sgr_value(string value): int {
