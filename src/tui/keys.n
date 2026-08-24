@@ -1,3 +1,5 @@
+import syscall
+
 // Keyboard decoding shared by the TUI.  The parser accepts the legacy VT
 // forms used by xterm/tmux and Kitty's CSI-u forms without depending on a
 // terminal-specific runtime.
@@ -12,6 +14,7 @@ pub const CODE_TAB = 9
 pub const CODE_ENTER = 13
 pub const CODE_SPACE = 32
 pub const CODE_BACKSPACE = 127
+pub const CODE_KP_ENTER = 57414
 pub const CODE_UP = -1
 pub const CODE_DOWN = -2
 pub const CODE_RIGHT = -3
@@ -29,6 +32,8 @@ pub type parsed_t = struct {
     bool valid
     int codepoint
     int modifier
+    int shifted_key = -1
+    int base_layout_key = -1
 }
 
 pub fn set_kitty_protocol(bool active) {
@@ -42,7 +47,7 @@ pub fn is_kitty_protocol_active(): bool {
 pub fn parse_key(string data): string {
     var sequence = parse_kitty(data)
     if sequence.valid {
-        return format_codepoint(sequence.codepoint, sequence.modifier)
+        return format_codepoint_with_base(sequence.codepoint, sequence.modifier, sequence.base_layout_key)
     }
     var modify = parse_modify_other_keys(data)
     if modify.valid {
@@ -59,12 +64,40 @@ pub fn parse_key(string data): string {
 }
 
 pub fn matches(string data, string key_id): bool {
+    string expected = canonical_key(key_id)
+    // Raw BS is also the legacy Ctrl+H byte even when the terminal treats it
+    // as Backspace (or Ctrl+Backspace in a local Windows Terminal session).
+    if data == '\x08' && expected == 'ctrl+h' {
+        return true
+    }
+    // Several legacy Ctrl+symbol bindings share bytes with named terminal
+    // keys. Pi's matchesKey resolves those against the requested binding even
+    // though parseKey must choose one canonical display name.
+    if expected == 'ctrl+[' && data == '\x1b' {return true}
+    if expected == 'ctrl+\\' && data == '\x1c' {return true}
+    if expected == 'ctrl+]' && data == '\x1d' {return true}
+    if expected == 'ctrl+-' && data == '\x1f' {return true}
+    // Legacy terminals encode Shift+letter as the uppercase printable byte,
+    // while parse_key intentionally returns that byte verbatim.
+    if data.len() == 1 && data[0] >= 'A'.char() && data[0] <= 'Z'.char() {
+        string shifted = 'shift+' + ascii_char(data[0] as int + 32)
+        if expected == shifted {return true}
+    }
     string actual = parse_key(data)
     if actual == '' {
         return false
     }
-    string expected = canonical_key(key_id)
     return actual == expected
+}
+
+pub fn is_key_release(string data): bool {
+    if data.contains('\x1b[200~') {return false}
+    return data.contains(':3u') || data.contains(':3~') || data.contains(':3A') || data.contains(':3B') || data.contains(':3C') || data.contains(':3D') || data.contains(':3H') || data.contains(':3F')
+}
+
+pub fn is_key_repeat(string data): bool {
+    if data.contains('\x1b[200~') {return false}
+    return data.contains(':2u') || data.contains(':2~') || data.contains(':2A') || data.contains(':2B') || data.contains(':2C') || data.contains(':2D') || data.contains(':2H') || data.contains(':2F')
 }
 
 pub fn decode_printable(string data): string {
@@ -82,6 +115,10 @@ pub fn decode_printable(string data): string {
         return ''
     }
     int codepoint = sequence.codepoint
+    if (modifier & MOD_SHIFT) != 0 && sequence.shifted_key >= 0 {
+        codepoint = sequence.shifted_key
+    }
+    codepoint = normalize_kitty_codepoint(codepoint)
     if codepoint < 32 || codepoint < 0 {
         return ''
     }
@@ -99,14 +136,28 @@ fn parse_kitty(string data): parsed_t {
         return invalid
     }
     int body_start = 2
-    int first_separator = separator_at(data, body_start, final_index)
-    int first_end = first_separator >= 0 ? first_separator : final_index
+    int semicolon = find_byte(data, ';'.char(), body_start, final_index)
+    int code_group_end = semicolon >= 0 ? semicolon : final_index
+    int first_colon = find_byte(data, ':'.char(), body_start, code_group_end)
+    int first_end = first_colon >= 0 ? first_colon : code_group_end
     int first = parse_number(data, body_start, first_end)
     if first < 0 {
         return invalid
     }
     int modifier = modifier_from_body(data, body_start, final_index)
     int codepoint = first
+    int shifted_key = -1
+    int base_layout_key = -1
+    if command == 'u'.char() && first_colon >= 0 {
+        int second_colon = find_byte(data, ':'.char(), first_colon + 1, code_group_end)
+        int shifted_end = second_colon >= 0 ? second_colon : code_group_end
+        if first_colon + 1 < shifted_end {
+            shifted_key = parse_number(data, first_colon + 1, shifted_end)
+        }
+        if second_colon >= 0 && second_colon + 1 < code_group_end {
+            base_layout_key = parse_number(data, second_colon + 1, code_group_end)
+        }
+    }
     if command == 'A'.char() {
         codepoint = CODE_UP
     } else if command == 'B'.char() {
@@ -128,7 +179,7 @@ fn parse_kitty(string data): parsed_t {
     if command == 'u'.char() {
         codepoint = first
     }
-    return parsed_t {valid: true, codepoint: codepoint, modifier: modifier,}
+    return parsed_t {valid: true, codepoint: codepoint, modifier: modifier, shifted_key: shifted_key, base_layout_key: base_layout_key,}
 }
 
 fn parse_modify_other_keys(string data): parsed_t {
@@ -149,7 +200,7 @@ fn parse_modify_other_keys(string data): parsed_t {
     if modifier_value < 1 || codepoint < 0 {
         return invalid
     }
-    return parsed_t {valid: true, codepoint: codepoint, modifier: modifier_value - 1,}
+    return parsed_t {valid: true, codepoint: codepoint, modifier: modifier_value - 1, shifted_key: -1, base_layout_key: -1,}
 }
 
 fn parse_legacy(string data): string {
@@ -166,6 +217,24 @@ fn parse_legacy(string data): string {
     if data == '\x1b[6~' || data == '\x1b[[6~' {return 'pageDown'}
     if data == '\x1b[E' || data == '\x1bOE' {return 'clear'}
     if data == '\x1b[Z' {return 'shift+tab'}
+    if data == '\x1b[a' {return 'shift+up'}
+    if data == '\x1b[b' {return 'shift+down'}
+    if data == '\x1b[c' {return 'shift+right'}
+    if data == '\x1b[d' {return 'shift+left'}
+    if data == '\x1b[e' {return 'shift+clear'}
+    if data == '\x1b[2$' {return 'shift+insert'}
+    if data == '\x1b[3$' {return 'shift+delete'}
+    if data == '\x1b[5$' {return 'shift+pageUp'}
+    if data == '\x1b[6$' {return 'shift+pageDown'}
+    if data == '\x1b[7$' {return 'shift+home'}
+    if data == '\x1b[8$' {return 'shift+end'}
+    if data == '\x1bOe' {return 'ctrl+clear'}
+    if data == '\x1b[2^' {return 'ctrl+insert'}
+    if data == '\x1b[3^' {return 'ctrl+delete'}
+    if data == '\x1b[5^' {return 'ctrl+pageUp'}
+    if data == '\x1b[6^' {return 'ctrl+pageDown'}
+    if data == '\x1b[7^' {return 'ctrl+home'}
+    if data == '\x1b[8^' {return 'ctrl+end'}
     if data == '\x1bOP' || data == '\x1b[11~' || data == '\x1b[[A' {return 'f1'}
     if data == '\x1bOQ' || data == '\x1b[12~' || data == '\x1b[[B' {return 'f2'}
     if data == '\x1bOR' || data == '\x1b[13~' || data == '\x1b[[C' {return 'f3'}
@@ -178,23 +247,24 @@ fn parse_legacy(string data): string {
     if data == '\x1b[21~' {return 'f10'}
     if data == '\x1b[23~' {return 'f11'}
     if data == '\x1b[24~' {return 'f12'}
-    if data == '\x1ba' || data == '\x1bb' {return data == '\x1bb' ? 'alt+left' : 'alt+right'}
+    if data == '\x1bb' {return 'alt+left'}
+    if data == '\x1bf' {return 'alt+right'}
     if data == '\x1bp' {return 'alt+up'}
     if data == '\x1bn' {return 'alt+down'}
-    if data == '\x1b[1;3D' || data == '\x1bB' {return 'alt+left'}
-    if data == '\x1b[1;3C' || data == '\x1bF' {return 'alt+right'}
+    if data == '\x1b[1;3D' || (!kitty_protocol_active && data == '\x1bB') {return 'alt+left'}
+    if data == '\x1b[1;3C' || (!kitty_protocol_active && data == '\x1bF') {return 'alt+right'}
     if data == '\x1b[1;5D' || data == '\x1bOd' {return 'ctrl+left'}
     if data == '\x1b[1;5C' || data == '\x1bOc' {return 'ctrl+right'}
     if data == '\x1b[1;5A' || data == '\x1bOa' {return 'ctrl+up'}
     if data == '\x1b[1;5B' || data == '\x1bOb' {return 'ctrl+down'}
-    if data == '\x1b\r' {return 'alt+enter'}
-    if data == '\x1b ' {return 'alt+space'}
+    if !kitty_protocol_active && data == '\x1b\r' {return 'alt+enter'}
+    if !kitty_protocol_active && data == '\x1b ' {return 'alt+space'}
     if data == '\x1b\x7f' || data == '\x1b\b' {return 'alt+backspace'}
     if data == '\r' || (!kitty_protocol_active && data == '\n') || data == '\x1bOM' {return 'enter'}
     if data == '\t' {return 'tab'}
     if data == ' ' {return 'space'}
     if data == '\x7f' {return 'backspace'}
-    if data == '\x08' {return 'backspace'}
+    if data == '\x08' {return is_windows_terminal_session() ? 'ctrl+backspace' : 'backspace'}
     if data == '\x00' {return 'ctrl+space'}
     if data == '\x1c' {return 'ctrl+\\'}
     if data == '\x1d' {return 'ctrl+]'}
@@ -202,6 +272,7 @@ fn parse_legacy(string data): string {
     if data == '\x1b\x1c' {return 'ctrl+alt+\\'}
     if data == '\x1b\x1d' {return 'ctrl+alt+]'}
     if data == '\x1b\x1f' {return 'ctrl+alt+-'}
+    if data == '\x1b\x1b' {return 'ctrl+alt+['}
     if data.len() == 1 {
         int code = data[0] as int
         if code >= 1 && code <= 26 {
@@ -212,13 +283,15 @@ fn parse_legacy(string data): string {
             return data
         }
     }
-    if data.len() == 2 && data[0] == 0x1b {
+    if !kitty_protocol_active && data.len() == 2 && data[0] == 0x1b {
         int code = data[1] as int
         if code >= 1 && code <= 26 {
             int letter = code + 'a'.char() as int - 1
             return 'ctrl+alt+' + ascii_char(letter)
         }
-        if code >= 32 && code <= 126 {
+        bool lower = code >= 'a'.char() as int && code <= 'z'.char() as int
+        bool digit = code >= '0'.char() as int && code <= '9'.char() as int
+        if lower || digit || is_known_symbol(code) {
             return 'alt+' + data.slice(1, 2)
         }
     }
@@ -242,10 +315,11 @@ fn canonical_key(string key_id): string {
         if base == 'return' {base = 'enter'}
         if base == 'pageup' {base = 'pageUp'}
         if base == 'pagedown' {base = 'pageDown'}
+        if base == '_' {base = '-'}
         string result = ''
         if key.contains('shift+') {result += 'shift+'}
-        if key.contains('alt+') {result += 'alt+'}
         if key.contains('ctrl+') {result += 'ctrl+'}
+        if key.contains('alt+') {result += 'alt+'}
         if key.contains('super+') {result += 'super+'}
         return result + base
     }
@@ -257,6 +331,13 @@ fn separator_at(string data, int start, int end): int {
         if data[index] == ';'.char() || data[index] == ':'.char() {
             return index
         }
+    }
+    return -1
+}
+
+fn find_byte(string data, u8 value, int start, int end): int {
+    for int index = start; index < end; index += 1 {
+        if data[index] == value {return index}
     }
     return -1
 }
@@ -309,23 +390,69 @@ fn functional_codepoint(int value): int {
     return 0
 }
 
-fn format_codepoint(int codepoint, int modifier): string {
-    int effective = codepoint
+fn normalize_kitty_codepoint(int codepoint): int {
+    if codepoint >= 57399 && codepoint <= 57408 {return '0'.char() as int + codepoint - 57399}
+    if codepoint == 57409 {return '.'.char() as int}
+    if codepoint == 57410 {return '/'.char() as int}
+    if codepoint == 57411 {return '*'.char() as int}
+    if codepoint == 57412 {return '-'.char() as int}
+    if codepoint == 57413 {return '+'.char() as int}
+    if codepoint == 57415 {return '='.char() as int}
+    if codepoint == 57416 {return ','.char() as int}
+    if codepoint == 57417 {return CODE_LEFT}
+    if codepoint == 57418 {return CODE_RIGHT}
+    if codepoint == 57419 {return CODE_UP}
+    if codepoint == 57420 {return CODE_DOWN}
+    if codepoint == 57421 {return CODE_PAGE_UP}
+    if codepoint == 57422 {return CODE_PAGE_DOWN}
+    if codepoint == 57423 {return CODE_HOME}
+    if codepoint == 57424 {return CODE_END}
+    if codepoint == 57425 {return CODE_INSERT}
+    if codepoint == 57426 {return CODE_DELETE}
+    return codepoint
+}
+
+fn is_known_symbol(int codepoint): bool {
+    string symbols = "`-=[]\\;',./!@#$%^&*()_+|~{}:<>?"
+    return codepoint >= 0 && codepoint <= 127 && symbols.contains(ascii_char(codepoint))
+}
+
+fn format_codepoint_with_base(int codepoint, int modifier, int base_layout_key): string {
+    int normalized = normalize_kitty_codepoint(codepoint)
+    int identity = normalized
     int locks_removed = modifier & ~LOCK_MASK
+    if (locks_removed & MOD_SHIFT) != 0 && identity >= 65 && identity <= 90 {
+        identity += 32
+    }
+    bool authoritative = (identity >= 97 && identity <= 122) || (identity >= 48 && identity <= 57) || is_known_symbol(identity)
+    int effective = authoritative || base_layout_key < 0 ? identity : base_layout_key
+    return format_codepoint(effective, modifier)
+}
+
+fn format_codepoint(int codepoint, int modifier): string {
+    int effective = normalize_kitty_codepoint(codepoint)
+    int locks_removed = modifier & ~LOCK_MASK
+    if (locks_removed & ~(MOD_SHIFT | MOD_ALT | MOD_CTRL | MOD_SUPER)) != 0 {
+        return ''
+    }
     if (locks_removed & MOD_SHIFT) != 0 && effective >= 65 && effective <= 90 {
         effective += 32
     }
     string key = ''
-    if effective == CODE_ESCAPE {key = 'escape'} else if effective == CODE_TAB {key = 'tab'} else if effective == CODE_ENTER {key = 'enter'} else if effective == CODE_SPACE {key = 'space'} else if effective == CODE_BACKSPACE {key = 'backspace'} else if effective == CODE_UP {key = 'up'} else if effective == CODE_DOWN {key = 'down'} else if effective == CODE_LEFT {key = 'left'} else if effective == CODE_RIGHT {key = 'right'} else if effective == CODE_DELETE {key = 'delete'} else if effective == CODE_INSERT {key = 'insert'} else if effective == CODE_PAGE_UP {key = 'pageUp'} else if effective == CODE_PAGE_DOWN {key = 'pageDown'} else if effective == CODE_HOME {key = 'home'} else if effective == CODE_END {key = 'end'} else if effective >= 97 && effective <= 122 {key = ascii_char(effective)} else if effective >= 48 && effective <= 57 {key = ascii_char(effective)} else if effective >= 33 && effective <= 126 {key = ascii_char(effective)}
+    if effective == CODE_ESCAPE {key = 'escape'} else if effective == CODE_TAB {key = 'tab'} else if effective == CODE_ENTER || effective == CODE_KP_ENTER {key = 'enter'} else if effective == CODE_SPACE {key = 'space'} else if effective == CODE_BACKSPACE {key = 'backspace'} else if effective == CODE_UP {key = 'up'} else if effective == CODE_DOWN {key = 'down'} else if effective == CODE_LEFT {key = 'left'} else if effective == CODE_RIGHT {key = 'right'} else if effective == CODE_DELETE {key = 'delete'} else if effective == CODE_INSERT {key = 'insert'} else if effective == CODE_PAGE_UP {key = 'pageUp'} else if effective == CODE_PAGE_DOWN {key = 'pageDown'} else if effective == CODE_HOME {key = 'home'} else if effective == CODE_END {key = 'end'} else if effective >= 97 && effective <= 122 {key = ascii_char(effective)} else if effective >= 48 && effective <= 57 {key = ascii_char(effective)} else if is_known_symbol(effective) {key = ascii_char(effective)}
     if key == '' {
         return ''
     }
     string result = ''
     if (locks_removed & MOD_SHIFT) != 0 {result += 'shift+'}
-    if (locks_removed & MOD_ALT) != 0 {result += 'alt+'}
     if (locks_removed & MOD_CTRL) != 0 {result += 'ctrl+'}
+    if (locks_removed & MOD_ALT) != 0 {result += 'alt+'}
     if (locks_removed & MOD_SUPER) != 0 {result += 'super+'}
     return result + key
+}
+
+fn is_windows_terminal_session(): bool {
+    return syscall.get_env('WT_SESSION') != '' && syscall.get_env('SSH_CONNECTION') == '' && syscall.get_env('SSH_CLIENT') == '' && syscall.get_env('SSH_TTY') == ''
 }
 
 fn plain_printable(string data): string {

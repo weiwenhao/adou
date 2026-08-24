@@ -1,10 +1,9 @@
 #!/bin/sh
 set -eu
 
-# PTY e2e for the Batch 3 settings selector: the Pi-ordered list shows the
-# unavailable image rows, value rows cycle on Enter (transport), the thinking
-# submenu still opens from the list, and the transport change persists to
-# settings.json.
+# PTY e2e for the settings selector: the Pi-ordered list hides terminal-only
+# image rows when no image protocol is available, value rows cycle on Enter,
+# the thinking submenu still opens, and the transport change persists.
 binary=${ADOU_BIN:-$(CDPATH= cd -- "$(dirname -- "$0")/../../build/bin" && pwd)/adou}
 if [ ! -x "$binary" ]; then
     echo "e2e: Adou binary not found: $binary" >&2
@@ -120,14 +119,12 @@ try:
     if not key(b"/settings\r", b"Settings", timeout=5.0):
         raise SystemExit("/settings did not open the settings selector")
     collect(timeout=0.3)
-    # Pi-order list: the top of the list (visible viewport) shows the
-    # unavailable image rows and the leading entries.
+    # Pi-order list: terminal rendering rows are hidden when no image protocol
+    # is available, while model-facing resize/block controls remain usable.
     for marker in (
         b"Auto-compact:",
-        b"Show images: UNAVAILABLE",
-        b"Image width: UNAVAILABLE",
-        b"Auto-resize images: UNAVAILABLE",
-        b"Block images: UNAVAILABLE",
+        b"Auto-resize images:",
+        b"Block images:",
         b"Skill commands:",
         b"Show hardware cursor:",
         b"Editor padding:",
@@ -139,8 +136,11 @@ try:
         if marker not in bytes(output):
             raise SystemExit(f"settings list is missing entry: {marker!r}")
 
-    # Transport row (14 downs from Auto-compact): Enter cycles auto -> sse.
-    downs(14)
+    if b"Show images:" in bytes(output) or b"Image width:" in bytes(output):
+        raise SystemExit("terminal-only image rows were shown without image support")
+
+    # Transport row (12 downs from Auto-compact): Enter cycles auto -> sse.
+    downs(12)
     if b"Transport:" not in bytes(output):
         raise SystemExit("transport row did not scroll into view")
     if not key(b"\r", b"Transport: sse", timeout=4.0):

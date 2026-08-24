@@ -1,5 +1,12 @@
 import adou.src.tui.input_buffer
 
+test 'single high-bit byte is normalized to a legacy Meta sequence' {
+    var buffer = input_buffer.new()
+    var result = buffer.process([0xe1])
+    assert(result.sequences.len() == 1)
+    assert(result.sequences[0] == '\x1ba')
+}
+
 pub fn assert_sequences([string] actual, [string] expected) {
     assert(actual.len() == expected.len())
     for index, value in expected {

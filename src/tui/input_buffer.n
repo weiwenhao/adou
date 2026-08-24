@@ -34,6 +34,10 @@ pub fn new(): ref<buffer_t> {
 
 pub fn buffer_t.process(&self, [u8] data): process_result_t {
     var result = empty_process_result()
+    // Match Pi/Node's legacy Meta-key normalization for a lone high-bit byte.
+    if data.len() == 1 && data[0] > 127 {
+        data = [ESC, data[0] - 128]
+    }
     if data.len() == 0 && self.buffer.len() == 0 {
         result.sequences.push('')
         return result

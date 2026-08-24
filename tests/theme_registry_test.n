@@ -25,12 +25,26 @@ fn write_file(string file_path, string content): void! {
     file.close()
 }
 
+fn full_theme(string name): string {
+    return '{"name":"' + name + '","vars":{"base":"#202122"},"colors":{' +
+        '"accent":"base","border":"base","borderAccent":"base","borderMuted":"base","success":"base","error":"base","warning":"base","muted":"base","dim":"base","text":"base","thinkingText":"base",' +
+        '"selectedBg":"base","userMessageBg":"base","userMessageText":"base","customMessageBg":"base","customMessageText":"base","customMessageLabel":"base","toolPendingBg":"base","toolSuccessBg":"base","toolErrorBg":"base","toolTitle":"base","toolOutput":"base",' +
+        '"mdHeading":"base","mdLink":"base","mdLinkUrl":"base","mdCode":"base","mdCodeBlock":"base","mdCodeBlockBorder":"base","mdQuote":"base","mdQuoteBorder":"base","mdHr":"base","mdListBullet":"base",' +
+        '"toolDiffAdded":"base","toolDiffRemoved":"base","toolDiffContext":"base","syntaxComment":"base","syntaxKeyword":"base","syntaxFunction":"base","syntaxVariable":"base","syntaxString":"base","syntaxNumber":"base","syntaxType":"base","syntaxOperator":"base","syntaxPunctuation":"base",' +
+        '"thinkingOff":"base","thinkingMinimal":"base","thinkingLow":"base","thinkingMedium":"base","thinkingHigh":"base","thinkingXhigh":"base","bashMode":"base"}}'
+}
+
+fn replace_color(string document, string name, string json_value): string {
+    return document.replace('"' + name + '":"base"', '"' + name + '":' + json_value)
+}
+
 test 'named themes resolve from the project registry and validate' {
     string root = isolate()
     string project = path.join(root, 'project')
     string theme_dir = path.join(project, '.pi', 'themes')
     os.mkdirs(theme_dir, 0o755) catch e {}
-    write_file(path.join(theme_dir, 'solarized.json'), '{"colors":{"text":"#073642","accent":"#268bd2"}}')
+    string solarized = replace_color(replace_color(full_theme('solarized'), 'text', '"#073642"'), 'accent', '"#268bd2"')
+    write_file(path.join(theme_dir, 'solarized.json'), solarized)
 
     assert(theme.ensure_named_loaded(project, 'solarized'))
     assert(theme.loaded_name() == 'solarized')
@@ -60,10 +74,51 @@ test 'the agent dir registry is the fallback location' {
     string root = isolate()
     string agent_themes = path.join(paths.agent_dir(), 'themes')
     os.mkdirs(agent_themes, 0o755) catch e {}
-    write_file(path.join(agent_themes, 'agenttheme.json'), '{"vars":{"accent":"#123456"},"colors":{"accent":"{accent}"}}')
+    string agent_theme = full_theme('agenttheme').replace('"vars":{"base":"#202122"}', '"vars":{"base":"#202122","agentAccent":"#123456"}')
+    write_file(path.join(agent_themes, 'agenttheme.json'), replace_color(agent_theme, 'accent', '"agentAccent"'))
 
     string project = path.join(root, 'proj')
     os.mkdirs(project, 0o755) catch e {}
     assert(theme.ensure_named_loaded(project, 'agenttheme'))
     assert(theme.loaded_path().contains('agenttheme.json'))
+}
+
+test 'available themes use JSON names and switch cleanly back to built-ins' {
+    string root = isolate()
+    string project = path.join(root, 'project-names')
+    string theme_dir = path.join(project, '.pi', 'themes')
+    os.mkdirs(theme_dir, 0o755) catch e {}
+    write_file(path.join(theme_dir, 'different-file.json'), replace_color(full_theme('amber'), 'accent', '"#010203"'))
+
+    var names = theme.available_names(project)
+    assert(names.len() == 3)
+    assert(names[0] == 'amber' && names[1] == 'dark' && names[2] == 'light')
+    assert(theme.ensure_named_loaded(project, 'amber'))
+    theme.set_variant('amber')
+    assert(theme.accent() == '\x1b[38;2;1;2;3m')
+    theme.set_variant('dark')
+    assert(theme.accent() == theme.ACCENT)
+}
+
+test 'explicit theme resources register by JSON name without activation' {
+    string root = isolate()
+    string project = path.join(root, 'project-explicit')
+    string resources = path.join(root, 'external-themes')
+    os.mkdirs(project, 0o755) catch e {}
+    os.mkdirs(resources, 0o755) catch e {}
+    write_file(path.join(resources, 'not-the-theme-name.json'), replace_color(full_theme('ocean'), 'accent', '"#112233"'))
+    write_file(path.join(resources, 'ignored.txt'), 'not a theme')
+
+    string before = theme.loaded_name()
+    assert(theme.register_path('../external-themes', project))
+    assert(theme.loaded_name() == before)
+    var names = theme.available_names(project)
+    bool found = false
+    for name in names {
+        if name == 'ocean' {found = true}
+    }
+    assert(found)
+    assert(theme.ensure_named_loaded(project, 'ocean'))
+    theme.set_variant('ocean')
+    assert(theme.accent() == '\x1b[38;2;17;34;51m')
 }

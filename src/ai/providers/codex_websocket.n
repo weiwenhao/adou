@@ -174,7 +174,7 @@ pub fn connect(string ws_url, {string:string} headers, int timeout_ms): ref<conn
     }
     types.connable? temp = null
     if parsed.scheme == 'wss' {
-        temp = tls.connect_ip_timeout(host, port, parsed.hostname, timeout_ms)
+        temp = tls.connect_timeout(fmt.sprintf('%s:%d', host, port), timeout_ms)
     } else {
         temp = tcp.connect_timeout(fmt.sprintf('%s:%d', host, port), timeout_ms)
     }

@@ -1,5 +1,4 @@
 import adou.src.tui.theme
-import strings
 
 // B4 (docs/porting-plan-100, decision C): lightweight syntax highlighting
 // for the highest-frequency languages in fenced code blocks — keywords,
@@ -83,7 +82,7 @@ pub fn highlight_line(string line, string language): string {
     string lang = normalize(language)
     [string] keywords = keywords_for(lang)
     if keywords.len() == 0 {
-        return theme.fg(theme.CODE_BLOCK, line)
+        return theme.fg(theme.syntax_variable(), line)
     }
     string comment_prefix = line_comment_prefix(lang)
     string out = ''
@@ -92,8 +91,7 @@ pub fn highlight_line(string line, string language): string {
         u8 c = line[cursor]
         // Line comment: the rest is muted.
         if comment_prefix != '' && cursor + comment_prefix.len() <= line.len() && line.slice(cursor, cursor + comment_prefix.len()) == comment_prefix {
-            bool preceded_by_content = out.contains(theme.fg(theme.WARNING, '')) || strings.join(keywords, '').len() < 0
-            out += theme.fg(theme.muted_color(), line.slice(cursor, line.len()))
+            out += theme.fg(theme.syntax_comment(), line.slice(cursor, line.len()))
             return out
         }
         // Strings: single or double quoted, honoring backslash escapes.
@@ -114,7 +112,7 @@ pub fn highlight_line(string line, string language): string {
             if stop > line.len() {
                 stop = line.len()
             }
-            out += theme.fg(theme.WARNING, line.slice(cursor, stop))
+            out += theme.fg(theme.syntax_string(), line.slice(cursor, stop))
             cursor = stop
             continue
         }
@@ -124,7 +122,7 @@ pub fn highlight_line(string line, string language): string {
             for stop < line.len() && (line[stop] >= '0'.char() && line[stop] <= '9'.char() || line[stop] == '.'.char()) {
                 stop += 1
             }
-            out += theme.fg(theme.HEADING, line.slice(cursor, stop))
+            out += theme.fg(theme.syntax_number(), line.slice(cursor, stop))
             cursor = stop
             continue
         }
@@ -136,14 +134,14 @@ pub fn highlight_line(string line, string language): string {
             }
             string word = line.slice(cursor, stop)
             if in_word_list(keywords, word) {
-                out += theme.fg(theme.accent(), word)
+                out += theme.fg(theme.syntax_keyword(), word)
             } else {
-                out += theme.fg(theme.CODE_BLOCK, word)
+                out += theme.fg(theme.syntax_variable(), word)
             }
             cursor = stop
             continue
         }
-        out += theme.fg(theme.CODE_BLOCK, line.slice(cursor, cursor + 1))
+        out += theme.fg(theme.syntax_punctuation(), line.slice(cursor, cursor + 1))
         cursor += 1
     }
     return out

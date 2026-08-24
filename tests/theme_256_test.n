@@ -12,11 +12,23 @@ test 'truecolor terminals keep direct rgb' {
 
 test '256 color terminals get the nearest palette entry' {
     syscall.set_env('COLORTERM', '') catch e {}
+    syscall.set_env('TERM', 'xterm-256color') catch e {}
+    syscall.set_env('TERM_PROGRAM', '') catch e {}
+    syscall.set_env('TERMINAL_EMULATOR', '') catch e {}
+    syscall.set_env('KITTY_WINDOW_ID', '') catch e {}
+    syscall.set_env('GHOSTTY_RESOURCES_DIR', '') catch e {}
+    syscall.set_env('WEZTERM_PANE', '') catch e {}
+    syscall.set_env('WARP_SESSION_ID', '') catch e {}
+    syscall.set_env('WARP_TERMINAL_SESSION_UUID', '') catch e {}
+    syscall.set_env('ITERM_SESSION_ID', '') catch e {}
+    syscall.set_env('WT_SESSION', '') catch e {}
+    syscall.set_env('TMUX', '') catch e {}
     theme.reset_color_mode_cache()
     // Pure red maps to cube corner 196; grayscale endpoints to 16/231.
-    // Green 128 rounds to cube level 3 -> index 34.
+    // Pi chooses the nearest xterm cube value, so green 128 is closest to
+    // level 135 (cube slot 2) -> index 28.
     assert(theme.parse_color('#ff0000', false) == '\x1b[38;5;196m')
     assert(theme.parse_color('#000000', false) == '\x1b[38;5;16m')
     assert(theme.parse_color('#ffffff', false) == '\x1b[38;5;231m')
-    assert(theme.parse_color('#008000', true) == '\x1b[48;5;34m')
+    assert(theme.parse_color('#008000', true) == '\x1b[48;5;28m')
 }

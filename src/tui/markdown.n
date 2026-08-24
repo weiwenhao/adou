@@ -2,11 +2,19 @@ import adou.src.tui.syntax
 import adou.src.tui.text_utils
 import adou.src.tui.unicode
 import adou.src.tui.theme
+import adou.src.tui.terminal_image
 import strings
 
 pub fn render(string markdown, int width): [string]! {
+    return render_with_default(markdown, width, theme.text())
+}
+
+// Pi Markdown applies the component's default text style to every plain
+// inline token. User messages pass userMessageText while assistant messages
+// use the ordinary text token.
+pub fn render_with_default(string markdown, int width, string default_color): [string]! {
     [string] result = vec<string>.cap_of(16)
-    var lines = split_lines(markdown)
+    var lines = split_lines(markdown.replace('\t', '   '))
     bool fenced = false
     string fence_language = ''
     bool highlighted_fence = false
@@ -14,14 +22,13 @@ pub fn render(string markdown, int width): [string]! {
     for index < lines.len() {
         string raw = lines[index]
         if raw.starts_with('```') || raw.starts_with('~~~') {
-            string fence = raw.slice(0, 3)
             if !fenced {
                 fenced = true
                 fence_language = raw.slice(3, raw.len()).trim([' '])
                 highlighted_fence = syntax.supports(fence_language)
-                result.push(theme.fg(theme.CODE_BLOCK_BORDER, raw))
+                result.push(theme.fg(theme.code_block_border(), '```' + fence_language))
             } else {
-                result.push(theme.fg(theme.CODE_BLOCK_BORDER, fence))
+                result.push(theme.fg(theme.code_block_border(), '```'))
                 fenced = false
                 highlighted_fence = false
                 fence_language = ''
@@ -33,7 +40,7 @@ pub fn render(string markdown, int width): [string]! {
         if fenced {
             // B4: supported languages get keyword/string/comment coloring.
             string code_text = highlighted_fence ? syntax.highlight_line(raw, fence_language) : raw
-            var code_line = text_utils.wrap_text_with_ansi(theme.fg(theme.CODE_BLOCK, '  ' + code_text), width > 0 ? width : 1)
+            var code_line = text_utils.wrap_text_with_ansi(theme.fg(theme.code_block(), '  ' + code_text), width > 0 ? width : 1)
             result.append(code_line)
             index += 1
             continue
@@ -41,7 +48,7 @@ pub fn render(string markdown, int width): [string]! {
         // A table starts with a header row whose next line is a delimiter
         // row (---); render the whole block before continuing.
         if table_delimiter_next(lines, index) {
-            var table_lines = render_table(lines, index, width)
+            var table_lines = render_table(lines, index, width, default_color)
             result.append(table_lines)
             index += table_block_height(lines, index)
             result.push('')
@@ -49,7 +56,7 @@ pub fn render(string markdown, int width): [string]! {
         }
         if is_horizontal_rule(raw) {
             int rule_width = width > 80 ? 80 : width
-            result.push(theme.fg(theme.muted_color(), repeat_string('─', rule_width)))
+            result.push(theme.fg(theme.md_hr(), repeat_string('─', rule_width)))
             result.push('')
             index += 1
             continue
@@ -57,7 +64,10 @@ pub fn render(string markdown, int width): [string]! {
         // B4: setext headings — a non-empty text line followed by a === or
         // --- underline renders as a level-1/2 heading (both lines consumed).
         if setext_underline(lines, index) > 0 {
-            result.append(text_utils.wrap_text_with_ansi(theme.bold(theme.fg(theme.HEADING, inline(raw))), width > 0 ? width : 1))
+            bool level_one = lines[index + 1].trim([' ', '\t']).starts_with('=')
+            string heading_text = inline(raw, theme.heading())
+            string styled_heading = level_one ? theme.underline(theme.bold(heading_text)) : theme.bold(heading_text)
+            result.append(text_utils.wrap_text_with_ansi(styled_heading, width > 0 ? width : 1))
             result.push('')
             index += 2
             continue
@@ -76,7 +86,11 @@ pub fn render(string markdown, int width): [string]! {
                 run_parts.push(lines[cursor].trim([' ', '\t']))
             }
             string joined_paragraph = strings.join(run_parts, ' ')
-            string paragraph_styled = run_is_heading ? theme.bold(theme.fg(theme.HEADING, inline(joined_paragraph))) : inline(joined_paragraph)
+            bool level_one = run_is_heading && lines[run_end - 1].trim([' ', '\t']).starts_with('=')
+            string paragraph_styled = inline(joined_paragraph, run_is_heading ? theme.heading() : default_color)
+            if run_is_heading {
+                paragraph_styled = level_one ? theme.underline(theme.bold(paragraph_styled)) : theme.bold(paragraph_styled)
+            }
             result.append(text_utils.wrap_text_with_ansi(paragraph_styled, width > 0 ? width : 1))
             index = run_end
             continue
@@ -87,13 +101,16 @@ pub fn render(string markdown, int width): [string]! {
         string styled = raw
         int heading = heading_prefix_end(content)
         if heading > 0 {
-            styled = indent_text + theme.bold(theme.fg(theme.HEADING, content.slice(0, heading))) + inline(content.slice(heading, content.len()))
+            int level = heading - 1
+            string heading_body = inline(content.slice(heading, content.len()), theme.heading())
+            string decorated = level == 1 ? theme.underline(theme.bold(heading_body)) : theme.bold(heading_body)
+            styled = indent_text + (level >= 3 ? theme.bold(theme.fg(theme.heading(), content.slice(0, heading))) : '') + decorated
         } else if quote_depth(content) > 0 {
             // Nested blockquotes render one gutter per depth level.
             int depth = quote_depth(content)
             string quote_content = strip_quote_prefix(content, depth)
             string gutter = repeat_string('│ ', depth)
-            styled = indent_text + theme.fg(theme.muted_color(), gutter) + inline(quote_content)
+            styled = indent_text + theme.fg(theme.md_quote_border(), gutter) + theme.italic(inline(quote_content, theme.md_quote()))
         } else if unordered_prefix_end(content) > 0 {
             // B4: GFM task lists — "[ ] "/"[x] " after the bullet joins the
             // accent-styled marker like Pi's bullet + taskMarker.
@@ -103,10 +120,10 @@ pub fn render(string markdown, int width): [string]! {
             } else if content.len() >= marker_end + 4 && content.slice(marker_end, marker_end + 4) == '[x] ' {
                 marker_end += 4
             }
-            styled = indent_text + theme.fg(theme.accent(), content.slice(0, marker_end)) + inline(content.slice(marker_end, content.len()))
+            styled = indent_text + theme.fg(theme.md_list_bullet(), content.slice(0, marker_end)) + inline(content.slice(marker_end, content.len()), default_color)
         } else {
             int ordered = ordered_prefix_end(content)
-            styled = ordered > 0 ? indent_text + theme.fg(theme.accent(), content.slice(0, ordered)) + inline(content.slice(ordered, content.len())) : inline(raw)
+            styled = ordered > 0 ? indent_text + theme.fg(theme.md_list_bullet(), content.slice(0, ordered)) + inline(content.slice(ordered, content.len()), default_color) : inline(raw, default_color)
         }
         var wrapped = text_utils.wrap_text_with_ansi(styled, width > 0 ? width : 1)
         for line in wrapped {
@@ -193,7 +210,7 @@ fn split_cells(string line): [string] {
 
 // Render a markdown table with aligned columns; the header row is bold and
 // a divider line separates it from the body.
-fn render_table([string] lines, int index, int width): [string]! {
+fn render_table([string] lines, int index, int width, string default_color): [string]! {
     var header_cells = split_cells(lines[index])
     [any] body = []
     int height = table_block_height(lines, index)
@@ -201,70 +218,141 @@ fn render_table([string] lines, int index, int width): [string]! {
         body.push(split_cells(lines[cursor]))
     }
     int column_count = header_cells.len()
-    for row in body {
-        if (row as [string]).len() > column_count {
-            column_count = (row as [string]).len()
+    int border_overhead = 3 * column_count + 1
+    int available_for_cells = width - border_overhead
+    if column_count == 0 || available_for_cells < column_count {
+        [string] fallback = []
+        for int cursor = index; cursor < index + height; cursor += 1 {
+            fallback.append(text_utils.wrap_text_with_ansi(lines[cursor], width > 0 ? width : 1))
         }
+        return fallback
     }
-    [int] widths = []
+
+    [int] natural_widths = []
+    [int] minimum_widths = []
     for int column = 0; column < column_count; column += 1 {
-        int cell_width = column < header_cells.len() ? text_utils.visible_width(header_cells[column]) : 0
+        int natural = text_utils.visible_width(header_cells[column])
+        int minimum = longest_table_word(header_cells[column])
         for row in body {
             var cells = row as [string]
             if column < cells.len() {
                 int value_width = text_utils.visible_width(cells[column])
-                if value_width > cell_width {
-                    cell_width = value_width
-                }
+                if value_width > natural {natural = value_width}
+                int word_width = longest_table_word(cells[column])
+                if word_width > minimum {minimum = word_width}
             }
         }
-        widths.push(cell_width)
+        natural_widths.push(natural)
+        minimum_widths.push(minimum > 0 ? minimum : 1)
     }
-    // Shrink the widest columns when the table exceeds the terminal width.
-    // Each column contributes its width plus a 3-char separator; the row
-    // starts with a 2-char gutter.
-    int total = 2 + 3 * column_count
-    for column_width in widths {
-        total += column_width
+
+    int minimum_total = sum_ints(minimum_widths)
+    if minimum_total > available_for_cells {
+        [int] proportional = []
+        for int column = 0; column < column_count; column += 1 {
+            proportional.push(1)
+        }
+        int remaining = available_for_cells - column_count
+        int total_weight = 0
+        for minimum in minimum_widths {
+            total_weight += minimum > 1 ? minimum - 1 : 0
+        }
+        int allocated = 0
+        for int column = 0; column < column_count; column += 1 {
+            int weight = minimum_widths[column] > 1 ? minimum_widths[column] - 1 : 0
+            int growth = total_weight > 0 ? weight * remaining / total_weight : 0
+            proportional[column] += growth
+            allocated += growth
+        }
+        int leftover = remaining - allocated
+        for int column = 0; column < column_count && leftover > 0; column += 1 {
+            proportional[column] += 1
+            leftover -= 1
+        }
+        minimum_widths = proportional
+        minimum_total = sum_ints(minimum_widths)
     }
-    if width > 0 && total > width {
-        int excess = total - width
-        for int pass = 0; pass < column_count && excess > 0; pass += 1 {
-            int widest = 0
-            for int column = 1; column < column_count; column += 1 {
-                if widths[column] > widths[widest] {
-                    widest = column
+
+    [int] widths = []
+    if sum_ints(natural_widths) + border_overhead <= width {
+        for int column = 0; column < column_count; column += 1 {
+            widths.push(natural_widths[column] > minimum_widths[column] ? natural_widths[column] : minimum_widths[column])
+        }
+    } else {
+        int grow_potential = 0
+        for int column = 0; column < column_count; column += 1 {
+            int delta = natural_widths[column] - minimum_widths[column]
+            grow_potential += delta > 0 ? delta : 0
+        }
+        int extra = available_for_cells - minimum_total
+        for int column = 0; column < column_count; column += 1 {
+            int delta = natural_widths[column] - minimum_widths[column]
+            int growth = grow_potential > 0 && delta > 0 ? delta * extra / grow_potential : 0
+            widths.push(minimum_widths[column] + growth)
+        }
+        int leftover = available_for_cells - sum_ints(widths)
+        for leftover > 0 {
+            bool grew = false
+            for int column = 0; column < column_count && leftover > 0; column += 1 {
+                if widths[column] < natural_widths[column] {
+                    widths[column] += 1
+                    leftover -= 1
+                    grew = true
                 }
             }
-            int reduction = widths[widest] - excess
-            if reduction < 3 {
-                reduction = 3
-            }
-            excess -= widths[widest] - reduction
-            widths[widest] = reduction
+            if !grew {break}
         }
     }
+
     [string] result = []
-    // B4: the header keeps its bold marker through inline processing so
-    // emphasis inside cells survives width measurement and wrapping.
-    result.append(table_rows(header_cells, widths, true))
-    result.push(table_divider(widths))
-    for row in body {
-        result.append(table_rows(row as [string], widths, false))
+    result.push(table_border(widths, '┌', '┬', '┐'))
+    result.append(table_rows(header_cells, widths, true, default_color))
+    string divider = table_border(widths, '├', '┼', '┤')
+    result.push(divider)
+    for row_index, row in body {
+        result.append(table_rows(row as [string], widths, false, default_color))
+        if row_index + 1 < body.len() {result.push(divider)}
     }
+    result.push(table_border(widths, '└', '┴', '┘'))
     return result
+}
+
+fn longest_table_word(string value): int! {
+    int longest = 1
+    for word in value.split(' ') {
+        int word_width = text_utils.visible_width(word)
+        if word_width > longest {longest = word_width}
+    }
+    return longest > 30 ? 30 : longest
+}
+
+fn sum_ints([int] values): int {
+    int total = 0
+    for value in values {
+        total += value
+    }
+    return total
+}
+
+fn table_border([int] widths, string left, string join, string right): string {
+    string line = left + '─'
+    for index, column_width in widths {
+        line += repeat_string('─', column_width)
+        line += index + 1 < widths.len() ? '─' + join + '─' : '─' + right
+    }
+    return line
 }
 
 // B4: Pi markdown.ts table rendering — overflowing cells wrap into extra
 // physical rows instead of truncating, and cell content keeps its inline
 // formatting (emphasis/code/strike) while staying ANSI-width aligned.
-fn table_rows([string] cells, [int] widths, bool header): [string]! {
+fn table_rows([string] cells, [int] widths, bool header, string default_color): [string]! {
     int column_count = widths.len()
     [[any]] segments = []
     int max_rows = 1
     for int column = 0; column < column_count; column += 1 {
         string cell = column < cells.len() ? cells[column] : ''
-        string styled = header ? theme.bold(inline(cell)) : inline(cell)
+        string styled = header ? theme.bold(inline(cell, default_color)) : inline(cell, default_color)
         var wrapped = text_utils.wrap_text_with_ansi(styled, widths[column] > 0 ? widths[column] : 1)
         if wrapped.len() == 0 {
             wrapped.push('')
@@ -293,21 +381,11 @@ fn table_rows([string] cells, [int] widths, bool header): [string]! {
             if padding < 0 {
                 padding = 0
             }
-            line += segment + repeat_string(' ', padding) + ' │ '
+            line += segment + repeat_string(' ', padding) + (column + 1 < column_count ? ' │ ' : ' │')
         }
         result.push(line)
     }
     return result
-}
-
-fn table_divider([int] widths): string {
-    string line = '├'
-    for index, column_width in widths {
-        line += repeat_string('─', column_width + 2) + '┼'
-    }
-    // Drop the trailing multi-byte separator entirely, then close the row.
-    line = line.slice(0, line.len() - 3) + '┤'
-    return theme.fg(theme.muted_color(), line)
 }
 
 fn quote_depth(string content): int {
@@ -347,12 +425,12 @@ fn word_at([unicode.segment_t] segments, int pos): bool {
     return false
 }
 
-fn inline(string text): string {
+fn inline(string text, string default_color): string {
     // Most streamed assistant/tool rows are ordinary text.  Returning the
     // original slice avoids rebuilding a growing line one byte at a time on
     // every redraw; markdown markers still take the parser below.
     if text.find('*') < 0 && text.find('_') < 0 && text.find('~') < 0 && text.find('`') < 0 && text.find('[') < 0 {
-        return text
+        return theme.fg(default_color, text)
     }
     // Only lines that actually contain an underscore need word boundaries.
     [unicode.segment_t] segments = []
@@ -362,6 +440,7 @@ fn inline(string text): string {
         }
     }
     [string] parts = vec<string>.cap_of(16)
+    parts.push(default_color)
     int cursor = 0
     for cursor < text.len() {
         // Keep ordinary spans contiguous once a marker is present. This
@@ -407,7 +486,7 @@ fn inline(string text): string {
         if text[cursor] == '`'.char() {
             int end = text.find_after('`', cursor + 1)
             if end >= 0 {
-                parts.push(theme.INVERSE + theme.CODE + text.slice(cursor + 1, end) + '\x1b[27m\x1b[39m')
+                parts.push(theme.fg(theme.code(), text.slice(cursor + 1, end)) + default_color)
                 cursor = end + 1
                 continue
             }
@@ -455,7 +534,14 @@ fn inline(string text): string {
                 if url_end >= 0 {
                     string label = text.slice(cursor + 1, label_end)
                     string url = text.slice(label_end + 2, url_end)
-                    parts.push('\x1b]8;;' + url + '\x1b\\' + theme.fg(theme.LINK, label) + '\x1b]8;;\x1b\\')
+                    string styled_label = theme.fg(theme.link(), theme.underline(label))
+                    var capabilities = terminal_image.detect_capabilities()
+                    if capabilities[2] {
+                        parts.push(terminal_image.hyperlink(styled_label, url) + default_color)
+                    } else {
+                        string comparison = url.starts_with('mailto:') ? url.slice(7, url.len()) : url
+                        parts.push(styled_label + (label == url || label == comparison ? '' : theme.fg(theme.md_link_url(), ' (' + url + ')')) + default_color)
+                    }
                     cursor = url_end + 1
                     continue
                 }
@@ -464,7 +550,7 @@ fn inline(string text): string {
         parts.push(text.slice(cursor, cursor + 1))
         cursor += 1
     }
-    return strings.join(parts, '')
+    return strings.join(parts, '') + '\x1b[39m'
 }
 
 fn is_inline_marker(u8 value): bool {

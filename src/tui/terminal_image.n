@@ -141,6 +141,42 @@ pub fn is_image_line(string line): bool {
     return line.starts_with('\x1b_G') || line.starts_with('\x1b]1337;File=') || line.contains('\x1b_G') || line.contains('\x1b]1337;File=')
 }
 
+// Kitty placement metadata is carried in the first graphics command header.
+// The differential renderer uses the id to delete stale placements and the
+// row count to reason about the reserved image block.
+pub fn extract_kitty_image_ids(string line): [int] {
+    [int] ids = []
+    int sequence_start = line.find('\x1b_G')
+    if sequence_start < 0 {return ids}
+    int params_start = sequence_start + 3
+    int params_end = line.find_after(';', params_start)
+    if params_end < 0 {return ids}
+    for param in line.slice(params_start, params_end).split(',') {
+        int equals = param.find('=')
+        if equals <= 0 || equals >= param.len() - 1 {continue}
+        if param.slice(0, equals) != 'i' {continue}
+        int value = param.slice(equals + 1, param.len()).to_int() catch error {0}
+        if value > 0 {ids.push(value)}
+    }
+    return ids
+}
+
+pub fn extract_kitty_image_rows(string line): int {
+    int sequence_start = line.find('\x1b_G')
+    if sequence_start < 0 {return 1}
+    int params_start = sequence_start + 3
+    int params_end = line.find_after(';', params_start)
+    if params_end < 0 {return 1}
+    for param in line.slice(params_start, params_end).split(',') {
+        int equals = param.find('=')
+        if equals <= 0 || equals >= param.len() - 1 {continue}
+        if param.slice(0, equals) != 'r' {continue}
+        int value = param.slice(equals + 1, param.len()).to_int() catch error {1}
+        return value > 0 ? value : 1
+    }
+    return 1
+}
+
 // Pi's hyperlink(): OSC 8 clickable link.
 pub fn hyperlink(string text, string url): string {
     return '\x1b]8;;' + url + '\x1b\\' + text + '\x1b]8;;\x1b\\'

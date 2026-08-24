@@ -1,8 +1,22 @@
 import adou.src.tui.theme
+import adou.src.tui.terminal_image
 import fs
 import os
 import path
 import syscall
+
+fn full_theme(string name): string {
+    return '{"name":"' + name + '","vars":{"base":"#202122"},"colors":{' +
+        '"accent":"base","border":"base","borderAccent":"base","borderMuted":"base","success":"base","error":"base","warning":"base","muted":"base","dim":"base","text":"base","thinkingText":"base",' +
+        '"selectedBg":"base","userMessageBg":"base","userMessageText":"base","customMessageBg":"base","customMessageText":"base","customMessageLabel":"base","toolPendingBg":"base","toolSuccessBg":"base","toolErrorBg":"base","toolTitle":"base","toolOutput":"base",' +
+        '"mdHeading":"base","mdLink":"base","mdLinkUrl":"base","mdCode":"base","mdCodeBlock":"base","mdCodeBlockBorder":"base","mdQuote":"base","mdQuoteBorder":"base","mdHr":"base","mdListBullet":"base",' +
+        '"toolDiffAdded":"base","toolDiffRemoved":"base","toolDiffContext":"base","syntaxComment":"base","syntaxKeyword":"base","syntaxFunction":"base","syntaxVariable":"base","syntaxString":"base","syntaxNumber":"base","syntaxType":"base","syntaxOperator":"base","syntaxPunctuation":"base",' +
+        '"thinkingOff":"base","thinkingMinimal":"base","thinkingLow":"base","thinkingMedium":"base","thinkingHigh":"base","thinkingXhigh":"base","thinkingMax":"base","bashMode":"base"}}'
+}
+
+fn replace_color(string document, string name, string json_value): string {
+    return document.replace('"' + name + '":"base"', '"' + name + '":' + json_value)
+}
 
 test 'foreground styles preserve an enclosing background' {
     string line = theme.background_line(theme.USER_BG, theme.fg(theme.TEXT, 'hello') + '   ', 8)
@@ -17,14 +31,18 @@ test 'text attributes reset without clearing an enclosing background' {
 test 'theme variants switch the readability colors like Pi' {
     theme.set_variant('light')
     assert(theme.variant() == 'light')
-    assert(theme.muted_color() != '\x1b[38;2;128;128;128m')
+    assert(theme.text() == '\x1b[38;2;31;35;40m')
+    assert(theme.muted_color() == '\x1b[38;2;108;108;108m')
+    assert(theme.accent() == '\x1b[38;2;90;128;128m')
+    assert(theme.error_color() == '\x1b[38;2;170;85;85m')
+    assert(theme.tool_pending_bg() == '\x1b[48;2;232;232;240m')
     theme.set_variant('dark')
     assert(theme.variant() == 'dark')
     assert(theme.text() == '\x1b[38;2;212;212;212m')
     assert(theme.muted_color() == '\x1b[38;2;128;128;128m')
     assert(theme.accent() == '\x1b[38;2;138;190;183m')
     theme.set_variant('light')
-    assert(theme.border() != '\x1b[38;2;95;135;255m')
+    assert(theme.border() == '\x1b[38;2;84;125;167m')
     theme.set_variant('dark')
 }
 
@@ -32,14 +50,15 @@ test 'custom JSON theme loads ANSI colors and reloads' {
     string file_path = '/tmp/adou-theme-test.json'
     os.remove(file_path) catch error {}
     var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
-    file.write('{"colors":{"accent":"#010203","text":"#aabbcc","user_bg":"#040506"}}' as [u8])
+    string original = replace_color(replace_color(replace_color(full_theme('reload'), 'accent', '"#010203"'), 'text', '"#aabbcc"'), 'userMessageBg', '"#040506"')
+    file.write(original as [u8])
     file.close()
     assert(theme.load_json(file_path))
     assert(theme.accent() == '\x1b[38;2;1;2;3m')
     assert(theme.text() == '\x1b[38;2;170;187;204m')
     assert(theme.user_bg() == '\x1b[48;2;4;5;6m')
     var changed = fs.open(file_path, syscall.O_WRONLY | syscall.O_TRUNC, 0o600)
-    changed.write('{"accent":"#0a0b0c"}' as [u8])
+    changed.write(replace_color(full_theme('reload'), 'accent', '"#0a0b0c"') as [u8])
     changed.close()
     assert(theme.reload())
     assert(theme.accent() == '\x1b[38;2;10;11;12m')
@@ -50,10 +69,79 @@ test 'custom Pi theme resolves vars and camelCase background aliases' {
     string file_path = '/tmp/adou-theme-alias-test.json'
     os.remove(file_path) catch error {}
     var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
-    file.write('{"vars":{"cyan":"#112233","surface":"#040506"},"colors":{"borderAccent":"cyan","userMessageBg":"surface"}}' as [u8])
+    string aliased = full_theme('aliases').replace('"vars":{"base":"#202122"}', '"vars":{"base":"#202122","cyan":"#112233","surface":"#040506"}')
+    aliased = replace_color(replace_color(aliased, 'borderAccent', '"cyan"'), 'userMessageBg', '"surface"')
+    file.write(aliased as [u8])
     file.close()
     assert(theme.load_json(file_path))
     assert(theme.custom_color('border_accent') == '\x1b[38;2;17;34;51m')
     assert(theme.user_bg() == '\x1b[48;2;4;5;6m')
+    os.remove(file_path) catch error {}
+}
+
+test 'custom Pi tokens and indexed colors drive every rendered color family' {
+    string file_path = '/tmp/adou-theme-token-test.json'
+    os.remove(file_path) catch error {}
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    string tokens = full_theme('tokens').replace('"vars":{"base":"#202122"}', '"vars":{"base":"#202122","indexed":196}')
+    tokens = replace_color(replace_color(replace_color(replace_color(replace_color(tokens, 'error', '"indexed"'), 'mdHeading', '"#010203"'), 'toolPendingBg', '17'), 'syntaxKeyword', '"#040506"'), 'thinkingMax', '"#070809"')
+    file.write(tokens as [u8])
+    file.close()
+    assert(theme.load_json(file_path))
+    assert(theme.error_color() == '\x1b[38;5;196m')
+    assert(theme.heading() == '\x1b[38;2;1;2;3m')
+    assert(theme.tool_pending_bg() == '\x1b[48;5;17m')
+    assert(theme.syntax_keyword() == '\x1b[38;2;4;5;6m')
+    assert(theme.editor_border_line('max', false, 1).starts_with('\x1b[38;2;7;8;9m'))
+    os.remove(file_path) catch error {}
+}
+
+test 'custom Pi text families empty reset and thinking fallback are exact' {
+    string file_path = '/tmp/adou-theme-complete-token-test.json'
+    os.remove(file_path) catch error {}
+    string document = full_theme('complete-tokens').replace(',"thinkingMax":"base"', '')
+    document = replace_color(replace_color(replace_color(replace_color(replace_color(document, 'userMessageText', '"#010203"'), 'customMessageText', '"#040506"'), 'toolTitle', '"#070809"'), 'mdLinkUrl', '""'), 'thinkingXhigh', '"#0a0b0c"')
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    file.write(document as [u8])
+    file.close()
+    assert(theme.load_json(file_path))
+    assert(theme.user_text() == '\x1b[38;2;1;2;3m')
+    assert(theme.custom_message_text() == '\x1b[38;2;4;5;6m')
+    assert(theme.tool_title() == '\x1b[38;2;7;8;9m')
+    assert(theme.md_link_url() == '\x1b[39m')
+    assert(theme.editor_border_line('max', false, 1).starts_with('\x1b[38;2;10;11;12m'))
+    os.remove(file_path) catch error {}
+}
+
+test 'xterm 256 conversion uses Pi weighted nearest palette entry' {
+    string file_path = '/tmp/adou-theme-256-test.json'
+    string previous = syscall.get_env('COLORTERM')
+    syscall.set_env('COLORTERM', '') catch error {}
+    theme.reset_color_mode_cache()
+    terminal_image.set_capabilities('', false, false)
+    var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    file.write(replace_color(full_theme('palette'), 'accent', '"#123456"') as [u8])
+    file.close()
+    assert(theme.load_json(file_path))
+    assert(theme.accent() == '\x1b[38;5;23m')
+    syscall.set_env('COLORTERM', previous) catch error {}
+    theme.reset_color_mode_cache()
+    theme.set_variant('dark')
+    os.remove(file_path) catch error {}
+}
+
+test 'custom theme validation rejects empty names and unknown schema fields' {
+    string file_path = '/tmp/adou-theme-invalid-schema-test.json'
+    for document in [
+        full_theme(''),
+        full_theme('unknown-root').replace('"colors":{', '"extra":true,"colors":{'),
+        full_theme('unknown-color').replace('"bashMode":"base"', '"bashMode":"base","legacyColor":"base"'),
+        full_theme('unknown-export').replace('}}', '},"export":{"legacy":"#010203"}}'),
+    ] {
+        var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+        file.write(document as [u8])
+        file.close()
+        assert(!theme.load_json(file_path))
+    }
     os.remove(file_path) catch error {}
 }

@@ -486,6 +486,12 @@ pub fn run(): void! {
         return
     }
 
+    // Pi registers explicit --theme resources before constructing the TUI.
+    // Registration makes each JSON `name` available to the settings-driven
+    // theme selector; it does not implicitly activate the last CLI entry.
+    for theme_entry in config.theme_paths {
+        tui_theme.register_path(theme_entry, config.cwd)
+    }
     var terminal = term.open()
     var view = session_view.new(terminal, runner, config.model.id, session_cwd, config.skill_paths, config.no_skills, config.trust_override, config.trust_override_explicit, config.scoped_models, config.scoped_models_explicit, config.system_prompt, config.append_system_prompts, config.no_context_files, config.prompt_template_paths, config.no_prompt_templates, config.no_themes)
     view.chat.thinking_visible = !config.hide_thinking
@@ -498,16 +504,7 @@ pub fn run(): void! {
         view.startup_session_picker = true
         view.show_session_overlay()
     }
-    // B6: Pi --theme entries load in order; the last one wins. Entries with
-    // a path separator or .json suffix load as files, otherwise registry.
-    for theme_entry in config.theme_paths {
-        if theme_entry.contains('/') || theme_entry.ends_with('.json') {
-            tui_theme.load_json(theme_entry)
-        } else {
-            tui_theme.ensure_named_loaded(session_cwd, theme_entry)
-        }
-    }
-    // Pi's first-time setup: a theme + telemetry welcome shown once until
+    // Pi's first-time setup: a theme + analytics welcome shown once until
     // the marker below the agent directory exists.  Pi resolves project
     // trust before the TUI starts, so a pending startup trust prompt takes
     // precedence; the setup overlay opens afterwards from the trust flow.

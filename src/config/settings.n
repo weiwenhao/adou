@@ -57,6 +57,10 @@ pub type settings_t = struct {
     bool collapse_changelog
     bool quiet_startup
     bool enable_install_telemetry = true
+    // Pi's first-time setup controls analytics independently from the
+    // anonymous install/update ping.
+    bool enable_analytics
+    string tracking_id
     // Pi settings.defaultProjectTrust: global-only fallback for projects
     // with no stored decision ('ask' | 'always' | 'never').
     string default_project_trust = 'ask'
@@ -139,6 +143,8 @@ fn load_file(string file_path, settings_t initial): settings_t {
     result.collapse_changelog = bool_value(object, 'collapseChangelog', result.collapse_changelog)
     result.quiet_startup = bool_value(object, 'quietStartup', result.quiet_startup)
     result.enable_install_telemetry = bool_value(object, 'enableInstallTelemetry', result.enable_install_telemetry)
+    result.enable_analytics = bool_value(object, 'enableAnalytics', result.enable_analytics)
+    result.tracking_id = string_value(object, 'trackingId', result.tracking_id)
     result.default_project_trust = trust_mode(string_value(object, 'defaultProjectTrust', result.default_project_trust))
     result.enable_skill_commands = bool_value(object, 'enableSkillCommands', result.enable_skill_commands)
     result.double_escape_action = double_escape(string_value(object, 'doubleEscapeAction', result.double_escape_action))
@@ -356,6 +362,12 @@ fn save_to(settings_t settings, string file_path): void! {
     object['collapseChangelog'] = settings.collapse_changelog
     object['quietStartup'] = settings.quiet_startup
     object['enableInstallTelemetry'] = settings.enable_install_telemetry
+    object['enableAnalytics'] = settings.enable_analytics
+    if settings.tracking_id != '' {
+        object['trackingId'] = settings.tracking_id
+    } else if object.contains('trackingId') {
+        object.del('trackingId')
+    }
     object['defaultProjectTrust'] = trust_mode(settings.default_project_trust)
     object['enableSkillCommands'] = settings.enable_skill_commands
     object['doubleEscapeAction'] = double_escape(settings.double_escape_action)
@@ -561,6 +573,13 @@ pub fn set_quiet_startup(bool enabled): void! {
 pub fn set_enable_install_telemetry(bool enabled): void! {
     var settings = load()
     settings.enable_install_telemetry = enabled
+    save(settings)
+}
+
+pub fn set_enable_analytics(bool enabled, string tracking_id): void! {
+    var settings = load()
+    settings.enable_analytics = enabled
+    settings.tracking_id = enabled ? tracking_id : settings.tracking_id
     save(settings)
 }
 

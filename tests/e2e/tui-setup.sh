@@ -2,8 +2,8 @@
 set -eu
 
 # PTY e2e for the first-time setup: the welcome overlay appears once, the
-# theme and telemetry entries toggle, Continue writes the marker, and a
-# second run skips the welcome.
+# Pi-aligned theme and analytics steps persist their choices, write the
+# marker, and a second run skips the welcome.
 binary=${ADOU_BIN:-$(CDPATH= cd -- "$(dirname -- "$0")/../../build/bin" && pwd)/adou}
 if [ ! -x "$binary" ]; then
     echo "e2e: Adou binary not found: $binary" >&2
@@ -97,27 +97,34 @@ def teardown():
 try:
     fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 100, 0, 0))
 
-    # First launch: the welcome overlay shows with theme and telemetry.
+    # First launch: the Pi-style theme step is shown first.
     if not collect(b"Welcome to Adou", timeout=5.0):
         raise SystemExit("first-time setup did not open on the first launch")
     collect(timeout=0.3)
-    if b"Theme: dark" not in bytes(output) or b"Telemetry: off" not in bytes(output):
-        raise SystemExit("setup entries missing")
+    if b"Pick a theme." not in bytes(output) or b"Dark" not in bytes(output) or b"Light" not in bytes(output):
+        raise SystemExit("setup theme step is incomplete")
 
-    # Toggle the theme entry for a live preview.
-    if not key(b"\r", b"Theme: light", timeout=4.0):
-        raise SystemExit("setup theme toggle did not preview the light variant")
-
-    # Complete the setup: the marker file is written and the TUI quits.
+    # Select Light (which previews immediately), then continue.
     os.write(fd, b"\x1b[B")
     time.sleep(0.3)
+    if not key(b"\r", b"Opt-in to anonymous usage data sharing?", timeout=4.0):
+        raise SystemExit("theme selection did not advance to analytics")
+    if b"Share anonymous usage data" not in bytes(output) or b"Don't share" not in bytes(output):
+        raise SystemExit("setup analytics choices are incomplete")
+
+    # Choose Don't share and finish: settings and the marker are persisted.
     os.write(fd, b"\x1b[B")
     time.sleep(0.3)
     if not key(b"\r", b"Setup complete", timeout=4.0):
-        raise SystemExit("Continue did not complete the setup")
+        raise SystemExit("analytics selection did not complete the setup")
     marker = os.path.join(root, "agent", ".adou-setup")
     if not os.path.exists(marker):
         raise SystemExit("setup marker file was not written")
+    settings = os.path.join(root, "agent", "settings.json")
+    with open(settings, "r", encoding="utf-8") as handle:
+        saved = handle.read()
+    if '"theme":"light"' not in saved or '"enableAnalytics":false' not in saved:
+        raise SystemExit("setup choices were not persisted")
     os.write(fd, b"/quit\r")
     collect(timeout=6.0)
     if status is None:
@@ -178,4 +185,4 @@ finally:
     shutil.rmtree(root, ignore_errors=True)
 PY
 
-echo "e2e: first-time setup shows once and persists its marker"
+echo "e2e: Pi-aligned first-time setup persists choices and shows once"

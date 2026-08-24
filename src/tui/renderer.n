@@ -1,7 +1,9 @@
 import adou.src.debug
 import adou.src.tui.text_utils
+import adou.src.tui.terminal_image
 import fmt
 import strings
+import syscall
 import time
 
 pub const STRATEGY_NONE = 'none'
@@ -30,6 +32,8 @@ pub type renderer_t = struct {
     // content shrinks.  Default off: shrunk rows keep their previous content
     // until overwritten (Pi's default; may look like stale rows).
     bool clear_on_shrink
+    int max_lines_rendered
+    [int] previous_kitty_image_ids = []
 }
 
 pub fn new(): ref<renderer_t> {
@@ -41,7 +45,7 @@ pub fn renderer_t.set_clear_on_shrink(&self, bool enabled) {
 }
 
 pub fn renderer_t.render(&self, [string] input_lines, int width, int height): result_t! {
-    return self.render_frame(input_lines, width, height, self.clear_on_shrink)
+    return self.render_frame(input_lines, width, height, false)
 }
 
 // Selectors and autocomplete menus are transient UI, so rows removed while
@@ -51,14 +55,14 @@ pub fn renderer_t.render_transient_frame(&self, [string] input_lines, int width,
     return self.render_frame(input_lines, width, height, true)
 }
 
-fn renderer_t.render_frame(&self, [string] input_lines, int width, int height, bool clear_on_shrink): result_t! {
+fn renderer_t.render_frame(&self, [string] input_lines, int width, int height, bool transient): result_t! {
     if width <= 0 || height <= 0 {
         throw errorf('terminal dimensions must be positive')
     }
     [string] lines = vec<string>.cap_of(input_lines.len())
     for input in input_lines {
         string normalized = text_utils.normalize_terminal_output(input)
-        // Every renderer element represents one terminal row.  Keep this
+        // Every renderer element represents one terminal row. Keep this
         // invariant even if a component accidentally returns embedded line
         // breaks; otherwise the terminal advances while diff state does not.
         string physical_text = normalized.replace('\r\n', '\n').replace('\r', '\n')
@@ -75,11 +79,16 @@ fn renderer_t.render_frame(&self, [string] input_lines, int width, int height, b
                 debug.write_crash_file(crash_data) catch error {}
                 throw errorf('rendered line exceeds terminal width: %d > %d', visible, width)
             }
-            lines.push(physical + LINE_RESET)
+            lines.push(terminal_image.is_image_line(physical) ? physical : physical + LINE_RESET)
         }
     }
     bool width_changed = self.previous_width != 0 && self.previous_width != width
     bool height_changed = self.previous_height != 0 && self.previous_height != height
+    int render_previous_viewport_top = self.previous_viewport_top
+    if height_changed && is_termux_session() {
+        int previous_buffer_length = self.previous_height > 0 ? self.previous_viewport_top + self.previous_height : height
+        render_previous_viewport_top = previous_buffer_length > height ? previous_buffer_length - height : 0
+    }
     if self.force_full {
         // The terminal was taken over by the shell/editor (Ctrl+Z, external
         // editor) while frames were being computed; the diff state is stale
@@ -88,20 +97,31 @@ fn renderer_t.render_frame(&self, [string] input_lines, int width, int height, b
         // instead of relying on a first-render join.
         self.force_full = false
         debug.log_redraw('forced full after terminal suspension', self.previous_lines.len(), lines.len(), height)
-        string output = full_output(lines, true)
-        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height))
+        string output = full_output(lines, true, self.delete_previous_kitty_images(), height)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height), true)
         return result_t {output: output, strategy: STRATEGY_FULL,}
     }
     if self.previous_lines.len() == 0 && !width_changed && !height_changed {
         debug.log_redraw('first render', self.previous_lines.len(), lines.len(), height)
-        string output = full_output(lines, false)
-        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height))
+        string output = full_output(lines, false, '', height)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height), false)
         return result_t {output: output, strategy: STRATEGY_FIRST,}
     }
-    if width_changed || height_changed {
+    if width_changed || (height_changed && !is_termux_session()) {
         debug.log_redraw(width_changed ? 'terminal width changed' : 'terminal height changed', self.previous_lines.len(), lines.len(), height)
-        string output = full_output(lines, true)
-        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height))
+        string output = full_output(lines, true, self.delete_previous_kitty_images(), height)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height), true)
+        return result_t {output: output, strategy: STRATEGY_FULL,}
+    }
+    // Pi's clearOnShrink is a high-water-mark repaint policy. Ordinary
+    // differential shrink always clears deleted rows; this option requests a
+    // full clear once content falls below any previously rendered working
+    // area. Transient selector frames correspond to Pi's active overlays and
+    // therefore skip this full-redraw branch.
+    if self.clear_on_shrink && !transient && lines.len() < self.max_lines_rendered {
+        debug.log_redraw('clearOnShrink', self.previous_lines.len(), lines.len(), height)
+        string output = full_output(lines, true, self.delete_previous_kitty_images(), height)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height), true)
         return result_t {output: output, strategy: STRATEGY_FULL,}
     }
     int first_changed = -1
@@ -117,23 +137,33 @@ fn renderer_t.render_frame(&self, [string] input_lines, int width, int height, b
             last_changed = index
         }
     }
+    bool appended_lines = lines.len() > self.previous_lines.len()
+    if appended_lines {
+        if first_changed < 0 {first_changed = self.previous_lines.len()}
+        last_changed = lines.len() - 1
+    }
     if first_changed < 0 {
         self.previous_width = width
         self.previous_height = height
+        self.previous_viewport_top = render_previous_viewport_top
         return result_t {strategy: STRATEGY_NONE,}
     }
+    var expanded = expand_changed_range_for_kitty_images(self.previous_lines, lines, first_changed, last_changed)
+    first_changed = expanded[0]
+    last_changed = expanded[1]
+    string kitty_deletes = self.delete_changed_kitty_images(first_changed, last_changed)
     int new_last_row = lines.len() > 0 ? lines.len() - 1 : 0
-    bool deleted_viewport_prefix = first_changed >= lines.len() && new_last_row < self.previous_viewport_top
-    if first_changed < self.previous_viewport_top || deleted_viewport_prefix {
+    bool deleted_viewport_prefix = first_changed >= lines.len() && new_last_row < render_previous_viewport_top
+    if first_changed < render_previous_viewport_top || deleted_viewport_prefix {
         debug.log_redraw('changed above viewport', self.previous_lines.len(), lines.len(), height)
-        string output = full_output(lines, true)
-        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height))
+        string output = full_output(lines, true, self.delete_previous_kitty_images(), height)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height), true)
         return result_t {output: output, strategy: STRATEGY_FULL, first_changed: first_changed, last_changed: last_changed,}
     }
     if first_changed >= lines.len() && self.previous_lines.len() - lines.len() > height {
         debug.log_redraw('large deletion', self.previous_lines.len(), lines.len(), height)
-        string output = full_output(lines, true)
-        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height))
+        string output = full_output(lines, true, self.delete_previous_kitty_images(), height)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height), true)
         return result_t {output: output, strategy: STRATEGY_FULL, first_changed: first_changed, last_changed: last_changed,}
     }
     int target_row = first_changed
@@ -141,30 +171,39 @@ fn renderer_t.render_frame(&self, [string] input_lines, int width, int height, b
     if appending {
         target_row = first_changed - 1
     }
-    int previous_bottom = self.previous_viewport_top + height - 1
-    int next_viewport_top = self.previous_viewport_top
+    int previous_bottom = render_previous_viewport_top + height - 1
+    int next_viewport_top = render_previous_viewport_top
     if target_row > previous_bottom {
         next_viewport_top += target_row - previous_bottom
     }
-    string output = differential_output(self.previous_lines, lines, self.hardware_cursor_row, self.previous_viewport_top, height, first_changed, last_changed, clear_on_shrink)
+    int render_end = last_changed < lines.len() ? last_changed : lines.len() - 1
+    if kitty_image_range_would_scroll(lines, first_changed, render_end, next_viewport_top, height) {
+        debug.log_redraw('kitty image pre-clear would scroll', self.previous_lines.len(), lines.len(), height)
+        string output = full_output(lines, true, self.delete_previous_kitty_images(), height)
+        self.commit(lines, width, height, lines.len() > 0 ? lines.len() - 1 : 0, viewport_top(lines.len(), height), true)
+        return result_t {output: output, strategy: STRATEGY_FULL, first_changed: first_changed, last_changed: last_changed,}
+    }
+    string output = differential_output(self.previous_lines, lines, self.hardware_cursor_row, render_previous_viewport_top, height, first_changed, last_changed, kitty_deletes)
     if debug.tui_frame_debug_enabled() {
-        string frame_debug = fmt.sprintf('firstChanged: %d\nviewportTop: %d\ncursorRow: %d\nheight: %d\nlineDiff: %d\nhardwareCursorRow: %d\nnewLines.length: %d\npreviousLines.length: %d\n\n=== newLines ===\n%s\n\n=== previousLines ===\n%s\n\n=== buffer ===\n%s\n', first_changed, self.previous_viewport_top, self.hardware_cursor_row, height, last_changed - first_changed + 1, self.hardware_cursor_row, lines.len(), self.previous_lines.len(), strings.join(lines, '\n'), strings.join(self.previous_lines, '\n'), output)
+        string frame_debug = fmt.sprintf('firstChanged: %d\nviewportTop: %d\ncursorRow: %d\nheight: %d\nlineDiff: %d\nhardwareCursorRow: %d\nnewLines.length: %d\npreviousLines.length: %d\n\n=== newLines ===\n%s\n\n=== previousLines ===\n%s\n\n=== buffer ===\n%s\n', first_changed, render_previous_viewport_top, self.hardware_cursor_row, height, last_changed - first_changed + 1, self.hardware_cursor_row, lines.len(), self.previous_lines.len(), strings.join(lines, '\n'), strings.join(self.previous_lines, '\n'), output)
         debug.log_tui_frame(frame_debug)
     }
     int final_cursor = lines.len() > 0 ? (last_changed < lines.len() ? last_changed : lines.len() - 1) : 0
     if lines.len() > 0 && final_cursor - height + 1 > next_viewport_top {
         next_viewport_top = final_cursor - height + 1
     }
-    self.commit(lines, width, height, final_cursor, next_viewport_top)
+    self.commit(lines, width, height, final_cursor, next_viewport_top, false)
     return result_t {output: output, strategy: STRATEGY_DIFF, first_changed: first_changed, last_changed: last_changed,}
 }
 
-pub fn renderer_t.commit(&self, [string] lines, int width, int height, int hardware_cursor_row, int viewport_top) {
+pub fn renderer_t.commit(&self, [string] lines, int width, int height, int hardware_cursor_row, int viewport_top, bool cleared) {
     self.previous_lines = copy_strings(lines)
     self.previous_width = width
     self.previous_height = height
     self.previous_viewport_top = viewport_top
     self.hardware_cursor_row = hardware_cursor_row
+    self.max_lines_rendered = cleared ? lines.len() : (self.max_lines_rendered > lines.len() ? self.max_lines_rendered : lines.len())
+    self.previous_kitty_image_ids = collect_kitty_image_ids(lines)
 }
 
 // Forget the committed diff state and demand a cleared full repaint on the
@@ -187,17 +226,35 @@ fn viewport_top(int line_count, int height): int {
     return buffer_height > height ? buffer_height - height : 0
 }
 
-fn full_output([string] lines, bool clear): string {
+fn full_output([string] lines, bool clear, string kitty_deletes, int height): string {
     string output = SYNC_START
     if clear {
+        output += kitty_deletes
         output += '\x1b[2J\x1b[H\x1b[3J'
     }
-    output += strings.join(lines, '\r\n')
+    int index = 0
+    for index < lines.len() {
+        if index > 0 {output += '\r\n'}
+        string line = lines[index]
+        int image_reserved_rows = terminal_image.is_image_line(line) ? kitty_image_reserved_rows(lines, index, lines.len() - 1) : 1
+        if image_reserved_rows > 1 && image_reserved_rows <= height {
+            for int row = 1; row < image_reserved_rows; row += 1 {
+                output += '\r\n'
+            }
+            output += csi_move(image_reserved_rows - 1, 'A')
+            output += line
+            output += csi_move(image_reserved_rows - 1, 'B')
+            index += image_reserved_rows
+            continue
+        }
+        output += line
+        index += 1
+    }
     return output + SYNC_END
 }
 
-fn differential_output([string] previous, [string] lines, int hardware_cursor_row, int previous_viewport_top, int height, int first_changed, int last_changed, bool clear_on_shrink): string {
-    string output = SYNC_START
+fn differential_output([string] previous, [string] lines, int hardware_cursor_row, int previous_viewport_top, int height, int first_changed, int last_changed, string kitty_deletes): string {
+    string output = SYNC_START + kitty_deletes
     // When every changed line was deleted, there is no replacement line to
     // render.  Pi clears the rows after the new content separately, starting
     // one row below the new last line, then returns the cursor to that line.
@@ -206,23 +263,20 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
         int difference = target - hardware_cursor_row
         if difference > 0 {output += csi_move(difference, 'B')} else if difference < 0 {output += csi_move(-difference, 'A')}
         output += '\r'
-        // clearOnShrink off: Pi leaves the shrunk rows untouched.
-        if clear_on_shrink {
-            int extra = previous.len() - lines.len()
-            int clear_start = lines.len() == 0 ? 0 : 1
-            if extra > 0 && clear_start > 0 {
-                output += csi_move(clear_start, 'B')
+        int extra = previous.len() - lines.len()
+        int clear_start = lines.len() == 0 ? 0 : 1
+        if extra > 0 && clear_start > 0 {
+            output += csi_move(clear_start, 'B')
+        }
+        for int index = 0; index < extra; index += 1 {
+            output += '\r\x1b[2K'
+            if index < extra - 1 {
+                output += csi_move(1, 'B')
             }
-            for int index = 0; index < extra; index += 1 {
-                output += '\r\x1b[2K'
-                if index < extra - 1 {
-                    output += csi_move(1, 'B')
-                }
-            }
-            int move_back = extra - 1 + clear_start
-            if move_back > 0 {
-                output += csi_move(move_back, 'A')
-            }
+        }
+        int move_back = extra - 1 + clear_start
+        if move_back > 0 {
+            output += csi_move(move_back, 'A')
         }
         return output + SYNC_END
     }
@@ -247,13 +301,28 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
     if difference > 0 {output += csi_move(difference, 'B')} else if difference < 0 {output += csi_move(-difference, 'A')}
     output += append_at_end ? '\r\n' : '\r'
     int render_end = last_changed < lines.len() ? last_changed : lines.len() - 1
-    for int index = first_changed; index <= render_end && index >= 0; index += 1 {
+    int index = first_changed
+    for index <= render_end && index >= 0 {
         if index > first_changed {
             output += '\r\n'
         }
-        output += '\x1b[2K' + lines[index]
+        string line = lines[index]
+        int image_reserved_rows = terminal_image.is_image_line(line) ? kitty_image_reserved_rows(lines, index, render_end) : 1
+        if image_reserved_rows > 1 {
+            output += '\x1b[2K'
+            for int row = 1; row < image_reserved_rows; row += 1 {
+                output += '\r\n\x1b[2K'
+            }
+            output += csi_move(image_reserved_rows - 1, 'A')
+            output += line
+            output += csi_move(image_reserved_rows - 1, 'B')
+            index += image_reserved_rows
+            continue
+        }
+        output += '\x1b[2K' + line
+        index += 1
     }
-    if previous.len() > lines.len() && clear_on_shrink {
+    if previous.len() > lines.len() {
         if render_end < lines.len() - 1 {
             output += csi_move(lines.len() - 1 - render_end, 'B')
         }
@@ -272,6 +341,112 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
         }
     }
     return output + SYNC_END
+}
+
+fn kitty_image_range_would_scroll([string] lines, int first_changed, int render_end, int viewport_top, int height): bool {
+    int index = first_changed
+    for index <= render_end && index >= 0 {
+        if !terminal_image.is_image_line(lines[index]) {
+            index += 1
+            continue
+        }
+        int rows = kitty_image_reserved_rows(lines, index, render_end)
+        if rows <= 1 {
+            index += 1
+            continue
+        }
+        int screen_row = index - viewport_top
+        if screen_row < 0 || screen_row + rows > height {return true}
+        index += rows
+    }
+    return false
+}
+
+fn is_termux_session(): bool {
+    return syscall.get_env('TERMUX_VERSION') != ''
+}
+
+fn renderer_t.delete_previous_kitty_images(&self): string {
+    return delete_kitty_image_ids(self.previous_kitty_image_ids)
+}
+
+fn renderer_t.delete_changed_kitty_images(&self, int first_changed, int last_changed): string {
+    [int] ids = []
+    int maximum = last_changed
+    if maximum >= self.previous_lines.len() {maximum = self.previous_lines.len() - 1}
+    for int index = first_changed; index <= maximum && index >= 0; index += 1 {
+        for id in terminal_image.extract_kitty_image_ids(self.previous_lines[index]) {
+            if !contains_id(ids, id) {ids.push(id)}
+        }
+    }
+    return delete_kitty_image_ids(ids)
+}
+
+fn collect_kitty_image_ids([string] lines): [int] {
+    [int] ids = []
+    for line in lines {
+        for id in terminal_image.extract_kitty_image_ids(line) {
+            if !contains_id(ids, id) {ids.push(id)}
+        }
+    }
+    return ids
+}
+
+fn contains_id([int] ids, int id): bool {
+    for existing in ids {
+        if existing == id {return true}
+    }
+    return false
+}
+
+fn delete_kitty_image_ids([int] ids): string {
+    string output = ''
+    for id in ids {
+        output += terminal_image.delete_kitty_image(id)
+    }
+    return output
+}
+
+fn expand_changed_range_for_kitty_images([string] previous, [string] lines, int first_changed, int last_changed): (int, int) {
+    int first = first_changed
+    int last = last_changed
+    var previous_range = expand_range_for_lines(previous, first_changed, last_changed)
+    if previous_range[0] < first {first = previous_range[0]}
+    if previous_range[1] > last {last = previous_range[1]}
+    var next_range = expand_range_for_lines(lines, first_changed, last_changed)
+    if next_range[0] < first {first = next_range[0]}
+    if next_range[1] > last {last = next_range[1]}
+    return (first, last)
+}
+
+fn expand_range_for_lines([string] lines, int first_changed, int last_changed): (int, int) {
+    int first = first_changed
+    int last = last_changed
+    for int index = 0; index < lines.len(); index += 1 {
+        if terminal_image.extract_kitty_image_ids(lines[index]).len() == 0 {continue}
+        int block_end = index + kitty_image_reserved_rows(lines, index, lines.len() - 1) - 1
+        if index >= first_changed || (index <= last_changed && block_end >= first_changed) {
+            if index < first {first = index}
+            if block_end > last {last = block_end}
+        }
+    }
+    return (first, last)
+}
+
+fn kitty_image_reserved_rows([string] lines, int index, int maximum): int {
+    int rows = terminal_image.extract_kitty_image_rows(lines[index])
+    if rows <= 1 {return 1}
+    int max_rows = rows
+    if maximum - index + 1 < max_rows {max_rows = maximum - index + 1}
+    if lines.len() - index < max_rows {max_rows = lines.len() - index}
+    int reserved = 1
+    for reserved < max_rows {
+        string line = lines[index + reserved]
+        int visible = text_utils.visible_width(line) catch error {1}
+        if terminal_image.is_image_line(line) || visible > 0 {break}
+        reserved += 1
+    }
+    return reserved
 }
 
 fn csi_move(int count, string direction): string {

@@ -5,9 +5,11 @@ import adou.src.compaction.token_estimate
 import adou.src.session.cache_stats
 import adou.src.tools.types as tool_types
 import adou.src.tui.markdown
+import adou.src.tui.keybindings
 import adou.src.tui.terminal_image
 import adou.src.tui.text_utils
 import adou.src.tui.theme
+import adou.src.tui.unicode
 import fmt
 import strings
 import syscall
@@ -351,8 +353,8 @@ pub fn chat_t.render(&self, int width): [string]! {
     }
     for tool in self.active_tools {
         string marker = tool.done ? '✓ ' : spinner_frame(self.spinner_index) + ' '
-        string color = tool.is_error ? theme.ERROR : tool.done ? theme.SUCCESS : theme.accent()
-        string line = color + marker + theme.fg(theme.text(), tool.name)
+        string color = tool.is_error ? theme.error_color() : tool.done ? theme.success() : theme.accent()
+        string line = color + marker + theme.fg(theme.tool_title(), theme.bold(tool.name))
         if tool.detail != '' {
             // A renderer line must never contain a physical newline.  Pi's
             // tool component owns multiline output as separate rows; the
@@ -361,19 +363,19 @@ pub fn chat_t.render(&self, int width): [string]! {
             string preview = tool.detail.replace('\r\n', ' ').replace('\r', ' ').replace('\n', ' ')
             int detail_width = width - text_utils.visible_width(line) - 1
             if detail_width < 1 {detail_width = 1}
-            line += ' ' + theme.fg(theme.muted_color(), text_utils.truncate_to_width(preview, detail_width, '...', false))
+            line += ' ' + theme.fg(theme.tool_output(), text_utils.truncate_to_width(preview, detail_width, '...', false))
         }
-        string background = tool.is_error ? theme.TOOL_ERROR_BG : tool.done ? theme.TOOL_SUCCESS_BG : theme.TOOL_PENDING_BG
+        string background = tool.is_error ? theme.tool_error_bg() : tool.done ? theme.tool_success_bg() : theme.tool_pending_bg()
         result.push(colored_row(background, line, width))
         if self.tool_output_expanded && tool.detail != '' {
             result.append(render_tool_body(tool.detail, width))
         }
     }
     if self.error_message != '' {
-        result.append(wrapped_lines(theme.fg(theme.ERROR, 'Error: ' + self.error_message), width))
+        result.append(wrapped_lines(theme.fg(theme.error_color(), 'Error: ' + self.error_message), width))
     }
     if self.cache_miss_notice != '' {
-        result.append(wrapped_lines(theme.fg(theme.WARNING, self.cache_miss_notice), width))
+        result.append(wrapped_lines(theme.fg(theme.warning(), self.cache_miss_notice), width))
     }
     if self.status != '' {
         // Pi's countdown timer: the retry status re-renders the remaining
@@ -437,9 +439,9 @@ pub fn chat_t.render_footer(&self, int width): [string]! {
             float percent_value = estimate.tokens as float * 100.0 / self.context_window as float
             context_display = format_percent(estimate.tokens, self.context_window) + '/' + format_tokens(self.context_window) + (self.auto_compaction ? ' (auto)' : '')
             if percent_value > 90.0 {
-                context_display = theme.fg(theme.ERROR, context_display)
+                context_display = theme.fg(theme.error_color(), context_display)
             } else if percent_value > 70.0 {
-                context_display = theme.fg(theme.WARNING, context_display)
+                context_display = theme.fg(theme.warning(), context_display)
             }
         }
         stats.push(context_display)
@@ -503,7 +505,61 @@ fn skill_invocation_name(string content): string {
     if end_quote < 13 {
         return ''
     }
+    if !content.slice(end_quote, content.len()).starts_with('" location="') || content.find('\n</skill>') < 0 {
+        return ''
+    }
     return content.slice(13, end_quote)
+}
+
+fn skill_block_content(string content): string {
+    int opening = content.find('>\n')
+    int closing = content.find('\n</skill>')
+    if opening < 0 || closing <= opening {return ''}
+    return content.slice(opening + 2, closing)
+}
+
+fn skill_block_user_message(string content): string {
+    int closing = content.find('\n</skill>')
+    if closing < 0 {return ''}
+    int after = closing + 9
+    if after + 2 > content.len() || content.slice(after, after + 2) != '\n\n' {return ''}
+    return content.slice(after + 2, content.len()).trim([' ', '\t', '\n', '\r'])
+}
+
+fn render_custom_markdown_box(string content, int width, string background): [string]! {
+    return render_markdown_rows(content, width, background, theme.custom_message_text(), 1)
+}
+
+fn render_summary_box(string kind, string summary, int tokens_before, bool expanded, int width): [string]! {
+    [string] result = []
+    string background = theme.custom_message_bg()
+    result.push('')
+    result.push(colored_row(background, '', width))
+    result.push(colored_row(background, ' ' + theme.fg(theme.custom_message_label(), theme.bold('[' + kind + ']')), width))
+    result.push(colored_row(background, '', width))
+    if expanded {
+        string header = kind == 'compaction' ? '**Compacted from ' + grouped_integer(tokens_before) + ' tokens**' : '**Branch Summary**'
+        result.append(render_custom_markdown_box(header + '\n\n' + summary, width, background))
+    } else {
+        string expand_key = keybindings.key_text(keybindings.current(), keybindings.APP_TOOLS_EXPAND)
+        string text = kind == 'compaction' ? 'Compacted from ' + grouped_integer(tokens_before) + ' tokens (' : 'Branch summary ('
+        string line = theme.fg(theme.custom_message_text(), text) + theme.fg(theme.dim_color(), expand_key) + theme.fg(theme.custom_message_text(), ' to expand)')
+        result.push(colored_row(background, ' ' + line, width))
+    }
+    result.push(colored_row(background, '', width))
+    return result
+}
+
+fn grouped_integer(int value): string {
+    string digits = fmt.sprintf('%d', value)
+    string result = ''
+    int first = digits.len() % 3
+    if first == 0 {first = 3}
+    for int index = 0; index < digits.len(); index += 1 {
+        if index > 0 && (index - first) % 3 == 0 {result += ','}
+        result += digits.slice(index, index + 1)
+    }
+    return result
 }
 
 fn render_message_lines(ai_types.message_t message, int width, bool tool_output_expanded, bool thinking_visible, int output_pad, bool show_images, int image_width_cells): [string]! {
@@ -515,40 +571,62 @@ fn render_message_lines(ai_types.message_t message, int width, bool tool_output_
         // the full skill block (which still goes to the model verbatim).
         string skill_name = skill_invocation_name(user.content)
         if skill_name != '' {
-            string skill_bg = theme.custom_color('customMessageBg')
+            string skill_bg = theme.custom_message_bg()
+            result.push('')
             result.push(colored_row(skill_bg, '', width) catch e {''})
-            string label = '\x1b[1m[skill]\x1b[22m'
-            result.push(colored_row(skill_bg, label + ' ' + theme.bold(skill_name), width) catch e {''})
+            string label = theme.fg(theme.custom_message_label(), theme.bold('[skill]'))
+            string expand_key = keybindings.key_text(keybindings.current(), keybindings.APP_TOOLS_EXPAND)
+            if tool_output_expanded {
+                result.push(colored_row(skill_bg, ' ' + label, width) catch e {''})
+                string expanded = '**' + skill_name + '**\n\n' + skill_block_content(user.content)
+                result.append(render_custom_markdown_box(expanded, width, skill_bg))
+            } else {
+                string line = label + ' ' + theme.fg(theme.custom_message_text(), skill_name) + theme.fg(theme.dim_color(), ' (' + expand_key + ' to expand)')
+                result.push(colored_row(skill_bg, ' ' + line, width) catch e {''})
+            }
             result.push(colored_row(skill_bg, '', width) catch e {''})
+            string trailing_user_message = skill_block_user_message(user.content)
+            if trailing_user_message != '' {
+                result.push('')
+                result.push(colored_row(theme.user_bg(), '', width))
+                result.append(render_markdown_rows(trailing_user_message, width, theme.user_bg(), theme.user_text(), output_pad))
+                result.push(colored_row(theme.user_bg(), '', width))
+            }
             return result
         }
         // Pi renders user messages through Markdown inside a Box with one
         // column of horizontal and one row of vertical padding. Keep the
         // complete row on the user background (including blank lines).
         result.push(colored_row(theme.user_bg(), '', width))
-        result.append(render_markdown_rows(user.content, width, theme.user_bg(), output_pad))
+        result.append(render_markdown_rows(user.content, width, theme.user_bg(), theme.user_text(), output_pad))
         result.push(colored_row(theme.user_bg(), '', width))
     } else if message is ref<ai_types.assistant_message_t> assistant {
         result.append(render_assistant_lines(assistant, width, false, thinking_visible, output_pad))
     } else if message is ref<ai_types.tool_result_message_t> tool {
-        string color = tool.is_error ? theme.ERROR : theme.SUCCESS
-        string prefix = color + (tool.is_error ? '✗ ' : '✓ ') + theme.fg(theme.text(), tool.tool_name)
+        string color = tool.is_error ? theme.error_color() : theme.success()
+        string prefix = color + (tool.is_error ? '✗ ' : '✓ ') + theme.fg(theme.tool_title(), theme.bold(tool.tool_name))
         string body = tool_message_text(*tool)
         string preview = body.replace('\r\n', '\n').replace('\r', '\n').replace('\n', ' ')
-        string line = prefix + (preview != '' ? ' ' + theme.fg(theme.muted_color(), preview) : '')
-        string background = tool.is_error ? theme.TOOL_ERROR_BG : theme.TOOL_SUCCESS_BG
+        string line = prefix + (preview != '' ? ' ' + theme.fg(theme.tool_output(), preview) : '')
+        string background = tool.is_error ? theme.tool_error_bg() : theme.tool_success_bg()
         result.push(colored_row(background, line, width))
         if body != '' && tool_output_expanded {
             result.append(render_tool_body(body, width))
         }
         result.append(render_tool_images(*tool, width, show_images, image_width_cells))
     } else if message is ref<ai_types.compaction_summary_message_t> summary {
-        result.append(wrapped_lines(theme.fg(theme.muted_color(), '[Context summary] ' + summary.summary), width))
+        result.append(render_summary_box('compaction', summary.summary, summary.tokens_before, tool_output_expanded, width))
     } else if message is ref<ai_types.branch_summary_message_t> summary {
-        result.append(wrapped_lines(theme.fg(theme.muted_color(), '[Branch summary] ' + summary.summary), width))
+        result.append(render_summary_box('branch', summary.summary, 0, tool_output_expanded, width))
     } else if message is ref<ai_types.custom_message_t> custom {
         if custom.display {
-            result.append(wrapped_lines(theme.fg(theme.muted_color(), custom.content), width))
+            string custom_bg = theme.custom_message_bg()
+            result.push('')
+            result.push(colored_row(custom_bg, '', width))
+            result.push(colored_row(custom_bg, ' ' + theme.fg(theme.custom_message_label(), theme.bold('[' + custom.custom_type + ']')), width))
+            result.push(colored_row(custom_bg, '', width))
+            result.append(render_custom_markdown_box(custom.content, width, custom_bg))
+            result.push(colored_row(custom_bg, '', width))
         }
     } else if message is ref<ai_types.bash_execution_message_t> bash {
         result.append(render_bash_lines(bash, width, tool_output_expanded))
@@ -595,7 +673,7 @@ const TOOL_BODY_MAX_PHYSICAL_LINES = 200
 
 fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, bool expanded): [string]! {
     [string] result = vec<string>.cap_of(8)
-    string color = bash.exclude_from_context ? theme.dim_color() : theme.accent()
+    string color = bash.exclude_from_context ? theme.dim_color() : theme.bash_mode()
     result.push('')
     result.push(theme.fg(color, text_utils.truncate_to_width('$ ' + bash.command, width, '...', false)))
     string body = bash.output.replace('\r\n', '\n').replace('\r', '\n')
@@ -609,7 +687,7 @@ fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, boo
                 skipped = truncated[1]
                 body_rows = []
                 for line in truncated[0].split('\n') {
-                    body_rows.append(wrapped_lines(theme.fg(theme.muted_color(), line), width))
+                    body_rows.append(wrapped_lines(theme.fg(theme.tool_output(), line), width))
                 }
                 bash.collapsed_render_rows = body_rows
                 bash.collapsed_render_width = width
@@ -631,7 +709,7 @@ fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, boo
             result.append(body_rows)
         }
     } else {
-        result.push(theme.fg(theme.muted_color(), '(no output)'))
+        result.push(theme.fg(theme.tool_output(), '(no output)'))
     }
     if bash.truncated && bash.full_output_path != '' {
         result.append(wrapped_lines(theme.fg(theme.dim_color(), 'Output truncated. Full output: ' + bash.full_output_path), width))
@@ -643,7 +721,7 @@ fn render_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, boo
         footer = fmt.sprintf('(exit %d)', bash.exit_code)
     }
     if footer != '' {
-        result.append(wrapped_lines(theme.fg(theme.ERROR, footer), width))
+        result.append(wrapped_lines(theme.fg(theme.error_color(), footer), width))
     }
     return result
 }
@@ -656,7 +734,7 @@ fn render_bounded_bash_body(string body, int width): [string]! {
     [string] tail_rows = vec<string>.cap_of(tail_limit)
     int total_rows = 0
     for line in lines {
-        var wrapped = wrapped_lines(theme.fg(theme.muted_color(), line), width)
+        var wrapped = wrapped_lines(theme.fg(theme.tool_output(), line), width)
         for row in wrapped {
             if total_rows < head_limit {
                 head_rows.push(row)
@@ -674,7 +752,7 @@ fn render_bounded_bash_body(string body, int width): [string]! {
 
 fn render_active_bash_lines(ref<ai_types.bash_execution_message_t> bash, int width, int spinner_index): [string]! {
     [string] result = vec<string>.cap_of(24)
-    string color = bash.exclude_from_context ? theme.dim_color() : theme.SUCCESS
+    string color = bash.exclude_from_context ? theme.dim_color() : theme.bash_mode()
     result.push('')
     result.push(theme.fg(color, text_utils.truncate_to_width('$ ' + bash.command, width, '...', false)))
     string normalized = bash.output.replace('\r\n', '\n').replace('\r', '\n')
@@ -685,7 +763,7 @@ fn render_active_bash_lines(ref<ai_types.bash_execution_message_t> bash, int wid
             result.push(theme.fg(theme.dim_color(), fmt.sprintf('... (%d earlier lines)', skipped)))
         }
         for line in truncated[0].split('\n') {
-            result.append(wrapped_lines(theme.fg(theme.muted_color(), line), width))
+            result.append(wrapped_lines(theme.fg(theme.tool_output(), line), width))
         }
     }
     result.append(wrapped_lines(theme.fg(color, spinner_frame(spinner_index) + ' Running... (escape to cancel)'), width))
@@ -722,7 +800,7 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
         if block is ref<ai_types.text_content_t> text {
             string value = text.text.trim([' ', '\t', '\n', '\r'])
             if value != '' {
-                result.append(render_markdown_rows(value, width, '', output_pad))
+                result.append(render_markdown_rows(value, width, '', theme.text(), output_pad))
                 had_content = true
             }
             index += 1
@@ -744,7 +822,7 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
             }
             if thinking_blocks.len() > 0 {
                 string value = thinking_visible ? strings.join(thinking_blocks, '\n\n') : 'Thinking...'
-                result.append(render_padded_text(theme.italic(theme.fg(theme.THINKING, value)), width, output_pad))
+                result.append(render_padded_text(theme.italic(theme.fg(theme.thinking_text(), value)), width, output_pad))
                 had_content = true
                 bool has_visible_after = false
                 for int after = index; after < assistant.content.len(); after += 1 {
@@ -778,20 +856,20 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
     if !streaming {
         if assistant.stop_reason == ai_types.STOP_LENGTH {
             result.push('')
-            result.append(render_padded_text(theme.fg(theme.ERROR, 'Error: Model stopped because it reached the maximum output token limit. The response may be incomplete.'), width, output_pad))
+            result.append(render_padded_text(theme.fg(theme.error_color(), 'Error: Model stopped because it reached the maximum output token limit. The response may be incomplete.'), width, output_pad))
         } else if !had_tool_calls && assistant.stop_reason == ai_types.STOP_ABORTED {
             string message = assistant.error_message
             if message == '' || message == 'Request was aborted' {
                 message = 'Operation aborted'
             }
             result.push('')
-            result.append(render_padded_text(theme.fg(theme.ERROR, message), width, output_pad))
+            result.append(render_padded_text(theme.fg(theme.error_color(), message), width, output_pad))
         } else if !had_tool_calls && assistant.stop_reason == ai_types.STOP_ERROR {
             string message = assistant.error_message == '' ? 'Unknown error' : 'Error: ' + assistant.error_message
             result.push('')
-            result.append(render_padded_text(theme.fg(theme.ERROR, message), width, output_pad))
+            result.append(render_padded_text(theme.fg(theme.error_color(), message), width, output_pad))
         } else if !had_content && assistant.error_message != '' {
-            result.append(render_padded_text(theme.fg(theme.ERROR, assistant.error_message), width, output_pad))
+            result.append(render_padded_text(theme.fg(theme.error_color(), assistant.error_message), width, output_pad))
         }
     }
     if streaming && had_content {
@@ -800,16 +878,15 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
     return result
 }
 
-fn render_markdown_rows(string value, int width, string background, int output_pad): [string]! {
+fn render_markdown_rows(string value, int width, string background, string foreground, int output_pad): [string]! {
     int content_width = width - 2 * output_pad
     if content_width < 1 {
         content_width = 1
     }
-    var markdown_lines = markdown.render(value, content_width)
+    var markdown_lines = markdown.render_with_default(value, content_width, foreground)
     [string] result = vec<string>.cap_of(markdown_lines.len())
     for line in markdown_lines {
-        string styled = theme.fg(theme.text(), line)
-        string padded = pad_terminal_line(pad_sides(styled, output_pad), width)
+        string padded = pad_terminal_line(pad_sides(line, output_pad), width)
         result.push(background == '' ? padded : theme.background_line(background, padded, width))
     }
     return result
@@ -909,22 +986,25 @@ fn tool_result_text(tool_types.tool_result_t result): string {
     return text
 }
 
-// Pi's tool result diff rendering: unified-diff bodies get per-line
-// coloring (+ added, - removed, @@ hunk headers, context muted).  Line-level
-// only; Pi additionally word-diffs single-line changes.
+// Pi's tool result diff rendering: context is muted, additions/removals are
+// colored, and a single removed/added pair highlights changed words using
+// inverse video.
 fn render_tool_body(string body, int width): [string]! {
     [string] lines = body.replace('\r\n', '\n').replace('\r', '\n').split('\n')
     bool is_diff = looks_like_diff(lines)
+    [string] display_lines = is_diff ? render_diff_lines(lines) : []
+    if !is_diff {
+        for line in lines {
+            display_lines.push(theme.fg(theme.tool_output(), line))
+        }
+    }
     int head_limit = TOOL_BODY_MAX_PHYSICAL_LINES / 2
     int tail_limit = TOOL_BODY_MAX_PHYSICAL_LINES - head_limit
     [string] head_rows = vec<string>.cap_of(head_limit)
     [string] tail_rows = vec<string>.cap_of(tail_limit)
     int total_rows = 0
-    for line in lines {
+    for line in display_lines {
         string styled_line = '  ' + line
-        if is_diff {
-            styled_line = '  ' + diff_line_color(line)
-        }
         var wrapped = wrapped_lines(styled_line, width)
         for row in wrapped {
             if total_rows < head_limit {
@@ -964,20 +1044,225 @@ fn looks_like_diff([string] lines): bool {
     return false
 }
 
+type parsed_diff_line_t = struct {
+    bool valid
+    string prefix
+    string line_number
+    string content
+}
+
+type diff_token_t = struct {
+    string value
+    int kind
+}
+
+pub fn render_diff_lines([string] lines): [string] {
+    [string] result = []
+    int index = 0
+    for index < lines.len() {
+        var parsed = parse_diff_line(lines[index])
+        if !parsed.valid {
+            result.push(diff_line_color(lines[index]))
+            index += 1
+            continue
+        }
+        if parsed.prefix == '-' {
+            [parsed_diff_line_t] removed = []
+            for index < lines.len() {
+                var candidate = parse_diff_line(lines[index])
+                if !candidate.valid || candidate.prefix != '-' {break}
+                removed.push(candidate)
+                index += 1
+            }
+            [parsed_diff_line_t] added = []
+            for index < lines.len() {
+                var candidate = parse_diff_line(lines[index])
+                if !candidate.valid || candidate.prefix != '+' {break}
+                added.push(candidate)
+                index += 1
+            }
+            if removed.len() == 1 && added.len() == 1 {
+                var (removed_text, added_text) = render_intra_line_diff(replace_diff_tabs(removed[0].content), replace_diff_tabs(added[0].content))
+                result.push(theme.fg(theme.tool_diff_removed(), '-' + removed[0].line_number + ' ' + removed_text))
+                result.push(theme.fg(theme.tool_diff_added(), '+' + added[0].line_number + ' ' + added_text))
+            } else {
+                for line in removed {
+                    result.push(theme.fg(theme.tool_diff_removed(), rebuild_diff_line(line)))
+                }
+                for line in added {
+                    result.push(theme.fg(theme.tool_diff_added(), rebuild_diff_line(line)))
+                }
+            }
+            continue
+        }
+        string rebuilt = rebuild_diff_line(parsed)
+        if parsed.prefix == '+' {
+            result.push(theme.fg(theme.tool_diff_added(), rebuilt))
+        } else {
+            result.push(theme.fg(theme.tool_diff_context(), rebuilt))
+        }
+        index += 1
+    }
+    return result
+}
+
+fn parse_diff_line(string line): parsed_diff_line_t {
+    var invalid = parsed_diff_line_t {}
+    if line.len() < 2 {return invalid}
+    u8 first = line[0]
+    if first != '+'.char() && first != '-'.char() && first != ' '.char() && first != '\t'.char() {return invalid}
+    int cursor = 1
+    for cursor < line.len() {
+        if line[cursor] != ' '.char() && line[cursor] != '\t'.char() {break}
+        cursor += 1
+    }
+    int digits_start = cursor
+    for cursor < line.len() {
+        if line[cursor] < '0'.char() || line[cursor] > '9'.char() {break}
+        cursor += 1
+    }
+    int separator = cursor
+    if digits_start == cursor {
+        // /^([+-\s])(\s*\d*)\s(.*)$/ backtracks one whitespace when no
+        // line number is present (the compact "     ..." gap row).
+        if cursor <= 1 {return invalid}
+        separator = cursor - 1
+    } else if cursor >= line.len() || (line[cursor] != ' '.char() && line[cursor] != '\t'.char()) {
+        return invalid
+    }
+    if separator >= line.len() {return invalid}
+    return parsed_diff_line_t {valid: true, prefix: line.slice(0, 1), line_number: line.slice(1, separator), content: line.slice(separator + 1, line.len()),}
+}
+
+fn rebuild_diff_line(parsed_diff_line_t line): string {
+    return line.prefix + line.line_number + ' ' + replace_diff_tabs(line.content)
+}
+
+fn replace_diff_tabs(string value): string {return value.replace('\t', '   ')}
+
+fn render_intra_line_diff(string old_content, string new_content): (string, string) {
+    var old_tokens = diff_tokens(old_content)
+    var new_tokens = diff_tokens(new_content)
+    int columns = new_tokens.len() + 1
+    [int] lcs = vec<int>.cap_of((old_tokens.len() + 1) * columns)
+    int cell_count = (old_tokens.len() + 1) * columns
+    for int index = 0; index < cell_count; index += 1 {
+        lcs.push(0)
+    }
+    for int old_index = old_tokens.len() - 1; old_index >= 0; old_index -= 1 {
+        for int new_index = new_tokens.len() - 1; new_index >= 0; new_index -= 1 {
+            int cell = old_index * columns + new_index
+            if diff_tokens_equal(old_tokens[old_index], new_tokens[new_index]) {
+                lcs[cell] = 1 + lcs[(old_index + 1) * columns + new_index + 1]
+            } else {
+                int skip_old = lcs[(old_index + 1) * columns + new_index]
+                int skip_new = lcs[old_index * columns + new_index + 1]
+                lcs[cell] = skip_old > skip_new ? skip_old : skip_new
+            }
+        }
+    }
+    [bool] old_changed = []
+    [bool] new_changed = []
+    [string] old_render_values = []
+    [string] new_render_values = []
+    for token in old_tokens {
+        old_changed.push(true)
+        old_render_values.push(token.value)
+    }
+    for token in new_tokens {
+        new_changed.push(true)
+        new_render_values.push(token.value)
+    }
+    int old_index = 0
+    int new_index = 0
+    for old_index < old_tokens.len() {
+        if new_index >= new_tokens.len() {break}
+        if diff_tokens_equal(old_tokens[old_index], new_tokens[new_index]) {
+            old_changed[old_index] = false
+            new_changed[new_index] = false
+            // diffWords ignores whitespace-only changes and renders the new
+            // whitespace on both sides of a common component.
+            if old_tokens[old_index].kind == 1 {
+                old_render_values[old_index] = new_tokens[new_index].value
+            }
+            old_index += 1
+            new_index += 1
+        } else if lcs[(old_index + 1) * columns + new_index] >= lcs[old_index * columns + new_index + 1] {
+            old_index += 1
+        } else {
+            new_index += 1
+        }
+    }
+    return (
+        render_diff_token_side(old_tokens, old_changed, old_render_values),
+        render_diff_token_side(new_tokens, new_changed, new_render_values),
+    )
+}
+
+// diffWords returns a changed word together with its trailing whitespace as
+// one component. Emit one inverse span for the entire component so the ANSI
+// stream as well as the visible cells matches Pi.
+fn render_diff_token_side([diff_token_t] tokens, [bool] changed, [string] values): string {
+    string result = ''
+    int index = 0
+    for index < tokens.len() {
+        if !diff_token_highlighted(tokens, changed, index) {
+            result += values[index]
+            index += 1
+            continue
+        }
+        string run = ''
+        for index < tokens.len() && diff_token_highlighted(tokens, changed, index) {
+            run += values[index]
+            index += 1
+        }
+        result += theme.inverse(run)
+    }
+    return result
+}
+
+fn diff_token_highlighted([diff_token_t] tokens, [bool] changed, int index): bool {
+    if !changed[index] {return false}
+    if tokens[index].kind != 1 {return true}
+    return index > 0 && changed[index - 1] && tokens[index - 1].kind != 1
+}
+
+fn diff_tokens_equal(diff_token_t left, diff_token_t right): bool {
+    return left.value == right.value || (left.kind == 1 && right.kind == 1)
+}
+
+fn diff_tokens(string value): [diff_token_t] {
+    [diff_token_t] result = []
+    var graphemes = unicode.graphemes(value) catch error {[]}
+    string current = ''
+    int current_kind = -1
+    for grapheme in graphemes {
+        string part = value.slice(grapheme.start, grapheme.end)
+        int kind = diff_token_kind(part)
+        if current != '' && kind != current_kind {
+            result.push(diff_token_t {value: current, kind: current_kind,})
+            current = ''
+        }
+        current += part
+        current_kind = kind
+    }
+    if current != '' {result.push(diff_token_t {value: current, kind: current_kind,})}
+    return result
+}
+
+fn diff_token_kind(string value): int {
+    if value == ' ' || value == '\t' {return 1}
+    u8 first = value[0]
+    if first >= 128 || first >= 'a'.char() && first <= 'z'.char() || first >= 'A'.char() && first <= 'Z'.char() || first >= '0'.char() && first <= '9'.char() || first == '_'.char() {return 2}
+    return 3
+}
+
 fn diff_line_color(string line): string {
-    if line.starts_with('@@') {
-        return theme.fg(theme.WARNING, line)
-    }
-    if line.starts_with('+++') || line.starts_with('---') {
-        return theme.fg(theme.muted_color(), line)
-    }
-    if line.starts_with('+') {
-        return theme.fg(theme.SUCCESS, line)
-    }
-    if line.starts_with('-') {
-        return theme.fg(theme.ERROR, line)
-    }
-    return theme.fg(theme.muted_color(), line)
+    if line.starts_with('@@') {return theme.fg(theme.warning(), line)}
+    if line.starts_with('+++') || line.starts_with('---') {return theme.fg(theme.tool_diff_context(), line)}
+    if line.starts_with('+') {return theme.fg(theme.tool_diff_added(), line)}
+    if line.starts_with('-') {return theme.fg(theme.tool_diff_removed(), line)}
+    return theme.fg(theme.tool_diff_context(), line)
 }
 
 fn tool_message_text(ai_types.tool_result_message_t tool): string {

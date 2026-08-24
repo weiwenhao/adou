@@ -1,6 +1,7 @@
 import adou.src.tui.components
 import adou.src.tui.markdown
 import adou.src.tui.text_utils
+import adou.src.tui.theme
 import fmt
 import strings
 
@@ -35,8 +36,9 @@ test 'markdown covers chat heading list quote code emphasis and links' {
     var lines = markdown.render(source, 40)
     assert(lines.len() >= 6)
     assert(lines[0].contains('\x1b[1m') && lines[1].contains('- '))
-    assert(lines[2].contains('│') && lines[3].contains('\x1b[7m'))
-    assert(lines[3].contains('\x1b]8;;https://example.com'))
+    assert(lines[2].contains('│') && lines[2].contains('\x1b[3m'))
+    assert(lines[3].contains(theme.code()))
+    assert(lines[3].contains(' (https://example.com)') || lines[3].contains('\x1b]8;;https://example.com'))
     for line in lines {
         assert(text_utils.visible_width(line) <= 40)
     }
@@ -53,7 +55,7 @@ test 'markdown handles nested markers, strike, rules, and fenced borders' {
     for line in lines {
         has_strike = has_strike || line.contains('\x1b[9m')
         has_rule = has_rule || line.contains('───')
-        has_fence = has_fence || line.contains('~~~')
+        has_fence = has_fence || line.contains('```nature')
         assert(text_utils.visible_width(line) <= 32)
     }
     assert(has_strike && has_rule && has_fence)
@@ -62,15 +64,17 @@ test 'markdown handles nested markers, strike, rules, and fenced borders' {
 test 'markdown tables render aligned columns with a bold header' {
     string source = '| Name | Value |\n|------|-------|\n| alpha | 1 |\n| beta gamma | 22 |'
     var lines = markdown.render(source, 40)
-    assert(lines.len() >= 3)
-    assert(lines[0].contains('│') && lines[0].contains('\x1b[1m'))
-    assert(lines[1].contains('├') && lines[1].contains('┼'))
+    assert(lines.len() >= 7)
+    assert(lines[0].contains('┌') && lines[0].contains('┬'))
+    assert(lines[1].contains('│') && lines[1].contains('\x1b[1m'))
+    assert(lines[2].contains('├') && lines[2].contains('┼'))
     for line in lines {
         assert(text_utils.visible_width(line) <= 40)
     }
     // Body cells align under the header columns.
-    assert(lines[2].contains('alpha') && lines[2].contains('1'))
-    assert(lines[3].contains('beta gamma'))
+    assert(lines[3].contains('alpha') && lines[3].contains('1'))
+    assert(lines[5].contains('beta gamma'))
+    assert(lines[6].contains('└') && lines[6].contains('┴'))
 }
 
 test 'nested blockquotes render one gutter per depth' {

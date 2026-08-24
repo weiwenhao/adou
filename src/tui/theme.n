@@ -2,8 +2,10 @@ import adou.src.tui.text_utils
 import adou.src.json_util
 import adou.src.config.paths
 import adou.src.tools.path_utils
+import adou.src.tui.terminal_image
 import fs
 import fmt
+import os
 import path
 import syscall
 
@@ -12,8 +14,11 @@ import syscall
 // background stays legible.  theme-selector previews by switching variants.
 string theme_variant = ''
 string loaded_theme_path = ''
+string loaded_theme_name = ''
 {string:string} custom_colors = {}
 {string:any} theme_vars = {}
+{string:string} registered_theme_paths = {}
+bool custom_theme_active = false
 
 fn hex_byte(string value): int {
     int result = 0
@@ -36,14 +41,15 @@ string cached_color_mode = ''
 
 pub fn reset_color_mode_cache() {
     cached_color_mode = ''
+    terminal_image.reset_capabilities_cache()
 }
 
 fn color_mode(): string {
     if cached_color_mode != '' {
         return cached_color_mode
     }
-    string colorterm = syscall.get_env('COLORTERM')
-    if colorterm == 'truecolor' || colorterm == '24bit' {
+    var capabilities = terminal_image.detect_capabilities()
+    if capabilities[1] {
         cached_color_mode = 'truecolor'
         return cached_color_mode
     }
@@ -51,30 +57,82 @@ fn color_mode(): string {
     return cached_color_mode
 }
 
-fn cube_channel(int value): int {
-    // 6x6x6 cube levels: round(v / 255 * 5).
-    int result = (value * 5 + 127) / 255
-    if result > 5 {
-        result = 5
+fn closest_cube_index(int value): int {
+    [int] levels = [0, 95, 135, 175, 215, 255]
+    int best = 0
+    int best_distance = 1000
+    for index, level in levels {
+        int distance = value > level ? value - level : level - value
+        if distance < best_distance {
+            best = index
+            best_distance = distance
+        }
     }
-    return result
+    return best
 }
 
 fn rgb_to_256(int r, int g, int b): int {
-    if r == g && g == b {
-        if r < 8 {
-            return 16
+    // Pi compares the nearest xterm color-cube entry with the grayscale
+    // ramp, using the same luminance-weighted squared distance. Grayscale is
+    // considered only for nearly neutral RGB colors.
+    int r_index = closest_cube_index(r)
+    int g_index = closest_cube_index(g)
+    int b_index = closest_cube_index(b)
+    [int] levels = [0, 95, 135, 175, 215, 255]
+    int cube_r = levels[r_index]
+    int cube_g = levels[g_index]
+    int cube_b = levels[b_index]
+    int cube_distance = color_distance(r, g, b, cube_r, cube_g, cube_b)
+    int gray = (299 * r + 587 * g + 114 * b + 500) / 1000
+    int gray_index = 0
+    int gray_absolute_distance = 1000
+    for int index = 0; index < 24; index += 1 {
+        int value = 8 + index * 10
+        int distance = gray > value ? gray - value : value - gray
+        if distance < gray_absolute_distance {
+            gray_index = index
+            gray_absolute_distance = distance
         }
-        if r > 248 {
-            return 231
-        }
-        return 232 + (r - 8) / 10
     }
-    return 16 + 36 * cube_channel(r) + 6 * cube_channel(g) + cube_channel(b)
+    int gray_value = 8 + gray_index * 10
+    int gray_distance = color_distance(r, g, b, gray_value, gray_value, gray_value)
+    int maximum = r > g ? (r > b ? r : b) : (g > b ? g : b)
+    int minimum = r < g ? (r < b ? r : b) : (g < b ? g : b)
+    if maximum - minimum < 10 && gray_distance < cube_distance {
+        return 232 + gray_index
+    }
+    return 16 + 36 * r_index + 6 * g_index + b_index
+}
+
+fn color_distance(int r1, int g1, int b1, int r2, int g2, int b2): int {
+    int dr = r1 - r2
+    int dg = g1 - g2
+    int db = b1 - b2
+    return dr * dr * 299 + dg * dg * 587 + db * db * 114
 }
 
 pub fn parse_color(string value, bool background): string {
-    string raw = resolve_theme_value(value, 0)
+    return parse_theme_color(value, background, 0)
+}
+
+fn parse_theme_color(any value, bool background, int depth): string {
+    if depth > theme_vars.len() + 1 {return ''}
+    if value is f64 {
+        int index = value as f64 as int
+        if index < 0 || index > 255 {return ''}
+        return (background ? '\x1b[48;5;' : '\x1b[38;5;') + fmt.sprintf('%dm', index)
+    }
+    if value is int {
+        int index = value as int
+        if index < 0 || index > 255 {return ''}
+        return (background ? '\x1b[48;5;' : '\x1b[38;5;') + fmt.sprintf('%dm', index)
+    }
+    if !(value is string) {return ''}
+    string raw = value as string
+    if theme_vars.contains(raw) {
+        return parse_theme_color(theme_vars[raw], background, depth + 1)
+    }
+    if raw == '' {return background ? '\x1b[49m' : '\x1b[39m'}
     if raw.starts_with('#') && raw.len() == 7 {
         int r = hex_byte(raw.slice(1, 3))
         int g = hex_byte(raw.slice(3, 5))
@@ -90,6 +148,100 @@ pub fn parse_color(string value, bool background): string {
     return raw
 }
 
+fn required_theme_colors(): [string] {
+    return [
+        'accent', 'border', 'borderAccent', 'borderMuted', 'success', 'error', 'warning', 'muted', 'dim', 'text', 'thinkingText',
+        'selectedBg', 'userMessageBg', 'userMessageText', 'customMessageBg', 'customMessageText', 'customMessageLabel',
+        'toolPendingBg', 'toolSuccessBg', 'toolErrorBg', 'toolTitle', 'toolOutput',
+        'mdHeading', 'mdLink', 'mdLinkUrl', 'mdCode', 'mdCodeBlock', 'mdCodeBlockBorder', 'mdQuote', 'mdQuoteBorder', 'mdHr', 'mdListBullet',
+        'toolDiffAdded', 'toolDiffRemoved', 'toolDiffContext',
+        'syntaxComment', 'syntaxKeyword', 'syntaxFunction', 'syntaxVariable', 'syntaxString', 'syntaxNumber', 'syntaxType', 'syntaxOperator', 'syntaxPunctuation',
+        'thinkingOff', 'thinkingMinimal', 'thinkingLow', 'thinkingMedium', 'thinkingHigh', 'thinkingXhigh', 'bashMode',
+    ]
+}
+
+fn valid_theme_object({string:any} root): bool {
+    if !root.contains('name') || !(root['name'] is string) {return false}
+    string theme_name = root['name'] as string
+    if theme_name == '' || theme_name.contains('/') {return false}
+    for name, _ in root {
+        if name != '$schema' && name != 'name' && name != 'vars' && name != 'colors' && name != 'export' {return false}
+    }
+    if root.contains('$schema') && !(root['$schema'] is string) {return false}
+    if !root.contains('colors') || !(root['colors'] is {string:any}) {return false}
+    if root.contains('vars') && !(root['vars'] is {string:any}) {return false}
+    var vars = json_util.opt_obj(root, 'vars')
+    for _, value in vars {
+        [string] visited = []
+        if !valid_color_value(value, vars, visited) {return false}
+    }
+    var colors = root['colors'] as {string:any}
+    var required = required_theme_colors()
+    for name, _ in colors {
+        if name != 'thinkingMax' && !contains_string(required, name) {return false}
+    }
+    for name in required {
+        if !colors.contains(name) {return false}
+        [string] visited = []
+        if !valid_color_value(colors[name], vars, visited) {return false}
+    }
+    if colors.contains('thinkingMax') {
+        [string] visited = []
+        if !valid_color_value(colors['thinkingMax'], vars, visited) {return false}
+    }
+    if root.contains('export') {
+        if !(root['export'] is {string:any}) {return false}
+        var export_colors = root['export'] as {string:any}
+        for name, _ in export_colors {
+            if name != 'pageBg' && name != 'cardBg' && name != 'infoBg' {return false}
+        }
+        for name in ['pageBg', 'cardBg', 'infoBg'] {
+            if export_colors.contains(name) {
+                [string] visited = []
+                if !valid_color_value(export_colors[name], vars, visited) {return false}
+            }
+        }
+    }
+    return true
+}
+
+fn valid_color_value(any value, {string:any} vars, [string] visited): bool {
+    if value is int {
+        int index = value as int
+        return index >= 0 && index <= 255
+    }
+    if value is f64 {
+        var number = value as f64
+        int index = number as int
+        return number == (index as f64) && index >= 0 && index <= 255
+    }
+    if !(value is string) {return false}
+    string raw = value as string
+    if raw == '' {return true}
+    if raw.starts_with('#') {
+        if raw.len() != 7 {return false}
+        for int index = 1; index < raw.len(); index += 1 {
+            if !is_hex_digit(raw[index]) {return false}
+        }
+        return true
+    }
+    if contains_string(visited, raw) || !vars.contains(raw) {return false}
+    var next_visited = visited
+    next_visited.push(raw)
+    return valid_color_value(vars[raw], vars, next_visited)
+}
+
+fn is_hex_digit(u8 value): bool {
+    return value >= '0'.char() && value <= '9'.char() || value >= 'a'.char() && value <= 'f'.char() || value >= 'A'.char() && value <= 'F'.char()
+}
+
+fn contains_string([string] values, string expected): bool {
+    for value in values {
+        if value == expected {return true}
+    }
+    return false
+}
+
 pub fn load_json(string file_path): bool {
     var file = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return false}
     string content = file.content() catch error {
@@ -100,36 +252,54 @@ pub fn load_json(string file_path): bool {
     var parsed = json_util.parse(content) catch error {return false}
     if !json_util.is_obj(parsed) {return false}
     var root = parsed as {string:any}
+    if !valid_theme_object(root) {return false}
+    var raw_vars = json_util.opt_obj(root, 'vars')
     custom_colors = {}
     theme_vars = {}
-    var raw_vars = json_util.opt_obj(root, 'vars')
     for name, value in raw_vars {
-        if value is string {theme_vars[name] = value as string}
+        if value is string || value is f64 || value is int {theme_vars[name] = value}
     }
-    any colors = root
-    if root.contains('colors') && json_util.is_obj(root['colors']) {colors = root['colors']}
-    if !(colors is {string:any}) {return false}
-    var object = colors as {string:any}
-    // B4: minimal schema validation — a theme must style at least one
-    // recognized color key (or define vars it derives colors from).
-    bool recognized = theme_vars.len() > 0
+    var object = root['colors'] as {string:any}
     for name, value in object {
-        if value is string && is_known_color_name(name) {
-            recognized = true
-            break
+        if value is string || value is f64 || value is int {
+            string parsed_color = parse_theme_color(value, is_background_name(name), 0)
+            if parsed_color != '' {set_custom_color(name, parsed_color)}
         }
     }
-    if !recognized {return false}
-    for name, value in object {
-        if value is string {set_custom_color(name, parse_color(value as string, is_background_name(name)))}
+    if !custom_colors.contains('thinking_max') {
+        custom_colors['thinking_max'] = custom_colors['thinking_xhigh']
     }
     loaded_theme_path = path_utils.expand_path(file_path)
+    loaded_theme_name = root['name'] as string
+    custom_theme_active = true
     return true
+}
+
+// Pi treats CLI/settings theme paths as registered resources. Registration
+// makes a theme selectable by its JSON name but does not itself activate it.
+pub fn register_path(string entry, string cwd): bool {
+    string resolved = path_utils.resolve_to_cwd(entry, cwd)
+    [string] entries = os.listdir(resolved) catch error {
+        string name = theme_name_from_file(resolved)
+        if name == '' {return false}
+        registered_theme_paths[name] = resolved
+        return true
+    }
+    sort_names(entries)
+    bool registered = false
+    for file_name in entries {
+        if !file_name.ends_with('.json') {continue}
+        string file_path = path.join(resolved, file_name)
+        string name = theme_name_from_file(file_path)
+        if name == '' {continue}
+        registered_theme_paths[name] = file_path
+        registered = true
+    }
+    return registered
 }
 
 // B4: named-theme registry — custom themes resolve from the project's
 // .pi/themes/<name>.json then the agent dir's themes/, nearest first.
-string loaded_theme_name = ''
 
 pub fn loaded_name(): string {
     return loaded_theme_name
@@ -148,17 +318,91 @@ pub fn ensure_named_loaded(string cwd, string name): bool {
     if name == loaded_theme_name && loaded_theme_path != '' {
         return true
     }
+    if registered_theme_paths.contains(name) && load_json(registered_theme_paths[name]) {
+        return true
+    }
     [string] candidates = [
         path_utils.resolve_to_cwd('.pi/themes/' + name + '.json', cwd),
         path.join(paths.agent_dir(), 'themes', name + '.json'),
     ]
     for candidate in candidates {
-        if load_json(candidate) {
-            loaded_theme_name = name
+        if theme_name_from_file(candidate) == name && load_json(candidate) {
             return true
         }
     }
+    // Pi identifies a theme by its JSON `name`, not only by its filename.
+    // Registered project resources can therefore be selected even when the
+    // resource file uses a different basename.
+    [string] directories = [
+        path_utils.resolve_to_cwd('.pi/themes', cwd),
+        path.join(paths.agent_dir(), 'themes'),
+    ]
+    for directory in directories {
+        [string] files = os.listdir(directory) catch error {continue}
+        for file_name in files {
+            if !file_name.ends_with('.json') {continue}
+            string candidate = path.join(directory, file_name)
+            if theme_name_from_file(candidate) == name && load_json(candidate) {return true}
+        }
+    }
     return false
+}
+
+// Pi's theme selectors are backed by getAvailableThemes(): built-ins plus
+// valid custom/registered themes, de-duplicated and sorted by theme name.
+pub fn available_names(string cwd): [string] {
+    [string] result = ['dark', 'light']
+    for name, _ in registered_theme_paths {
+        if name != '' && !contains_name(result, name) {result.push(name)}
+    }
+    [string] directories = [
+        path_utils.resolve_to_cwd('.pi/themes', cwd),
+        path.join(paths.agent_dir(), 'themes'),
+    ]
+    for directory in directories {
+        [string] files = os.listdir(directory) catch error {continue}
+        for file_name in files {
+            if !file_name.ends_with('.json') {continue}
+            string name = theme_name_from_file(path.join(directory, file_name))
+            if name == '' || contains_name(result, name) {continue}
+            result.push(name)
+        }
+    }
+    sort_names(result)
+    return result
+}
+
+fn theme_name_from_file(string file_path): string {
+    var file = fs.open(file_path, syscall.O_RDONLY, 0) catch error {return ''}
+    string content = file.content() catch error {
+        file.close()
+        return ''
+    }
+    file.close()
+    var parsed = json_util.parse(content) catch error {return ''}
+    if !json_util.is_obj(parsed) {return ''}
+    var root = parsed as {string:any}
+    if !valid_theme_object(root) {return ''}
+    return root['name'] as string
+}
+
+fn contains_name([string] values, string candidate): bool {
+    for value in values {
+        if value == candidate {return true}
+    }
+    return false
+}
+
+fn sort_names([string] values) {
+    for int index = 0; index < values.len(); index += 1 {
+        for int next = index + 1; next < values.len(); next += 1 {
+            if values[next] < values[index] {
+                string swap = values[index]
+                values[index] = values[next]
+                values[next] = swap
+            }
+        }
+    }
 }
 
 pub fn reload(): bool {return loaded_theme_path != '' && load_json(loaded_theme_path)}
@@ -167,22 +411,52 @@ pub fn loaded_path(): string {return loaded_theme_path}
 fn set_custom_color(string name, string value) {
     string key = match name {
         'userMessageBg' -> 'user_bg'
+        'userMessageText' -> 'user_text'
+        'customMessageBg' -> 'custom_bg'
+        'customMessageText' -> 'custom_text'
+        'customMessageLabel' -> 'custom_label'
         'selectedBg' -> 'selected_bg'
         'toolPendingBg' -> 'tool_pending_bg'
         'toolSuccessBg' -> 'tool_success_bg'
         'toolErrorBg' -> 'tool_error_bg'
+        'toolTitle' -> 'tool_title'
+        'toolOutput' -> 'tool_output'
         'borderAccent' -> 'border_accent'
-        'codeBlock' -> 'code_block'
-        'codeBlockBorder' -> 'code_block_border'
+        'borderMuted' -> 'border_muted'
+        'thinkingText' -> 'thinking_text'
+        'mdHeading' -> 'md_heading'
+        'mdLink' -> 'md_link'
+        'mdLinkUrl' -> 'md_link_url'
+        'mdCode' -> 'md_code'
+        'mdCodeBlock' -> 'md_code_block'
+        'mdCodeBlockBorder' -> 'md_code_block_border'
+        'mdQuote' -> 'md_quote'
+        'mdQuoteBorder' -> 'md_quote_border'
+        'mdHr' -> 'md_hr'
+        'mdListBullet' -> 'md_list_bullet'
+        'toolDiffAdded' -> 'tool_diff_added'
+        'toolDiffRemoved' -> 'tool_diff_removed'
+        'toolDiffContext' -> 'tool_diff_context'
+        'syntaxComment' -> 'syntax_comment'
+        'syntaxKeyword' -> 'syntax_keyword'
+        'syntaxFunction' -> 'syntax_function'
+        'syntaxVariable' -> 'syntax_variable'
+        'syntaxString' -> 'syntax_string'
+        'syntaxNumber' -> 'syntax_number'
+        'syntaxType' -> 'syntax_type'
+        'syntaxOperator' -> 'syntax_operator'
+        'syntaxPunctuation' -> 'syntax_punctuation'
+        'thinkingOff' -> 'thinking_off'
+        'thinkingMinimal' -> 'thinking_minimal'
+        'thinkingLow' -> 'thinking_low'
+        'thinkingMedium' -> 'thinking_medium'
+        'thinkingHigh' -> 'thinking_high'
+        'thinkingXhigh' -> 'thinking_xhigh'
+        'thinkingMax' -> 'thinking_max'
+        'bashMode' -> 'bash_mode'
         _ -> name
     }
     custom_colors[key] = value
-}
-
-fn resolve_theme_value(string value, int depth): string {
-    string raw = value.trim([' ', '\t', '\n', '\r'])
-    if depth >= 8 || !theme_vars.contains(raw) {return raw}
-    return resolve_theme_value(theme_vars[raw] as string, depth + 1)
 }
 
 pub fn is_known_color_name(string name): bool {
@@ -199,11 +473,44 @@ pub fn is_known_color_name(string name): bool {
         'error' -> true
         'warning' -> true
         'success' -> true
-        'heading' -> true
-        'codeBlock' -> true
-        'code_block' -> true
-        'codeBlockBorder' -> true
-        'code_block_border' -> true
+        'borderAccent' -> true
+        'borderMuted' -> true
+        'thinkingText' -> true
+        'userMessageText' -> true
+        'customMessageText' -> true
+        'customMessageLabel' -> true
+        'toolTitle' -> true
+        'toolOutput' -> true
+        'mdHeading' -> true
+        'mdLink' -> true
+        'mdLinkUrl' -> true
+        'mdCode' -> true
+        'mdCodeBlock' -> true
+        'mdCodeBlockBorder' -> true
+        'mdQuote' -> true
+        'mdQuoteBorder' -> true
+        'mdHr' -> true
+        'mdListBullet' -> true
+        'toolDiffAdded' -> true
+        'toolDiffRemoved' -> true
+        'toolDiffContext' -> true
+        'syntaxComment' -> true
+        'syntaxKeyword' -> true
+        'syntaxFunction' -> true
+        'syntaxVariable' -> true
+        'syntaxString' -> true
+        'syntaxNumber' -> true
+        'syntaxType' -> true
+        'syntaxOperator' -> true
+        'syntaxPunctuation' -> true
+        'thinkingOff' -> true
+        'thinkingMinimal' -> true
+        'thinkingLow' -> true
+        'thinkingMedium' -> true
+        'thinkingHigh' -> true
+        'thinkingXhigh' -> true
+        'thinkingMax' -> true
+        'bashMode' -> true
         _ -> false
     }
 }
@@ -228,6 +535,11 @@ fn is_background_name(string name): bool {
 
 pub fn set_variant(string name) {
     theme_variant = name == 'light' ? 'light' : 'dark'
+    if name == 'light' || name == 'dark' {
+        custom_theme_active = false
+    } else if name != '' {
+        custom_theme_active = loaded_theme_name == name && loaded_theme_path != ''
+    }
 }
 
 pub fn variant(): string {
@@ -238,35 +550,51 @@ pub fn variant(): string {
 }
 
 pub fn text(): string {
-    return variant() == 'light' ? '\x1b[38;2;50;50;60m' : custom_or('text', TEXT)
+    return themed_fg('text', TEXT, '\x1b[38;2;31;35;40m')
 }
 
 pub fn muted_color(): string {
-    return variant() == 'light' ? '\x1b[38;2;110;110;115m' : custom_or('muted', MUTED)
+    return themed_fg('muted', MUTED, '\x1b[38;2;108;108;108m')
 }
 
 pub fn dim_color(): string {
-    return variant() == 'light' ? '\x1b[38;2;140;140;145m' : custom_or('dim', DIM_COLOR)
+    return themed_fg('dim', DIM_COLOR, '\x1b[38;2;118;118;118m')
 }
 
 pub fn accent(): string {
-    return variant() == 'light' ? '\x1b[38;2;30;130;120m' : custom_or('accent', ACCENT)
+    return themed_fg('accent', ACCENT, '\x1b[38;2;90;128;128m')
 }
 
 pub fn user_bg(): string {
-    return variant() == 'light' ? '\x1b[48;2;235;235;240m' : custom_or('user_bg', USER_BG)
+    return themed_fg('user_bg', USER_BG, '\x1b[48;2;232;232;232m')
 }
 
 pub fn selected_bg(): string {
-    return variant() == 'light' ? '\x1b[48;2;225;225;230m' : custom_or('selected_bg', SELECTED_BG)
+    return themed_fg('selected_bg', SELECTED_BG, '\x1b[48;2;208;208;224m')
 }
 
 pub fn border(): string {
-    return variant() == 'light' ? '\x1b[38;2;70;100;200m' : custom_or('border', BORDER)
+    return themed_fg('border', BORDER, '\x1b[38;2;84;125;167m')
+}
+
+pub fn border_muted(): string {return themed_fg('border_muted', '\x1b[38;2;80;80;80m', '\x1b[38;2;176;176;176m')}
+pub fn user_text(): string {return themed_fg('user_text', TEXT, '\x1b[38;2;31;35;40m')}
+pub fn custom_message_bg(): string {return themed_fg('custom_bg', '\x1b[48;2;45;40;56m', '\x1b[48;2;237;231;246m')}
+pub fn custom_message_text(): string {return themed_fg('custom_text', TEXT, '\x1b[38;2;31;35;40m')}
+pub fn custom_message_label(): string {return themed_fg('custom_label', '\x1b[38;2;149;117;205m', '\x1b[38;2;126;87;194m')}
+pub fn tool_title(): string {return themed_fg('tool_title', TEXT, '\x1b[38;2;31;35;40m')}
+pub fn tool_output(): string {return themed_fg('tool_output', MUTED, '\x1b[38;2;108;108;108m')}
+pub fn md_link_url(): string {return themed_fg('md_link_url', DIM_COLOR, '\x1b[38;2;118;118;118m')}
+pub fn md_quote_border(): string {return themed_fg('md_quote_border', MUTED, '\x1b[38;2;108;108;108m')}
+pub fn bash_mode(): string {return themed_fg('bash_mode', SUCCESS, '\x1b[38;2;88;132;88m')}
+
+fn themed_fg(string key, string dark, string light): string {
+    if custom_theme_active {return custom_or(key, dark)}
+    return variant() == 'light' ? light : dark
 }
 
 fn custom_or(string name, string fallback): string {
-    return custom_colors.contains(name) ? custom_colors[name] : fallback
+    return custom_theme_active && custom_colors.contains(name) ? custom_colors[name] : fallback
 }
 
 pub fn custom_color(string name): string {return custom_or(name, '')}
@@ -299,7 +627,7 @@ pub const HEADING = '\x1b[38;2;240;198;116m'
 pub const LINK = '\x1b[38;2;129;162;190m'
 pub const CODE = '\x1b[38;2;138;190;183m'
 pub const CODE_BLOCK = '\x1b[38;2;181;189;104m'
-pub const CODE_BLOCK_BORDER = '\x1b[38;2;102;102;102m'
+pub const CODE_BLOCK_BORDER = '\x1b[38;2;128;128;128m'
 const USER_BG_DARK = '\x1b[48;2;52;53;65m'
 pub const USER_BG = '\x1b[48;2;52;53;65m'
 const SELECTED_BG_DARK = '\x1b[48;2;58;58;74m'
@@ -315,6 +643,45 @@ pub const THINKING_HIGH = '\x1b[38;2;178;148;187m'
 pub const THINKING_XHIGH = '\x1b[38;2;209;131;232m'
 pub const THINKING_MAX = '\x1b[38;2;255;95;255m'
 
+pub fn border_accent(): string {return themed_fg('border_accent', BORDER_ACCENT, '\x1b[38;2;90;128;128m')}
+pub fn success(): string {return themed_fg('success', SUCCESS, '\x1b[38;2;88;132;88m')}
+pub fn error_color(): string {return themed_fg('error', ERROR, '\x1b[38;2;170;85;85m')}
+pub fn warning(): string {return themed_fg('warning', WARNING, '\x1b[38;2;154;115;38m')}
+pub fn thinking_text(): string {return themed_fg('thinking_text', THINKING, '\x1b[38;2;108;108;108m')}
+pub fn heading(): string {return themed_fg('md_heading', HEADING, '\x1b[38;2;154;115;38m')}
+pub fn link(): string {return themed_fg('md_link', LINK, '\x1b[38;2;84;125;167m')}
+pub fn code(): string {return themed_fg('md_code', CODE, '\x1b[38;2;90;128;128m')}
+pub fn code_block(): string {return themed_fg('md_code_block', CODE_BLOCK, '\x1b[38;2;88;132;88m')}
+pub fn code_block_border(): string {return themed_fg('md_code_block_border', MUTED, '\x1b[38;2;108;108;108m')}
+pub fn tool_pending_bg(): string {return themed_fg('tool_pending_bg', TOOL_PENDING_BG, '\x1b[48;2;232;232;240m')}
+pub fn tool_success_bg(): string {return themed_fg('tool_success_bg', TOOL_SUCCESS_BG, '\x1b[48;2;232;240;232m')}
+pub fn tool_error_bg(): string {return themed_fg('tool_error_bg', TOOL_ERROR_BG, '\x1b[48;2;240;232;232m')}
+pub fn tool_diff_added(): string {return themed_fg('tool_diff_added', SUCCESS, '\x1b[38;2;88;132;88m')}
+pub fn tool_diff_removed(): string {return themed_fg('tool_diff_removed', ERROR, '\x1b[38;2;170;85;85m')}
+pub fn tool_diff_context(): string {return themed_fg('tool_diff_context', MUTED, '\x1b[38;2;108;108;108m')}
+pub fn md_quote(): string {return themed_fg('md_quote', MUTED, '\x1b[38;2;108;108;108m')}
+pub fn md_hr(): string {return themed_fg('md_hr', MUTED, '\x1b[38;2;108;108;108m')}
+pub fn md_list_bullet(): string {return themed_fg('md_list_bullet', ACCENT, '\x1b[38;2;88;132;88m')}
+pub fn syntax_comment(): string {return themed_fg('syntax_comment', '\x1b[38;2;106;153;85m', '\x1b[38;2;0;128;0m')}
+pub fn syntax_keyword(): string {return themed_fg('syntax_keyword', '\x1b[38;2;86;156;214m', '\x1b[38;2;0;0;255m')}
+pub fn syntax_function(): string {return themed_fg('syntax_function', '\x1b[38;2;220;220;170m', '\x1b[38;2;121;94;38m')}
+pub fn syntax_variable(): string {return themed_fg('syntax_variable', '\x1b[38;2;156;220;254m', '\x1b[38;2;0;16;128m')}
+pub fn syntax_string(): string {return themed_fg('syntax_string', '\x1b[38;2;206;145;120m', '\x1b[38;2;163;21;21m')}
+pub fn syntax_number(): string {return themed_fg('syntax_number', '\x1b[38;2;181;206;168m', '\x1b[38;2;9;134;88m')}
+pub fn syntax_type(): string {return themed_fg('syntax_type', '\x1b[38;2;78;201;176m', '\x1b[38;2;38;127;153m')}
+pub fn syntax_operator(): string {return themed_fg('syntax_operator', TEXT, '\x1b[38;2;0;0;0m')}
+pub fn syntax_punctuation(): string {return themed_fg('syntax_punctuation', TEXT, '\x1b[38;2;0;0;0m')}
+
+fn thinking_border_color(string thinking): string {
+    if thinking == 'minimal' {return themed_fg('thinking_minimal', THINKING_MINIMAL, '\x1b[38;2;118;118;118m')}
+    if thinking == 'low' {return themed_fg('thinking_low', THINKING_LOW, '\x1b[38;2;84;125;167m')}
+    if thinking == 'medium' {return themed_fg('thinking_medium', THINKING_MEDIUM, '\x1b[38;2;90;128;128m')}
+    if thinking == 'high' {return themed_fg('thinking_high', THINKING_HIGH, '\x1b[38;2;135;95;135m')}
+    if thinking == 'xhigh' {return themed_fg('thinking_xhigh', THINKING_XHIGH, '\x1b[38;2;139;0;139m')}
+    if thinking == 'max' {return themed_fg('thinking_max', THINKING_MAX, '\x1b[38;2;175;0;95m')}
+    return themed_fg('thinking_off', THINKING_OFF, '\x1b[38;2;176;176;176m')
+}
+
 pub fn fg(string color, string value): string {
     // Restore only the foreground so an enclosing row background survives.
     return color + value + '\x1b[39m'
@@ -329,11 +696,11 @@ pub fn bold(string value): string {
 }
 
 pub fn dim(string value): string {
-    return DIM_COLOR + value + '\x1b[39m'
+    return dim_color() + value + '\x1b[39m'
 }
 
 pub fn muted(string value): string {
-    return MUTED + value + '\x1b[39m'
+    return muted_color() + value + '\x1b[39m'
 }
 
 pub fn italic(string value): string {
@@ -352,26 +719,20 @@ pub fn cursor(string value): string {
     return INVERSE + value + '\x1b[27m'
 }
 
-pub fn border_line(int width): string {
-    return fg(BORDER, repeat('─', width))
+// Pi exposes inverse independently from cursor styling; diff rendering uses
+// it to highlight changed tokens without changing their foreground color.
+pub fn inverse(string value): string {
+    return INVERSE + value + '\x1b[27m'
 }
 
-pub fn editor_border_line(string thinking, bool bash_mode, int width): string {
-    string color = THINKING_OFF
-    if bash_mode {
-        color = SUCCESS
-    } else if thinking == 'minimal' {
-        color = THINKING_MINIMAL
-    } else if thinking == 'low' {
-        color = THINKING_LOW
-    } else if thinking == 'medium' {
-        color = THINKING_MEDIUM
-    } else if thinking == 'high' {
-        color = THINKING_HIGH
-    } else if thinking == 'xhigh' {
-        color = THINKING_XHIGH
-    } else if thinking == 'max' {
-        color = THINKING_MAX
+pub fn border_line(int width): string {
+    return fg(border(), repeat('─', width))
+}
+
+pub fn editor_border_line(string thinking, bool in_bash_mode, int width): string {
+    string color = thinking_border_color(thinking)
+    if in_bash_mode {
+        color = bash_mode()
     }
     return fg(color, repeat('─', width))
 }

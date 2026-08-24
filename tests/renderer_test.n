@@ -1,5 +1,7 @@
 import adou.src.tui.renderer
 import adou.src.tui.virtual_terminal
+import adou.src.tui.terminal_image
+import syscall
 
 test 'first render appends with synchronized output and no clear' {
     var value = renderer.new()
@@ -37,6 +39,16 @@ test 'width height and changes above viewport force full redraw' {
     viewport.render(['0', '1', '2', '3', '4', '5'], 20, 3)
     var redraw = viewport.render(['X', '1', '2', '3', '4', '5'], 20, 3)
     assert(redraw.strategy == renderer.STRATEGY_FULL && redraw.output.contains('\x1b[2J\x1b[H\x1b[3J'))
+}
+
+test 'Termux height changes preserve Pi differential state' {
+    string previous = syscall.get_env('TERMUX_VERSION')
+    syscall.set_env('TERMUX_VERSION', '1') catch e {}
+    defer syscall.set_env('TERMUX_VERSION', previous) catch e {}
+    var value = renderer.new()
+    value.render(['a', 'b', 'c', 'd', 'e', 'f'], 20, 5)
+    var resized = value.render(['a', 'b', 'c', 'd', 'e', 'f'], 20, 4)
+    assert(resized.strategy == renderer.STRATEGY_NONE)
 }
 
 test 'scrolling content keeps the visible tail aligned while appending' {
@@ -88,11 +100,20 @@ test 'deleting more than one viewport clears with a full redraw' {
     assert(screen[0] == 'line 0' && screen[1] == '' && screen[2] == '' && screen[3] == '' && screen[4] == '')
 }
 
-test 'shrink clears deleted rows through differential output' {
+test 'clearOnShrink repaints below Pi high water mark' {
     var value = renderer.new()
-    // Pi settings.terminal.clearOnShrink (default off): the clearing
-    // behavior is opt-in; the existing shrink contract runs with it on.
     value.set_clear_on_shrink(true)
+    var terminal = virtual_terminal.new(20, 5)
+    terminal.write(value.render(['one', 'two', 'three'], 20, 5).output)
+    var shrink = value.render(['one'], 20, 5)
+    assert(shrink.strategy == renderer.STRATEGY_FULL)
+    terminal.write(shrink.output)
+    var screen = terminal.snapshot()
+    assert(screen[0] == 'one' && screen[1] == '' && screen[2] == '')
+}
+
+test 'ordinary Pi differential shrink clears deleted rows with clearOnShrink off' {
+    var value = renderer.new()
     var terminal = virtual_terminal.new(20, 5)
     terminal.write(value.render(['one', 'two', 'three'], 20, 5).output)
     var shrink = value.render(['one'], 20, 5)
@@ -100,18 +121,6 @@ test 'shrink clears deleted rows through differential output' {
     terminal.write(shrink.output)
     var screen = terminal.snapshot()
     assert(screen[0] == 'one' && screen[1] == '' && screen[2] == '')
-}
-
-test 'clearOnShrink off leaves shrunk rows untouched like Pi default' {
-    var value = renderer.new()
-    var terminal = virtual_terminal.new(20, 5)
-    terminal.write(value.render(['one', 'two', 'three'], 20, 5).output)
-    var shrink = value.render(['one'], 20, 5)
-    assert(shrink.strategy == renderer.STRATEGY_DIFF)
-    terminal.write(shrink.output)
-    var screen = terminal.snapshot()
-    // Pi default: the previous rows stay visible below the shrunk content.
-    assert(screen[0] == 'one' && screen[1] == 'two' && screen[2] == 'three')
 }
 
 test 'transient frame clears removed rows independent of global shrink setting' {
@@ -182,4 +191,41 @@ test 'invalidate forces a cleared full repaint exactly once' {
     // The force flag is consumed by the repaint: the next identical frame
     // stays a no-op instead of repainting forever.
     assert(value.render(['one', 'two'], 20, 5).strategy == renderer.STRATEGY_NONE)
+}
+
+test 'Kitty image lines stay raw and stale placements are deleted per frame' {
+    string image = '\x1b_Ga=T,f=100,q=2,c=2,r=1,i=41;AAAA\x1b\\'
+    var value = renderer.new()
+    var first = value.render([image], 20, 5)
+    assert(first.output.contains(image))
+    assert(!first.output.contains(image + renderer.LINE_RESET))
+    var changed = value.render(['replacement'], 20, 5)
+    assert(changed.strategy == renderer.STRATEGY_DIFF)
+    assert(changed.output.contains(terminal_image.delete_kitty_image(41)))
+
+    value.render([image], 20, 5)
+    var full = value.render([image], 21, 5)
+    assert(full.strategy == renderer.STRATEGY_FULL)
+    assert(full.output.contains(terminal_image.delete_kitty_image(41)))
+}
+
+test 'Kitty image blocks preallocate and clear every reserved terminal row' {
+    string image = '\x1b_Ga=T,f=100,q=2,c=2,r=3,i=42;AAAA\x1b\\'
+    var value = renderer.new()
+    var first = value.render([image, '', ''], 20, 5)
+    assert(first.output.contains('\r\n\r\n\x1b[2A' + image + '\x1b[2B'))
+
+    value.render(['old', '', ''], 20, 5)
+    var changed = value.render([image, '', ''], 20, 5)
+    assert(changed.strategy == renderer.STRATEGY_DIFF)
+    assert(changed.output.contains('\x1b[2K\r\n\x1b[2K\r\n\x1b[2K\x1b[2A' + image + '\x1b[2B'))
+}
+
+test 'Kitty image pre-clear that would scroll forces a safe full repaint' {
+    string image = '\x1b_Ga=T,f=100,q=2,c=2,r=3,i=43;AAAA\x1b\\'
+    var value = renderer.new()
+    value.render(['0', '1', '2', '3', '4'], 20, 5)
+    var changed = value.render(['0', '1', '2', '3', image, '', ''], 20, 5)
+    assert(changed.strategy == renderer.STRATEGY_FULL)
+    assert(changed.output.contains('\x1b[2J\x1b[H\x1b[3J'))
 }

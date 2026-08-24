@@ -6,3 +6,10 @@
 # Python bytecode caches (test harness)
 __pycache__/
 *.py[cod]
+
+# Repository-local credentials. Runtime credentials normally live in
+# ~/.adou/agent/auth.json; keep accidental local copies out of Git too.
+/.env
+/.env.local
+/auth.json
+/config.local.json

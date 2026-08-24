@@ -212,6 +212,23 @@ test 'tool output diff bodies render with per-line colors like Pi' {
     assert(!plain_lines.contains('-just') && !plain_lines.contains('+just'))
 }
 
+test 'single numbered edit pair highlights changed words like Pi' {
+    var lines = chat.render_diff_lines(['-1 old value here', '+1 new value here'])
+    assert(lines.len() == 2)
+    assert(lines[0].contains('\x1b[7mold\x1b[27m'))
+    assert(lines[1].contains('\x1b[7mnew\x1b[27m'))
+    assert(lines[0].contains(' value here'))
+    assert(lines[1].contains(' value here'))
+}
+
+test 'numbered word diff carries inserted trailing whitespace like jsdiff' {
+    var inserted = chat.render_diff_lines(['-1 hello world', '+1 hello brave world'])
+    assert(inserted[1].contains('\x1b[7mbrave \x1b[27m'))
+    var whitespace = chat.render_diff_lines(['-1 foo  bar', '+1 foo bar'])
+    assert(whitespace[0].contains('foo bar'))
+    assert(!whitespace[0].contains('foo  bar'))
+}
+
 test 'expanded tool bodies stay bounded for long results' {
     var value = chat.new('mock-model', '/tmp/project')
     string body = ''
@@ -259,7 +276,7 @@ test 'bash render cache follows live theme changes' {
     string light = strings.join(value.render(60), '\n')
     theme.set_variant('dark')
     assert(dark.contains('\x1b[38;2;128;128;128m'))
-    assert(light.contains('\x1b[38;2;110;110;115m'))
+    assert(light.contains('\x1b[38;2;108;108;108m'))
 }
 
 test 'B3 outputPad 0 widens the user message content area' {

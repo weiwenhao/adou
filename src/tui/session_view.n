@@ -194,6 +194,10 @@ pub type overlay_t = struct {
     string theme_light = 'light'
     string theme_dark = 'dark'
     string theme_select_target
+    // Pi FirstTimeSetupComponent state. The setup is a two-step selector;
+    // changing the theme selection previews it immediately.
+    string setup_step = 'theme'
+    string setup_theme = 'dark'
     // Pi app.tree.toggleLabelTimestamp: show each entry's timestamp next
     // to its label in the tree rows.
     bool label_timestamps
@@ -398,12 +402,7 @@ pub fn new(ref<term.terminal_t> terminal, ref<session.runner_t> runner, string m
     }
     view.update_untrusted_banner(cwd)
     var stored_settings = view.settings_snapshot
-    // B4: named custom themes resolve from the registry before the
-    // light/dark/pair fallback decides a variant (--no-themes disables).
-    if !view.no_themes {
-        theme.ensure_named_loaded(cwd, stored_settings.theme)
-    }
-    theme.set_variant(active_theme_variant(stored_settings.theme, view.live_theme_report))
+    view.activate_theme_setting(stored_settings.theme)
     string theme_file = syscall.get_env('ADOU_THEME_FILE')
     if theme_file != '' {theme.load_json(theme_file)}
     // Pi quietStartup suppresses the startup status lines; Adou's startup
@@ -433,7 +432,20 @@ fn active_theme_variant(string setting, string live_report): string {
         }
         return terminal_colors.detect_terminal_theme_from_env() == 'light' ? light_name : dark_name
     }
-    return 'dark'
+    return setting == '' ? 'dark' : setting
+}
+
+fn view_t.activate_theme_setting(&self, string setting) {
+    string active = active_theme_variant(setting, self.live_theme_report)
+    if !self.no_themes {
+        theme.ensure_named_loaded(self.runner.repository.cwd, active)
+    }
+    theme.set_variant(active)
+}
+
+fn view_t.available_theme_names(&self): [string] {
+    if self.no_themes {return ['dark', 'light']}
+    return theme.available_names(self.runner.repository.cwd)
 }
 
 // B1-R2-06/07/08: one trust-aware resource snapshot refresh shared by init,
@@ -467,7 +479,7 @@ pub fn view_t.refresh_resource_snapshot(&self, string cwd, bool reload_auth) {
     self.chat.set_image_preferences(self.settings_snapshot.show_images, self.settings_snapshot.image_width_cells, self.settings_snapshot.auto_resize_images)
     self.chat.set_show_cache_miss_notices(self.settings_snapshot.show_cache_miss_notices)
     self.renderer.set_clear_on_shrink(self.settings_snapshot.terminal_clear_on_shrink)
-    theme.set_variant(active_theme_variant(self.settings_snapshot.theme, self.live_theme_report))
+    self.activate_theme_setting(self.settings_snapshot.theme)
     self.runner.apply_preferences_snapshot(self.settings_snapshot)
     self.rebuild_read_tool_options(self.settings_snapshot.auto_resize_images)
     // B1-R3-05: the /scoped-models settings backing ALWAYS follows the
@@ -2516,7 +2528,7 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     // untrusted; Adou renders the equivalent banner under the header.
     if self.show_untrusted_banner {
         [string] with_banner = []
-        var banner_lines = text_utils.wrap_text_with_ansi(theme.fg(theme.WARNING, 'This project is not trusted. Project .pi resources and packages are ignored. Use /trust to save a trust decision.'), width)
+        var banner_lines = text_utils.wrap_text_with_ansi(theme.fg(theme.warning(), 'This project is not trusted. Project .pi resources and packages are ignored. Use /trust to save a trust decision.'), width)
         for line in banner_lines {
             with_banner.push(line)
         }
@@ -3424,7 +3436,7 @@ fn view_t.apply_live_theme(&self) {
     if !self.settings_snapshot.theme.contains('/') {
         return
     }
-    theme.set_variant(active_theme_variant(self.settings_snapshot.theme, self.live_theme_report))
+    self.activate_theme_setting(self.settings_snapshot.theme)
     self.redraw()
 }
 
@@ -3659,28 +3671,26 @@ fn provider_name_from_option(string option): string {
 
 // Batch 3: Pi's settings list order (settings-selector.ts).  Value items
 // cycle on Enter (Pi SettingsList behavior); submenu items open their
-// submenu. Image settings stay visibly unavailable until their runtime
-// behavior is implemented; they are open parity work, not exclusions.
+// submenu. Pi only exposes terminal-rendering controls when an inline image
+// protocol is available; model-facing resize/block controls are always shown.
 pub fn view_t.show_settings_overlay(&self) {
     var s = self.settings_snapshot
     var image_capabilities = terminal_image.detect_capabilities()
     bool images_available = image_capabilities[0] != ''
-    string image_status = images_available ? onoff(s.show_images) : 'UNAVAILABLE'
-    string image_width_status = images_available ? int_string(s.image_width_cells) : 'UNAVAILABLE'
-    string auto_resize_status = images_available ? onoff(s.auto_resize_images) : 'UNAVAILABLE'
-    string block_images_status = images_available ? onoff(s.block_images) : 'UNAVAILABLE'
     int selected = 0
     if self.overlay is ref<overlay_t> previous {
         if previous.kind == OVERLAY_SETTINGS {
             selected = previous.selected
         }
     }
-    [string] options = [
-        'Auto-compact: ' + onoff(s.auto_compaction),
-        'Show images: ' + image_status,
-        'Image width: ' + image_width_status,
-        'Auto-resize images: ' + auto_resize_status,
-        'Block images: ' + block_images_status,
+    [string] options = ['Auto-compact: ' + onoff(s.auto_compaction)]
+    if images_available {
+        options.push('Show images: ' + onoff(s.show_images))
+        options.push('Image width: ' + int_string(s.image_width_cells))
+    }
+    options.push('Auto-resize images: ' + onoff(s.auto_resize_images))
+    options.push('Block images: ' + onoff(s.block_images))
+    [string] remaining = [
         'Skill commands: ' + onoff(s.enable_skill_commands),
         'Show hardware cursor: ' + onoff(s.show_hardware_cursor),
         'Editor padding: ' + int_string(s.editor_padding_x),
@@ -3704,6 +3714,9 @@ pub fn view_t.show_settings_overlay(&self) {
         'Thinking level: ' + self.chat.thinking + '           (enter: level submenu)',
         'Theme: ' + theme_label(s.theme) + '                 (enter: theme submenu)',
     ]
+    for option in remaining {
+        options.push(option)
+    }
     self.overlay = new overlay_t(kind = OVERLAY_SETTINGS, title = 'Settings', options = options)
     var active = self.overlay as ref<overlay_t>
     if selected < options.len() {
@@ -3713,7 +3726,7 @@ pub fn view_t.show_settings_overlay(&self) {
 
 // Enter on a value row cycles to the next value and applies the runtime
 // effect immediately (Pi SettingsList Enter/Space behavior); submenu rows
-// open their submenu; currently unavailable rows are inert.
+// open their submenu.
 fn view_t.handle_settings_option(&self, ref<overlay_t> overlay, string option) {
     var s = self.settings_snapshot
     if option.starts_with('Warnings:') {
@@ -3741,11 +3754,9 @@ fn view_t.handle_settings_option(&self, ref<overlay_t> overlay, string option) {
         if !images_available {return}
         s.image_width_cells = cycle_int(s.image_width_cells, [60, 80, 120])
     } else if option.starts_with('Auto-resize images:') {
-        if !images_available {return}
         s.auto_resize_images = !s.auto_resize_images
         self.rebuild_read_tool_options(s.auto_resize_images)
     } else if option.starts_with('Block images:') {
-        if !images_available {return}
         s.block_images = !s.block_images
         self.runner.apply_preferences_snapshot(s)
     } else if option.starts_with('Skill commands:') {
@@ -3849,10 +3860,12 @@ fn view_t.handle_warnings_toggle(&self, ref<overlay_t> overlay) {
     self.redraw()
 }
 
-// Pi's Theme submenu: single mode ([Automatic, dark, light], live preview,
-// Enter applies, Esc restores) and automatic mode (light/dark pair editing).
+// Pi's Theme submenu: single mode ([Automatic, ...available themes], live
+// preview, Enter applies, Esc restores) and automatic mode (light/dark pair
+// editing).
 fn view_t.show_theme_overlay(&self, ref<overlay_t> overlay) {
     string stored = self.settings_snapshot.theme
+    [string] available = self.available_theme_names()
     overlay.kind = OVERLAY_THEME
     overlay.title = 'Theme'
     overlay.theme_original = stored
@@ -3864,10 +3877,13 @@ fn view_t.show_theme_overlay(&self, ref<overlay_t> overlay) {
         overlay.selected = 0
     } else {
         // Pi defaultAutomaticThemes: a fixed current theme seeds both slots.
-        string single = stored == 'light' ? 'light' : 'dark'
+        string single = theme_list_contains(available, stored) ? stored : 'dark'
         overlay.theme_light = single
         overlay.theme_dark = single
-        overlay.options = ['Automatic   (follow terminal appearance)', 'dark', 'light']
+        overlay.options = ['Automatic   (follow terminal appearance)']
+        for name in available {
+            overlay.options.push(name)
+        }
         // Pi's SelectSubmenu pre-selects the current value; Enter on the
         // submenu starts on the active theme instead of always Automatic.
         overlay.selected = 0
@@ -3940,15 +3956,15 @@ fn view_t.handle_theme_input(&self, ref<overlay_t> overlay, string key) {
 fn view_t.preview_theme_option(&self, ref<overlay_t> overlay) {
     if overlay.options.len() <= 1 {
         // Automatic pair row: preview the active variant (dark fallback).
-        theme.set_variant(active_theme_variant(overlay.theme_light + '/' + overlay.theme_dark, self.live_theme_report))
+        self.activate_theme_setting(overlay.theme_light + '/' + overlay.theme_dark)
         return
     }
     if overlay.selected == 0 {
-        theme.set_variant(active_theme_variant(overlay.theme_light + '/' + overlay.theme_dark, self.live_theme_report))
+        self.activate_theme_setting(overlay.theme_light + '/' + overlay.theme_dark)
         return
     }
     string name = overlay.options[overlay.selected]
-    theme.set_variant(active_theme_variant(name, self.live_theme_report))
+    self.activate_theme_setting(name)
 }
 
 fn view_t.apply_theme_option(&self, ref<overlay_t> overlay) {
@@ -3966,7 +3982,7 @@ fn view_t.apply_theme_option(&self, ref<overlay_t> overlay) {
     }
     self.settings_snapshot = s
     self.save_preferences()
-    theme.set_variant(active_theme_variant(s.theme, self.live_theme_report))
+    self.activate_theme_setting(s.theme)
     self.show_settings_overlay()
     self.redraw()
 }
@@ -3975,7 +3991,7 @@ fn view_t.cancel_theme_overlay(&self, ref<overlay_t> overlay) {
     var s = self.settings_snapshot
     s.theme = overlay.theme_original
     self.settings_snapshot = s
-    theme.set_variant(active_theme_variant(overlay.theme_original, self.live_theme_report))
+    self.activate_theme_setting(overlay.theme_original)
     self.show_settings_overlay()
     self.redraw()
 }
@@ -4007,7 +4023,7 @@ fn view_t.handle_theme_auto_input(&self, ref<overlay_t> overlay, string key) {
             s.theme = overlay.theme_light + '/' + overlay.theme_dark
             self.settings_snapshot = s
             self.save_preferences()
-            theme.set_variant(active_theme_variant(s.theme, self.live_theme_report))
+            self.activate_theme_setting(s.theme)
             self.show_settings_overlay()
             self.redraw()
         } else {
@@ -4025,7 +4041,7 @@ fn view_t.show_theme_select_overlay(&self, ref<overlay_t> overlay, string target
     overlay.kind = OVERLAY_THEME_SELECT
     overlay.theme_select_target = target
     overlay.title = target == 'light' ? 'Light Theme' : 'Dark Theme'
-    overlay.options = ['dark', 'light']
+    overlay.options = self.available_theme_names()
     string current = target == 'light' ? overlay.theme_light : overlay.theme_dark
     overlay.selected = 0
     for index, name in overlay.options {
@@ -4070,7 +4086,7 @@ fn view_t.handle_theme_select_input(&self, ref<overlay_t> overlay, string key) {
 fn view_t.preview_theme_pair(&self, ref<overlay_t> overlay, string picked) {
     string light_value = overlay.theme_select_target == 'light' ? picked : overlay.theme_light
     string dark_value = overlay.theme_select_target == 'dark' ? picked : overlay.theme_dark
-    theme.set_variant(active_theme_variant(light_value + '/' + dark_value, self.live_theme_report))
+    self.activate_theme_setting(light_value + '/' + dark_value)
 }
 
 fn split_theme_pair(string value): (string, string) {
@@ -4079,6 +4095,13 @@ fn split_theme_pair(string value): (string, string) {
         return ('light', 'dark')
     }
     return (value.slice(0, separator), value.slice(separator + 1, value.len()))
+}
+
+fn theme_list_contains([string] values, string candidate): bool {
+    for value in values {
+        if value == candidate {return true}
+    }
+    return false
 }
 
 fn onoff(bool value): string {
@@ -4141,7 +4164,7 @@ fn theme_label(string setting): string {
     return setting
 }
 
-// Pi's first-time setup: a two-choice welcome (theme + telemetry opt-in)
+// Pi's first-time setup: a two-step welcome (theme + analytics opt-in)
 // that completes by writing a marker file below the agent directory.
 // Pi's config-selector manages package resources; adou's equivalent lists
 // the skills and prompt templates with per-resource enable toggles.
@@ -4362,16 +4385,29 @@ pub fn view_t.filter_enabled_prompts(&self, [ref<prompt_templates.prompt_templat
 }
 
 pub fn view_t.show_setup_overlay(&self) {
-    [string] options = [
-        'Theme: ' + theme.variant(),
-        'Telemetry: ' + (attribution.is_install_telemetry_enabled() ? 'on' : 'off'),
-        'Continue',
-    ]
-    self.overlay = new overlay_t(kind = OVERLAY_SETUP, title = 'Welcome to Adou', options = options)
+    string detected = theme.variant() == 'light' ? 'light' : 'dark'
+    int selected = detected == 'light' ? 1 : 0
+    self.overlay = new overlay_t(
+        kind = OVERLAY_SETUP,
+        title = 'Welcome to Adou, the minimal coding agent.',
+        provider = detected,
+        options = ['Dark', 'Light'],
+        selected = selected,
+        setup_step = 'theme',
+        setup_theme = detected,
+    )
     self.redraw()
 }
 
-fn view_t.complete_setup(&self) {
+fn view_t.complete_setup(&self, ref<overlay_t> overlay) {
+    bool share_analytics = overlay.selected == 0
+    self.settings_snapshot.theme = overlay.setup_theme
+    self.settings_snapshot.enable_analytics = share_analytics
+    if share_analytics && self.settings_snapshot.tracking_id == '' {
+        self.settings_snapshot.tracking_id = identity.uuid_v7() catch error {''}
+    }
+    self.activate_theme_setting(overlay.setup_theme)
+    self.save_preferences()
     string marker = path.join(paths.agent_dir(), '.adou-setup')
     os.mkdirs(paths.agent_dir(), 0o700) catch error {
         self.chat.error_message = 'Could not save setup: ' + error.msg()
@@ -4383,7 +4419,7 @@ fn view_t.complete_setup(&self) {
         self.redraw()
         return
     }
-    file.write(('theme=' + theme.variant() + '\ntelemetry=' + (attribution.is_install_telemetry_enabled() ? 'on' : 'off') + '\n') as [u8]) catch error {
+    file.write(('theme=' + overlay.setup_theme + '\nanalytics=' + (share_analytics ? 'on' : 'off') + '\n') as [u8]) catch error {
         file.close()
         self.chat.error_message = 'Could not save setup: ' + error.msg()
         self.redraw()
@@ -4646,28 +4682,39 @@ pub fn view_t.handle_overlay_input(&self, ref<overlay_t> overlay, input_t input)
     }
     if overlay.kind == OVERLAY_SETUP && !input.paste {
         string key = keys.parse_key(input.data)
-        if key == 'up' {
-            overlay.selected = overlay.selected == 0 ? overlay.options.len() - 1 : overlay.selected - 1
+        if self.keybindings.matches(key, keybindings.SELECT_UP) || key == 'k' {
+            if overlay.selected > 0 {overlay.selected -= 1}
+            if overlay.setup_step == 'theme' {
+                overlay.setup_theme = overlay.selected == 0 ? 'dark' : 'light'
+                self.activate_theme_setting(overlay.setup_theme)
+            }
             self.redraw()
             return
         }
-        if key == 'down' {
-            overlay.selected = overlay.selected == overlay.options.len() - 1 ? 0 : overlay.selected + 1
+        if self.keybindings.matches(key, keybindings.SELECT_DOWN) || key == 'j' {
+            if overlay.selected + 1 < overlay.options.len() {overlay.selected += 1}
+            if overlay.setup_step == 'theme' {
+                overlay.setup_theme = overlay.selected == 0 ? 'dark' : 'light'
+                self.activate_theme_setting(overlay.setup_theme)
+            }
             self.redraw()
             return
         }
-        if key == 'enter' {
-            if overlay.selected == 0 {
-                theme.set_variant(theme.variant() == 'light' ? 'dark' : 'light')
-                overlay.options[0] = 'Theme: ' + theme.variant()
-                self.redraw()
-            } else if overlay.selected == 1 {
-                syscall.set_env('ADOU_TELEMETRY', attribution.is_install_telemetry_enabled() ? '' : '1') catch error {}
-                overlay.options[1] = 'Telemetry: ' + (attribution.is_install_telemetry_enabled() ? 'on' : 'off')
+        if self.keybindings.matches(key, keybindings.SELECT_CONFIRM) || key == 'enter' {
+            if overlay.setup_step == 'theme' {
+                overlay.setup_step = 'analytics'
+                overlay.options = ['Share anonymous usage data', "Don't share"]
+                overlay.selected = 0
                 self.redraw()
             } else {
-                self.complete_setup()
+                self.complete_setup(overlay)
             }
+            return
+        }
+        if self.keybindings.matches(key, keybindings.SELECT_CANCEL) || key == 'escape' || key == 'ctrl+c' {
+            self.activate_theme_setting(self.settings_snapshot.theme)
+            self.overlay = null
+            self.redraw()
             return
         }
         return
@@ -5651,7 +5698,7 @@ pub fn view_t.select_overlay_option(&self, ref<overlay_t> overlay) {
             s.theme = overlay.theme_light + '/' + overlay.theme_dark
             self.settings_snapshot = s
             self.save_preferences()
-            theme.set_variant(active_theme_variant(s.theme, self.live_theme_report))
+            self.activate_theme_setting(s.theme)
             self.show_settings_overlay()
             self.redraw()
         } else {
@@ -5919,7 +5966,7 @@ fn render_model_selector(ref<overlay_t> overlay, ref<model_selector.state_t> sta
         result.push(' ' + theme.fg(theme.muted_color(), 'Scope: ') + all_text + theme.fg(theme.muted_color(), ' | ') + scoped_text)
         result.push(' ' + theme.fg(theme.muted_color(), 'Tab scope (all/scoped)'))
     } else {
-        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.WARNING, 'Only showing models from configured providers. Use /login to add providers.'), width))
+        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.warning(), 'Only showing models from configured providers. Use /login to add providers.'), width))
     }
     result.push('')
     result.push(' > ' + theme.fg(theme.text(), state.query))
@@ -5937,7 +5984,7 @@ fn render_model_selector(ref<overlay_t> overlay, ref<model_selector.state_t> sta
         string prefix = selected ? theme.fg(theme.accent(), '-> ') : '   '
         string model_text = selected ? theme.fg(theme.accent(), item.id) : theme.fg(theme.text(), item.id)
         string badge = theme.fg(theme.muted_color(), ' [' + item.provider + ']')
-        string check = item.reference == state.current_reference ? theme.fg(theme.SUCCESS, ' ✓') : ''
+        string check = item.reference == state.current_reference ? theme.fg(theme.success(), ' ✓') : ''
         string line = prefix + model_text + badge + check
         result.push(' ' + text_utils.truncate_to_width(line, width - 2, '...', true))
     }
@@ -5945,7 +5992,7 @@ fn render_model_selector(ref<overlay_t> overlay, ref<model_selector.state_t> sta
         result.push('  ' + theme.fg(theme.muted_color(), fmt.sprintf('(%d/%d)', state.selected + 1, state.filtered.len())))
     }
     if state.error_message != '' {
-        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.ERROR, state.error_message), width))
+        result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.error_color(), state.error_message), width))
     } else if state.filtered.len() == 0 {
         result.push('  ' + theme.fg(theme.muted_color(), 'No matching models'))
     } else {
@@ -5988,7 +6035,7 @@ fn render_scoped_models(ref<overlay_t> overlay, ref<scoped_models.state_t> state
         if item.model is ref<ai_types.model_t> {
             badge = theme.fg(theme.muted_color(), ' [' + item.provider + ']')
             if !state.all_enabled {
-                status = state.is_enabled(item.full_id) ? theme.fg(theme.SUCCESS, ' ✓') : theme.fg(theme.dim_color(), ' ✗')
+                status = state.is_enabled(item.full_id) ? theme.fg(theme.success(), ' ✓') : theme.fg(theme.dim_color(), ' ✗')
             }
         } else {
             id = item.full_id
@@ -6025,6 +6072,47 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
     }
     if overlay.kind == OVERLAY_SCOPED_MODELS && overlay.scoped_models_state is ref<scoped_models.state_t> {
         return render_scoped_models(overlay, overlay.scoped_models_state as ref<scoped_models.state_t>, width)
+    }
+    if overlay.kind == OVERLAY_SETUP {
+        [string] setup = vec<string>.cap_of(24)
+        setup.push(theme.border_line(width))
+        setup.push('')
+        for logo_line in ['██████', '██  ██', '████  ██', '██    ██'] {
+            setup.push(' ' + theme.fg(theme.accent(), logo_line))
+        }
+        setup.push('')
+        setup.push(' ' + theme.bold(theme.fg(theme.accent(), overlay.title)))
+        setup.push('')
+        if overlay.setup_step == 'theme' {
+            setup.push(' ' + theme.fg(theme.text(), 'Pick a theme.'))
+            setup.push(' ' + theme.fg(theme.muted_color(), 'Detected system appearance: ' + overlay.provider))
+            setup.push('')
+        } else {
+            setup.push(' ' + theme.fg(theme.text(), 'Opt-in to anonymous usage data sharing?'))
+            for line in [
+                'Opting in stores a tracking identifier in settings.json and enables anonymous',
+                'usage analytics. This helps us to better debug, reproduce, and resolve issues',
+                'and bugs within Adou. You can observe what is shared using /privacy and make',
+                'changes anytime in settings.json.',
+            ] {
+                setup.push(' ' + theme.fg(theme.muted_color(), line))
+            }
+            setup.push('')
+        }
+        for index, option in overlay.options {
+            bool selected = index == overlay.selected
+            string prefix = selected ? theme.fg(theme.accent(), '→ ') : '  '
+            string label = selected ? theme.fg(theme.accent(), option) : theme.fg(theme.text(), option)
+            setup.push(' ' + prefix + label)
+        }
+        setup.push('')
+        var setup_registry = keybindings.current()
+        string action = overlay.setup_step == 'theme' ? 'continue' : 'finish'
+        string hint = '↑↓ navigate  ' + keybindings.key_text(setup_registry, keybindings.SELECT_CONFIRM) + ' ' + action + '  ' + keybindings.key_text(setup_registry, keybindings.SELECT_CANCEL) + ' skip setup'
+        setup.append(text_utils.wrap_text_with_ansi(' ' + theme.fg(theme.dim_color(), hint), width))
+        setup.push('')
+        setup.push(theme.border_line(width))
+        return setup
     }
     [string] result = vec<string>.cap_of(24)
     result.push(theme.border_line(width))
@@ -6118,7 +6206,7 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
         result.push('')
     } else {
         if overlay.kind == OVERLAY_SESSION && overlay.confirming_delete {
-            result.push(' ' + theme.fg(theme.ERROR, 'Delete this session?'))
+            result.push(' ' + theme.fg(theme.error_color(), 'Delete this session?'))
             result.push(' ' + theme.fg(theme.text(), shorten_overlay_path(overlay.delete_path)))
             result.push('')
             result.push(' ' + theme.fg(theme.dim_color(), 'enter confirm   escape cancel'))
@@ -6129,7 +6217,7 @@ pub fn render_overlay(ref<overlay_t> overlay, int width, string session_dir, str
             // Pi's scope header (all / scoped) plus the auth hint.
             string scope_text = overlay.scope == 1 ? 'Scoped' : 'All'
             result.push(' ' + theme.fg(theme.muted_color(), 'Scope: ') + theme.fg(theme.accent(), scope_text) + theme.fg(theme.muted_color(), '  (Tab to switch)'))
-            result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.WARNING, 'Only showing models from configured providers. Use /login to add providers.'), width))
+            result.append(text_utils.wrap_text_with_ansi(theme.fg(theme.warning(), 'Only showing models from configured providers. Use /login to add providers.'), width))
             result.push('')
             if overlay.query != '' {
                 result.push(' ' + theme.fg(theme.muted_color(), 'Search: ') + theme.fg(theme.text(), overlay.query))
@@ -6412,37 +6500,53 @@ fn session_tree_prefix([string] options, int index): string {
         return ''
     }
     string parent = selected.header.parent_session
-    int depth = 0
+    [string] ancestors = []
     string cursor_path = parent
-    for depth < 16 && cursor_path != '' {
-        int parent_index = -1
-        for candidate, option in options {
-            if candidate < index && option == cursor_path {
-                parent_index = candidate
-                break
-            }
-        }
-        if parent_index < 0 {
-            break
-        }
-        depth += 1
-        var parent_manager = repository.open(cursor_path) catch error {
-            break
-        }
+    for ancestors.len() < 16 && cursor_path != '' {
+        int parent_index = session_option_index(options, cursor_path, index)
+        if parent_index < 0 {break}
+        ancestors.push(cursor_path)
+        var parent_manager = repository.open(cursor_path) catch error {break}
         cursor_path = parent_manager.header.parent_session
     }
     string result = ''
-    for int level = 0; level < depth; level += 1 {
-        result += '│ '
+    // Pi reserves one three-column gutter for every ancestor. The virtual
+    // root gutter is blank; deeper gutters continue with │ only while that
+    // ancestor has a later sibling in the flattened thread.
+    for int position = ancestors.len() - 1; position >= 0; position -= 1 {
+        if position == ancestors.len() - 1 {
+            result += '   '
+            continue
+        }
+        string ancestor = ancestors[position]
+        int ancestor_index = session_option_index(options, ancestor, index)
+        string ancestor_parent = session_parent_path(ancestor)
+        result += session_has_later_sibling(options, ancestor_index, ancestor_parent) ? '│  ' : '   '
     }
-    // A child is the last sibling when the following option is not one of
-    // its descendants; approximate with the direct sibling check.
-    if index + 1 < options.len() && options[index + 1] == parent {
-        result += '└─ '
-    } else {
-        result += '├─ '
-    }
+    result += session_has_later_sibling(options, index, parent) ? '├─ ' : '└─ '
     return theme.fg(theme.muted_color(), result)
+}
+
+fn session_parent_path(string file_path): string {
+    var manager = repository.open(file_path) catch error {return ''}
+    return manager.header.parent_session
+}
+
+fn session_option_index([string] options, string file_path, int before): int {
+    int limit = before < options.len() ? before : options.len()
+    for int index = 0; index < limit; index += 1 {
+        if options[index] == file_path {return index}
+    }
+    return -1
+}
+
+fn session_has_later_sibling([string] options, int index, string parent): bool {
+    if index < 0 {return false}
+    for int candidate = index + 1; candidate < options.len(); candidate += 1 {
+        var manager = repository.open(options[candidate]) catch error {continue}
+        if manager.header.parent_session == parent {return true}
+    }
+    return false
 }
 
 // Pi's model row: id with a [provider] badge and a ✓ mark on the current
@@ -6453,7 +6557,7 @@ fn model_option_display(string reference, string current_reference): string {
     string id = separator >= 0 ? reference.slice(separator + 1, reference.len()) : reference
     string line = id + ' ' + theme.fg(theme.muted_color(), '[' + provider + ']')
     if reference == current_reference {
-        line += theme.fg(theme.SUCCESS, ' ✓')
+        line += theme.fg(theme.success(), ' ✓')
     }
     return line
 }
@@ -6618,7 +6722,7 @@ fn builtin_command_description(string command): string {
     if command == '/fork' {return 'Create a new fork from a previous user message'}
     if command == '/clone' {return 'Duplicate the current session at the current position'}
     if command == '/tree' {return 'Navigate session tree (switch branches)'}
-    if command == '/trust' {return 'Choose project trust for this or future sessions'}
+    if command == '/trust' {return 'Save project trust decision for future sessions'}
     if command == '/login' {return 'Configure provider authentication'}
     if command == '/logout' {return 'Remove provider authentication'}
     if command == '/new' {return 'Start a new session'}

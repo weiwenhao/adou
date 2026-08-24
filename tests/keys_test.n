@@ -49,3 +49,47 @@ test 'ctrl+d resolves like other ctrl characters' {
     assert(keys.parse_key('\x15') == 'ctrl+u')
     assert(keys.parse_key('\x0b') == 'ctrl+k')
 }
+
+test 'Kitty alternate layout and keypad codepoints match Pi' {
+    keys.set_kitty_protocol(true)
+    assert(keys.parse_key('\x1b[1089::99;5u') == 'ctrl+c')
+    assert(keys.matches('\x1b[1042::100;5u', 'ctrl+d'))
+    assert(keys.parse_key('\x1b[107::118;5u') == 'ctrl+k')
+    assert(keys.parse_key('\x1b[47::91;5u') == 'ctrl+/')
+    assert(keys.parse_key('\x1b[57399u') == '0')
+    assert(keys.parse_key('\x1b[57413u') == '+')
+    assert(keys.parse_key('\x1b[57417u') == 'left')
+    assert(keys.parse_key('\x1b[57426u') == 'delete')
+    assert(keys.decode_printable('\x1b[57410u') == '/')
+    assert(keys.decode_printable('\x1b[97:65:97;2u') == 'A')
+    keys.set_kitty_protocol(false)
+}
+
+test 'legacy rxvt sequences and Kitty mode gates match Pi' {
+    keys.set_kitty_protocol(false)
+    assert(keys.parse_key('\x1b[a') == 'shift+up')
+    assert(keys.parse_key('\x1b[2^') == 'ctrl+insert')
+    assert(keys.parse_key('\x1b[8$') == 'shift+end')
+    assert(keys.parse_key('\x1b\x1b') == 'ctrl+alt+[')
+    assert(keys.matches('\x1f', 'ctrl+_'))
+    assert(keys.matches('\x1b', 'ctrl+['))
+    assert(keys.matches('\x1c', 'ctrl+\\'))
+    assert(keys.matches('\x1d', 'ctrl+]'))
+    assert(keys.parse_key('\x1ba') == 'alt+a')
+    assert(keys.parse_key('\x1bA') == '')
+    assert(keys.parse_key('\x1b7') == 'alt+7')
+    assert(keys.parse_key('\x1b?') == 'alt+?')
+    assert(keys.matches('A', 'shift+a'))
+    keys.set_kitty_protocol(true)
+    assert(keys.parse_key('\x1ba') == '')
+    assert(keys.parse_key('\x1bB') == '')
+    assert(keys.parse_key('\x1b\b') == 'alt+backspace')
+    keys.set_kitty_protocol(false)
+}
+
+test 'Kitty event type helpers ignore bracketed paste text' {
+    assert(keys.is_key_release('\x1b[99;1:3u'))
+    assert(keys.is_key_repeat('\x1b[99;1:2u'))
+    assert(!keys.is_key_release('\x1b[200~value:3F\x1b[201~'))
+    assert(!keys.is_key_repeat('\x1b[200~value:2F\x1b[201~'))
+}
