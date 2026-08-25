@@ -218,6 +218,8 @@ try:
         raise SystemExit("final assistant text rendered more than once")
     if rendered.count("MASTER_UNIQUE_THOUGHT") != 1:
         raise SystemExit("final assistant thinking rendered more than once")
+    if "Thinking..." in rendered:
+        raise SystemExit("final assistant left the TUI in Thinking state")
     quit_tui(fd, output, pid)
 finally:
     try:

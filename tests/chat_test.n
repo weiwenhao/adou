@@ -80,10 +80,15 @@ test 'assistant lifecycle finalizes one streaming message exactly once' {
     value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, assistant_message: final_message,},})
     assert(!(value.streaming_assistant is ref<types.assistant_message_t>))
     assert(value.messages.len() == 1)
+    assert(value.status == '')
     string rendered = strings.join(value.render(100), '\n')
     int answer = rendered.find('unique lifecycle answer')
     assert(answer >= 0)
     assert(!rendered.slice(answer + 'unique lifecycle answer'.len(), rendered.len()).contains('unique lifecycle answer'))
+
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_TURN_END, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_TURN_END,},})
+    assert(value.status == '')
+    assert(!strings.join(value.render(100), '\n').contains('Thinking...'))
 
     value.apply(session_stream.event_t {kind: agent_types.EVENT_AGENT_END, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_END,},})
     assert(value.messages.len() == 1)

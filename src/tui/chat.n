@@ -329,7 +329,10 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
             self.messages.push(message)
             self.streaming_assistant = null
             self.reset_streaming_thinking_cache()
-            self.status = assistant.stop_reason == ai_types.STOP_ERROR ? 'Model error' : 'Thinking...'
+            // A completed assistant message is no longer thinking.  Pi
+            // clears the loading state here; a following tool or turn-start
+            // event will set the next active status when work continues.
+            self.status = assistant.stop_reason == ai_types.STOP_ERROR ? 'Model error' : ''
             self.update_cache_miss_notice(assistant)
         } else if agent_event.tool_message is ref<ai_types.tool_result_message_t> tool {
             ai_types.message_t message = tool
@@ -360,7 +363,9 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
         return
     }
     if agent_event.kind == agent_types.EVENT_TURN_END {
-        self.status = 'Thinking...'
+        // TURN_END also fires for the final turn.  Do not resurrect the
+        // spinner after the final answer has already been committed.
+        self.status = ''
     }
 }
 
