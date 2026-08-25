@@ -41,6 +41,8 @@ def final_stream():
         event({"id": "chatcmpl_2", "object": "chat.completion.chunk",
                "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}}]}),
         event({"id": "chatcmpl_2", "object": "chat.completion.chunk",
+               "choices": [{"index": 0, "delta": {"reasoning_content": "MASTER_UNIQUE_THOUGHT"}}]}),
+        event({"id": "chatcmpl_2", "object": "chat.completion.chunk",
                "choices": [{"index": 0, "delta": {"content": "MASTER_TLS_TOOL_OK"}}]}),
         event({"id": "chatcmpl_2", "object": "chat.completion.chunk",
                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}),

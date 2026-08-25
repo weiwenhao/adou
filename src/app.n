@@ -603,7 +603,11 @@ fn stream_provider(): agent_types.stream_fn {
         // they are inside the five-minute expiry window.  Keep this in the
         // shared application stream closure so TUI, RPC and one-shot runs all
         // observe the same credential lifecycle.
-        if auth.is_using_oauth(model.provider) {
+        // Only OAuth-capable providers need the credential-store map. DeepSeek
+        // and other API-key providers must not walk the dynamic auth snapshot
+        // on every follow-up turn; Nature can otherwise retain a stale `any`
+        // map after the first tool result and crash in rt_map_contains.
+        if registry.supports_oauth(model.provider) && auth.is_using_oauth(model.provider) {
             bool refreshed = oauth.refresh_if_needed(model.provider) catch error {
                 var failed = ai_event_stream.new()
                 var message = new ai_types.assistant_message_t(api = model.api, provider = model.provider, model = model.id, stop_reason = ai_types.STOP_ERROR, error_message = error.msg())

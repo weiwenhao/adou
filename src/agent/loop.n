@@ -636,7 +636,7 @@ fn clone_assistant_event(types.assistant_event_t source): types.assistant_event_
         result.error = clone.assistant(error_message)
     }
     if source.tool_call is ref<types.tool_call_t> call {
-        result.tool_call = new types.tool_call_t(id = call.id, name = call.name, arguments = call.arguments, partial_json = call.partial_json)
+        result.tool_call = clone.tool_call(call)
     }
     return result
 }
@@ -647,6 +647,13 @@ fn emit_simple(ref<run_state_t> state, string kind): void! {
 }
 
 fn emit_message(ref<run_state_t> state, string kind, types.message_t message, types.assistant_event_t assistant_event): void! {
+    // Pi's emit() awaits AgentSession listeners. Give persistence its own
+    // message graph and finish it synchronously before publishing the TUI
+    // event, so Nature never serializes tool arguments while another
+    // coroutine renders or advances the same response.
+    if kind == agent_types.EVENT_MESSAGE_END && state.config.message_end_listener is agent_types.message_end_listener_fn listener {
+        listener(clone.message(message))
+    }
     var event = agent_types.agent_event_t {kind: kind, assistant_event: assistant_event,}
     if message is ref<types.user_message_t> user {
         event.user_message = user
@@ -655,15 +662,7 @@ fn emit_message(ref<run_state_t> state, string kind, types.message_t message, ty
     } else if message is ref<types.tool_result_message_t> tool {
         event.tool_message = tool
     }
-    ref<agent_types.message_end_ack_t>? ack = null
-    if kind == agent_types.EVENT_MESSAGE_END && state.config.await_message_end_ack {
-        ack = new agent_types.message_end_ack_t()
-        event.message_end_ack = ack
-    }
     state.stream.push(event)
-    if ack is ref<agent_types.message_end_ack_t> pending {
-        pending.wait()
-    }
 }
 
 fn emit_turn_end(ref<run_state_t> state, ref<types.assistant_message_t> message, [ref<types.tool_result_message_t>] results): void! {
@@ -678,12 +677,12 @@ fn emit_agent_end(ref<run_state_t> state): void! {
 }
 
 fn emit_tool_start(ref<run_state_t> state, ref<types.tool_call_t> call): void! {
-    var event = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_START, tool_call_id: call.id, tool_name: call.name, args: call.arguments,}
+    var event = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_START, tool_call_id: call.id, tool_name: call.name, args: clone.tool_call(call).arguments,}
     state.stream.push(event)
 }
 
 fn emit_tool_update(ref<run_state_t> state, ref<types.tool_call_t> call, tool_types.tool_result_t result): void! {
-    var event = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_UPDATE, tool_call_id: call.id, tool_name: call.name, args: call.arguments, tool_result: result,}
+    var event = agent_types.agent_event_t {kind: agent_types.EVENT_TOOL_UPDATE, tool_call_id: call.id, tool_name: call.name, args: clone.tool_call(call).arguments, tool_result: result,}
     state.stream.push(event)
 }
 

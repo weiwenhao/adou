@@ -674,7 +674,7 @@ pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! 
         }
         co.sleep(8)
     }
-    var final_messages = stream.result() catch error {
+    var ignored_messages = stream.result() catch error {
         debug.log('tui', 'stream result failed: ' + error.msg())
         stream_failed = true
         self.chat.error_message = error.msg()
@@ -682,12 +682,11 @@ pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! 
         self.redraw()
         []
     }
-    // The terminal event carries the canonical active branch.  Reload it
-    // after every operation so compaction, tree navigation, retry cleanup,
-    // and cancellation cannot leave stale messages rendered in the TUI.
-    if !stream_failed {
-        self.reload_chat_messages(final_messages)
-    }
+    // Pi finalizes ordinary prompts entirely through message_end/agent_end.
+    // Do not rebuild the transcript at the transport-only session_end: that
+    // creates a second source of chat state and can render a finalized
+    // message alongside a stale streaming snapshot. Context-rebuilding
+    // operations refresh at their own lifecycle event below.
     if self.pending_tree_navigation {
         string target_id = self.pending_tree_target_id
         if !stream_failed && !branch_aborted && branch_error == '' {
@@ -720,6 +719,12 @@ fn view_t.apply_stream_event(&self, session_stream.event_t event): void! {
     self.chat.apply(event) catch error {
         self.render_lock.unlock()
         throw error
+    }
+    // Pi rebuilds the chat immediately when a successful compaction replaces
+    // the active context. This is the exceptional rebuild path; normal
+    // message completion remains event-driven.
+    if event.kind == session_stream.EVENT_COMPACTION_END && event.compaction_has_result && !event.aborted && event.error_message == '' {
+        self.chat.load_messages(self.runner.copy_active_messages())
     }
     if event.kind == agent_types.EVENT_MESSAGE_END || event.kind == session_stream.EVENT_COMPACTION_END || event.kind == session_stream.EVENT_BRANCH_SUMMARY_END || event.kind == session_stream.EVENT_SESSION_INFO_CHANGED {
         self.repository_footer_dirty = true

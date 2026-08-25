@@ -106,6 +106,11 @@ pub fn chat_t.toggle_thinking_visibility(&self): bool {
 
 pub fn chat_t.load_messages(&self, [ai_types.message_t] messages) {
     self.messages = messages.slice(0, messages.len())
+    // Pi rebuilds the chat container from finalized session entries and
+    // discards any in-flight AssistantMessageComponent. Keeping Adou's
+    // separate streaming snapshot across a rebuild renders the same final
+    // assistant twice.
+    self.streaming_assistant = null
     self.reset_streaming_thinking_cache()
     self.invalidate_transcript_cache()
 }
@@ -288,6 +293,12 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
         return
     }
     if agent_event.kind == agent_types.EVENT_AGENT_END {
+        // Pi defensively removes an unfinished streaming component at
+        // agent_end. A normal message_end has already finalized it into
+        // messages; this only clears a stale partial after an interrupted
+        // lifecycle.
+        self.streaming_assistant = null
+        self.reset_streaming_thinking_cache()
         self.running = false
         self.status = ''
         return
@@ -296,6 +307,10 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
         if agent_event.user_message is ref<ai_types.user_message_t> user {
             ai_types.message_t message = user
             self.messages.push(message)
+        } else if agent_event.assistant_message is ref<ai_types.assistant_message_t> assistant {
+            // Pi creates exactly one AssistantMessageComponent at
+            // message_start and updates that component for the whole stream.
+            self.streaming_assistant = assistant
         }
         return
     }
@@ -307,6 +322,9 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
     }
     if agent_event.kind == agent_types.EVENT_MESSAGE_END {
         if agent_event.assistant_message is ref<ai_types.assistant_message_t> assistant {
+            // Finalize the one streaming assistant atomically: once the
+            // completed message enters history, it is no longer rendered by
+            // the streaming slot.
             ai_types.message_t message = assistant
             self.messages.push(message)
             self.streaming_assistant = null

@@ -1,4 +1,5 @@
 import adou.src.ai.providers.openai_completions
+import adou.src.ai.clone
 import adou.src.ai.sse
 import adou.src.ai.types
 import adou.src.json_util
@@ -50,6 +51,14 @@ test 'processes streamed function tool call and maps toolUse stop reason' {
     if done[0].tool_call is ref<types.tool_call_t> tool_call {
         assert(tool_call.name == 'read')
         assert((tool_call.arguments as {string:any})['path'] as string == 'README.md')
+        assert(tool_call.arguments_json == '{"path":"README.md"}')
+        // The raw final JSON is the ownership boundary for Nature. Even if a
+        // later dynamic map string is reused, session/TUI snapshots rebuild
+        // the exact arguments emitted by the provider.
+        var dynamic_arguments = tool_call.arguments as {string:any}
+        dynamic_arguments['path'] = 'chat.completion.chunk'
+        var copied = clone.tool_call(tool_call)
+        assert((copied.arguments as {string:any})['path'] as string == 'README.md')
     } else {
         assert(false)
     }

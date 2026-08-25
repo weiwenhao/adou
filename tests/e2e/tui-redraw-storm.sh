@@ -198,6 +198,26 @@ try:
     # the provider; its presence proves the real bash tool ran end-to-end.
     if "REDRAW_TOOL_OK" not in json.dumps(final_payload, separators=(",", ":")):
         raise SystemExit("e2e: bash tool result missing from the second request stream")
+
+    # A completed Pi-style message must leave exactly one finalized assistant
+    # in the rendered transcript and return the TUI to idle. /debug is an idle
+    # command; if message_end/agent_end is stranded behind a lifecycle ACK it
+    # is treated as streaming input and this marker never appears.
+    if not send(fd, output, pid, b"/debug\r", b"Debug log written", timeout=10.0):
+        raise SystemExit("TUI did not return to idle after the final assistant")
+    debug_path = os.path.join(agent, "adou-debug.log")
+    deadline = time.time() + 3.0
+    while time.time() < deadline and not os.path.exists(debug_path):
+        time.sleep(0.05)
+    if not os.path.exists(debug_path):
+        raise SystemExit("/debug did not write the final TUI snapshot")
+    with open(debug_path, encoding="utf-8") as fh:
+        debug_text = fh.read()
+    rendered = debug_text.split("=== Agent messages (JSONL) ===", 1)[0]
+    if rendered.count("MASTER_TLS_TOOL_OK") != 1:
+        raise SystemExit("final assistant text rendered more than once")
+    if rendered.count("MASTER_UNIQUE_THOUGHT") != 1:
+        raise SystemExit("final assistant thinking rendered more than once")
     quit_tui(fd, output, pid)
 finally:
     try:
@@ -217,5 +237,5 @@ finally:
         server.kill()
     shutil.rmtree(root, ignore_errors=True)
 
-print("e2e: redraw storm frames are valid UTF-8, balanced sync, no bad address")
+print("e2e: redraw storm settles idle with one finalized assistant and valid frames")
 PY

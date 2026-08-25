@@ -239,6 +239,36 @@ test 'tool prompt forwards complete agent and session lifecycle in Pi order' {
     assert(agent_end >= 0 && settled > agent_end && session_end > settled)
 }
 
+test 'message end persistence owns tool arguments independently from TUI events' {
+    var manager = repository.in_memory('/tmp')
+    var fixture = new provider_fixture_t(agent_responses = [assistant_tool('isolated-call'), assistant('final answer', ai_types.STOP_STOP, '', 2, 3)])
+    var runner = make_runner(manager, fixture, 1000, 100, 20)
+    runner.base_context.tools.push(session_echo_tool())
+    var result = consume(runner.prompt('keep the tool arguments stable'))
+
+    // The TUI receives a separate graph. Simulate a renderer/runtime write to
+    // that event after the turn and prove it cannot alter session ownership.
+    for event in result[0] {
+        if event.kind == agent_types.EVENT_MESSAGE_END && event.agent_event.assistant_message is ref<ai_types.assistant_message_t> event_assistant {
+            for block in event_assistant.content {
+                if block is ref<ai_types.tool_call_t> event_call {
+                    var event_arguments = event_call.arguments as {string:any}
+                    event_arguments['value'] = 'tui-overwrite'
+                }
+            }
+        }
+    }
+
+    var stored = manager.build_context()
+    var stored_assistant = stored.messages[1] as ref<ai_types.assistant_message_t>
+    var stored_call = stored_assistant.content[0] as ref<ai_types.tool_call_t>
+    assert((stored_call.arguments as {string:any})['value'] as string == 'hello')
+    var active = runner.copy_active_messages()
+    var active_assistant = active[1] as ref<ai_types.assistant_message_t>
+    var active_call = active_assistant.content[0] as ref<ai_types.tool_call_t>
+    assert((active_call.arguments as {string:any})['value'] as string == 'hello')
+}
+
 test 'session snapshots tool schemas for later provider turns and validation' {
     var manager = repository.in_memory('/tmp')
     var fixture = new provider_fixture_t(agent_responses = [assistant_tool('stable-schema-call'), assistant('final answer', ai_types.STOP_STOP, '', 2, 3)])

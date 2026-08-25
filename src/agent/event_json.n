@@ -1,6 +1,7 @@
 import adou.src.agent.session_stream
 import adou.src.agent.types as agent_types
 import adou.src.ai.types as ai_types
+import adou.src.ai.streaming_json
 import adou.src.json_util
 import adou.src.session.message_json
 import adou.src.tools.types as tool_types
@@ -212,7 +213,7 @@ fn encode_assistant_event(ai_types.assistant_event_t event): any! {
     if event.tool_call is ref<ai_types.tool_call_t> call {
         object['toolCallId'] = call.id
         object['toolName'] = call.name
-        object['arguments'] = call.arguments
+        object['arguments'] = call.arguments_json != '' ? streaming_json.parse(call.arguments_json) : call.arguments
         if call.partial_json != '' {object['partialJson'] = call.partial_json}
     }
     return object

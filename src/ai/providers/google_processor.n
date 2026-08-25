@@ -188,7 +188,8 @@ pub fn processor_t.append_function_call(&self, any call, [types.assistant_event_
     }
     block.id = id
     if call_object.contains('args') && !json_util.is_null(call_object['args']) {
-        block.arguments = call_object['args']
+        block.arguments_json = json_util.stringify(call_object['args'])
+        block.arguments = json_util.parse(block.arguments_json)
     }
     // Google thought signatures ride on functionCall parts; preserve them so
     // later turns replay the reasoning context verbatim.

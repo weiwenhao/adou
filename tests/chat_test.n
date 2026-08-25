@@ -66,6 +66,41 @@ test 'streaming assistant matches Pi cursor and spinner behavior' {
     assert(value.streaming_thinking_stable_rows.len() == 2)
 }
 
+test 'assistant lifecycle finalizes one streaming message exactly once' {
+    var value = chat.new('mock-model', '/tmp/project')
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_AGENT_START, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_START,},})
+    [types.content_t] started_content = [new types.thinking_content_t(thinking = 'unique lifecycle thought')]
+    var started = new types.assistant_message_t(content = started_content, stop_reason = types.STOP_PENDING)
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_START, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_START, assistant_message: started,},})
+    assert(value.streaming_assistant is ref<types.assistant_message_t>)
+
+    [types.content_t] final_content = [new types.thinking_content_t(thinking = 'unique lifecycle thought'), new types.text_content_t(text = 'unique lifecycle answer')]
+    var final_message = new types.assistant_message_t(content = final_content, stop_reason = types.STOP_STOP)
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, assistant_message: final_message,},})
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_END, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_END, assistant_message: final_message,},})
+    assert(!(value.streaming_assistant is ref<types.assistant_message_t>))
+    assert(value.messages.len() == 1)
+    string rendered = strings.join(value.render(100), '\n')
+    int answer = rendered.find('unique lifecycle answer')
+    assert(answer >= 0)
+    assert(!rendered.slice(answer + 'unique lifecycle answer'.len(), rendered.len()).contains('unique lifecycle answer'))
+
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_AGENT_END, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_END,},})
+    assert(value.messages.len() == 1)
+    assert(!(value.streaming_assistant is ref<types.assistant_message_t>))
+}
+
+test 'agent end removes an unfinished streaming assistant like Pi' {
+    var value = chat.new('mock-model', '/tmp/project')
+    [types.content_t] content = [new types.text_content_t(text = 'unfinished')]
+    var partial = new types.assistant_message_t(content = content, stop_reason = types.STOP_PENDING)
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_START, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_START, assistant_message: partial,},})
+    assert(value.streaming_assistant is ref<types.assistant_message_t>)
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_AGENT_END, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_END,},})
+    assert(!(value.streaming_assistant is ref<types.assistant_message_t>))
+    assert(!strings.join(value.render(80), '\n').contains('unfinished'))
+}
+
 test 'tool image attachments render through terminal capability settings' {
     terminal_image.set_capabilities('kitty', true, true)
     var value = chat.new('mock-model', '/tmp/project')
@@ -118,6 +153,24 @@ test 'chat restores history and renders configured context state in the footer' 
     value.apply(session_stream.event_t {kind: agent_types.EVENT_AGENT_START, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_START,},})
     rendered = strings.join(value.render(120), '\n')
     assert(rendered.contains('Thinking...'))
+}
+
+test 'loaded chat history does not observe later session vector appends' {
+    var value = chat.new('mock-model', '/tmp/project')
+    [types.message_t] session_messages = [new types.user_message_t(content = 'hello')]
+    value.load_messages(session_messages)
+    [types.content_t] content = [new types.text_content_t(text = 'one answer')]
+    types.message_t assistant = new types.assistant_message_t(content = content, stop_reason = types.STOP_STOP)
+    session_messages.push(assistant)
+    assert(value.messages.len() == 1)
+    string rendered = strings.join(value.render(80), '\n')
+    assert(rendered.contains('hello'))
+    assert(!rendered.contains('one answer'))
+
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_START, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_START, assistant_message: assistant as ref<types.assistant_message_t>,},})
+    assert(value.streaming_assistant is ref<types.assistant_message_t>)
+    value.load_messages(session_messages)
+    assert(!(value.streaming_assistant is ref<types.assistant_message_t>))
 }
 
 test 'branch summarization status does not increment compaction count' {

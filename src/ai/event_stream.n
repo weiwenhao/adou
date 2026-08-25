@@ -151,7 +151,7 @@ fn snapshot_event(types.assistant_event_t source): types.assistant_event_t {
         result.error = clone.assistant(error_message)
     }
     if source.tool_call is ref<types.tool_call_t> call {
-        result.tool_call = new types.tool_call_t(id = call.id, name = call.name, arguments = call.arguments, partial_json = call.partial_json)
+        result.tool_call = clone.tool_call(call)
     }
     return result
 }

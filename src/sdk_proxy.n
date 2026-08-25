@@ -162,7 +162,10 @@ fn apply_proxy_event(ref<event_stream.assistant_stream_t> stream, ref<ai_types.a
         }
         'toolcall_end' -> {
             if index < 0 || index >= partial.content.len() || !(partial.content[index] is ref<ai_types.tool_call_t>) {throw errorf('Received toolcall_end for non-toolCall content')}
-            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_END, content_index: index, tool_call: partial.content[index] as ref<ai_types.tool_call_t>, partial: partial,})
+            var call = partial.content[index] as ref<ai_types.tool_call_t>
+            call.arguments_json = call.partial_json == '' ? '{}' : call.partial_json
+            call.arguments = streaming_json.parse(call.arguments_json)
+            stream.push(ai_types.assistant_event_t {kind: ai_types.EVENT_TOOLCALL_END, content_index: index, tool_call: call, partial: partial,})
         }
         'done' -> {
             partial.stop_reason = json_util.opt_string(object, 'reason')

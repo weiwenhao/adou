@@ -57,6 +57,10 @@ pub type tool_call_t = struct {
     string name
     any arguments
     string partial_json
+    // Nature's dynamic JSON strings can outlive the SSE object that produced
+    // them. Providers retain the completed raw argument JSON here so final
+    // message snapshots can rebuild an independently owned value.
+    string arguments_json
     // Google thought signatures ride on functionCall parts and must replay
     // verbatim on later turns (google-shared.ts).
     string thought_signature

@@ -209,9 +209,14 @@ pub fn processor_t.finish_tool_call(&self, int index, {string:any} object, [type
                 tool_call.name = name
             }
             if tool_call_object.contains('arguments') && !json_util.is_null(tool_call_object['arguments']) {
-                tool_call.arguments = tool_call_object['arguments']
+                tool_call.arguments_json = json_util.stringify(tool_call_object['arguments'])
+                tool_call.arguments = streaming_json.parse(tool_call.arguments_json)
                 tool_call.partial_json = ''
             }
+        }
+        if tool_call.arguments_json == '' {
+            tool_call.arguments_json = tool_call.partial_json == '' ? '{}' : tool_call.partial_json
+            tool_call.arguments = streaming_json.parse(tool_call.arguments_json)
         }
     }
     if self.tool_json.contains(index) {

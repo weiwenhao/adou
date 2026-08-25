@@ -1,5 +1,16 @@
 import adou.src.ai.types
 import adou.src.json_util
+import adou.src.ai.streaming_json
+
+pub fn tool_call(ref<types.tool_call_t> source): ref<types.tool_call_t> {
+    any arguments = {}
+    if source.arguments_json != '' {
+        arguments = streaming_json.parse(source.arguments_json)
+    } else {
+        arguments = json_util.clone(source.arguments) catch e {{}}
+    }
+    return new types.tool_call_t(id = source.id, name = source.name, arguments = arguments, partial_json = source.partial_json, arguments_json = source.arguments_json, thought_signature = source.thought_signature)
+}
 
 pub fn assistant(ref<types.assistant_message_t> source): ref<types.assistant_message_t> {
     [any] diagnostics = []
@@ -16,12 +27,7 @@ pub fn assistant(ref<types.assistant_message_t> source): ref<types.assistant_mes
             types.content_t copied = new types.thinking_content_t(thinking = thinking.thinking, thinking_signature = thinking.thinking_signature, redacted = thinking.redacted)
             result.content.push(copied)
         } else if block is ref<types.tool_call_t> call {
-            // Tool arguments are arbitrary JSON stored in `any`.  A shallow
-            // copy makes the session writer and the next provider request
-            // reflect over the same runtime object graph from two coroutines.
-            // Nature's serializer requires an isolated JSON value here.
-            any arguments = json_util.clone(call.arguments) catch e {{}}
-            types.content_t copied = new types.tool_call_t(id = call.id, name = call.name, arguments = arguments, partial_json = call.partial_json)
+            types.content_t copied = tool_call(call)
             result.content.push(copied)
         }
     }

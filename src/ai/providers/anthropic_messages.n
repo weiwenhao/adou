@@ -152,7 +152,8 @@ pub fn processor_t.start_block(&self, int provider_index, any block, [types.assi
         // Clone the value so the streamed output owns its arguments rather
         // than retaining a reference into the parsed SSE frame.
         if block_object.contains('input') && !json_util.is_null(block_object['input']) {
-            content.arguments = json_util.clone(block_object['input'])
+            content.arguments_json = json_util.stringify(block_object['input'])
+            content.arguments = streaming_json.parse(content.arguments_json)
         } else {
             {string:any} empty_args = {}
             content.arguments = empty_args
@@ -207,6 +208,7 @@ pub fn processor_t.stop_block(&self, int provider_index, [types.assistant_event_
         }
         // The final input_json payload can still be incomplete. Pi repairs it
         // with the same incremental parser used for each input delta.
+        slot.tool_call.arguments_json = arguments
         slot.tool_call.arguments = streaming_json.parse(arguments)
         slot.tool_call.partial_json = ''
         var event = update_event(types.EVENT_TOOLCALL_END, slot.content_index, '', '', self.output)

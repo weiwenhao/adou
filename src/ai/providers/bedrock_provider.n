@@ -119,6 +119,7 @@ pub fn processor_t.feed(&self, bedrock_messages.stream_event_t event): [types.as
                         if block is ref<types.tool_call_t> call {
                             var merged = merge_json(call.arguments, tool_use['input'])
                             call.arguments = merged
+                            call.arguments_json = json_util.stringify(merged)
                             events.push(update_event(types.EVENT_TOOLCALL_DELTA, self.output.content.len() - 1, json_util.stringify(tool_use['input']), '', self.output))
                         }
                     }
@@ -136,6 +137,10 @@ pub fn processor_t.feed(&self, bedrock_messages.stream_event_t event): [types.as
             } else if block is ref<types.thinking_content_t> thinking {
                 events.push(update_event(types.EVENT_THINKING_END, index, '', thinking.thinking, self.output))
             } else if block is ref<types.tool_call_t> call {
+                if call.arguments_json == '' {
+                    call.arguments_json = '{}'
+                    call.arguments = json_util.parse(call.arguments_json)
+                }
                 var event = update_event(types.EVENT_TOOLCALL_END, index, '', '', self.output)
                 event.tool_call = call
                 events.push(event)

@@ -1,5 +1,6 @@
 import adou.src.ai.types
 import adou.src.json_util
+import adou.src.ai.streaming_json
 
 
 pub fn encode(types.message_t message): any! {
@@ -109,7 +110,11 @@ pub fn encode_content([types.content_t] content): any! {
             item['type'] = 'toolCall'
             item['id'] = call.id
             item['name'] = call.name
-            item['arguments'] = call.arguments
+            if call.arguments_json != '' {
+                item['arguments'] = streaming_json.parse(call.arguments_json)
+            } else {
+                item['arguments'] = call.arguments
+            }
         }
         result.push(item)
     }
@@ -132,7 +137,7 @@ pub fn decode_content(any value): [types.content_t]! {
             if item.contains('arguments') {
                 arguments = json_util.clone(item['arguments'])
             }
-            types.content_t block = new types.tool_call_t(id = required_string(item, 'id'), name = required_string(item, 'name'), arguments = arguments)
+            types.content_t block = new types.tool_call_t(id = required_string(item, 'id'), name = required_string(item, 'name'), arguments = arguments, arguments_json = json_util.stringify(arguments))
             result.push(block)
         }
     }

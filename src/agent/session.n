@@ -80,10 +80,16 @@ pub type tree_target_t = struct {
 
 pub fn new(ref<repository.manager_t> session_repository, ref<agent_types.context_t> context, ref<agent_types.config_t> config, agent_types.stream_fn stream_function, compaction_types.settings_t settings): ref<runner_t>! {
     var stored = session_repository.build_context()
-    config.await_message_end_ack = true
     agent_types.snapshot_tool_schemas(context.tools)
     [string] active_names = stored.active_tool_names.len() > 0 ? stored.active_tool_names : tool_names(context.tools)
     var runner = new runner_t(lock = mutex.mutex_t.new(), repository = session_repository, base_context = context, all_tools = context.tools.slice(0, context.tools.len()), active_tool_names = active_names, agent_config = config, stream_function = stream_function, compaction_settings = settings, active_messages = stored.messages)
+    agent_types.message_end_listener_fn persist_message = fn(ai_types.message_t message): void! {
+        // This runs on the agent producer coroutine. It is the Nature
+        // equivalent of Pi awaiting AgentSession._handleAgentEvent().
+        runner.repository.append_message(message)
+        runner.append_active_message(message)
+    }
+    runner.agent_config.message_end_listener = persist_message
     runner.base_context.tools = filter_tools(runner.all_tools, active_names)
     return runner
 }
@@ -1134,12 +1140,6 @@ pub fn runner_t.forward_agent_stream(&self, ref<session_stream.stream_t> output,
         debug.log('agent', 'provider event=' + event.kind)
         if event.kind == agent_types.EVENT_MESSAGE_END {
             var message = event.message()
-            self.repository.append_message(message) catch error {
-                event.acknowledge_message_end() catch ack_error {}
-                throw error
-            }
-            self.append_active_message(message)
-            event.acknowledge_message_end()
             if message is ref<ai_types.assistant_message_t> assistant {
                 last_assistant = assistant
             }
@@ -1218,7 +1218,11 @@ pub fn runner_t.remove_last_active_error(&self, ref<ai_types.assistant_message_t
     if self.active_messages.len() > 0 {
         int last = self.active_messages.len() - 1
         if self.active_messages[last] is ref<ai_types.assistant_message_t> current {
-            if current == expected {
+            // The synchronous message_end listener deliberately owns a deep
+            // copy, so identity differs from the TUI event copy returned by
+            // forward_agent_stream. Match the same finalized response by its
+            // stable fields before retrying.
+            if current.stop_reason == ai_types.STOP_ERROR && current.timestamp == expected.timestamp && current.response_id == expected.response_id && current.error_message == expected.error_message {
                 self.active_messages = self.active_messages.slice(0, last)
             }
         }
