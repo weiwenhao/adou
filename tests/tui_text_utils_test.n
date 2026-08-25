@@ -14,6 +14,11 @@ test 'visible width handles large styled rows without per-byte rebuilding' {
     assert(text_utils.visible_width(styled) == 50000)
 }
 
+test 'normalize terminal output does not rebuild ANSI-only rows' {
+    string row = '\x1b[38;2;212;212;212mcolored assistant text\x1b[39m'
+    assert(text_utils.normalize_terminal_output(row) == row)
+}
+
 test 'truncate is grapheme safe preserves ANSI and pads by cells' {
     string plain = text_utils.truncate_to_width('ab界cd', 5, '...', false)
     assert(text_utils.visible_width(plain) == 5)

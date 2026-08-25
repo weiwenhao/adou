@@ -105,7 +105,10 @@ pub fn visible_width(string text): int! {
 }
 
 pub fn normalize_terminal_output(string text): string {
-    if text.find('\x1b') < 0 && text.find('\t') < 0 && text.find('ำ') < 0 && text.find('ຳ') < 0 {
+    // ANSI escape codes are already terminal-safe. Do not split and join
+    // every colored row just because it contains ESC; only normalize rows
+    // that actually contain tabs or the two known combining sequences.
+    if text.find('\t') < 0 && text.find('ำ') < 0 && text.find('ຳ') < 0 {
         return text
     }
     [string] parts = vec<string>.cap_of(8)

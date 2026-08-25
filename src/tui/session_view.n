@@ -666,6 +666,10 @@ pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! 
             last_render_ms = now
         }
         if event_received {
+            // A buffered stream can deliver events without blocking. Yield
+            // between those events so Nature's GC and other coroutines get a
+            // scheduling point even while the provider is continuously hot.
+            co.yield()
             continue
         }
         if stream.events.is_closed() {
