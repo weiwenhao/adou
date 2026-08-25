@@ -50,23 +50,23 @@ test 'concurrent atomic writers leave a whole document behind' {
 }
 
 fn write_one(string file_path, int index, chan<bool> done) {
-    i32 lock_fd = atomic_io.acquire_lock(file_path) catch error {
+    var lock = atomic_io.acquire_lock(file_path) catch error {
         done.send(false) catch e2 {}
         return
     }
     atomic_io.write_file_atomic(file_path, '{"writer":' + fmt.sprintf('%d', index) + '}') catch e {
-        atomic_io.release_lock(lock_fd) catch e2 {}
+        atomic_io.release_lock(lock) catch e2 {}
         done.send(false) catch e3 {}
         return
     }
-    atomic_io.release_lock(lock_fd) catch e2 {}
+    atomic_io.release_lock(lock) catch e2 {}
     done.send(true) catch e4 {}
 }
 
 test 'lock files are reusable across sequential acquisitions' {
     string file_path = unique_path('seq')
-    i32 first = atomic_io.acquire_lock(file_path)
+    var first = atomic_io.acquire_lock(file_path)
     atomic_io.release_lock(first) catch e {}
-    i32 second = atomic_io.acquire_lock(file_path)
+    var second = atomic_io.acquire_lock(file_path)
     atomic_io.release_lock(second) catch e {}
 }

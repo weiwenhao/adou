@@ -1,9 +1,27 @@
+import co
+import co.mutex
+import fs
 import syscall
 
 // Node can replace process.stdout.write.  Nature does not expose a mutable
 // process stream method, so callers explicitly use these raw writers for
 // machine-readable output and keep ordinary diagnostics on stderr.
 var stdout_taken_over = false
+type output_state_t = struct {
+    ref<mutex.mutex_t> lock
+    ref<fs.file_t>? stdout = null
+    ref<fs.file_t>? stderr = null
+}
+ref<output_state_t>? standard_output_state = null
+
+fn output_state(): ref<output_state_t> {
+    if standard_output_state is ref<output_state_t> state {
+        return state
+    }
+    var state = new output_state_t(lock = mutex.mutex_t.new())
+    standard_output_state = state
+    return state
+}
 
 pub fn take_over_stdout() {
     stdout_taken_over = true
@@ -33,27 +51,73 @@ pub fn write_stderr(string text): void! {
     write_raw_stderr(text)
 }
 
-// Standard streams are blocking file descriptors in the CLI.  A synchronous
-// loop preserves the bytes on short writes and gives callers an explicit
-// error instead of silently dropping protocol output.
+// Keep one independent fs context per standard stream and serialize access:
+// Nature's fs.file_t suspends the coroutine through libuv, while sharing one
+// context between concurrent writes would overwrite its in-flight request.
 pub fn write_fd(int fd, string text): void! {
     if text.len() == 0 {
         return
     }
+    var state = output_state()
+    state.lock.lock()
+    ref<fs.file_t>? selected = null
+    if fd == syscall.STDOUT {
+        if state.stdout is ref<fs.file_t> output {
+            selected = output
+        } else {
+            var output = fs.stdout() catch error {
+                state.lock.unlock()
+                throw error
+            }
+            state.stdout = output
+            selected = output
+        }
+    } else if fd == syscall.STDERR {
+        if state.stderr is ref<fs.file_t> output {
+            selected = output
+        } else {
+            var output = fs.stderr() catch error {
+                state.lock.unlock()
+                throw error
+            }
+            state.stderr = output
+            selected = output
+        }
+    } else {
+        state.lock.unlock()
+        throw errorf('raw output supports only stdout and stderr')
+    }
     [u8] bytes = text as [u8]
     int offset = 0
-    for offset < bytes.len() {
-        [u8] chunk = bytes.slice(offset, bytes.len())
-        int written = syscall.write(fd, chunk.ref(), chunk.len())
-        if written <= 0 {
-            throw errorf('incomplete raw output write')
+    if selected is ref<fs.file_t> output {
+        int empty_writes = 0
+        for offset < bytes.len() {
+            int written = output.write(bytes.slice(offset, bytes.len())) catch error {
+                state.lock.unlock()
+                throw error
+            }
+            if written < 0 {
+                state.lock.unlock()
+                throw errorf('raw output write failed')
+            }
+            if written == 0 {
+                empty_writes += 1
+                if empty_writes >= 16 {
+                    state.lock.unlock()
+                    throw errorf('incomplete raw output write')
+                }
+                co.sleep(4)
+                continue
+            }
+            empty_writes = 0
+            offset += written
         }
-        offset += written
     }
+    state.lock.unlock()
 }
 
-// Nature writes synchronously, so these are explicit no-ops that preserve the
-// call shape used by Pi's async output guard.
+// fs.file_t.write completes after libuv reports the write, so no additional
+// backpressure promise is needed to preserve Pi's call shape.
 pub fn wait_for_raw_stdout_backpressure(): void! {
     return
 }

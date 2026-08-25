@@ -2,6 +2,7 @@ import adou.src.ai.providers.registry
 import adou.src.ai.types
 import adou.src.json_util
 import adou.src.tools.path_utils
+import adou.src.config.atomic_io
 import adou.src.config.paths
 import adou.src.config.resolve_config_value
 import fs
@@ -9,13 +10,6 @@ import json
 import os
 import path
 import syscall
-
-#linkid adou_auth_lock
-fn native_auth_lock(anyptr path): i32
-#linkid adou_auth_unlock
-fn native_auth_unlock(i32 fd): i32
-#linkid adou_auth_atomic_write
-fn native_auth_atomic_write(anyptr path, anyptr data, i32 length): i32
 
 // Pi's RuntimeCredentials overlay: non-persistent API keys win over the
 // persisted auth.json store without writing to disk.
@@ -150,21 +144,18 @@ pub fn save(string provider, string key): void! {
     }
     string file_path = auth_path()
     os.mkdirs(path.dir(file_path), 0o700)
-    i32 lock_fd = acquire_lock(file_path)
+    var lock = atomic_io.acquire_lock(file_path)
     var object = read_root(file_path)
     {string:any} credential = {}
     credential['type'] = 'api_key'
     credential['key'] = key
     object[provider] = credential
     string serialized = json.serialize(object)
-    i32 write_result = native_auth_atomic_write(file_path.ref(), serialized.ref(), serialized.len() as i32)
-    i32 unlock_result = native_auth_unlock(lock_fd)
-    if write_result < 0 {
-        throw errorf('Could not atomically write auth storage')
+    atomic_io.write_file_atomic(file_path, serialized) catch error {
+        atomic_io.release_lock(lock) catch unlock_error {}
+        throw error
     }
-    if unlock_result < 0 {
-        throw errorf('Could not unlock auth storage')
-    }
+    atomic_io.release_lock(lock)
     invalidate_auth_cache()
 }
 
@@ -178,23 +169,20 @@ pub fn save(string provider, string key): void! {
 pub fn remove(string provider): void! {
     string file_path = auth_path()
     os.mkdirs(path.dir(file_path), 0o700)
-    i32 lock_fd = acquire_lock(file_path)
+    var lock = atomic_io.acquire_lock(file_path)
     var object = read_root(file_path)
     if object.contains(provider) {
         object.del(provider)
         string serialized = json.serialize(object)
-        i32 write_result = native_auth_atomic_write(file_path.ref(), serialized.ref(), serialized.len() as i32)
-        i32 unlock_result = native_auth_unlock(lock_fd)
-        if write_result < 0 {
-            throw errorf('Could not atomically write auth storage')
+        atomic_io.write_file_atomic(file_path, serialized) catch error {
+            atomic_io.release_lock(lock) catch unlock_error {}
+            throw error
         }
-        if unlock_result < 0 {
-            throw errorf('Could not unlock auth storage')
-        }
+        atomic_io.release_lock(lock)
         invalidate_auth_cache()
         return
     }
-    native_auth_unlock(lock_fd)
+    atomic_io.release_lock(lock) catch error {}
     remove_from_snapshot(provider)
 }
 
@@ -367,35 +355,32 @@ pub type credential_modify_fn = fn(ref<credential_edit_t>? current): ref<credent
 pub fn modify_credential(string provider, credential_modify_fn modify_fn): void! {
     string file_path = auth_path()
     os.mkdirs(path.dir(file_path), 0o700)
-    i32 lock_fd = acquire_lock(file_path)
+    var lock = atomic_io.acquire_lock(file_path)
     var current = credential_edit_from_object(read_root(file_path), provider)
     var next = modify_fn(current) catch error {
-        native_auth_unlock(lock_fd)
+        atomic_io.release_lock(lock) catch unlock_error {}
         throw error
     }
     if next is ref<credential_edit_t> replacement {
-        persist_edit_locked(file_path, provider, replacement, lock_fd)
+        persist_edit_locked(file_path, provider, replacement, lock)
         return
     }
-    native_auth_unlock(lock_fd)
+    atomic_io.release_lock(lock)
 }
 
-fn persist_object_locked(string file_path, string provider, {string:any} credential, i32 lock_fd): void! {
+fn persist_object_locked(string file_path, string provider, {string:any} credential, ref<atomic_io.lock_t> lock): void! {
     var object = read_root(file_path)
     object[provider] = credential
     string serialized = json.serialize(object)
-    i32 write_result = native_auth_atomic_write(file_path.ref(), serialized.ref(), serialized.len() as i32)
-    i32 unlock_result = native_auth_unlock(lock_fd)
-    if write_result < 0 {
-        throw errorf('Could not atomically write auth storage')
+    atomic_io.write_file_atomic(file_path, serialized) catch error {
+        atomic_io.release_lock(lock) catch unlock_error {}
+        throw error
     }
-    if unlock_result < 0 {
-        throw errorf('Could not unlock auth storage')
-    }
+    atomic_io.release_lock(lock)
     invalidate_auth_cache()
 }
 
-fn persist_edit_locked(string file_path, string provider, ref<credential_edit_t> credential, i32 lock_fd): void! {
+fn persist_edit_locked(string file_path, string provider, ref<credential_edit_t> credential, ref<atomic_io.lock_t> lock): void! {
     {string:any} object = {}
     object['type'] = credential.credential_type
     if credential.credential_type == 'api_key' {
@@ -415,7 +400,7 @@ fn persist_edit_locked(string file_path, string provider, ref<credential_edit_t>
     for name, value in credential.env {
         object[name] = value
     }
-    persist_object_locked(file_path, provider, object, lock_fd)
+    persist_object_locked(file_path, provider, object, lock)
 }
 
 fn credential_edit_from_object({string:any} object, string provider): ref<credential_edit_t>? {
@@ -470,15 +455,6 @@ fn restore_env({string:string} env, {string:any} credential) {
 
 pub fn credential_field(string name): bool {
     return name == 'type' || name == 'key' || name == 'refresh' || name == 'access' || name == 'expires' || name == 'accountId' || name == 'enterpriseDomain' || name == 'enterpriseUrl' || name == 'baseUrl' || name == 'gateway' || name == 'scope' || name == 'availableModelIds' || name == 'gatewayConfig'
-}
-
-fn acquire_lock(string file_path): i32! {
-    string lock_path = file_path + '.lock'
-    i32 fd = native_auth_lock(lock_path.ref())
-    if fd < 0 {
-        throw errorf('Could not lock auth storage')
-    }
-    return fd
 }
 
 fn read_root(string file_path): {string:any} {
@@ -540,8 +516,5 @@ fn reload_snapshot_from(string file_path): bool {
 
 pub fn write_file(string file_path, string content): void! {
     os.mkdirs(path.dir(file_path), 0o700)
-    i32 result = native_auth_atomic_write(file_path.ref(), content.ref(), content.len() as i32)
-    if result < 0 {
-        throw errorf('Could not atomically write auth storage')
-    }
+    atomic_io.write_file_atomic(file_path, content)
 }

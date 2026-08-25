@@ -184,11 +184,6 @@ pub fn manager_t.import_file(&self, string source_path): ref<manager_t>! {
     if destination != resolved_source {
         var output = fs.open(destination, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
         write_all(output, content as [u8])
-        if libc.fsync(output.fd as i32) != 0 {
-            string message = libc.error_string()
-            output.close()
-            throw errorf('fsync imported session failed: %s', message)
-        }
         output.close()
     }
     return open(destination)
@@ -1367,11 +1362,6 @@ pub fn manager_t.persist_line(&self, string line, bool is_assistant_entry): void
             write_all(file, (pending + '\n') as [u8])
         }
         write_all(file, (line + '\n') as [u8])
-        if libc.fsync(file.fd as i32) != 0 {
-            string message = libc.error_string()
-            file.close()
-            throw errorf('fsync session failed: %s', message)
-        }
         file.close()
         self.session_flushed = true
         self.pending_lines = []
@@ -1383,33 +1373,18 @@ pub fn manager_t.persist_line(&self, string line, bool is_assistant_entry): void
         self.needs_separator = false
     }
     write_all(file, (line + '\n') as [u8])
-    if libc.fsync(file.fd as i32) != 0 {
-        string message = libc.error_string()
-        file.close()
-        throw errorf('fsync session failed: %s', message)
-    }
     file.close()
 }
 
 fn write_new_file(string file_path, string content): void! {
     var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_EXCL, 0o600)
     write_all(file, content as [u8])
-    if libc.fsync(file.fd as i32) != 0 {
-        string message = libc.error_string()
-        file.close()
-        throw errorf('fsync session failed: %s', message)
-    }
     file.close()
 }
 
 fn rewrite_file(string file_path, string content): void! {
     var file = fs.open(file_path, syscall.O_WRONLY | syscall.O_TRUNC, 0o600)
     write_all(file, content as [u8])
-    if libc.fsync(file.fd as i32) != 0 {
-        string message = libc.error_string()
-        file.close()
-        throw errorf('fsync session failed: %s', message)
-    }
     file.close()
 }
 

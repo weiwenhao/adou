@@ -18,7 +18,6 @@ REGEX_OBJ := native/regex.o
 STDIN_PEEK_OBJ := native/stdin_peek.o
 AUTH_STORE_OBJ := native/auth_store.o
 CLIPBOARD_IMAGE_OBJ := native/clipboard_image.o
-FS_WATCH_OBJ := native/fs_watch.o
 
 ICU_INCLUDE ?= $(firstword $(wildcard /opt/homebrew/opt/icu4c/include /usr/local/opt/icu4c/include))
 ICU_CFLAGS := $(if $(ICU_INCLUDE),-I$(ICU_INCLUDE),)
@@ -32,7 +31,7 @@ E2E_SOURCES := $(sort $(wildcard tests/e2e/*.sh))
 # registered here to join make e2e-live.  Each live script self-gates
 # behind an ADOU_LIVE_* switch, so this target is safe to invoke without
 # any switch set.
-E2E_LIVE_SOURCES := tests/e2e/live/live-smoke.sh tests/e2e/live/live-coding-journey.sh tests/e2e/live/live-tui-coding-journey.sh tests/e2e/live/openai-journey.sh tests/e2e/live/openai-oauth.sh tests/e2e/live/radius-web.sh tests/e2e/live/share-github.sh
+E2E_LIVE_SOURCES := tests/e2e/live/live-smoke.sh tests/e2e/live/live-coding-journey.sh tests/e2e/live/live-tui-coding-journey.sh tests/e2e/live/live-tui-memory-pressure.sh tests/e2e/live/openai-journey.sh tests/e2e/live/openai-oauth.sh tests/e2e/live/radius-web.sh tests/e2e/live/share-github.sh
 EVAL_ENTRY := tests/evals/smoke_evals.n
 EVAL_BIN := $(BIN_DIR)/adou-evals
 ADOU_VERSION := $(shell sed -n "s/^pub const VERSION = '\([^']*\)'.*/\1/p" $(CURDIR)/src/app.n)
@@ -77,11 +76,7 @@ $(CLIPBOARD_IMAGE_OBJ): native/clipboard_image.c
 	@mkdir -p "$(dir $@)"
 	@$(CC) -std=c11 -O2 -c "$<" -o "$@"
 
-$(FS_WATCH_OBJ): native/fs_watch.c
-	@mkdir -p "$(dir $@)"
-	@$(CC) -std=c11 -O2 -c "$<" -o "$@"
-
-$(ADOU_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(CLIPBOARD_IMAGE_OBJ) $(FS_WATCH_OBJ) $(NATURE_SERIAL)
+$(ADOU_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(CLIPBOARD_IMAGE_OBJ) $(NATURE_SERIAL)
 	@mkdir -p "$(BIN_DIR)"
 	@NATURE_EXECUTABLE="$(NATURE)" "$(NATURE_SERIAL)" build -o "$(ADOU_BIN)" "$(CURDIR)/main.n"
 
@@ -91,7 +86,7 @@ run: build
 # Nature's own test runner is the test framework.  Run tests one at a time so
 # each invocation gets the same stale-compiler cleanup and no two Nature
 # processes can overlap.
-test: $(NATURE_SERIAL) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(CLIPBOARD_IMAGE_OBJ) $(FS_WATCH_OBJ) $(PROCESS_GROUP_HELPER)
+test: $(NATURE_SERIAL) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(CLIPBOARD_IMAGE_OBJ) $(PROCESS_GROUP_HELPER)
 	@set -e; for test_file in $(TEST_SOURCES); do \
 		echo "==> $$test_file"; \
 		ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" NATURE_EXECUTABLE="$(NATURE)" "$(NATURE_SERIAL)" test "$(CURDIR)/$$test_file"; \

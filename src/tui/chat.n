@@ -56,6 +56,12 @@ pub type chat_t = struct {
     float total_cost
     float latest_cache_hit_rate = -1.0
     bool context_known = true
+    // Pi derives this value from the finalized message history.  Repeating
+    // the derivation on every terminal frame is cheap in JavaScript, but in
+    // Nature it also reflects and serializes every trailing tool-call map.
+    // Keep the same value while recomputing it only when messages change.
+    int context_tokens
+    bool context_tokens_valid = true
     // Pi settings.outputPad: horizontal padding for user messages, assistant
     // messages and thinking (0 or 1, default 1).
     int output_pad = 1
@@ -106,6 +112,7 @@ pub fn chat_t.toggle_thinking_visibility(&self): bool {
 
 pub fn chat_t.load_messages(&self, [ai_types.message_t] messages) {
     self.messages = messages.slice(0, messages.len())
+    self.refresh_context_tokens()
     // Pi rebuilds the chat container from finalized session entries and
     // discards any in-flight AssistantMessageComponent. Keeping Adou's
     // separate streaming snapshot across a rebuild renders the same final
@@ -158,6 +165,16 @@ pub fn chat_t.invalidate_transcript_cache(&self) {
     self.transcript_cache = []
 }
 
+fn chat_t.refresh_context_tokens(&self) {
+    var estimate = token_estimate.estimate_context_tokens(self.messages) catch error {
+        self.context_tokens = 0
+        self.context_tokens_valid = false
+        return
+    }
+    self.context_tokens = estimate.tokens
+    self.context_tokens_valid = true
+}
+
 fn chat_t.reset_streaming_thinking_cache(&self) {
     self.streaming_thinking_stable_rows = []
     self.streaming_thinking_source = ''
@@ -188,6 +205,7 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
         var bash = new ai_types.bash_execution_message_t(command = event.bash_command, output = event.bash_output, exit_code = event.bash_exit_code, cancelled = event.bash_cancelled, truncated = event.bash_truncated, full_output_path = event.bash_full_output_path, exclude_from_context = event.bash_exclude_from_context)
         ai_types.message_t message = bash
         self.messages.push(message)
+        self.refresh_context_tokens()
         self.active_bash = null
         // Pi keeps the exit status on the bash message itself; the global
         // status row returns to idle so the footer does not echo the code.
@@ -307,6 +325,7 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
         if agent_event.user_message is ref<ai_types.user_message_t> user {
             ai_types.message_t message = user
             self.messages.push(message)
+            self.refresh_context_tokens()
         } else if agent_event.assistant_message is ref<ai_types.assistant_message_t> assistant {
             // Pi creates exactly one AssistantMessageComponent at
             // message_start and updates that component for the whole stream.
@@ -327,6 +346,7 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
             // the streaming slot.
             ai_types.message_t message = assistant
             self.messages.push(message)
+            self.refresh_context_tokens()
             self.streaming_assistant = null
             self.reset_streaming_thinking_cache()
             // A completed assistant message is no longer thinking.  Pi
@@ -337,6 +357,7 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
         } else if agent_event.tool_message is ref<ai_types.tool_result_message_t> tool {
             ai_types.message_t message = tool
             self.messages.push(message)
+            self.refresh_context_tokens()
             self.remove_tool(tool.tool_call_id)
         }
         return
@@ -514,12 +535,11 @@ pub fn chat_t.render_footer(&self, int width): [string]! {
     if self.total_cost > 0.0 {stats.push(fmt.sprintf('$%.3f', self.total_cost))}
     if self.context_window > 0 {
         string context_display = ''
-        if !self.context_known {
+        if !self.context_known || !self.context_tokens_valid {
             context_display = '?/' + format_tokens(self.context_window) + (self.auto_compaction ? ' (auto)' : '')
         } else {
-            var estimate = token_estimate.estimate_context_tokens(self.messages)
-            float percent_value = estimate.tokens as float * 100.0 / self.context_window as float
-            context_display = format_percent(estimate.tokens, self.context_window) + '/' + format_tokens(self.context_window) + (self.auto_compaction ? ' (auto)' : '')
+            float percent_value = self.context_tokens as float * 100.0 / self.context_window as float
+            context_display = format_percent(self.context_tokens, self.context_window) + '/' + format_tokens(self.context_window) + (self.auto_compaction ? ' (auto)' : '')
             if percent_value > 90.0 {
                 context_display = theme.fg(theme.error_color(), context_display)
             } else if percent_value > 70.0 {
@@ -568,6 +588,8 @@ pub fn chat_t.clear(&self) {
     self.total_cost = 0.0
     self.latest_cache_hit_rate = -1.0
     self.context_known = true
+    self.context_tokens = 0
+    self.context_tokens_valid = true
     self.invalidate_transcript_cache()
 }
 

@@ -1,6 +1,7 @@
 import adou.src.debug
 import adou.src.tui.text_utils
 import adou.src.tui.terminal_image
+import co
 import fmt
 import strings
 import syscall
@@ -13,6 +14,18 @@ pub const STRATEGY_DIFF = 'diff'
 pub const SYNC_START = '\x1b[?2026h'
 pub const SYNC_END = '\x1b[?2026l'
 pub const LINE_RESET = '\x1b[0m\x1b]8;;\x07'
+
+// Nature schedules coroutines cooperatively. Rendering a large transcript can
+// otherwise keep one coroutine running past the collector's safepoint wait
+// window, so long renderer loops explicitly hand control back in small,
+// bounded batches.
+const RENDER_YIELD_ROWS = 8
+
+fn yield_render_rows(int completed) {
+    if completed > 0 && completed % RENDER_YIELD_ROWS == 0 {
+        co.yield()
+    }
+}
 
 pub type result_t = struct {
     string output
@@ -87,6 +100,7 @@ fn renderer_t.render_frame(&self, [string] input_lines, int width, int height, b
         throw errorf('terminal dimensions must be positive')
     }
     [string] lines = vec<string>.cap_of(input_lines.len())
+    int normalized_rows = 0
     for input in input_lines {
         string normalized = text_utils.normalize_terminal_output(input)
         // Every renderer element represents one terminal row. Keep this
@@ -107,6 +121,8 @@ fn renderer_t.render_frame(&self, [string] input_lines, int width, int height, b
                 throw errorf('rendered line exceeds terminal width: %d > %d', visible, width)
             }
             lines.push(terminal_image.is_image_line(physical) ? physical : physical + LINE_RESET)
+            normalized_rows += 1
+            yield_render_rows(normalized_rows)
         }
     }
     bool width_changed = self.previous_width != 0 && self.previous_width != width
@@ -163,6 +179,7 @@ fn renderer_t.render_frame(&self, [string] input_lines, int width, int height, b
             }
             last_changed = index
         }
+        yield_render_rows(index + 1)
     }
     bool appended_lines = lines.len() > self.previous_lines.len()
     if appended_lines {
@@ -273,10 +290,12 @@ fn full_output([string] lines, bool clear, string kitty_deletes, int height): st
             output.push(line)
             output.push(csi_move(image_reserved_rows - 1, 'B'))
             index += image_reserved_rows
+            yield_render_rows(index)
             continue
         }
         output.push(line)
         index += 1
+        yield_render_rows(index)
     }
     output.push(SYNC_END)
     return strings.join(output, '')
@@ -304,6 +323,7 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
             if index < extra - 1 {
                 output.push(csi_move(1, 'B'))
             }
+            yield_render_rows(index + 1)
         }
         int move_back = extra - 1 + clear_start
         if move_back > 0 {
@@ -334,6 +354,7 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
     output.push(append_at_end ? '\r\n' : '\r')
     int render_end = last_changed < lines.len() ? last_changed : lines.len() - 1
     int index = first_changed
+    int rendered_rows = 0
     for index <= render_end && index >= 0 {
         if index > first_changed {
             output.push('\r\n')
@@ -349,11 +370,15 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
             output.push(line)
             output.push(csi_move(image_reserved_rows - 1, 'B'))
             index += image_reserved_rows
+            rendered_rows += image_reserved_rows
+            yield_render_rows(rendered_rows)
             continue
         }
         output.push('\x1b[2K')
         output.push(line)
         index += 1
+        rendered_rows += 1
+        yield_render_rows(rendered_rows)
     }
     if previous.len() > lines.len() {
         if render_end < lines.len() - 1 {
@@ -369,6 +394,7 @@ fn differential_output([string] previous, [string] lines, int hardware_cursor_ro
             output.push('\r\n\x1b[2K')
             for int index = 1; index < extra; index += 1 {
                 output.push('\r\n\x1b[2K')
+                yield_render_rows(index)
             }
             output.push(csi_move(extra, 'A'))
         }
@@ -412,16 +438,18 @@ fn renderer_t.delete_changed_kitty_images(&self, int first_changed, int last_cha
         for id in terminal_image.extract_kitty_image_ids(self.previous_lines[index]) {
             if !contains_id(ids, id) {ids.push(id)}
         }
+        yield_render_rows(index - first_changed + 1)
     }
     return delete_kitty_image_ids(ids)
 }
 
 fn collect_kitty_image_ids([string] lines): [int] {
     [int] ids = []
-    for line in lines {
+    for index, line in lines {
         for id in terminal_image.extract_kitty_image_ids(line) {
             if !contains_id(ids, id) {ids.push(id)}
         }
+        yield_render_rows(index + 1)
     }
     return ids
 }
@@ -457,12 +485,16 @@ fn expand_range_for_lines([string] lines, int first_changed, int last_changed): 
     int first = first_changed
     int last = last_changed
     for int index = 0; index < lines.len(); index += 1 {
-        if terminal_image.extract_kitty_image_ids(lines[index]).len() == 0 {continue}
+        if terminal_image.extract_kitty_image_ids(lines[index]).len() == 0 {
+            yield_render_rows(index + 1)
+            continue
+        }
         int block_end = index + kitty_image_reserved_rows(lines, index, lines.len() - 1) - 1
         if index >= first_changed || (index <= last_changed && block_end >= first_changed) {
             if index < first {first = index}
             if block_end > last {last = block_end}
         }
+        yield_render_rows(index + 1)
     }
     return (first, last)
 }
@@ -517,8 +549,9 @@ fn int_string(int value): string {
 
 pub fn copy_strings([string] values): [string] {
     [string] result = vec<string>.cap_of(values.len())
-    for value in values {
+    for index, value in values {
         result.push(value)
+        yield_render_rows(index + 1)
     }
     return result
 }

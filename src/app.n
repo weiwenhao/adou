@@ -523,9 +523,8 @@ pub fn run(): void! {
         throw error
     }
     view.restore_terminal_sync()
-    // The terminal reader coroutine stays parked in a blocking PTY read after
-    // the run loop exits, so the process would never terminate on its own.
-    // Exit explicitly after restoring the terminal.
+    // Exit explicitly after restoring the terminal so background input,
+    // signal, and version-check coroutines cannot extend TUI shutdown.
     syscall.exit(0) catch exit_error {}
     return
 }

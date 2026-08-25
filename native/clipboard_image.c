@@ -1,8 +1,7 @@
 #include <errno.h>
-#include <fcntl.h>
+#include <stdint.h>
 #include <stddef.h>
-#include <sys/stat.h>
-#include <unistd.h>
+#include <string.h>
 
 #if defined(__APPLE__)
 #include <dlfcn.h>
@@ -18,32 +17,12 @@ typedef adou_obj_t (*adou_msg1_fn)(adou_obj_t, adou_sel_t, adou_obj_t);
 typedef unsigned long (*adou_length_fn)(adou_obj_t, adou_sel_t);
 typedef const unsigned char *(*adou_bytes_fn)(adou_obj_t, adou_sel_t);
 
-static int write_all(const char *path, const unsigned char *data, unsigned long length) {
-    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
-    if (fd < 0) return -errno;
-    unsigned long offset = 0;
-    while (offset < length) {
-        ssize_t count = write(fd, data + offset, (size_t)(length - offset));
-        if (count < 0 && errno == EINTR) continue;
-        if (count <= 0) {
-            int saved = count == 0 ? EIO : errno;
-            close(fd);
-            return -saved;
-        }
-        offset += (unsigned long)count;
-    }
-    if (fchmod(fd, 0600) != 0) {
-        int saved = errno;
-        close(fd);
-        return -saved;
-    }
-    if (close(fd) != 0) return -errno;
-    return 1;
-}
-
-// Returns 1 for PNG, 2 for TIFF, 0 when the clipboard has no image, and a
-// negative errno-style value on a dynamic-runtime or filesystem failure.
-int adou_clipboard_image_write(const char *path) {
+// Copies PNG/TIFF clipboard bytes into caller-owned Nature memory. Passing a
+// null/zero buffer only queries the required size. File creation and writes
+// stay in Nature's fs module so this native bridge never blocks a processor
+// on file I/O.
+int64_t adou_clipboard_image_read(void *buffer, int64_t capacity, int64_t *kind_out) {
+    if (capacity < 0 || kind_out == NULL) return -EINVAL;
     void *objc = dlopen("/usr/lib/libobjc.A.dylib", RTLD_LAZY);
     void *appkit = dlopen("/System/Library/Frameworks/AppKit.framework/AppKit", RTLD_LAZY);
     if (objc == NULL || appkit == NULL) {
@@ -73,7 +52,7 @@ int adou_clipboard_image_write(const char *path) {
     adou_sel_t data_for_type = register_sel("dataForType:");
     adou_obj_t png_type = msg1(string_class, string_with_utf8, (adou_obj_t)"public.png");
     adou_obj_t data = msg1(pasteboard, data_for_type, png_type);
-    int kind = 1;
+    int64_t kind = 1;
     if (!data) {
         adou_obj_t tiff_type = msg1(string_class, string_with_utf8, (adou_obj_t)"public.tiff");
         data = msg1(pasteboard, data_for_type, tiff_type);
@@ -89,17 +68,34 @@ int adou_clipboard_image_write(const char *path) {
     adou_bytes_fn bytes = (adou_bytes_fn)msg0;
     unsigned long size = length(data, register_sel("length"));
     const unsigned char *content = bytes(data, register_sel("bytes"));
-    int result = (!content || size == 0) ? -EIO : write_all(path, content, size);
-    if (result > 0) result = kind;
+    if (!content || size == 0) {
+        dlclose(appkit);
+        dlclose(objc);
+        return -EIO;
+    }
+    *kind_out = kind;
+    if (buffer == NULL || capacity == 0) {
+        dlclose(appkit);
+        dlclose(objc);
+        return (int64_t)size;
+    }
+    if ((uint64_t)capacity < (uint64_t)size) {
+        dlclose(appkit);
+        dlclose(objc);
+        return -ENOSPC;
+    }
+    memcpy(buffer, content, size);
     dlclose(appkit);
     dlclose(objc);
-    return result;
+    return (int64_t)size;
 }
 
 #else
 
-int adou_clipboard_image_write(const char *path) {
-    (void)path;
+int64_t adou_clipboard_image_read(void *buffer, int64_t capacity, int64_t *kind_out) {
+    (void)buffer;
+    (void)capacity;
+    (void)kind_out;
     return 0;
 }
 

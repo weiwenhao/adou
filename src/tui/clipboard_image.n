@@ -5,8 +5,8 @@ import syscall
 import fmt
 import time
 
-#linkid adou_clipboard_image_write
-fn native_clipboard_image_write(anyptr path): int
+#linkid adou_clipboard_image_read
+fn native_clipboard_image_read(anyptr buffer, int capacity, ptr<int> kind): int
 
 pub type clipboard_image_t = struct {
     string path
@@ -18,11 +18,35 @@ pub type clipboard_image_t = struct {
 pub fn read(): clipboard_image_t? {
     int pid = syscall.getpid() catch error {0}
     string root = '/tmp/adou-clipboard-' + fmt.sprintf('%d-%d', pid, time.now().ms_timestamp())
-    int kind = native_clipboard_image_write(root.ref())
-    if kind <= 0 {
-        os.remove(root) catch error {}
+    int kind = 0
+    int required = native_clipboard_image_read(null, 0, &kind)
+    if required <= 0 {
         return null
     }
+    [u8] clipboard_bytes = vec<u8>.new(0, required)
+    int copied = native_clipboard_image_read(clipboard_bytes.ref(), clipboard_bytes.len(), &kind)
+    if copied <= 0 || copied > clipboard_bytes.len() {
+        return null
+    }
+    clipboard_bytes = clipboard_bytes.slice(0, copied)
+    var output = fs.open(root, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600) catch error {
+        return null
+    }
+    int offset = 0
+    for offset < clipboard_bytes.len() {
+        int written = output.write(clipboard_bytes.slice(offset, clipboard_bytes.len())) catch error {
+            output.close()
+            os.remove(root) catch cleanup_error {}
+            return null
+        }
+        if written <= 0 {
+            output.close()
+            os.remove(root) catch cleanup_error {}
+            return null
+        }
+        offset += written
+    }
+    output.close()
     string mime = kind == 1 ? 'image/png' : 'image/tiff'
     string source = root
     if kind == 2 {

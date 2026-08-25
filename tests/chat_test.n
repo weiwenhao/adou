@@ -11,6 +11,14 @@ import fmt
 import strings
 import time
 
+fn repeated(string value, int count): string {
+    string result = ''
+    for int index = 0; index < count; index += 1 {
+        result += value
+    }
+    return result
+}
+
 test 'chat view consumes streaming messages, tools, compaction and errors' {
     var value = chat.new('mock-model', '/tmp/project')
     var started = session_stream.event_t {kind: agent_types.EVENT_AGENT_START, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_START,},}
@@ -158,6 +166,23 @@ test 'chat restores history and renders configured context state in the footer' 
     value.apply(session_stream.event_t {kind: agent_types.EVENT_AGENT_START, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_START,},})
     rendered = strings.join(value.render(120), '\n')
     assert(rendered.contains('Thinking...'))
+}
+
+test 'footer context estimate refreshes when finalized history changes' {
+    var value = chat.new('mock-model', '/tmp/project')
+    value.configure(1000, 'off')
+    types.message_t history = new types.user_message_t(content = repeated('a', 400))
+    value.load_messages([history])
+    assert(value.context_tokens == 100)
+    string first = strings.join(value.render_footer(120), '\n')
+    assert(first.contains('10.0%/1k (auto)'))
+
+    var user = new types.user_message_t(content = repeated('b', 400))
+    var user_event = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_START, user_message: user,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_START, has_agent_event: true, agent_event: user_event,})
+    assert(value.context_tokens == 200)
+    string second = strings.join(value.render_footer(120), '\n')
+    assert(second.contains('20.0%/1k (auto)'))
 }
 
 test 'loaded chat history does not observe later session vector appends' {

@@ -2845,9 +2845,9 @@ fn view_t.stop_signals(&self) {
 }
 
 fn read_terminal(ref<view_t> view, chan<terminal_input_t> output): void! {
-    // Nature's terminal reader is backed by fs/libuv. Keep the blocking read
-    // in its own coroutine so the parser can handle escape timeouts without
-    // changing the descriptor flags or polling an idle terminal.
+    // Keep terminal I/O separate from escape-sequence parsing. fs.file_t
+    // suspends this coroutine while libuv waits for input, so an idle terminal
+    // never occupies a Nature processor.
     for !view.quitting {
         var bytes = view.terminal.read() catch error {
             debug.log('tui', 'terminal input failed: ' + error.msg())

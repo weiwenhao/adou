@@ -1,0 +1,53 @@
+import adou.src.context.fs_watch
+import co
+import fmt
+import fs
+import os
+import syscall
+import time
+
+fn watch_path(string label): string {
+    return '/tmp/adou-fs-watch-' + label + '-' + fmt.sprintf('%d', time.now().ms_timestamp())
+}
+
+fn write_text(string file_path, string content): void! {
+    var output = fs.open(file_path, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_TRUNC, 0o600)
+    [u8] bytes = content as [u8]
+    int offset = 0
+    for offset < bytes.len() {
+        int written = output.write(bytes.slice(offset, bytes.len()))
+        if written <= 0 {
+            output.close()
+            throw errorf('watch test write failed')
+        }
+        offset += written
+    }
+    output.close()
+}
+
+fn update_after_delay(string file_path, chan<bool> done) {
+    co.sleep(20)
+    write_text(file_path, 'after') catch error {
+        done.send(false) catch send_error {}
+        return
+    }
+    done.send(true) catch error {}
+}
+
+test 'file watcher sleeps cooperatively and observes replacement' {
+    string file_path = watch_path('change')
+    write_text(file_path, 'before')
+    var done = chan<bool>.new(1)
+    go update_after_delay(file_path, done)
+    bool changed = fs_watch.wait(file_path, 100)
+    assert(done.recv() catch error {false})
+    assert(changed)
+    os.remove(file_path) catch error {}
+}
+
+test 'file watcher does not report an unchanged file' {
+    string file_path = watch_path('unchanged')
+    write_text(file_path, 'same')
+    assert(!fs_watch.wait(file_path, 5))
+    os.remove(file_path) catch error {}
+}

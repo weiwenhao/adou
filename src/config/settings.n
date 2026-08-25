@@ -473,12 +473,12 @@ fn save_to(settings_t settings, string file_path): void! {
     // with atomic replacement.  Hold the same exclusive lock across the
     // write and replace the file durably (temp + fsync + rename) so a crash
     // can never leave truncated settings behind.
-    i32 lock_fd = atomic_io.acquire_lock(file_path)
+    var lock = atomic_io.acquire_lock(file_path)
     atomic_io.write_file_atomic(file_path, content) catch e {
-        atomic_io.release_lock(lock_fd) catch e2 {}
+        atomic_io.release_lock(lock) catch e2 {}
         throw e
     }
-    atomic_io.release_lock(lock_fd) catch e2 {}
+    atomic_io.release_lock(lock) catch e2 {}
 }
 
 // Pi persists the selected model immediately.  Keep this operation shared by

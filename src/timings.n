@@ -1,4 +1,5 @@
 import fmt
+import adou.src.output_guard
 import syscall
 import time as clock
 
@@ -87,7 +88,7 @@ pub fn print_timings() {
     if output == '' {
         return
     }
-    syscall.write(syscall.STDERR, output.ref(), output.len()) catch error {}
+    output_guard.write_raw_stderr(output) catch error {}
 }
 
 pub fn namespace_timings(string namespace): [timing_t] {

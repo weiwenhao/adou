@@ -1,6 +1,42 @@
-#linkid adou_fs_watch_wait
-fn native_fs_watch_wait(anyptr path, int timeout_ms): int
+import co
+import fs
+import syscall
+
+type snapshot_t = struct {
+    bool exists
+    u64 device
+    u64 inode
+    u64 size
+    u64 modified_seconds
+    u64 modified_nanoseconds
+}
 
 pub fn wait(string file_path, int timeout_ms): bool {
-    return native_fs_watch_wait(file_path.ref(), timeout_ms) > 0
+    var before = snapshot(file_path)
+    if timeout_ms > 0 {
+        co.sleep(timeout_ms)
+    } else {
+        co.yield()
+    }
+    var after = snapshot(file_path)
+    return before.exists != after.exists || before.device != after.device || before.inode != after.inode || before.size != after.size || before.modified_seconds != after.modified_seconds || before.modified_nanoseconds != after.modified_nanoseconds
+}
+
+fn snapshot(string file_path): snapshot_t {
+    var input = fs.open(file_path, syscall.O_RDONLY, 0) catch error {
+        return snapshot_t{}
+    }
+    var info = input.stat() catch error {
+        input.close()
+        return snapshot_t{}
+    }
+    input.close()
+    return snapshot_t {
+        exists: true,
+        device: info.dev,
+        inode: info.ino,
+        size: info.size,
+        modified_seconds: info.mtime.sec,
+        modified_nanoseconds: info.mtime.nsec,
+    }
 }

@@ -1,15 +1,11 @@
 // Terminal raw mode, size, and I/O helpers.  Ported from the Nature standard
-// library's term package so Adou stays self-contained: the runtime-backed
-// linkid symbols (adou_term_*) live in native/term.c and report errors as
-// negative errno codes instead of raising runtime exceptions.
-// Input/output go through native bridges, not fs:
-// the runtime's fs.file_t reuses one libuv fs_context per handle
-// (req/buf/data_len), so two coroutines writing the same stdout can clobber
-// each other's in-flight request. Input uses one non-blocking read attempt
-// followed by a bounded scheduler sleep, so errno stays numeric and signals
-// cannot be confused with a localized error string.
+// library's term package so Adou stays self-contained. Raw mode and terminal
+// size use the small native termios/ioctl bridge; ordinary input/output use
+// Nature's asynchronous fs.file_t implementation so blocked terminal I/O
+// suspends the coroutine instead of occupying a scheduler processor.
 import adou.src.debug
 import co
+import co.mutex
 import fmt
 import fs
 
@@ -22,8 +18,6 @@ pub const STDOUT = 1
 // write failure vs the normal run-loop exit is observable without changing
 // default behavior.  The quit marker is emitted by the run loop
 // (session_view.view_t.run) after it exits.
-pub const TUI_IO_EINTR_RETRY = 'eintr-retry'
-pub const TUI_IO_EINTR_EXHAUSTED = 'eintr-exhausted'
 pub const TUI_IO_EOF = 'eof'
 pub const TUI_IO_READ_FAILURE = 'read-failure'
 pub const TUI_IO_WRITE_FAILURE = 'write-failure'
@@ -57,6 +51,8 @@ pub type terminal_t = struct {
     int input_fd
     int output_fd
     ref<fs.file_t> input
+    ref<fs.file_t> output
+    ref<mutex.mutex_t> output_lock = mutex.mutex_t.new()
     bool active
     bool eof
     bool restored
@@ -73,12 +69,6 @@ pub fn restore_raw_native(int fd):int
 
 #linkid adou_term_size
 pub fn size_native(int fd, ptr<int> rows, ptr<int> columns):int
-
-#linkid adou_term_write
-pub fn write_native(int fd, anyptr buf, int length): int
-
-#linkid adou_term_read
-pub fn read_native(int fd, anyptr buf, int length): int
 
 pub fn is_tty(int fd):bool {
     return is_tty_native(fd) != 0
@@ -104,7 +94,7 @@ pub fn open():ref<terminal_t>! {
     }
 
     enter_raw(STDIN)
-    var terminal = new terminal_t(input_fd = STDIN, output_fd = STDOUT, input = fs.stdin(), active = true)
+    var terminal = new terminal_t(input_fd = STDIN, output_fd = STDOUT, input = fs.stdin(), output = fs.stdout(), active = true)
     terminal.write(BRACKETED_PASTE_ON + CURSOR_HIDE + KEYBOARD_PROTOCOL_ON)
     return terminal
 }
@@ -118,70 +108,31 @@ pub fn terminal_t.size(&self):size_t! {
     return result
 }
 
-// A non-blocking read makes the idle terminal path explicit: EAGAIN yields to
-// the scheduler, EINTR retries, and all other negative results fail directly.
-pub const INPUT_EINTR_RETRY_LIMIT = 100
-pub const INPUT_READ_WOULD_BLOCK = -1
-pub const INPUT_READ_INTERRUPTED = -2
-
-// Pure retry-budget predicate (B1-R5-01): an EINTR read is retried only
-// while attempts < limit; at the limit the next EINTR classifies as
-// exhaustion instead of another retry.
-pub fn eintr_retry_allowed(int attempts, int limit): bool {
-    return attempts < limit
-}
-
 pub fn terminal_t.read(&self):[u8]! {
     if self.eof {
         return []
     }
 
     var buffer = vec<u8>.new(0, 4096)
-    int attempts = 0
-    for true {
-        int count = read_native(self.input_fd, buffer.ref(), buffer.len())
-        if count == INPUT_READ_WOULD_BLOCK {
-            co.sleep(4)
-            continue
-        }
-        if count == INPUT_READ_INTERRUPTED {
-            if eintr_retry_allowed(attempts, INPUT_EINTR_RETRY_LIMIT) {
-                attempts += 1
-                if attempts == 1 {
-                    debug.log_tui_io(TUI_IO_EINTR_RETRY, 'first interrupted read, retrying')
-                }
-                co.sleep(4)
-                continue
-            }
-            debug.log_tui_io(TUI_IO_EINTR_EXHAUSTED, 'EINTR retry budget exhausted after ' + fmt.sprintf('%d', attempts) + ' attempts')
-            throw errorf('terminal input interrupted retry budget exhausted')
-        }
-        if count < 0 {
-            string failure = 'terminal input read failed with code ' + fmt.sprintf('%d', count)
-            debug.log_tui_io(TUI_IO_READ_FAILURE, failure)
-            throw errorf('%s', failure)
-        }
-        if count == 0 {
-            self.eof = true
-            debug.log_tui_io(TUI_IO_EOF, 'read returned 0 (EOF)')
-            return []
-        }
-        return buffer.slice(0, count)
+    int count = self.input.read(buffer) catch error {
+        debug.log_tui_io(TUI_IO_READ_FAILURE, error.msg())
+        throw error
     }
-    return []
+    if count < 0 {
+        debug.log_tui_io(TUI_IO_READ_FAILURE, 'negative read count')
+        throw errorf('negative read count')
+    }
+    if count == 0 {
+        self.eof = true
+        debug.log_tui_io(TUI_IO_EOF, 'read returned 0 (EOF)')
+        return []
+    }
+    return buffer.slice(0, count)
 }
 
-// Terminal output bypasses the runtime's shared libuv fs_context: its
-// file_t.write reuses one req/buf/data_len per handle, so a frame write and
-// a restore-sequence write racing on the same stdout can clobber each
-// other's in-flight request.  adou_term_write is a one-shot non-blocking
-// write-some: it temporarily adds O_NONBLOCK for the call (restoring it
-// before returning, reporting restore failures), retries EINTR in C, and
-// returns the bytes written (>0), 0 for a momentarily full tty buffer
-// (EAGAIN/EWOULDBLOCK), or -errno for permanent failures.  0 is handled
-// here with a bounded co.sleep retry so the scheduler keeps running instead
-// of blocking the whole processor inside a C loop; partial writes advance
-// by bytes, which is safe even when a UTF-8 sequence is split.
+// fs.file_t owns one libuv request context, so serialize all writes through
+// this terminal instance. Partial writes advance by bytes and a zero-byte
+// completion gets a bounded cooperative retry.
 pub const TERM_WRITE_RETRY_LIMIT = 400
 
 pub fn terminal_t.write(&self, string text):void! {
@@ -190,10 +141,19 @@ pub fn terminal_t.write(&self, string text):void! {
     }
 
     [u8] buf = text as [u8]
+    if self.output_fd < 0 {
+        debug.log_tui_io(TUI_IO_WRITE_FAILURE, 'terminal write failed with invalid descriptor')
+        throw errorf('terminal write failed with invalid descriptor')
+    }
+    self.output_lock.lock()
     int written = 0
     int stalled = 0
     for written < buf.len() {
-        int count = write_native(self.output_fd, buf.slice(written, buf.len()).ref(), buf.len() - written)
+        int count = self.output.write(buf.slice(written, buf.len())) catch error {
+            self.output_lock.unlock()
+            debug.log_tui_io(TUI_IO_WRITE_FAILURE, error.msg())
+            throw error
+        }
         if count > 0 {
             written += count
             stalled = 0
@@ -205,15 +165,18 @@ pub fn terminal_t.write(&self, string text):void! {
             // wedged terminal cannot stall the render coroutine forever.
             stalled += 1
             if stalled > TERM_WRITE_RETRY_LIMIT {
+                self.output_lock.unlock()
                 debug.log_tui_io(TUI_IO_WRITE_FAILURE, 'terminal write made no progress (stall budget exceeded)')
                 throw errorf('terminal write made no progress')
             }
             co.sleep(4)
             continue
         }
+        self.output_lock.unlock()
         debug.log_tui_io(TUI_IO_WRITE_FAILURE, 'terminal write failed with error ' + fmt.sprintf('%d', count))
         throw errorf('terminal write failed with error %d', count)
     }
+    self.output_lock.unlock()
 }
 
 pub fn terminal_t.is_eof(&self):bool {

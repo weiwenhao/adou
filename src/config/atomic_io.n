@@ -1,40 +1,109 @@
-// Shared durable-write primitives over native/auth_store.o (B1.4 of
-// docs/porting-plan-100).  Pi guards settings.json and trust writes with
-// proper-lockfile plus atomic renames; the auth store already carries the
-// same fsync + rename + fcntl machinery natively, so settings and the
-// project trust store reuse those linked symbols instead of duplicating
-// another C helper.
+// Durable config writes use Nature fs for every ordinary file operation.
+// Native helpers remain only for fcntl locking and fsync, which fs does not
+// expose. Lock contention always suspends the coroutine before retrying.
 
-#linkid adou_auth_lock
-fn native_lock(anyptr path): i32
+import co
+import fmt
+import fs
+import os
+import path
+import syscall
+import time
+
+#linkid adou_auth_try_lock
+fn native_try_lock(i32 fd): i32
 #linkid adou_auth_unlock
 fn native_unlock(i32 fd): i32
-#linkid adou_auth_atomic_write
-fn native_atomic_write(anyptr path, anyptr data, i32 length): i32
+#linkid adou_auth_fsync
+fn native_fsync(i32 fd): i32
 
-// Acquire an exclusive cross-process lock on `<target>.lock` and return the
-// held fd.  Blocks until the lock is available (EINTR-retried fcntl).
-pub fn acquire_lock(string target_path): i32! {
-    i32 fd = native_lock((target_path + '.lock').ref())
-    if fd < 0 {
-        throw errorf('Could not lock %s', target_path)
-    }
-    return fd
+pub type lock_t = struct {
+    ref<fs.file_t> file
 }
 
-pub fn release_lock(i32 fd): void! {
-    i32 result = native_unlock(fd)
+pub fn acquire_lock(string target_path): ref<lock_t>! {
+    string lock_path = target_path + '.lock'
+    var file = fs.open(lock_path, syscall.O_WRONLY | syscall.O_CREAT, 0o600)
+    syscall.chmod(lock_path, 0o600) catch error {
+        file.close()
+        throw error
+    }
+    for true {
+        i32 result = native_try_lock(file.fd as i32)
+        if result == 1 {
+            return new lock_t(file = file)
+        }
+        if result == 0 {
+            co.sleep(8)
+            continue
+        }
+        file.close()
+        throw errorf('Could not lock %s', target_path)
+    }
+    file.close()
+    throw errorf('Could not lock %s', target_path)
+}
+
+pub fn release_lock(ref<lock_t> lock): void! {
+    i32 result = native_unlock(lock.file.fd as i32)
+    lock.file.close()
     if result < 0 {
         throw errorf('Could not release config lock')
     }
 }
 
-// Durable replacement: unique temp file, write-all, fsync, rename onto the
-// target, then fsync of the parent directory.  A crash mid-write can never
-// leave a truncated settings.json or trust.json behind.
+// Unique temp file, fs.write-all, fsync, atomic rename, then parent fsync.
+// A crash mid-write cannot leave a truncated config file at the target.
 pub fn write_file_atomic(string file_path, string content): void! {
-    i32 result = native_atomic_write(file_path.ref(), content.ref(), content.len() as i32)
-    if result < 0 {
-        throw errorf('Could not atomically write %s', file_path)
+    ref<fs.file_t>? output = null
+    string temporary = ''
+    int pid = syscall.getpid() catch error {0}
+    i64 stamp = time.now().ms_timestamp()
+    for int attempt = 0; attempt < 100; attempt += 1 {
+        temporary = file_path + '.tmp.' + fmt.sprintf('%d-%d-%d', pid, stamp, attempt)
+        var created = fs.open(temporary, syscall.O_WRONLY | syscall.O_CREAT | syscall.O_EXCL, 0o600) catch error {
+            continue
+        }
+        output = created
+        break
+    }
+    if !(output is ref<fs.file_t>) {
+        throw errorf('Could not create temporary file for %s', file_path)
+    }
+    if output is ref<fs.file_t> file {
+        [u8] bytes = content as [u8]
+        int offset = 0
+        for offset < bytes.len() {
+            int written = file.write(bytes.slice(offset, bytes.len())) catch error {
+                file.close()
+                os.remove(temporary) catch cleanup_error {}
+                throw error
+            }
+            if written <= 0 {
+                file.close()
+                os.remove(temporary) catch cleanup_error {}
+                throw errorf('Could not atomically write %s', file_path)
+            }
+            offset += written
+        }
+        if native_fsync(file.fd as i32) < 0 {
+            file.close()
+            os.remove(temporary) catch cleanup_error {}
+            throw errorf('Could not sync temporary file for %s', file_path)
+        }
+        file.close()
+    }
+    syscall.rename(temporary, file_path) catch error {
+        os.remove(temporary) catch cleanup_error {}
+        throw error
+    }
+    string parent = path.dir(file_path)
+    if parent != '' {
+        var directory = fs.open(parent, syscall.O_RDONLY, 0)
+        i32 sync_result = native_fsync(directory.fd as i32)
+        directory.close()
+        if sync_result < 0 {
+            throw errorf('Could not sync parent directory for %s', file_path)
+        }
     }
 }

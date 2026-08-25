@@ -21,16 +21,16 @@ test 'terminal open rejects non-tty streams without changing state' {
     assert(!can_open_terminal())
 }
 
-test 'terminal reads through fs and writes through the fd bridge' {
+test 'terminal reads and writes through serialized fs handles' {
     var dir = '/tmp/adou-term-fs-io'
     os.mkdirs(dir, 0o755)
     var input = fs.open(dir + '/input.txt', syscall.O_RDWR | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
     input.write('hello\n' as [u8])
     input.seek(0, syscall.SEEK_SET)
     var output = fs.open(dir + '/output.txt', syscall.O_RDWR | syscall.O_CREAT | syscall.O_TRUNC, 0o644)
-    // The input fd bridge reads from the fixture descriptor; writes go
-    // through the native bridge on the fixture descriptor, never stdout.
-    var terminal = new term.terminal_t(input_fd = input.fd, output_fd = output.fd, input = input, active = false, restored = true)
+    // Both fixture descriptors use Nature's asynchronous fs implementation;
+    // the terminal serializes output on its dedicated file handle.
+    var terminal = new term.terminal_t(input_fd = input.fd, output_fd = output.fd, input = input, output = output, active = false, restored = true)
 
     var bytes = terminal.read()
     assert(bytes as string == 'hello\n')
@@ -47,16 +47,9 @@ test 'terminal reads through fs and writes through the fd bridge' {
     assert(written.slice(0, count) as string == 'world')
 }
 
-test 'terminal read status uses fixed numeric EINTR and EAGAIN codes' {
-    assert(term.INPUT_READ_INTERRUPTED == -2)
-    assert(term.INPUT_READ_WOULD_BLOCK == -1)
-    assert(term.INPUT_READ_INTERRUPTED != term.INPUT_READ_WOULD_BLOCK)
-}
-
-test 'terminal write surfaces permanent bridge errors instead of swallowing them' {
-    // A permanently invalid descriptor must raise the bridge's -errno, not
-    // spin on the EAGAIN retry budget and not vanish silently.
-    var broken = new term.terminal_t(input_fd = syscall.STDIN, output_fd = -1, input = fs.stdin(), active = true, restored = false)
+test 'terminal write surfaces invalid descriptors instead of swallowing them' {
+    var standard_input = fs.stdin()
+    var broken = new term.terminal_t(input_fd = syscall.STDIN, output_fd = -1, input = standard_input, output = standard_input, active = true, restored = false)
     bool failed = false
     try {
         broken.write('hello')
@@ -81,17 +74,8 @@ test 'B1-R5-01 tui io diagnostic is default-off and only file-targeted' {
     assert(debug.tui_io_line(term.TUI_IO_EOF, 'read returned 0 (EOF)') == '[tui-io] eof: read returned 0 (EOF)')
 }
 
-test 'B1-R5-01 eintr retry budget boundary is pure and exact' {
-    assert(term.eintr_retry_allowed(0, term.INPUT_EINTR_RETRY_LIMIT))
-    assert(term.eintr_retry_allowed(term.INPUT_EINTR_RETRY_LIMIT - 1, term.INPUT_EINTR_RETRY_LIMIT))
-    assert(!term.eintr_retry_allowed(term.INPUT_EINTR_RETRY_LIMIT, term.INPUT_EINTR_RETRY_LIMIT))
-    assert(!term.eintr_retry_allowed(term.INPUT_EINTR_RETRY_LIMIT + 1, term.INPUT_EINTR_RETRY_LIMIT))
-}
-
 test 'B1-R5-01 diagnostic event categories are fixed and distinct' {
     [string] events = [
-        term.TUI_IO_EINTR_RETRY,
-        term.TUI_IO_EINTR_EXHAUSTED,
         term.TUI_IO_EOF,
         term.TUI_IO_READ_FAILURE,
         term.TUI_IO_WRITE_FAILURE,
@@ -114,7 +98,8 @@ test 'B1-R5-01 restore event is recorded only after the write succeeds' {
     // A broken output fd makes the restore write throw BEFORE any restore
     // event could be logged; the log must not claim the sequences were
     // issued.
-    var broken = new term.terminal_t(input_fd = syscall.STDIN, output_fd = -1, input = fs.stdin(), active = true, restored = false)
+    var standard_input = fs.stdin()
+    var broken = new term.terminal_t(input_fd = syscall.STDIN, output_fd = -1, input = standard_input, output = standard_input, active = true, restored = false)
     bool failed = false
     try {
         broken.restore()

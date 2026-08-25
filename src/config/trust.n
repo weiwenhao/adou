@@ -66,10 +66,10 @@ pub fn save(string cwd, bool trusted): void! {
     string file_path = trust_path()
     // B1.4: exclusive cross-process lock spans the whole read-modify-write;
     // the file itself is replaced atomically (temp + fsync + rename).
-    i32 lock_fd = atomic_io.acquire_lock(file_path)
+    var lock = atomic_io.acquire_lock(file_path)
     {string:any} object = read_object(file_path)
     object[normalize(cwd)] = trusted
-    write_object(file_path, object, lock_fd)
+    write_object(file_path, object, lock)
 }
 
 // Pi's resolveProjectTrusted re-evaluated against an arbitrary working
@@ -130,7 +130,7 @@ pub type trust_update_t = struct {
 // null decision removes the entry instead of storing null.
 pub fn set_many([trust_update_t] updates): void! {
     string file_path = trust_path()
-    i32 lock_fd = atomic_io.acquire_lock(file_path)
+    var lock = atomic_io.acquire_lock(file_path)
     {string:any} object = read_object(file_path)
     for update in updates {
         string key = normalize(update.trust_path)
@@ -143,7 +143,7 @@ pub fn set_many([trust_update_t] updates): void! {
             object[key] = value
         }
     }
-    write_object(file_path, object, lock_fd)
+    write_object(file_path, object, lock)
 }
 
 pub fn clear(string cwd): void! {
@@ -152,8 +152,8 @@ pub fn clear(string cwd): void! {
     string key = normalize(cwd)
     if object.contains(key) {
         object.del(key)
-        i32 lock_fd = atomic_io.acquire_lock(file_path)
-        write_object(file_path, object, lock_fd)
+        var lock = atomic_io.acquire_lock(file_path)
+        write_object(file_path, object, lock)
     }
 }
 
@@ -230,14 +230,14 @@ pub fn has_trust_requiring_resources(string cwd): bool {    [string] resources =
     return false
 }
 
-fn write_object(string file_path, {string:any} object, i32 lock_fd): void! {
+fn write_object(string file_path, {string:any} object, ref<atomic_io.lock_t> lock): void! {
     os.mkdirs(path.dir(file_path), 0o700)
     string content = json.serialize(object)
     atomic_io.write_file_atomic(file_path, content) catch e {
-        atomic_io.release_lock(lock_fd) catch e2 {}
+        atomic_io.release_lock(lock) catch e2 {}
         throw e
     }
-    atomic_io.release_lock(lock_fd) catch e2 {}
+    atomic_io.release_lock(lock) catch e2 {}
 }
 
 fn home_dir(): string {
