@@ -1,0 +1,41 @@
+import co
+import runtime
+
+fn render_rows(string text): int {
+    [string] rows = []
+    for int start = 0; start < text.len(); start += 80 {
+        int end = start + 80
+        if end > text.len() {
+            end = text.len()
+        }
+        rows.push(text.slice(start, end))
+    }
+    return rows.len()
+}
+
+fn main() {
+    string text = ''
+    int rows = 0
+    for int frame = 0; frame < 4000; frame += 1 {
+        text += 'streaming allocation '
+        rows = render_rows(text)
+        if frame % 100 == 99 {
+            runtime.gc()
+            co.sleep(5)
+        }
+        if frame % 50 == 49 {
+            int allocated = runtime.malloc_bytes()
+            println('frame', frame + 1, allocated)
+            if allocated < 0 {
+                return
+            }
+        }
+    }
+    println('before gc', text.len(), rows, runtime.malloc_bytes())
+    for int round = 0; round < 5; round += 1 {
+        runtime.gc()
+        co.sleep(500)
+        println('after gc', round, runtime.malloc_bytes())
+    }
+    co.sleep(10000)
+}

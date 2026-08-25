@@ -67,6 +67,16 @@ pub type chat_t = struct {
     bool show_cache_miss_notices
     ref<cache_stats.previous_request_t>? cache_previous = null
     string cache_miss_notice
+    [string] transcript_cache = []
+    int transcript_cache_width
+    bool transcript_cache_valid
+    i64 transcript_cache_theme_generation = -1
+    [string] streaming_thinking_stable_rows = []
+    string streaming_thinking_source = ''
+    int streaming_thinking_stable_end
+    int streaming_thinking_width
+    int streaming_thinking_pad
+    i64 streaming_thinking_theme_generation = -1
 }
 
 pub fn new(string model, string cwd): ref<chat_t> {
@@ -84,16 +94,20 @@ pub fn chat_t.set_auto_compaction(&self, bool enabled) {
 
 pub fn chat_t.toggle_tool_output(&self): bool {
     self.tool_output_expanded = !self.tool_output_expanded
+    self.invalidate_transcript_cache()
     return self.tool_output_expanded
 }
 
 pub fn chat_t.toggle_thinking_visibility(&self): bool {
     self.thinking_visible = !self.thinking_visible
+    self.invalidate_transcript_cache()
     return self.thinking_visible
 }
 
 pub fn chat_t.load_messages(&self, [ai_types.message_t] messages) {
     self.messages = messages.slice(0, messages.len())
+    self.reset_streaming_thinking_cache()
+    self.invalidate_transcript_cache()
 }
 
 pub fn chat_t.set_usage_totals(&self, ai_types.usage_t usage) {
@@ -118,19 +132,38 @@ pub fn chat_t.set_provider_visibility(&self, bool visible) {
 
 pub fn chat_t.set_output_pad(&self, int pad) {
     self.output_pad = pad == 0 ? 0 : 1
+    self.invalidate_transcript_cache()
 }
 
 pub fn chat_t.set_image_preferences(&self, bool show, int width_cells, bool auto_resize) {
     self.show_images = show
     self.image_width_cells = width_cells > 0 ? width_cells : 60
     self.auto_resize_images = auto_resize
+    self.invalidate_transcript_cache()
 }
 
 pub fn chat_t.set_show_cache_miss_notices(&self, bool enabled) {
     self.show_cache_miss_notices = enabled
 }
 
+pub fn chat_t.invalidate_transcript_cache(&self) {
+    self.transcript_cache_valid = false
+    self.transcript_cache_width = 0
+    self.transcript_cache_theme_generation = -1
+    self.transcript_cache = []
+}
+
+fn chat_t.reset_streaming_thinking_cache(&self) {
+    self.streaming_thinking_stable_rows = []
+    self.streaming_thinking_source = ''
+    self.streaming_thinking_stable_end = 0
+    self.streaming_thinking_width = 0
+    self.streaming_thinking_pad = 0
+    self.streaming_thinking_theme_generation = -1
+}
+
 pub fn chat_t.apply(&self, session_stream.event_t event): void! {
+    self.invalidate_transcript_cache()
     if event.kind == session_stream.EVENT_BASH_START {
         self.active_bash = new ai_types.bash_execution_message_t(command = event.bash_command, exclude_from_context = event.bash_exclude_from_context)
         self.running = true
@@ -245,6 +278,9 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
     }
     var agent_event = event.agent_event
     if agent_event.kind == agent_types.EVENT_AGENT_START || agent_event.kind == agent_types.EVENT_TURN_START {
+        if agent_event.kind == agent_types.EVENT_AGENT_START {
+            self.reset_streaming_thinking_cache()
+        }
         self.running = true
         self.status = 'Thinking...'
         self.error_message = ''
@@ -274,6 +310,7 @@ pub fn chat_t.apply(&self, session_stream.event_t event): void! {
             ai_types.message_t message = assistant
             self.messages.push(message)
             self.streaming_assistant = null
+            self.reset_streaming_thinking_cache()
             self.status = assistant.stop_reason == ai_types.STOP_ERROR ? 'Model error' : 'Thinking...'
             self.update_cache_miss_notice(assistant)
         } else if agent_event.tool_message is ref<ai_types.tool_result_message_t> tool {
@@ -342,11 +379,22 @@ pub fn chat_t.render(&self, int width): [string]! {
         throw errorf('chat width must be positive')
     }
     [string] result = vec<string>.cap_of(64)
-    for message in self.messages {
-        result.append(render_message_lines(message, width, self.tool_output_expanded, self.thinking_visible, self.output_pad, self.show_images, self.image_width_cells))
-    }
-    if self.streaming_assistant is ref<ai_types.assistant_message_t> assistant {
-        result.append(render_assistant_lines(assistant, width, true, self.thinking_visible, self.output_pad))
+    i64 current_theme_generation = theme.generation()
+    if self.transcript_cache_valid && self.transcript_cache_width == width && self.transcript_cache_theme_generation == current_theme_generation {
+        result.append(self.transcript_cache)
+    } else {
+        for message in self.messages {
+            result.append(render_message_lines(message, width, self.tool_output_expanded, self.thinking_visible, self.output_pad, self.show_images, self.image_width_cells))
+        }
+        if self.streaming_assistant is ref<ai_types.assistant_message_t> assistant {
+            result.append(render_assistant_lines(assistant, width, true, self.thinking_visible, self.output_pad, self))
+        }
+        [string] cached = vec<string>.cap_of(result.len())
+        cached.append(result)
+        self.transcript_cache = cached
+        self.transcript_cache_width = width
+        self.transcript_cache_theme_generation = current_theme_generation
+        self.transcript_cache_valid = true
     }
     if self.active_bash is ref<ai_types.bash_execution_message_t> bash {
         result.append(render_active_bash_lines(bash, width, self.spinner_index))
@@ -390,15 +438,26 @@ pub fn chat_t.render(&self, int width): [string]! {
             self.status = fmt.sprintf('Retrying request (%d/%d) in %.1fs...', self.retry_attempt, self.retry_max_attempts, remaining as float / 1000.0)
         }
         result.append(render_status_lines(self.status, self.running, width, self.spinner_index))
-        if self.running {
-            i64 now = time.now().ms_timestamp()
-            if self.spinner_last_ms == 0 || now - self.spinner_last_ms >= 80 {
-                self.spinner_index = (self.spinner_index + 1) % 10
-                self.spinner_last_ms = now
-            }
-        }
     }
     return result
+}
+
+// Pi's Loader owns an 80 ms interval and requests a render independently of
+// provider deltas. The session loop calls this clock while a stream is active.
+pub fn chat_t.advance_spinner(&self, i64 now): bool {
+    if !self.running || self.status == '' {
+        return false
+    }
+    if self.spinner_last_ms == 0 {
+        self.spinner_last_ms = now
+        return false
+    }
+    if now - self.spinner_last_ms < 80 {
+        return false
+    }
+    self.spinner_index = (self.spinner_index + 1) % 10
+    self.spinner_last_ms = now
+    return true
 }
 
 // The footer is a sibling of the editor in Pi, not part of the transcript.
@@ -486,6 +545,7 @@ pub fn chat_t.clear(&self) {
     self.total_cost = 0.0
     self.latest_cache_hit_rate = -1.0
     self.context_known = true
+    self.invalidate_transcript_cache()
 }
 
 // Pi parseSkillBlock: detect a /skill expansion user message and extract
@@ -601,7 +661,7 @@ fn render_message_lines(ai_types.message_t message, int width, bool tool_output_
         result.append(render_markdown_rows(user.content, width, theme.user_bg(), theme.user_text(), output_pad))
         result.push(colored_row(theme.user_bg(), '', width))
     } else if message is ref<ai_types.assistant_message_t> assistant {
-        result.append(render_assistant_lines(assistant, width, false, thinking_visible, output_pad))
+        result.append(render_assistant_lines(assistant, width, false, thinking_visible, output_pad, null))
     } else if message is ref<ai_types.tool_result_message_t> tool {
         string color = tool.is_error ? theme.error_color() : theme.success()
         string prefix = color + (tool.is_error ? '✗ ' : '✓ ') + theme.fg(theme.tool_title(), theme.bold(tool.tool_name))
@@ -770,7 +830,7 @@ fn render_active_bash_lines(ref<ai_types.bash_execution_message_t> bash, int wid
     return result
 }
 
-fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width, bool streaming, bool thinking_visible, int output_pad): [string]! {
+fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width, bool streaming, bool thinking_visible, int output_pad, ref<chat_t>? streaming_cache): [string]! {
     [string] result = vec<string>.cap_of(16)
     bool had_content = false
     bool had_tool_calls = false
@@ -822,7 +882,11 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
             }
             if thinking_blocks.len() > 0 {
                 string value = thinking_visible ? (thinking_blocks.len() == 1 ? thinking_blocks[0] : strings.join(thinking_blocks, '\n\n')) : 'Thinking...'
-                result.append(render_padded_thinking(value, width, output_pad))
+                if streaming && thinking_visible && streaming_cache is ref<chat_t> cache {
+                    result.append(cache.render_streaming_thinking(value, width, output_pad))
+                } else {
+                    result.append(render_padded_thinking(value, width, output_pad))
+                }
                 had_content = true
                 bool has_visible_after = false
                 for int after = index; after < assistant.content.len(); after += 1 {
@@ -871,9 +935,6 @@ fn render_assistant_lines(ref<ai_types.assistant_message_t> assistant, int width
         } else if !had_content && assistant.error_message != '' {
             result.append(render_padded_text(theme.fg(theme.error_color(), assistant.error_message), width, output_pad))
         }
-    }
-    if streaming && had_content {
-        result.push(theme.fg(theme.accent(), '▌'))
     }
     return result
 }
@@ -927,6 +988,46 @@ fn render_padded_thinking(string value, int width, int output_pad): [string]! {
         // strings and repeat ANSI-aware width scans for every transcript row.
         result.push(strings.join([prefix, line, suffix, text_utils.spaces(output_pad + remaining)], ''))
     }
+    return result
+}
+
+// Keep completed logical reasoning lines across streamed snapshots. Nature
+// strings are immutable, and rebuilding every prior line for each token turns
+// an otherwise linear response into quadratic allocation. Pi keeps component
+// instances alive between requestRender() calls; this cache provides the same
+// lifetime for Adou while the final, still-growing line remains live.
+fn chat_t.render_streaming_thinking(&self, string value, int width, int output_pad): [string]! {
+    i64 current_theme_generation = theme.generation()
+    bool compatible = self.streaming_thinking_width == width && self.streaming_thinking_pad == output_pad && self.streaming_thinking_theme_generation == current_theme_generation && value.starts_with(self.streaming_thinking_source)
+    if !compatible {
+        self.streaming_thinking_stable_rows = []
+        self.streaming_thinking_stable_end = 0
+    }
+    self.streaming_thinking_width = width
+    self.streaming_thinking_pad = output_pad
+    self.streaming_thinking_theme_generation = current_theme_generation
+
+    int line_start = self.streaming_thinking_stable_end
+    int cursor = line_start
+    for cursor < value.len() {
+        if value[cursor] != '\r'.char() && value[cursor] != '\n'.char() {
+            cursor += 1
+            continue
+        }
+        int line_end = cursor
+        if value[cursor] == '\r'.char() && cursor + 1 < value.len() && value[cursor + 1] == '\n'.char() {
+            cursor += 1
+        }
+        self.streaming_thinking_stable_rows.append(render_padded_thinking(value.slice(line_start, line_end), width, output_pad))
+        line_start = cursor + 1
+        cursor += 1
+    }
+    self.streaming_thinking_stable_end = line_start
+    self.streaming_thinking_source = value
+
+    [string] result = vec<string>.cap_of(self.streaming_thinking_stable_rows.len() + 4)
+    result.append(self.streaming_thinking_stable_rows)
+    result.append(render_padded_thinking(value.slice(line_start, value.len()), width, output_pad))
     return result
 }
 

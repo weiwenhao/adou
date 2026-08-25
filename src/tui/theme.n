@@ -19,6 +19,7 @@ string loaded_theme_name = ''
 {string:any} theme_vars = {}
 {string:string} registered_theme_paths = {}
 bool custom_theme_active = false
+i64 theme_generation = 0
 
 fn hex_byte(string value): int {
     int result = 0
@@ -272,6 +273,7 @@ pub fn load_json(string file_path): bool {
     loaded_theme_path = path_utils.expand_path(file_path)
     loaded_theme_name = root['name'] as string
     custom_theme_active = true
+    theme_generation += 1
     return true
 }
 
@@ -540,7 +542,10 @@ pub fn set_variant(string name) {
     } else if name != '' {
         custom_theme_active = loaded_theme_name == name && loaded_theme_path != ''
     }
+    theme_generation += 1
 }
+
+pub fn generation(): i64 {return theme_generation}
 
 pub fn variant(): string {
     if theme_variant == '' {

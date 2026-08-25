@@ -1,0 +1,11 @@
+import co
+import runtime
+
+fn main() {
+    string text = ''
+    for int frame = 0; frame < 20000; frame += 1 {
+        text += 'abcd'
+    }
+    println('after concat', text.len(), runtime.malloc_bytes())
+    co.sleep(2000)
+}

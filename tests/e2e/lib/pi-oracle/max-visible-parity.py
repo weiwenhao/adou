@@ -220,8 +220,8 @@ def _fingerprint(root: str, inputs: list[str]) -> str:
 
 # Adou build inputs (Makefile NATURE_SOURCES + linked native C + guard):
 # main.n, package.toml, src/**/*.n (incl. untracked), native/*.c,
-# scripts/nature-build-safe.sh.  Identical algorithm in slash-menu.sh.
-ADOU_SOURCE_EXTRA = ("main.n", "package.toml", "scripts/nature-build-safe.sh")
+# scripts/nature-serial.sh.  Identical algorithm in slash-menu.sh.
+ADOU_SOURCE_EXTRA = ("main.n", "package.toml", "scripts/nature-serial.sh")
 
 
 def adou_source_fingerprint(root: str) -> tuple[str, list[str]]:
@@ -981,7 +981,7 @@ def self_test() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         os.makedirs(os.path.join(tmp, "src", "tui"))
         os.makedirs(os.path.join(tmp, "native"))
-        for rel in ("main.n", "package.toml", "scripts/nature-build-safe.sh", "src/tui/a.n", "src/tui/b.n", "native/term.c"):
+        for rel in ("main.n", "package.toml", "scripts/nature-serial.sh", "src/tui/a.n", "src/tui/b.n", "native/term.c"):
             full = os.path.join(tmp, rel)
             os.makedirs(os.path.dirname(full), exist_ok=True)
             with open(full, "w") as fh:

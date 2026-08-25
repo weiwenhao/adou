@@ -36,10 +36,17 @@ test 'wrap preserves styles hyperlinks words and CJK boundaries' {
     assert(words.len() == 2 && text_utils.visible_width(words[0]) <= 7 && text_utils.visible_width(words[1]) <= 7)
     var cjk = text_utils.wrap_text_with_ansi('中文测试', 4)
     assert(cjk.len() == 2 && text_utils.visible_width(cjk[0]) == 4 && text_utils.visible_width(cjk[1]) == 4)
+    var mixed = text_utils.wrap_text_with_ansi('alpha θ beta gamma', 10)
+    assert(mixed.len() == 2 && mixed[0] == 'alpha θ' && mixed[1] == 'beta gamma')
     var styled = text_utils.wrap_text_with_ansi('\x1b[4;31mabcdef', 3)
     assert(styled.len() == 2 && styled[0].contains('\x1b[24m') && styled[1].contains('\x1b[4;31m'))
     var linked = text_utils.wrap_text_with_ansi('\x1b]8;;u\x07abcdef\x1b]8;;\x07', 3)
     assert(linked.len() == 2 && linked[0].contains('\x1b]8;;\x07') && linked[1].contains('\x1b]8;;u\x07'))
+    var thinking = text_utils.wrap_text_with_ansi(' \x1b[3m\x1b[38;2;128;128;128mplan the styled streaming response carefully\x1b[39m\x1b[23m', 18)
+    assert(thinking.len() == 3)
+    for line in thinking {
+        assert(text_utils.visible_width(line) <= 18 && line.contains('\x1b[3m') && line.contains('\x1b[23m'))
+    }
 }
 
 test 'wraps large colored output without rebuilding each byte' {

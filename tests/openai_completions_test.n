@@ -2,7 +2,9 @@ import adou.src.ai.providers.openai_completions
 import adou.src.ai.sse
 import adou.src.ai.types
 import adou.src.json_util
+import co
 import json
+import time
 
 pub fn model(): ref<types.model_t> {
     return new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek')
@@ -91,6 +93,7 @@ test 'coalesces tiny text deltas without losing the final message' {
     processor.start()
     int emitted = 0
     for int index = 0; index < 300; index += 1 {
+        processor.text_last_flush_ms = time.now().ms_timestamp()
         var events = processor.feed(frame('{"choices":[{"delta":{"content":"x"},"finish_reason":null}]}'))
         emitted += events.len()
     }
@@ -105,21 +108,21 @@ test 'coalesces tiny text deltas without losing the final message' {
     }
 }
 
-test 'adapts snapshot batches for long reasoning streams' {
+test 'bounds a same-tick snapshot burst for long reasoning streams' {
     var processor = openai_completions.processor(model(), 1)
     processor.start()
     string chunk = 'xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
     int emitted = 0
     int chunks = 8192
     for int index = 0; index < chunks; index += 1 {
+        processor.thinking_last_flush_ms = time.now().ms_timestamp()
         var events = processor.feed(frame('{"choices":[{"delta":{"reasoning_content":"' + chunk + '"},"finish_reason":null}]}'))
         emitted += events.len()
     }
     processor.feed(frame('{"choices":[{"delta":{},"finish_reason":"stop"}]}'))
     var done = processor.finish()
-    // A fixed 256-byte batch emits about 4,096 full-message snapshots for
-    // this 1 MiB response. Adaptive batching keeps the expensive snapshots
-    // bounded while preserving the complete final reasoning block.
+    // A producer burst is capped by bytes even when the 16 ms render clock
+    // has not advanced; ordinary live streaming flushes on that clock.
     assert(emitted < 32)
     if done[done.len() - 1].message is ref<types.assistant_message_t> message {
         assert(message.content.len() == 1)
@@ -127,4 +130,17 @@ test 'adapts snapshot batches for long reasoning streams' {
     } else {
         assert(false)
     }
+}
+
+test 'flushes pending reasoning on Pi render cadence' {
+    var processor = openai_completions.processor(model(), 1)
+    processor.start()
+    var first = processor.feed(frame('{"choices":[{"delta":{"reasoning_content":"a"},"finish_reason":null}]}'))
+    assert(first.len() == 2)
+    processor.thinking_last_flush_ms = time.now().ms_timestamp()
+    var pending = processor.feed(frame('{"choices":[{"delta":{"reasoning_content":"b"},"finish_reason":null}]}'))
+    assert(pending.len() == 0)
+    co.sleep(20)
+    var flushed = processor.feed(frame('{"choices":[{"delta":{"reasoning_content":"c"},"finish_reason":null}]}'))
+    assert(flushed.len() == 1 && flushed[0].kind == types.EVENT_THINKING_DELTA && flushed[0].delta == 'bc')
 }

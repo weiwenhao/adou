@@ -356,6 +356,12 @@ pub type view_t = struct {
     bool suppress_quit_render
     bool defer_redraw
     bool redraw_deferred
+    // Pi reads already-decoded session entries in its footer. Adou's
+    // repository stores JSON-shaped `any` maps, so decoding the whole log on
+    // every 16 ms streaming frame creates avoidable allocation pressure and
+    // can expose Nature GC/map corruption. Refresh these values only after a
+    // repository-changing event or session rebind.
+    bool repository_footer_dirty = true
     // Batch 4: one keybinding registry shared by the app dispatch, the
     // editor and every hint surface (Pi setKeybindings/getKeybindings).
     ref<keybindings.keybindings_t> keybindings = keybindings.current()
@@ -441,6 +447,7 @@ fn view_t.activate_theme_setting(&self, string setting) {
         theme.ensure_named_loaded(self.runner.repository.cwd, active)
     }
     theme.set_variant(active)
+    self.chat.invalidate_transcript_cache()
 }
 
 fn view_t.available_theme_names(&self): [string] {
@@ -615,6 +622,8 @@ pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! 
     bool branch_aborted = false
     string branch_error = ''
     bool stream_failed = false
+    bool render_pending = false
+    i64 last_render_ms = 0
     for true {
         var (incoming, input_received) = self.input_events.try_recv() catch error {
             self.quitting = true
@@ -641,9 +650,22 @@ pub fn view_t.consume_stream(&self, ref<session_stream.stream_t> stream): bool! 
                 branch_error = event.error_message
             }
             self.apply_stream_event(event)
+            render_pending = true
             if event.kind == session_stream.EVENT_SESSION_END {
+                self.redraw()
                 break
             }
+        }
+        i64 now = time.now().ms_timestamp()
+        if self.advance_stream_spinner(now) {
+            render_pending = true
+        }
+        if render_pending && (last_render_ms == 0 || now - last_render_ms >= 16) {
+            self.redraw()
+            render_pending = false
+            last_render_ms = now
+        }
+        if event_received {
             continue
         }
         if stream.events.is_closed() {
@@ -699,8 +721,17 @@ fn view_t.apply_stream_event(&self, session_stream.event_t event): void! {
         self.render_lock.unlock()
         throw error
     }
+    if event.kind == agent_types.EVENT_MESSAGE_END || event.kind == session_stream.EVENT_COMPACTION_END || event.kind == session_stream.EVENT_BRANCH_SUMMARY_END || event.kind == session_stream.EVENT_SESSION_INFO_CHANGED {
+        self.repository_footer_dirty = true
+    }
     self.render_lock.unlock()
-    self.redraw()
+}
+
+fn view_t.advance_stream_spinner(&self, i64 now): bool {
+    self.render_lock.lock()
+    bool changed = self.chat.advance_spinner(now)
+    self.render_lock.unlock()
+    return changed
 }
 
 // Same serialization for transcript replacement (stream completion, session
@@ -709,6 +740,7 @@ fn view_t.apply_stream_event(&self, session_stream.event_t event): void! {
 fn view_t.reload_chat_messages(&self, [ai_types.message_t] messages) {
     self.render_lock.lock()
     self.chat.load_messages(messages)
+    self.repository_footer_dirty = true
     self.render_lock.unlock()
     self.redraw()
 }
@@ -716,6 +748,7 @@ fn view_t.reload_chat_messages(&self, [ai_types.message_t] messages) {
 fn view_t.clear_chat(&self) {
     self.render_lock.lock()
     self.chat.clear()
+    self.repository_footer_dirty = true
     self.render_lock.unlock()
     self.redraw()
 }
@@ -2505,10 +2538,13 @@ pub fn view_t.render_lines(&self, int width, int height): [string]! {
     // model table scan happen in refresh_auth_provider_count, which runs
     // at view init and after every auth change.
     self.chat.set_provider_visibility(self.cached_auth_provider_count > 1)
-    self.chat.session_name = self.runner.repository.get_session_name() catch error {''}
-    self.chat.set_usage_totals(self.runner.repository.usage_totals())
-    self.chat.set_latest_cache_hit_rate(self.runner.repository.latest_cache_hit_rate())
-    self.chat.set_context_known(self.runner.repository.context_usage_known())
+    if self.repository_footer_dirty {
+        self.chat.session_name = self.runner.repository.get_session_name() catch error {''}
+        self.chat.set_usage_totals(self.runner.repository.usage_totals())
+        self.chat.set_latest_cache_hit_rate(self.runner.repository.latest_cache_hit_rate())
+        self.chat.set_context_known(self.runner.repository.context_usage_known())
+        self.repository_footer_dirty = false
+    }
     [string] transcript_lines = self.chat.render(width)
     // Pi's built-in header: the compact keybinding hint line derived from
     // the registry, silenced by quietStartup.  It wraps to the terminal
@@ -2725,6 +2761,7 @@ fn start_file_watchers(ref<view_t> view, string cwd) {
             for !view.quitting {
                 if git_paths.wait_for_change(theme_path, 1500) {
                     theme.reload()
+                    view.chat.invalidate_transcript_cache()
                     view.redraw()
                 }
             }

@@ -16,11 +16,17 @@ pub fn word_segments_raw(anyptr text, int length, anyptr starts, anyptr ends, an
 #linkid adou_icu_grapheme_width
 pub fn grapheme_width_raw(anyptr text, int length): int
 
+#linkid adou_icu_grapheme_width_at
+pub fn grapheme_width_at_raw(anyptr text, int length, int start, int end): int
+
 #linkid adou_icu_visible_width
 pub fn visible_width_raw(anyptr text, int length): int
 
 #linkid adou_icu_is_cjk_break
 pub fn is_cjk_break_raw(anyptr text, int length): bool
+
+#linkid adou_icu_is_cjk_break_at
+pub fn is_cjk_break_at_raw(anyptr text, int length, int start, int end): bool
 
 pub fn require_icu(): void! {
     if !icu_available() {
@@ -92,6 +98,18 @@ pub fn grapheme_width(string text): int! {
     return result
 }
 
+// Measure an existing grapheme by offsets without materializing a short
+// Nature string. Besides avoiding an unnecessary copy, this keeps TUI word
+// wrapping away from nature-lang/nature#331's <=7-byte dynamic string pool.
+pub fn grapheme_width_at(string text, int start, int end): int! {
+    require_icu()
+    int result = grapheme_width_at_raw(text.ref(), text.len(), start, end)
+    if result < 0 {
+        throw errorf('ICU grapheme width failed')
+    }
+    return result
+}
+
 pub fn visible_width(string text): int! {
     require_icu()
     int result = visible_width_raw(text.ref(), text.len())
@@ -104,4 +122,10 @@ pub fn visible_width(string text): int! {
 pub fn is_cjk_break(string text): bool! {
     require_icu()
     return text != '' && is_cjk_break_raw(text.ref(), text.len())
+}
+
+
+pub fn is_cjk_break_at(string text, int start, int end): bool! {
+    require_icu()
+    return is_cjk_break_at_raw(text.ref(), text.len(), start, end)
 }

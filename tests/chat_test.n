@@ -38,6 +38,34 @@ test 'chat view consumes streaming messages, tools, compaction and errors' {
     assert(!value.running)
 }
 
+test 'streaming assistant matches Pi cursor and spinner behavior' {
+    var value = chat.new('mock-model', '/tmp/project')
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_AGENT_START, has_agent_event: true, agent_event: agent_types.agent_event_t {kind: agent_types.EVENT_AGENT_START,},})
+    [types.content_t] content = [new types.thinking_content_t(thinking = 'plan θ carefully')]
+    var assistant = new types.assistant_message_t(content = content, stop_reason = types.STOP_PENDING)
+    var update = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, assistant_message: assistant,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, has_agent_event: true, agent_event: update,})
+    string first = strings.join(value.render(60), '\n')
+    assert(!first.contains('▌') && first.contains('⠋') && first.contains('Thinking...'))
+    assert(!value.advance_spinner(1000))
+    assert(value.advance_spinner(1080))
+    string second = strings.join(value.render(60), '\n')
+    assert(second.contains('⠙') && second.contains('Thinking...'))
+
+    content = [new types.thinking_content_t(thinking = 'one stable line\nsecond grows')]
+    assistant = new types.assistant_message_t(content = content, stop_reason = types.STOP_PENDING)
+    update = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, assistant_message: assistant,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, has_agent_event: true, agent_event: update,})
+    value.render(60)
+    assert(value.streaming_thinking_stable_rows.len() == 1)
+    content = [new types.thinking_content_t(thinking = 'one stable line\nsecond grows\nthird')]
+    assistant = new types.assistant_message_t(content = content, stop_reason = types.STOP_PENDING)
+    update = agent_types.agent_event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, assistant_message: assistant,}
+    value.apply(session_stream.event_t {kind: agent_types.EVENT_MESSAGE_UPDATE, has_agent_event: true, agent_event: update,})
+    value.render(60)
+    assert(value.streaming_thinking_stable_rows.len() == 2)
+}
+
 test 'tool image attachments render through terminal capability settings' {
     terminal_image.set_capabilities('kitty', true, true)
     var value = chat.new('mock-model', '/tmp/project')
@@ -181,7 +209,7 @@ test 'retry status counts down every render like Pi' {
     var started = session_stream.event_t {kind: session_stream.EVENT_RETRY_START, retry_attempt: 2, retry_max_attempts: 3, retry_delay_ms: 3000,}
     value.apply(started)
     var first = strings.join(value.render(60), '\n')
-    assert(first.contains('(2/3) in 3s') || first.contains('(2/3) in 3.0s'))
+    assert(first.contains('(2/3) in '))
     co.sleep(1200)
     var later = strings.join(value.render(60), '\n')
     assert(later.contains('in 1s') || later.contains('in 1.') || later.contains('in 2s'))

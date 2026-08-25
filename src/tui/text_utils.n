@@ -12,6 +12,20 @@ pub type slice_t = struct {
     int width
 }
 
+type plain_token_t = struct {
+    int start
+    int end
+    int grapheme_start
+    int grapheme_end
+    int width
+    bool whitespace
+}
+
+type ansi_wrap_t = struct {
+    bool matched
+    [string] lines = []
+}
+
 pub type tracker_t = struct {
     string sgr_history
     bool underline
@@ -287,8 +301,23 @@ fn wrap_single_line(string line, int width): [string]! {
     // transient allocator pressure even though each final row is short.
     // ASCII word wrapping only needs byte offsets, so emit final row slices
     // directly without an intermediate token vector.
-    if line.find('\x1b') < 0 && line.find('\t') < 0 && is_ascii_text(line) {
-        return wrap_ascii_line(line, width)
+    if line.find('\x1b') < 0 && line.find('\t') < 0 {
+        if is_ascii_text(line) {
+            return wrap_ascii_line(line, width)
+        }
+        return wrap_plain_unicode_line(line, width)
+    }
+    // Thinking rows and most themed transcript rows have one style prefix
+    // and one reset suffix around otherwise plain text. Preserve those codes
+    // on every visual row, but wrap the visible body with the offset-only
+    // paths above. The generic ANSI tokenizer creates a short Nature string
+    // for every grapheme; repeated streaming redraws then amplify the runtime
+    // short-string-pool leak from nature-lang/nature#331.
+    if line.find('\x1b') >= 0 && line.find('\t') < 0 {
+        var uniform = wrap_uniform_ansi_line(line, width)
+        if uniform.matched {
+            return uniform.lines
+        }
     }
     // A long unbroken UTF-8 word is common while an assistant streams a
     // token at a time.  The general tokenizer appends every grapheme to a
@@ -350,6 +379,68 @@ fn wrap_single_line(string line, int width): [string]! {
     return result
 }
 
+fn wrap_uniform_ansi_line(string line, int width): ansi_wrap_t! {
+    int first_nonspace = -1
+    int last_nonspace_end = -1
+    int cursor = 0
+    for cursor < line.len() {
+        var ansi = extract_ansi(line, cursor)
+        if ansi.found {
+            cursor += ansi.length
+            continue
+        }
+        if line[cursor] != ' '.char() {
+            if first_nonspace < 0 {
+                first_nonspace = cursor
+            }
+            last_nonspace_end = cursor + 1
+        }
+        cursor += 1
+    }
+    if first_nonspace < 0 {
+        return ansi_wrap_t {matched: true, lines: [line],}
+    }
+
+    string prefix = ''
+    string suffix = ''
+    [string] plain_parts = vec<string>.cap_of(4)
+    int plain_start = 0
+    cursor = 0
+    for cursor < line.len() {
+        var ansi = extract_ansi(line, cursor)
+        if !ansi.found {
+            cursor += 1
+            continue
+        }
+        if cursor >= first_nonspace && cursor < last_nonspace_end {
+            return ansi_wrap_t{}
+        }
+        if plain_start < cursor {
+            plain_parts.push(line.slice(plain_start, cursor))
+        }
+        if cursor < first_nonspace {
+            prefix += ansi.code
+        } else {
+            suffix += ansi.code
+        }
+        cursor += ansi.length
+        plain_start = cursor
+    }
+    if plain_start < line.len() {
+        plain_parts.push(line.slice(plain_start, line.len()))
+    }
+    string plain = strings.join(plain_parts, '')
+    [string] wrapped = is_ascii_text(plain) ? wrap_ascii_line(plain, width) : wrap_plain_unicode_line(plain, width)
+    var tracker = new tracker_t()
+    tracker.update(prefix)
+    [string] result = vec<string>.cap_of(wrapped.len())
+    for int index = 0; index < wrapped.len(); index += 1 {
+        string end_reset = index + 1 < wrapped.len() ? tracker.line_end_reset() : ''
+        result.push(prefix + wrapped[index] + end_reset + suffix)
+    }
+    return ansi_wrap_t {matched: true, lines: result,}
+}
+
 fn wrap_ascii_line(string line, int width): [string] {
     [string] result = vec<string>.cap_of((line.len() + width - 1) / width)
     int row_start = -1
@@ -402,6 +493,111 @@ fn wrap_ascii_line(string line, int width): [string] {
         result.push(ascii_trimmed_slice(line, row_start, row_end))
     }
     return result.len() > 0 ? result : ['']
+}
+
+// Plain Unicode transcript lines need ICU grapheme boundaries, but not a
+// short Nature string for every grapheme. Offset tokens preserve Pi's word
+// and CJK wrapping semantics while avoiding the <=7-byte pool leak tracked in
+// nature-lang/nature#331.
+fn wrap_plain_unicode_line(string line, int width): [string]! {
+    var graphemes = unicode.graphemes(line)
+    [plain_token_t] tokens = vec<plain_token_t>.cap_of(16)
+    int token_start = -1
+    int token_grapheme_start = -1
+    int token_end = -1
+    int token_width = 0
+    int token_kind = 0
+    for int index = 0; index < graphemes.len(); index += 1 {
+        var grapheme = graphemes[index]
+        int grapheme_width = unicode.grapheme_width_at(line, grapheme.start, grapheme.end)
+        bool whitespace = grapheme.end - grapheme.start == 1 && line[grapheme.start] == ' '.char()
+        bool cjk = !whitespace && unicode.is_cjk_break_at(line, grapheme.start, grapheme.end)
+        if cjk {
+            if token_start >= 0 {
+                tokens.push(plain_token_t {start: token_start, end: token_end, grapheme_start: token_grapheme_start, grapheme_end: index, width: token_width, whitespace: token_kind == 1,})
+            }
+            tokens.push(plain_token_t {start: grapheme.start, end: grapheme.end, grapheme_start: index, grapheme_end: index + 1, width: grapheme_width,})
+            token_start = -1
+            token_grapheme_start = -1
+            token_end = -1
+            token_width = 0
+            token_kind = 0
+            continue
+        }
+        int next_kind = whitespace ? 1 : 2
+        if token_start >= 0 && token_kind != next_kind {
+            tokens.push(plain_token_t {start: token_start, end: token_end, grapheme_start: token_grapheme_start, grapheme_end: index, width: token_width, whitespace: token_kind == 1,})
+            token_start = grapheme.start
+            token_grapheme_start = index
+            token_width = 0
+        } else if token_start < 0 {
+            token_start = grapheme.start
+            token_grapheme_start = index
+        }
+        token_end = grapheme.end
+        token_width += grapheme_width
+        token_kind = next_kind
+    }
+    if token_start >= 0 {
+        tokens.push(plain_token_t {start: token_start, end: token_end, grapheme_start: token_grapheme_start, grapheme_end: graphemes.len(), width: token_width, whitespace: token_kind == 1,})
+    }
+
+    [string] result = vec<string>.cap_of((line.len() + width - 1) / width)
+    int row_start = -1
+    int row_end = -1
+    int row_width = 0
+    for token in tokens {
+        if token.width > width && !token.whitespace {
+            if row_start >= 0 {
+                result.push(plain_trimmed_slice(line, row_start, row_end))
+                row_start = -1
+                row_end = -1
+                row_width = 0
+            }
+            int piece_start = token.start
+            int piece_width = 0
+            for int index = token.grapheme_start; index < token.grapheme_end; index += 1 {
+                var grapheme = graphemes[index]
+                int grapheme_width = unicode.grapheme_width_at(line, grapheme.start, grapheme.end)
+                if piece_width + grapheme_width > width && piece_width > 0 {
+                    result.push(line.slice(piece_start, grapheme.start))
+                    piece_start = grapheme.start
+                    piece_width = 0
+                }
+                piece_width += grapheme_width
+            }
+            row_start = piece_start
+            row_end = token.end
+            row_width = piece_width
+            continue
+        }
+        if row_width + token.width > width && row_width > 0 {
+            result.push(plain_trimmed_slice(line, row_start, row_end))
+            row_start = -1
+            row_end = -1
+            row_width = 0
+            if token.whitespace {
+                continue
+            }
+        }
+        if row_start < 0 {
+            row_start = token.start
+        }
+        row_end = token.end
+        row_width += token.width
+    }
+    if row_start >= 0 {
+        result.push(plain_trimmed_slice(line, row_start, row_end))
+    }
+    return result.len() > 0 ? result : ['']
+}
+
+fn plain_trimmed_slice(string line, int start, int end): string {
+    int trimmed_end = end
+    for trimmed_end > start && line[trimmed_end - 1] == ' '.char() {
+        trimmed_end -= 1
+    }
+    return line.slice(start, trimmed_end)
 }
 
 fn ascii_trimmed_slice(string line, int start, int end): string {

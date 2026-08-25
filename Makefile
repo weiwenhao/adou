@@ -11,7 +11,7 @@ BUILD_DIR ?= build
 BIN_DIR := $(BUILD_DIR)/bin
 ADOU_BIN := $(BIN_DIR)/adou
 PROCESS_GROUP_HELPER := $(BIN_DIR)/adou-process-group
-SAFE_NATURE := $(CURDIR)/scripts/nature-build-safe.sh
+NATURE_SERIAL := $(CURDIR)/scripts/nature-serial.sh
 NATIVE_OBJ := native/unicode_icu.o
 TERM_OBJ := native/term.o
 REGEX_OBJ := native/regex.o
@@ -81,9 +81,9 @@ $(FS_WATCH_OBJ): native/fs_watch.c
 	@mkdir -p "$(dir $@)"
 	@$(CC) -std=c11 -O2 -c "$<" -o "$@"
 
-$(ADOU_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(CLIPBOARD_IMAGE_OBJ) $(FS_WATCH_OBJ) $(SAFE_NATURE)
+$(ADOU_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(CLIPBOARD_IMAGE_OBJ) $(FS_WATCH_OBJ) $(NATURE_SERIAL)
 	@mkdir -p "$(BIN_DIR)"
-	@NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" build -o "$(ADOU_BIN)" "$(CURDIR)/main.n"
+	@NATURE_EXECUTABLE="$(NATURE)" "$(NATURE_SERIAL)" build -o "$(ADOU_BIN)" "$(CURDIR)/main.n"
 
 run: build
 	@ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" "$(ADOU_BIN)"
@@ -91,10 +91,10 @@ run: build
 # Nature's own test runner is the test framework.  Run tests one at a time so
 # each invocation gets the same stale-compiler cleanup and no two Nature
 # processes can overlap.
-test: $(SAFE_NATURE) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(CLIPBOARD_IMAGE_OBJ) $(FS_WATCH_OBJ) $(PROCESS_GROUP_HELPER)
+test: $(NATURE_SERIAL) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(CLIPBOARD_IMAGE_OBJ) $(FS_WATCH_OBJ) $(PROCESS_GROUP_HELPER)
 	@set -e; for test_file in $(TEST_SOURCES); do \
 		echo "==> $$test_file"; \
-		ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" test "$(CURDIR)/$$test_file"; \
+		ADOU_PROCESS_GROUP_HELPER="$(CURDIR)/$(PROCESS_GROUP_HELPER)" NATURE_EXECUTABLE="$(NATURE)" "$(NATURE_SERIAL)" test "$(CURDIR)/$$test_file"; \
 	done
 
 e2e: build
@@ -117,9 +117,9 @@ e2e-live: build
 eval: build $(EVAL_BIN)
 	@"$(EVAL_BIN)"
 
-$(EVAL_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(CLIPBOARD_IMAGE_OBJ) $(SAFE_NATURE) $(EVAL_ENTRY)
+$(EVAL_BIN): $(NATURE_SOURCES) $(NATIVE_OBJ) $(TERM_OBJ) $(REGEX_OBJ) $(STDIN_PEEK_OBJ) $(AUTH_STORE_OBJ) $(CLIPBOARD_IMAGE_OBJ) $(NATURE_SERIAL) $(EVAL_ENTRY)
 	@mkdir -p "$(BIN_DIR)"
-	@NATURE_EXECUTABLE="$(NATURE)" "$(SAFE_NATURE)" build -o "$(EVAL_BIN)" "$(CURDIR)/$(EVAL_ENTRY)"
+	@NATURE_EXECUTABLE="$(NATURE)" "$(NATURE_SERIAL)" build -o "$(EVAL_BIN)" "$(CURDIR)/$(EVAL_ENTRY)"
 
 check: test e2e
 

@@ -263,6 +263,11 @@ int64_t adou_icu_grapheme_width(const char *text, int64_t length) {
     return width;
 }
 
+int64_t adou_icu_grapheme_width_at(const char *text, int64_t length, int64_t start, int64_t end) {
+    if (text == NULL || start < 0 || end < start || end > length) return -1;
+    return adou_icu_grapheme_width(text + start, end - start);
+}
+
 int64_t adou_icu_visible_width(const char *text, int64_t length) {
     if (!load_icu() || text == NULL || length < 0 || length > INT32_MAX) return -1;
     UText utext = UTEXT_INITIALIZER;
@@ -294,4 +299,9 @@ bool adou_icu_is_cjk_break(const char *text, int64_t length) {
     if (codepoint < 0) return false;
     int32_t script = api.int_property(codepoint, UCHAR_SCRIPT);
     return script == USCRIPT_HAN || script == USCRIPT_HIRAGANA || script == USCRIPT_KATAKANA || script == USCRIPT_HANGUL || script == USCRIPT_BOPOMOFO;
+}
+
+bool adou_icu_is_cjk_break_at(const char *text, int64_t length, int64_t start, int64_t end) {
+    if (text == NULL || start < 0 || end < start || end > length) return false;
+    return adou_icu_is_cjk_break(text + start, end - start);
 }

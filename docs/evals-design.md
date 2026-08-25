@@ -9,7 +9,7 @@
 | `src/pi-harness.ts` | 单 case 运行器：装配 session（provider/tools/session）、跑 prompt、抽取 response/transcript/usage，非 `stop` 结束即抛错 | `src/evals/harness.n`：`make_runner`/`drive_prompt`（装配 session、运行 prompt、按最后 assistant 的 stop_reason 判定 run 失败） |
 | `src/smoke.eval.ts` | smoke 集合：`describeEval("Pi Coding Agent smoke", ...)`，case 名 "runs a basic prompt end to end"（断言 output 为 Paris、errors 为空、usage 元数据） | `tests/evals/smoke_evals.n`：case 定义（name + prompt + 期望），`basic-prompt` 沿用“回答 Paris”语义与 case 命名风格 |
 | `src/extensions.eval.ts` | 扩展创建/reload/工具调用 eval | **明确排除**：Pi extension 已在生产入口停用，扩展相关 eval 不移植（记录于 porting-plan 排除项） |
-| `scripts/run-evals.mjs` | CLI 包装：校验 ADOU_PROVIDER/ADOU_MODEL 后跑 vitest | `Makefile` 的 `eval` target：经 `scripts/nature-build-safe.sh` guarded 串行构建 `tests/evals/smoke_evals.n` 并运行二进制 |
+| `scripts/run-evals.mjs` | CLI 包装：校验 ADOU_PROVIDER/ADOU_MODEL 后跑 vitest | `Makefile` 的 `eval` target：经 `scripts/nature-serial.sh` guarded 串行构建 `tests/evals/smoke_evals.n` 并运行二进制 |
 
 上游 harness 依赖真实模型 API（`ADOU_PROVIDER`/`ADOU_MODEL` + ModelRuntime），本实现按任务要求改为**本地脚本化 HTTP mock**（参照 `tests/anthropic_http_stream_test.n` / `deepseek_http_stream_test.n` 的 fixture server 模式）：每个 case 一个 `http.server()`，按请求序号返回预置的 Anthropic-messages SSE 体，全程离线、确定、零成本。真实 provider eval 未做（记录为剩余差异）。
 
@@ -34,4 +34,4 @@
 
 - `tests/evals/*.n` 不在 `make test` 的 `tests/*.n` glob 内（避免被当作单元测试重复串行跑）；`tests/evals/` 非 `.sh`，也不被 `make e2e` 的 `tests/e2e/*.sh` glob 误抓。
 - `src/evals/harness.n` 随 `NATURE_SOURCES` 进入主构建（与其余 src 模块一致）。
-- 与单元测试一样，所有 Nature 编译器调用都经 `scripts/nature-build-safe.sh` 串行守卫。
+- 与单元测试一样，所有 Nature 编译器调用都经 `scripts/nature-serial.sh` 串行守卫。

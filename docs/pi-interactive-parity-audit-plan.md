@@ -891,7 +891,7 @@ max5 双方 editor 可见 + input "/"）。
 - F2（Adou 只有 HEAD，dirty worktree 下 HEAD 不变）：`slash-menu.sh` 每
   record 增加 `binary_sha256`（ADOU_BIN 实际 bytes）与 `source_fingerprint`
   （Makefile build 输入：main.n、package.toml、src/**/*.n 含 untracked、
-  native/*.c、scripts/nature-build-safe.sh；repo-relative 排序，path+content
+  native/*.c、scripts/nature-serial.sh；repo-relative 排序，path+content
   入 hash）。comparator 重算并逐轮校验；binary 变化、tracked 源码变化、
   untracked src/*.n 变化均 FAIL（纯/tempdir 负例）。
 - F3（vendors/pi worktree dirty）：`oracle_runtime_fingerprint` 覆盖

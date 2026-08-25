@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Run one Nature compiler command after removing stale Nature compiler
-# processes owned by the current user.  Nature's compiler can retain several
+# processes owned by the current user. Nature's compiler can retain several
 # GiB while compiling Adou; allowing an interrupted build to overlap with a
 # new one can exhaust the machine before either build finishes.
 

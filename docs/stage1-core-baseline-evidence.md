@@ -13,7 +13,7 @@ the deterministic eval harness. Interactive/TUI parity remains Stage 2 work.
 ## Nature Tests
 
 The following targeted files were executed serially through
-`scripts/nature-build-safe.sh`:
+`scripts/nature-serial.sh`:
 
 - `agent_loop_test.n`: 17/17
 - `tools_test.n`: 24/24

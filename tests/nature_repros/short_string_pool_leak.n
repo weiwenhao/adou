@@ -1,0 +1,18 @@
+import co
+import runtime
+
+fn main() {
+    string source = 'abcdefghij'
+    int checksum = 0
+    for int index = 0; index < 2000000; index += 1 {
+        int start = index % 8
+        string value = source.slice(start, start + 1)
+        checksum += value.len()
+    }
+    runtime.gc()
+    co.sleep(1000)
+    runtime.gc()
+    co.sleep(1000)
+    println('done', checksum, 'gc_heap', runtime.malloc_bytes())
+    co.sleep(10000)
+}

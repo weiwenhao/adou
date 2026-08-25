@@ -6,6 +6,7 @@ import adou.src.ai.types
 import adou.src.tui.chat
 import co
 import runtime
+import time
 
 fn model(): ref<types.model_t> {
     return new types.model_t(id = 'deepseek-v4-flash', api = 'openai-completions', provider = 'deepseek')
@@ -23,6 +24,7 @@ fn render_long_reasoning_stream(): int! {
     int emitted = 0
     int rendered_rows = 0
     for int index = 0; index < 2048; index += 1 {
+        processor.thinking_last_flush_ms = time.now().ms_timestamp()
         var events = processor.feed(frame('{"choices":[{"delta":{"reasoning_content":"' + chunk + '"},"finish_reason":null}]}'))
         for event in events {
             emitted += 1

@@ -48,6 +48,6 @@ concurrent invocations can corrupt generated artifacts and exhaust the host.
 - Do not run the full `make test` suite unless the task explicitly requires
   it: a full run takes ~2 hours and can exhaust the machine. Prefer targeted
   single-file tests, e.g.
-  `NATURE_EXECUTABLE=/usr/local/nature/bin/nature ./scripts/nature-build-safe.sh test <absolute path to tests/xxx_test.n>`.
+  `NATURE_EXECUTABLE=/usr/local/nature/bin/nature ./scripts/nature-serial.sh test <absolute path to tests/xxx_test.n>`.
 - When practical, run the generated executable and verify its observable output.
 - Do not modify files under `vendors/` unless the task explicitly requires it.

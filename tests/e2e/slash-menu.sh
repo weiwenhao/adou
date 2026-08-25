@@ -935,11 +935,11 @@ def adou_binary_sha256() -> str:
 def adou_source_fingerprint() -> str:
     """Deterministic hash over the Makefile build inputs (B1-R6 rework C):
     main.n, package.toml, src/**/*.n (incl. UNTRACKED files — never just
-    git diff), native/*.c and scripts/nature-build-safe.sh, sorted by
+    git diff), native/*.c and scripts/nature-serial.sh, sorted by
     repo-relative path with path+content hashed.  Identical algorithm to
     max-visible-parity.adou_source_fingerprint()."""
     inputs: list[str] = []
-    for rel in ("main.n", "package.toml", "scripts/nature-build-safe.sh"):
+    for rel in ("main.n", "package.toml", "scripts/nature-serial.sh"):
         if os.path.exists(os.path.join(ROOT, rel)):
             inputs.append(rel)
     for prefix, suffix in (("src", ".n"), ("native", ".c")):
