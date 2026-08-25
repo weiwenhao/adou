@@ -2,6 +2,7 @@ import adou.src.ai.abort
 import adou.src.ai.clone
 import adou.src.ai.types
 import adou.src.debug
+import co
 import co.mutex
 pub const DEFAULT_CAPACITY = 32
 // assistant_stream_t preserves Pi's two related stream concepts: a bounded
@@ -70,6 +71,10 @@ pub fn assistant_stream_t.push(&self, types.assistant_event_t event): void! {
     }
     self.lock.unlock()
     self.events.send(snapshot)
+    // A buffered send can complete without suspending the provider. Yield
+    // explicitly so a continuously readable HTTP stream cannot monopolize
+    // Nature's cooperative scheduler and starve the GC or UI coroutines.
+    co.yield()
     debug.log('ai-stream', 'event delivered kind=' + snapshot.kind)
 }
 pub fn assistant_stream_t.recv(&self): types.assistant_event_t! {

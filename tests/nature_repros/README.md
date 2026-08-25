@@ -3,23 +3,49 @@
 These are focused Nature programs for the memory pressure observed in Adou's
 model selector and long streamed TUI responses.
 
+## Cooperative GC progress
+
+`cooperative_gc_progress.n` is the minimal reproduction for the remaining
+live-stream symptom. It allocates about 50 MB of unreachable data, requests an
+asynchronous collection, and then occupies the current processor with a CPU
+loop that has no scheduling point. The allocation count does not change while
+that loop is running; after one explicit `co.yield()` and a short collector
+settling interval, it returns to a few kilobytes.
+
+On Nature master `a52a1cdd` the observed output is:
+
+```text
+before 50335520 before_yield 50335520 after_yield 3616
+```
+
+This is expected cooperative-scheduler behavior, not a separate runtime bug.
+It models a provider whose HTTP reads and buffered event sends can all complete
+immediately: without an explicit yield, the stream coroutine can starve the GC
+work coroutines even when `runtime.gc()` has already been requested.
+
+Build and run it serially from the repository root:
+
+```sh
+NATURE_EXECUTABLE=/usr/local/nature/bin/nature \
+  ./scripts/nature-serial.sh build -o /tmp/adou_cooperative_gc_progress \
+  "$PWD/tests/nature_repros/cooperative_gc_progress.n"
+/tmp/adou_cooperative_gc_progress
+```
+
 ## Short dynamic string pool leak (#331)
 
 `short_string_pool_leak.n` is the standalone reproduction for
 [`nature-lang/nature#331`](https://github.com/nature-lang/nature/issues/331).
-Two million one-byte `string.slice` operations leave about 92 MB of dirty,
-non-reclaimable Darwin `MALLOC_NANO` memory after two settled Nature GC
-cycles; changing the slice length to eight bypasses the runtime's
-`capacity <= 8` pool path and leaves only about 160 KB in that zone. Adou's
-Unicode and Markdown wrappers amplified this native leak during long streamed
-responses, so the TUI keeps offset-based plain-Unicode wrapping as a local
-mitigation until the runtime fix is available.
+Before PR #333, two million one-byte `string.slice` operations left about 92 MB
+of dirty, non-reclaimable Darwin `MALLOC_NANO` memory after two settled Nature
+GC cycles. Nature master `a52a1cdd` fixes the dynamic short-string pool leak;
+the same reproduction now settles at about 3.8 KB of live Nature allocation.
 
 ## Streamed render GC failure (#332)
 
 `growing_render_gc_pressure.n` reduces the streamed transcript shape to
 immutable string growth plus rebuilding and dropping fixed-width row vectors.
-It is the standalone reproduction for
+It is the historical standalone reproduction for
 [`nature-lang/nature#332`](https://github.com/nature-lang/nature/issues/332).
 On upstream Nature `1f840ec0`, repeated forced GC cycles eventually make
 `runtime.malloc_bytes()` negative; the program stops at the first negative
@@ -27,6 +53,12 @@ sample. The measured upstream run stopped at frame 2,450 with
 `-1319468015`, after reaching a 9.16 GB peak physical footprint. Removing the
 5 ms scheduler pause makes GC stop completing after several cycles and grows
 physical footprint to 18 GB in under a minute.
+
+PR #333 fixes the allocation-accounting underflow: on master `a52a1cdd` the
+program completes all 4,000 frames, keeps accounting non-negative, peaks near
+90.9 MB, and settles near 103 KB. The no-pause variant is covered separately
+by `cooperative_gc_progress.n`; starvation without a scheduling point is
+expected under Nature's cooperative model.
 
 `string_concat_gc_accounting.n` is the control for the string-concatenation
 path alone. It keeps `runtime.malloc_bytes()` positive, narrowing #332 to the

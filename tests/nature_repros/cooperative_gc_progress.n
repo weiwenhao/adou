@@ -1,0 +1,32 @@
+import co
+import runtime
+
+fn allocate_garbage(): int {
+    [[u8]] blocks = []
+    for int index = 0; index < 16; index += 1 {
+        var block = vec<u8>.new(0, 1024 * 1024)
+        block.push(index as u8)
+        blocks.push(block)
+    }
+    return blocks.len()
+}
+
+fn main() {
+    int blocks = allocate_garbage()
+    i64 before = runtime.malloc_bytes()
+
+    // runtime.gc() starts collection asynchronously. The collector cannot
+    // finish while this coroutine occupies the processor without yielding.
+    runtime.gc()
+    i64 checksum = 0
+    for int index = 0; index < 100000000; index += 1 {
+        checksum += index % 17
+    }
+    i64 before_yield = runtime.malloc_bytes()
+
+    co.yield()
+    co.sleep(100)
+    i64 after_yield = runtime.malloc_bytes()
+    println('blocks', blocks, 'checksum', checksum)
+    println('before', before, 'before_yield', before_yield, 'after_yield', after_yield)
+}
