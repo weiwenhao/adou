@@ -33,6 +33,15 @@ pub type entry_t = struct {
     string parent_id
     string timestamp
     any raw
+    // Parsed, immutable metadata used by concurrent readers such as the TUI
+    // footer. Readers must not repeatedly traverse raw JSON maps while an
+    // append coroutine is serializing and parsing the next entry.
+    bool has_usage
+    ai_types.usage_t usage
+    bool assistant_message
+    string assistant_stop_reason
+    string usage_key
+    string session_name
 }
 
 pub type context_t = struct {

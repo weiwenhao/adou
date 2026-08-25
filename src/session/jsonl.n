@@ -1,4 +1,6 @@
 import adou.src.json_util
+import adou.src.ai.types as ai_types
+import adou.src.session.message_json
 import adou.src.session.types
 import adou.src.session.identity
 import fs
@@ -166,7 +168,36 @@ pub fn parse_entry(any value): ref<types.entry_t>! {
     if has_parent {
         parent_id = object['parentId'] as string
     }
-    return new types.entry_t(kind = kind, id = id, has_parent = has_parent, parent_id = parent_id, timestamp = timestamp, raw = value)
+    var entry = new types.entry_t(kind = kind, id = id, has_parent = has_parent, parent_id = parent_id, timestamp = timestamp, raw = value)
+    if kind == types.ENTRY_MESSAGE && object.contains('message') && object['message'] is {string:any} {
+        var message = object['message'] as {string:any}
+        string role = optional_string(message, 'role')
+        if role == 'assistant' {
+            entry.assistant_message = true
+            entry.assistant_stop_reason = optional_string(message, 'stopReason')
+            if entry.assistant_stop_reason == '' {
+                entry.assistant_stop_reason = ai_types.STOP_STOP
+            }
+            entry.usage_key = optional_string(message, 'provider') + '/' + optional_string(message, 'model')
+            entry.has_usage = true
+            if message.contains('usage') && message['usage'] is {string:any} {
+                entry.usage = message_json.decode_usage(message['usage'])
+            }
+        } else if role == 'toolResult' {
+            entry.usage_key = 'Tools/summaries'
+            entry.has_usage = true
+            if message.contains('usage') && message['usage'] is {string:any} {
+                entry.usage = message_json.decode_usage(message['usage'])
+            }
+        }
+    } else if (kind == types.ENTRY_COMPACTION || kind == types.ENTRY_BRANCH_SUMMARY) && object.contains('usage') && object['usage'] is {string:any} {
+        entry.usage_key = 'Tools/summaries'
+        entry.has_usage = true
+        entry.usage = message_json.decode_usage(object['usage'])
+    } else if kind == types.ENTRY_SESSION_INFO {
+        entry.session_name = optional_string(object, 'name')
+    }
+    return entry
 }
 
 pub fn required_string({string:any} object, string key): string! {

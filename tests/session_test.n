@@ -14,6 +14,27 @@ pub fn append_worker(ref<repository.manager_t> session, string content, chan<int
     done.send(1)
 }
 
+pub fn append_usage_worker(ref<repository.manager_t> session, int count, chan<int> done): void! {
+    for int index = 0; index < count; index += 1 {
+        ai_types.usage_t usage = ai_types.usage_t {input: 1, output: 1, total_tokens: 2,}
+        ai_types.content_t text = new ai_types.text_content_t(text = 'stream update')
+        session.append_message(new ai_types.assistant_message_t(content = [text], usage = usage, stop_reason = ai_types.STOP_STOP, timestamp = index))
+        co.yield()
+    }
+    done.send(1)
+}
+
+pub fn read_usage_worker(ref<repository.manager_t> session, int count, chan<int> done): void! {
+    int previous = 0
+    for int index = 0; index < count; index += 1 {
+        var usage = session.usage_totals()
+        assert(usage.input >= previous)
+        previous = usage.input
+        co.yield()
+    }
+    done.send(1)
+}
+
 pub fn text_of(ai_types.message_t message): string {
     if message is ref<ai_types.user_message_t> user {
         return user.content
@@ -458,6 +479,21 @@ test 'session file is private and concurrent records never interleave' {
     assert(reopened.get_entries().len() == 3)
     assert(reopened.get_warnings().len() == 0)
     os.rmdir(root, true)
+}
+
+test 'footer usage reads stay valid while session entries are appended' {
+    string root = '/tmp/adou-session-test-concurrent-footer'
+    var session = repository.in_memory(root)
+    chan<int> done = chan<int>.new(3)
+    go append_usage_worker(session, 300, done)
+    go read_usage_worker(session, 600, done)
+    go read_usage_worker(session, 600, done)
+    done.recv()
+    done.recv()
+    done.recv()
+    var usage = session.usage_totals()
+    assert(usage.input == 300)
+    assert(usage.output == 300)
 }
 
 test 'continue recent selects the newest session for the same cwd' {

@@ -474,7 +474,7 @@ pub fn manager_t.collect_branch_entries(&self, string old_leaf_id, string target
     return branch_collection_t {entries: entries, has_common_ancestor: has_common, common_ancestor_id: common_id,}
 }
 
-pub fn manager_t.active_entries(&self): [ref<types.entry_t>] {
+fn manager_t.active_entries_locked(&self): [ref<types.entry_t>] {
     if !self.has_leaf || !self.by_id.contains(self.leaf_id) {
         return []
     }
@@ -502,6 +502,13 @@ pub fn manager_t.active_entries(&self): [ref<types.entry_t>] {
     for int index = reversed.len() - 1; index >= 0; index -= 1 {
         result.push(reversed[index])
     }
+    return result
+}
+
+pub fn manager_t.active_entries(&self): [ref<types.entry_t>] {
+    self.lock.lock()
+    var result = self.active_entries_locked()
+    self.lock.unlock()
     return result
 }
 
@@ -747,10 +754,9 @@ pub fn manager_t.get_session_name(&self): string! {
     string result = ''
     // Pi treats the display name as session metadata, so branch navigation must
     // not reveal an older name from the selected path.
-    for entry in self.entries {
+    for entry in self.entries_snapshot() {
         if entry.kind == types.ENTRY_SESSION_INFO {
-            var object = entry.raw as {string:any}
-            result = json_util.opt_string(object, 'name')
+            result = entry.session_name
         }
     }
     return result
@@ -1066,14 +1072,24 @@ pub fn manager_t.build_context(&self): types.context_t! {
     return result
 }
 
+fn manager_t.entries_snapshot(&self): [ref<types.entry_t>] {
+    self.lock.lock()
+    [ref<types.entry_t>] result = vec<ref<types.entry_t>>.cap_of(self.entries.len())
+    for entry in self.entries {
+        result.push(entry)
+    }
+    self.lock.unlock()
+    return result
+}
+
 pub fn manager_t.get_entries(&self): [ref<types.entry_t>] {
-    return self.entries.slice(0, self.entries.len())
+    return self.entries_snapshot()
 }
 
 // Pi's findEntries: entries of a given kind (message/session_info/...).
 pub fn manager_t.find_entries(&self, string kind): [ref<types.entry_t>] {
     [ref<types.entry_t>] result = []
-    for entry in self.entries {
+    for entry in self.entries_snapshot() {
         if entry.kind == kind {
             result.push(entry)
         }
@@ -1084,11 +1100,12 @@ pub fn manager_t.find_entries(&self, string kind): [ref<types.entry_t>] {
 // Pi's getEntries({afterEntrySeq, limit}): entries starting at the given
 // sequence (array index) with an optional cap; limit <= 0 means unbounded.
 pub fn manager_t.get_entries_after(&self, int after_entry_seq, int limit): [ref<types.entry_t>] {
+    var entries = self.entries_snapshot()
     int start = after_entry_seq
     if start < 0 {
         start = 0
     }
-    int end = self.entries.len()
+    int end = entries.len()
     if limit > 0 && start + limit < end {
         end = start + limit
     }
@@ -1096,11 +1113,17 @@ pub fn manager_t.get_entries_after(&self, int after_entry_seq, int limit): [ref<
         [ref<types.entry_t>] empty = []
         return empty
     }
-    return self.entries.slice(start, end)
+    return entries.slice(start, end)
 }
 
 pub fn manager_t.get_warnings(&self): [string] {
-    return self.warnings.slice(0, self.warnings.len())
+    self.lock.lock()
+    [string] result = vec<string>.cap_of(self.warnings.len())
+    for warning in self.warnings {
+        result.push(warning)
+    }
+    self.lock.unlock()
+    return result
 }
 
 // Pi's footer totals usage across the complete session log, not only the
@@ -1109,26 +1132,9 @@ pub fn manager_t.get_warnings(&self): [string] {
 // source of truth as the JSONL writer.
 pub fn manager_t.usage_totals(&self): ai_types.usage_t {
     ai_types.usage_t total = ai_types.usage_t{}
-    for entry in self.entries {
-        if entry.kind == types.ENTRY_MESSAGE {
-            if !json_util.is_obj(entry.raw) {continue}
-            var object = entry.raw as {string:any}
-            if !object.contains('message') || !(object['message'] is {string:any}) {
-                continue
-            }
-            var message = message_json.decode(object['message']) catch error {continue}
-            if message is ref<ai_types.assistant_message_t> assistant {
-                add_usage(&total, assistant.usage)
-            } else if message is ref<ai_types.tool_result_message_t> tool {
-                add_usage(&total, tool.usage)
-            }
-        } else if entry.kind == types.ENTRY_COMPACTION || entry.kind == types.ENTRY_BRANCH_SUMMARY {
-            if !json_util.is_obj(entry.raw) {continue}
-            var object = entry.raw as {string:any}
-            if object.contains('usage') && object['usage'] is {string:any} {
-                var usage = message_json.decode_usage(object['usage']) catch error {continue}
-                add_usage(&total, usage)
-            }
+    for entry in self.entries_snapshot() {
+        if entry.has_usage {
+            add_usage(&total, entry.usage)
         }
     }
     return total
@@ -1147,36 +1153,9 @@ pub type breakdown_entry_t = struct {
 pub fn manager_t.usage_cost_breakdown(&self): [breakdown_entry_t] {
     {string:ai_types.usage_t} totals_by_key = {}
     [string] order = []
-    for entry in self.entries {
-        string key = ''
-        ai_types.usage_t usage = ai_types.usage_t{}
-        bool has_usage = false
-        if entry.kind == types.ENTRY_MESSAGE {
-            if !json_util.is_obj(entry.raw) {continue}
-            var object = entry.raw as {string:any}
-            if !object.contains('message') || !(object['message'] is {string:any}) {
-                continue
-            }
-            var message = message_json.decode(object['message']) catch error {continue}
-            if message is ref<ai_types.assistant_message_t> assistant {
-                key = assistant.provider + '/' + assistant.model
-                usage = assistant.usage
-                has_usage = true
-            } else if message is ref<ai_types.tool_result_message_t> tool {
-                key = 'Tools/summaries'
-                usage = tool.usage
-                has_usage = true
-            }
-        } else if entry.kind == types.ENTRY_COMPACTION || entry.kind == types.ENTRY_BRANCH_SUMMARY {
-            if !json_util.is_obj(entry.raw) {continue}
-            var object = entry.raw as {string:any}
-            if object.contains('usage') && object['usage'] is {string:any} {
-                usage = message_json.decode_usage(object['usage']) catch error {continue}
-                key = 'Tools/summaries'
-                has_usage = true
-            }
-        }
-        if key == '' || !has_usage {
+    for entry in self.entries_snapshot() {
+        string key = entry.usage_key
+        if key == '' || !entry.has_usage {
             continue
         }
         if !totals_by_key.contains(key) {
@@ -1184,7 +1163,7 @@ pub fn manager_t.usage_cost_breakdown(&self): [breakdown_entry_t] {
             order.push(key)
         }
         var current = totals_by_key[key]
-        add_usage(&current, usage)
+        add_usage(&current, entry.usage)
         totals_by_key[key] = current
     }
     [breakdown_entry_t] result = []
@@ -1213,21 +1192,13 @@ pub fn manager_t.usage_cost_breakdown(&self): [breakdown_entry_t] {
 // value is intentionally a snapshot of the latest prompt window.
 pub fn manager_t.latest_cache_hit_rate(&self): float {
     float result = -1.0
-    for entry in self.entries {
-        if entry.kind != types.ENTRY_MESSAGE {
+    for entry in self.entries_snapshot() {
+        if !entry.assistant_message {
             continue
         }
-        if !json_util.is_obj(entry.raw) {continue}
-            var object = entry.raw as {string:any}
-        if !object.contains('message') || !(object['message'] is {string:any}) {
-            continue
-        }
-        var message = message_json.decode(object['message']) catch error {continue}
-        if message is ref<ai_types.assistant_message_t> assistant {
-            int prompt_tokens = assistant.usage.input + assistant.usage.cache_read + assistant.usage.cache_write
-            if prompt_tokens > 0 {
-                result = assistant.usage.cache_read as float * 100.0 / prompt_tokens as float
-            }
+        int prompt_tokens = entry.usage.input + entry.usage.cache_read + entry.usage.cache_write
+        if prompt_tokens > 0 {
+            result = entry.usage.cache_read as float * 100.0 / prompt_tokens as float
         }
     }
     return result
@@ -1253,19 +1224,14 @@ pub fn manager_t.context_usage_known(&self): bool {
         if entry.kind != types.ENTRY_MESSAGE {
             continue
         }
-        if !json_util.is_obj(entry.raw) {continue}
-            var object = entry.raw as {string:any}
-        if !object.contains('message') || !(object['message'] is {string:any}) {
+        if !entry.assistant_message {
             continue
         }
-        var message = message_json.decode(object['message']) catch error {continue}
-        if message is ref<ai_types.assistant_message_t> assistant {
-            if assistant.stop_reason == ai_types.STOP_ABORTED || assistant.stop_reason == ai_types.STOP_ERROR {
-                continue
-            }
-            if token_estimate.calculate_context_tokens(assistant.usage) > 0 {
-                return true
-            }
+        if entry.assistant_stop_reason == ai_types.STOP_ABORTED || entry.assistant_stop_reason == ai_types.STOP_ERROR {
+            continue
+        }
+        if token_estimate.calculate_context_tokens(entry.usage) > 0 {
+            return true
         }
     }
     return false
